@@ -1,0 +1,15 @@
+data/raw/*
+data/db/*
+!data/raw/.gitkeep
+!data/db/.gitkeep
+.env
+.venv
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+*.egg-info/
+.playwright/
+docs/

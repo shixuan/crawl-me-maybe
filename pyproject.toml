@@ -1,0 +1,20 @@
+[project]
+name = "crawl-me-maybe"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5",
+    "pydantic-settings",
+    "httpx",
+    "trafilatura",
+    "beautifulsoup4",
+    "lxml",
+    "aiosqlite",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crawl"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
