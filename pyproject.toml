@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/crawl"]
+packages = ["src/crawlme"]
 
 [build-system]
 requires = ["hatchling"]

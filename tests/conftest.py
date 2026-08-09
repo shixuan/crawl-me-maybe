@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from crawl.config import Settings
+from crawlme.config import Settings
 
 
 @pytest.fixture
