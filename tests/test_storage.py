@@ -13,13 +13,16 @@ def _run(coro):
 
 @pytest.fixture
 def storage(tmp_path):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     db = tmp_path / "test.db"
     raw = tmp_path / "raw"
     raw.mkdir()
     s = Storage(str(db), str(raw))
-    _run(s.start())
+    loop.run_until_complete(s.start())
     yield s
-    _run(s.close())
+    loop.run_until_complete(s.close())
+    loop.close()
 
 
 def test_init_creates_all_tables(storage):
