@@ -79,9 +79,11 @@ class Frontier:
         self,
         domain_budget: int = 50,
         aging_window: float = 600.0,
+        age_factor: float = 1.0,
     ) -> None:
         self._domain_budget = domain_budget
         self._aging_window = aging_window
+        self._age_factor = age_factor
         self._lock = asyncio.Lock()
 
         # Python heapq is a min-heap.  We want the *highest* priority item
@@ -172,6 +174,7 @@ class Frontier:
                 return None
 
             heapq.heappop(self._heap)
+            item.priority = self._effective_priority(item, now)
             item.status = "IN_FLIGHT"
             return item
         return None
@@ -187,6 +190,7 @@ class Frontier:
         for item in ready:
             if item.url_key not in self._visited and item.url_key not in self._items:
                 item.seq = _next_seq()
+                item.priority = self._effective_priority(item, now)
                 self._items[item.url_key] = item
                 heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
         return len(ready) > 0
@@ -203,6 +207,16 @@ class Frontier:
     async def mark_visited(self, url_key: str) -> None:
         async with self._lock:
             self._visited.add(url_key)
+
+    def _effective_priority(self, item: FrontierItem, now: datetime.datetime) -> float:
+        """Apply priority aging so old items don't starve.
+
+        Formula:  effective = priority + age_factor * (now - enqueued_at) / aging_window
+        """
+        age_seconds = (now - item.enqueued_at).total_seconds()
+        if age_seconds <= 0 or self._aging_window <= 0:
+            return item.priority
+        return item.priority + self._age_factor * age_seconds / self._aging_window
 
     def contains(self, url_key: str) -> bool:
         return url_key in self._visited or url_key in self._items
