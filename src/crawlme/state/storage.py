@@ -7,7 +7,6 @@ from typing import Any
 
 import aiosqlite
 
-
 DDL = """
 CREATE TABLE IF NOT EXISTS crawl_goals (
     goal_id    TEXT PRIMARY KEY,
@@ -212,14 +211,15 @@ class Storage:
 
     # -- crawl_goals --------------------------------------------------------
 
-    def save_goal(self, goal_json: dict) -> None:
+    def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, embedding, "
             "max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                goal_json["goal_id"], goal_json["prompt"],
+                goal_json["goal_id"],
+                goal_json["prompt"],
                 goal_json.get("goal_statement", ""),
                 json.dumps(goal_json.get("embedding")),
                 goal_json.get("max_pages", 500),
@@ -234,22 +234,21 @@ class Storage:
             ),
         )
 
-    async def get_goal(self, goal_id: str) -> dict | None:
-        cur = await self._execute_now(
-            "SELECT * FROM crawl_goals WHERE goal_id = ?", (goal_id,)
-        )
+    async def get_goal(self, goal_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM crawl_goals WHERE goal_id = ?", (goal_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
     # -- crawl_tasks --------------------------------------------------------
 
-    def save_task(self, task_json: dict) -> None:
+    def save_task(self, task_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_tasks(task_id, goal_id, state, counters, "
             "start_at, end_at, stopping_reason, checkpoint_ref) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                task_json["task_id"], task_json.get("goal_id", ""),
+                task_json["task_id"],
+                task_json.get("goal_id", ""),
                 task_json.get("state", "CREATED"),
                 json.dumps(task_json.get("counters", {})),
                 task_json.get("start_at", ""),
@@ -259,79 +258,86 @@ class Storage:
             ),
         )
 
-    async def get_task(self, task_id: str) -> dict | None:
-        cur = await self._execute_now(
-            "SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,)
-        )
+    async def get_task(self, task_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
     # -- urls ---------------------------------------------------------------
 
-    def save_url(self, url_json: dict) -> None:
+    def save_url(self, url_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO urls(url_key, raw, canonical, scheme, host, "
             "path, query, domain, reg_domain, first_seen, last_seen, status) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                url_json["url_key"], url_json["raw"], url_json["canonical"],
-                url_json.get("scheme", ""), url_json.get("host", ""),
-                url_json.get("path", ""), url_json.get("query", ""),
-                url_json.get("domain", ""), url_json.get("reg_domain", ""),
+                url_json["url_key"],
+                url_json["raw"],
+                url_json["canonical"],
+                url_json.get("scheme", ""),
+                url_json.get("host", ""),
+                url_json.get("path", ""),
+                url_json.get("query", ""),
+                url_json.get("domain", ""),
+                url_json.get("reg_domain", ""),
                 url_json.get("first_seen", url_json.get("last_seen", "")),
-                url_json.get("last_seen", ""), url_json.get("status", "NEW"),
+                url_json.get("last_seen", ""),
+                url_json.get("status", "NEW"),
             ),
         )
 
-    async def get_url(self, url_key: str) -> dict | None:
+    async def get_url(self, url_key: str) -> dict[str, Any] | None:
         cur = await self._execute_now("SELECT * FROM urls WHERE url_key = ?", (url_key,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
     # -- pages --------------------------------------------------------------
 
-    def save_page(self, page_json: dict) -> None:
+    def save_page(self, page_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO pages(page_id, url_key, url_json, raw_html_path, "
             "title, markdown, plain_text, metadata_json, text_hash, text_len, "
             "extracted_at, extraction_status) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                page_json["page_id"], page_json.get("url_key", ""),
+                page_json["page_id"],
+                page_json.get("url_key", ""),
                 json.dumps(page_json.get("url_json", {})),
                 page_json.get("raw_html_path", ""),
-                page_json.get("title"), page_json.get("markdown"),
+                page_json.get("title"),
+                page_json.get("markdown"),
                 page_json.get("plain_text"),
                 json.dumps(page_json.get("metadata_json", {})),
-                page_json.get("text_hash", ""), page_json.get("text_len", 0),
+                page_json.get("text_hash", ""),
+                page_json.get("text_len", 0),
                 page_json.get("extracted_at", ""),
                 page_json.get("extraction_status", "OK"),
             ),
         )
 
-    async def get_page(self, page_id: str) -> dict | None:
+    async def get_page(self, page_id: str) -> dict[str, Any] | None:
         cur = await self._execute_now("SELECT * FROM pages WHERE page_id = ?", (page_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def get_pages_by_url_key(self, url_key: str) -> list[dict]:
-        cur = await self._execute_now(
-            "SELECT * FROM pages WHERE url_key = ? ORDER BY extracted_at", (url_key,)
-        )
+    async def get_pages_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
+        cur = await self._execute_now("SELECT * FROM pages WHERE url_key = ? ORDER BY extracted_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
     # -- candidates ---------------------------------------------------------
 
-    def save_candidate(self, candidate_json: dict) -> None:
+    def save_candidate(self, candidate_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO candidates(candidate_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
             "source_url_key, depth, status, discovered_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                candidate_json["candidate_id"], candidate_json.get("url_key", ""),
+                candidate_json["candidate_id"],
+                candidate_json.get("url_key", ""),
                 json.dumps(candidate_json.get("url_json", {})),
-                candidate_json.get("anchor"), candidate_json.get("snippet"),
+                candidate_json.get("anchor"),
+                candidate_json.get("snippet"),
                 candidate_json.get("parent_heading"),
                 candidate_json.get("position", 0),
                 candidate_json.get("source_page_id"),
@@ -342,39 +348,43 @@ class Storage:
             ),
         )
 
-    async def get_candidate(self, candidate_id: str) -> dict | None:
-        cur = await self._execute_now(
-            "SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,)
-        )
+    async def get_candidate(self, candidate_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
     # -- rank_decisions -----------------------------------------------------
 
-    def save_rank_decision(self, rd_json: dict) -> None:
+    def save_rank_decision(self, rd_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO rank_decisions(candidate_id, url_key, priority, "
             "dropped, rationale, ranker, tokens_used, decided_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                rd_json["candidate_id"], rd_json.get("url_key", ""),
-                rd_json.get("priority", 0.0), 1 if rd_json.get("dropped") else 0,
-                rd_json.get("rationale"), rd_json.get("ranker", "rule"),
-                rd_json.get("tokens_used", 0), rd_json.get("decided_at", ""),
+                rd_json["candidate_id"],
+                rd_json.get("url_key", ""),
+                rd_json.get("priority", 0.0),
+                1 if rd_json.get("dropped") else 0,
+                rd_json.get("rationale"),
+                rd_json.get("ranker", "rule"),
+                rd_json.get("tokens_used", 0),
+                rd_json.get("decided_at", ""),
             ),
         )
 
     # -- analyses -----------------------------------------------------------
 
-    def save_analysis(self, analysis_json: dict) -> None:
+    def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
             "classification, relevance_score, summary, structured_data, tags_json, "
             "feedback_json, model, prompt_version, tokens_used, analyzed_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                analysis_json["analysis_id"], analysis_json.get("page_id", ""),
-                analysis_json.get("url_key", ""), analysis_json.get("goal_id", ""),
+                analysis_json["analysis_id"],
+                analysis_json.get("page_id", ""),
+                analysis_json.get("url_key", ""),
+                analysis_json.get("goal_id", ""),
                 analysis_json.get("classification", "UNKNOWN"),
                 analysis_json.get("relevance_score", 0.0),
                 analysis_json.get("summary"),
@@ -388,65 +398,63 @@ class Storage:
             ),
         )
 
-    async def get_analyses_by_url_key(self, url_key: str) -> list[dict]:
-        cur = await self._execute_now(
-            "SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,)
-        )
+    async def get_analyses_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
+        cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
     # -- feedback -----------------------------------------------------------
 
-    def save_feedback(self, fb_json: dict) -> None:
+    def save_feedback(self, fb_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO feedback(reg_domain, hub_score, relevance_agg, "
             "topics_json, updated_at) VALUES(?, ?, ?, ?, ?)",
             (
-                fb_json["reg_domain"], fb_json.get("hub_score", 0.0),
+                fb_json["reg_domain"],
+                fb_json.get("hub_score", 0.0),
                 json.dumps(fb_json.get("relevance_agg", {})),
                 json.dumps(fb_json.get("topics", [])),
                 fb_json.get("updated_at", ""),
             ),
         )
 
-    async def get_feedback(self, reg_domain: str) -> dict | None:
-        cur = await self._execute_now(
-            "SELECT * FROM feedback WHERE reg_domain = ?", (reg_domain,)
-        )
+    async def get_feedback(self, reg_domain: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM feedback WHERE reg_domain = ?", (reg_domain,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
     # -- frontier_snapshots -------------------------------------------------
 
-    def save_snapshot(self, snapshot_json: dict) -> None:
+    def save_snapshot(self, snapshot_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO frontier_snapshots(snapshot_id, task_id, "
             "snapshot_json, created_at) VALUES(?, ?, ?, ?)",
             (
-                snapshot_json["snapshot_id"], snapshot_json.get("task_id", ""),
+                snapshot_json["snapshot_id"],
+                snapshot_json.get("task_id", ""),
                 json.dumps(snapshot_json.get("snapshot_json", {})),
                 snapshot_json.get("created_at", ""),
             ),
         )
 
-    async def get_snapshot(self, snapshot_id: str) -> dict | None:
-        cur = await self._execute_now(
-            "SELECT * FROM frontier_snapshots WHERE snapshot_id = ?", (snapshot_id,)
-        )
+    async def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM frontier_snapshots WHERE snapshot_id = ?", (snapshot_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
     # -- events -------------------------------------------------------------
 
-    def save_event(self, event_json: dict) -> None:
+    def save_event(self, event_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT INTO events(ts, task_id, type, payload_json) VALUES(?, ?, ?, ?)",
             (
-                event_json.get("ts", ""), event_json.get("task_id", ""),
-                event_json["type"], json.dumps(event_json.get("payload", {})),
+                event_json.get("ts", ""),
+                event_json.get("task_id", ""),
+                event_json["type"],
+                json.dumps(event_json.get("payload", {})),
             ),
         )
 
-    async def get_events_after(self, task_id: str, after_seq: int = 0) -> list[dict]:
+    async def get_events_after(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         cur = await self._execute_now(
             "SELECT * FROM events WHERE task_id = ? AND seq > ? ORDER BY seq",
             (task_id, after_seq),
@@ -455,33 +463,35 @@ class Storage:
 
     # -- errors -------------------------------------------------------------
 
-    def save_error(self, error_json: dict) -> None:
+    def save_error(self, error_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT INTO errors(task_id, url_key, stage, error_type, attempt, "
             "next_retry_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
             (
-                error_json.get("task_id", ""), error_json.get("url_key", ""),
-                error_json["stage"], error_json["error_type"],
-                error_json.get("attempt", 0), error_json.get("next_retry_at"),
+                error_json.get("task_id", ""),
+                error_json.get("url_key", ""),
+                error_json["stage"],
+                error_json["error_type"],
+                error_json.get("attempt", 0),
+                error_json.get("next_retry_at"),
                 error_json.get("created_at", ""),
             ),
         )
 
     # -- robots_cache -------------------------------------------------------
 
-    def save_robots(self, robots_json: dict) -> None:
+    def save_robots(self, robots_json: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO robots_cache(domain, raw, fetched_at, ttl) "
-            "VALUES(?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO robots_cache(domain, raw, fetched_at, ttl) VALUES(?, ?, ?, ?)",
             (
-                robots_json["domain"], robots_json.get("raw", ""),
-                robots_json.get("fetched_at", ""), robots_json.get("ttl", 86400),
+                robots_json["domain"],
+                robots_json.get("raw", ""),
+                robots_json.get("fetched_at", ""),
+                robots_json.get("ttl", 86400),
             ),
         )
 
-    async def get_robots(self, domain: str) -> dict | None:
-        cur = await self._execute_now(
-            "SELECT * FROM robots_cache WHERE domain = ?", (domain,)
-        )
+    async def get_robots(self, domain: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM robots_cache WHERE domain = ?", (domain,))
         row = await cur.fetchone()
         return dict(row) if row else None

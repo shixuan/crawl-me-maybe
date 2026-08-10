@@ -27,23 +27,34 @@ def storage(tmp_path):
 
 def test_init_creates_all_tables(storage):
     tables = [
-        "crawl_goals", "crawl_tasks", "urls", "pages", "candidates",
-        "rank_decisions", "analyses", "feedback", "frontier_snapshots",
-        "events", "errors", "robots_cache",
+        "crawl_goals",
+        "crawl_tasks",
+        "urls",
+        "pages",
+        "candidates",
+        "rank_decisions",
+        "analyses",
+        "feedback",
+        "frontier_snapshots",
+        "events",
+        "errors",
+        "robots_cache",
     ]
     for t in tables:
-        cur = _run(storage._execute_now(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)
-        ))
+        cur = _run(storage._execute_now("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)))
         row = _run(cur.fetchone())
         assert row is not None, f"Table {t} missing"
 
 
 def test_save_and_get_goal(storage):
-    storage.save_goal({
-        "goal_id": "g1", "prompt": "find AI news",
-        "max_pages": 10, "created_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_goal(
+        {
+            "goal_id": "g1",
+            "prompt": "find AI news",
+            "max_pages": 10,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     g = _run(storage.get_goal("g1"))
     assert g is not None
@@ -52,10 +63,15 @@ def test_save_and_get_goal(storage):
 
 
 def test_save_and_get_task(storage):
-    storage.save_task({
-        "task_id": "t1", "goal_id": "g1", "state": "RUNNING",
-        "counters": {}, "start_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_task(
+        {
+            "task_id": "t1",
+            "goal_id": "g1",
+            "state": "RUNNING",
+            "counters": {},
+            "start_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     t = _run(storage.get_task("t1"))
     assert t is not None
@@ -63,11 +79,17 @@ def test_save_and_get_task(storage):
 
 
 def test_save_and_get_url(storage):
-    storage.save_url({
-        "url_key": "abc", "raw": "https://x.com", "canonical": "https://x.com",
-        "domain": "x.com", "reg_domain": "x.com",
-        "first_seen": "2026-01-01T00:00:00Z", "last_seen": "2026-01-01T00:00:00Z",
-    })
+    storage.save_url(
+        {
+            "url_key": "abc",
+            "raw": "https://x.com",
+            "canonical": "https://x.com",
+            "domain": "x.com",
+            "reg_domain": "x.com",
+            "first_seen": "2026-01-01T00:00:00Z",
+            "last_seen": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     u = _run(storage.get_url("abc"))
     assert u is not None
@@ -75,11 +97,16 @@ def test_save_and_get_url(storage):
 
 
 def test_save_and_get_page(storage):
-    storage.save_page({
-        "page_id": "p1", "url_key": "abc", "url_json": {"raw": "x"},
-        "raw_html_path": "", "title": "Test Page",
-        "extracted_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_page(
+        {
+            "page_id": "p1",
+            "url_key": "abc",
+            "url_json": {"raw": "x"},
+            "raw_html_path": "",
+            "title": "Test Page",
+            "extracted_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     p = _run(storage.get_page("p1"))
     assert p is not None
@@ -88,11 +115,15 @@ def test_save_and_get_page(storage):
 
 def test_get_pages_by_url_key(storage):
     for i in range(3):
-        storage.save_page({
-            "page_id": f"p{i}", "url_key": "abc",
-            "url_json": {}, "title": f"Page {i}",
-            "extracted_at": f"2026-01-0{i+1}T00:00:00Z",
-        })
+        storage.save_page(
+            {
+                "page_id": f"p{i}",
+                "url_key": "abc",
+                "url_json": {},
+                "title": f"Page {i}",
+                "extracted_at": f"2026-01-0{i + 1}T00:00:00Z",
+            }
+        )
     _run(storage._write_queue.join())
     pages = _run(storage.get_pages_by_url_key("abc"))
     assert len(pages) == 3
@@ -106,10 +137,16 @@ def test_save_raw_html(storage):
 
 
 def test_save_and_get_candidate(storage):
-    storage.save_candidate({
-        "candidate_id": "c1", "url_key": "abc", "url_json": {},
-        "depth": 2, "status": "BUFFERED", "discovered_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_candidate(
+        {
+            "candidate_id": "c1",
+            "url_key": "abc",
+            "url_json": {},
+            "depth": 2,
+            "status": "BUFFERED",
+            "discovered_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     c = _run(storage.get_candidate("c1"))
     assert c is not None
@@ -117,18 +154,27 @@ def test_save_and_get_candidate(storage):
 
 
 def test_save_rank_decision(storage):
-    storage.save_rank_decision({
-        "candidate_id": "c1", "priority": 0.8, "ranker": "llm",
-        "decided_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_rank_decision(
+        {
+            "candidate_id": "c1",
+            "priority": 0.8,
+            "ranker": "llm",
+            "decided_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
 
 
 def test_save_and_get_analyses(storage):
-    storage.save_analysis({
-        "analysis_id": "a1", "page_id": "p1", "url_key": "abc",
-        "classification": "RELEVANT", "analyzed_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "page_id": "p1",
+            "url_key": "abc",
+            "classification": "RELEVANT",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     results = _run(storage.get_analyses_by_url_key("abc"))
     assert len(results) == 1
@@ -136,10 +182,13 @@ def test_save_and_get_analyses(storage):
 
 
 def test_save_and_get_feedback(storage):
-    storage.save_feedback({
-        "reg_domain": "example.com", "hub_score": 0.75,
-        "updated_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_feedback(
+        {
+            "reg_domain": "example.com",
+            "hub_score": 0.75,
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     fb = _run(storage.get_feedback("example.com"))
     assert fb is not None
@@ -147,25 +196,36 @@ def test_save_and_get_feedback(storage):
 
 
 def test_save_and_get_snapshot(storage):
-    storage.save_snapshot({
-        "snapshot_id": "s1", "task_id": "t1",
-        "snapshot_json": {"heap": [1, 2, 3]},
-        "created_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_snapshot(
+        {
+            "snapshot_id": "s1",
+            "task_id": "t1",
+            "snapshot_json": {"heap": [1, 2, 3]},
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     snap = _run(storage.get_snapshot("s1"))
     assert snap is not None
 
 
 def test_save_and_get_events(storage):
-    storage.save_event({
-        "ts": "2026-01-01T00:00:00Z", "task_id": "t1",
-        "type": "PAGE_FETCHED", "payload": {},
-    })
-    storage.save_event({
-        "ts": "2026-01-01T00:00:01Z", "task_id": "t1",
-        "type": "PAGE_ANALYZED", "payload": {},
-    })
+    storage.save_event(
+        {
+            "ts": "2026-01-01T00:00:00Z",
+            "task_id": "t1",
+            "type": "PAGE_FETCHED",
+            "payload": {},
+        }
+    )
+    storage.save_event(
+        {
+            "ts": "2026-01-01T00:00:01Z",
+            "task_id": "t1",
+            "type": "PAGE_ANALYZED",
+            "payload": {},
+        }
+    )
     _run(storage._write_queue.join())
     events = _run(storage.get_events_after("t1", 0))
     assert len(events) == 2
@@ -173,19 +233,27 @@ def test_save_and_get_events(storage):
 
 
 def test_save_error(storage):
-    storage.save_error({
-        "task_id": "t1", "url_key": "abc", "stage": "fetch",
-        "error_type": "timeout", "attempt": 2,
-        "created_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_error(
+        {
+            "task_id": "t1",
+            "url_key": "abc",
+            "stage": "fetch",
+            "error_type": "timeout",
+            "attempt": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
 
 
 def test_save_and_get_robots(storage):
-    storage.save_robots({
-        "domain": "example.com", "raw": "User-agent: *\nDisallow: /",
-        "fetched_at": "2026-01-01T00:00:00Z",
-    })
+    storage.save_robots(
+        {
+            "domain": "example.com",
+            "raw": "User-agent: *\nDisallow: /",
+            "fetched_at": "2026-01-01T00:00:00Z",
+        }
+    )
     _run(storage._write_queue.join())
     r = _run(storage.get_robots("example.com"))
     assert r is not None
