@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from crawlme.digest.links import extract_links
+from crawlme.schemas import URL, Page
 
 PAGE_WITH_LINKS = """<!DOCTYPE html>
 <html>
@@ -42,8 +45,18 @@ PAGE_EMPTY_HREF = """<!DOCTYPE html>
 </html>"""
 
 
-def test_extracts_href_and_anchor():
-    links = extract_links(PAGE_WITH_LINKS)
+def _page(tmp_path: Path, html: str, url_key: str = "k1") -> Page:
+    path = tmp_path / f"{url_key}.html"
+    path.write_text(html, encoding="utf-8")
+    return Page(
+        url_key=url_key,
+        url=URL(raw="https://example.com", canonical="https://example.com", url_key=url_key),
+        raw_html_path=str(path),
+    )
+
+
+def test_extracts_href_and_anchor(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     hrefs = {link.href for link in links}
     assert "/intro" in hrefs
     assert "/api/auth" in hrefs
@@ -51,52 +64,47 @@ def test_extracts_href_and_anchor():
     assert any(link.anchor == "Authentication" for link in links)
 
 
-def test_positions_are_sequential():
-    links = extract_links(PAGE_WITH_LINKS)
+def test_positions_are_sequential(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     positions = [link.position for link in links]
     assert positions == sorted(positions)
     assert positions[0] >= 1
 
 
-def test_snippet_is_parent_text():
-    links = extract_links(PAGE_WITH_LINKS)
+def test_snippet_is_parent_text(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     auth_link = next(link for link in links if link.anchor == "Authentication")
     assert auth_link.snippet is not None
     assert "Authentication" in auth_link.snippet
 
 
-def test_parent_heading_from_ancestor():
-    links = extract_links(PAGE_HEADING_ANCESTOR)
+def test_parent_heading_from_ancestor(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_HEADING_ANCESTOR))
     assert len(links) == 1
     assert links[0].parent_heading == "Nested Link"
 
 
-def test_parent_heading_from_preceding():
-    links = extract_links(PAGE_WITH_LINKS)
+def test_parent_heading_from_preceding(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     auth_link = next(link for link in links if link.anchor == "Authentication")
     assert auth_link.parent_heading is not None
     assert "API Reference" in auth_link.parent_heading
 
 
-def test_skips_links_with_empty_href():
-    links = extract_links(PAGE_EMPTY_HREF)
+def test_skips_links_with_empty_href(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_EMPTY_HREF))
     hrefs = {link.href for link in links}
     assert "" not in hrefs
     assert "/valid" in hrefs
 
 
-def test_empty_page_returns_empty_list():
-    links = extract_links(PAGE_NO_LINKS)
+def test_empty_page_returns_empty_list(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_NO_LINKS))
     assert links == []
 
 
-def test_anchor_none_when_no_text():
+def test_anchor_none_when_no_text(tmp_path):
     html = '<html><body><a href="/img"><img src="x.png" alt="pic"></a></body></html>'
-    links = extract_links(html)
+    links = extract_links(_page(tmp_path, html))
     assert len(links) == 1
     assert links[0].anchor is None
-
-
-def test_bytes_input():
-    links = extract_links(PAGE_WITH_LINKS.encode("utf-8"))
-    assert len(links) >= 4

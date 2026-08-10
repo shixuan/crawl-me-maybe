@@ -1,31 +1,34 @@
-"""Link extraction.
+"""Link extraction — finds all <a href> in a Page and produces RawLink records.
 
-Parses HTML to find all <a href> tags and produces RawLink records with
-anchor text, surrounding snippet, nearest parent heading, and position.
+- anchor: link text, stripped.  None if only contains an image.
+- snippet: parent element text truncated to ~200 chars.
+- parent_heading: nearest h1-h6 ancestor, or preceding heading in document order.
+- Empty/missing hrefs are skipped.
 
-The heading-finding logic first checks ancestors — is this link nested
-inside an h1-h6 tag? — then falls back to the most recent preceding heading
-in document order via find_previous().  Structural context like "this link
-appeared under an 'API Reference' h2" helps the ranker decide whether it's
-worth following.
-
-Snippets are the text content of the link's immediate parent element,
-truncated to ~200 characters.  They stay compact enough for the ranker's
-context window while still carrying enough surrounding text to judge
-relevance.
+Reads raw HTML from page.raw_html_path on disk so it can parse the original
+DOM.  Parsing from plain_text or markdown would lose <a> tags.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from bs4 import BeautifulSoup, Tag
 
-from crawlme.schemas import RawLink
+from crawlme.schemas import Page, RawLink
 
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
 
-def extract_links(html: str | bytes) -> list[RawLink]:
-    soup = BeautifulSoup(html, "lxml")
+def extract_links(page: Page) -> list[RawLink]:
+    return _extract_from_html(page.raw_html_path)
+
+
+def _extract_from_html(path: str) -> list[RawLink]:
+    if not path:
+        return []
+    html_bytes = Path(path).read_bytes()
+    soup = BeautifulSoup(html_bytes, "lxml")
     links: list[RawLink] = []
 
     for position, tag in enumerate(soup.find_all("a", href=True), start=1):
