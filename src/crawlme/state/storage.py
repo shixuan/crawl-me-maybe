@@ -378,9 +378,7 @@ class Storage:
         return dict(row) if row else None
 
     async def get_rank_decisions_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
-        cur = await self._execute_now(
-            "SELECT * FROM rank_decisions WHERE url_key = ? ORDER BY decided_at", (url_key,)
-        )
+        cur = await self._execute_now("SELECT * FROM rank_decisions WHERE url_key = ? ORDER BY decided_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
     # -- analyses -----------------------------------------------------------
@@ -490,15 +488,11 @@ class Storage:
         )
 
     async def get_errors_by_task(self, task_id: str) -> list[dict[str, Any]]:
-        cur = await self._execute_now(
-            "SELECT * FROM errors WHERE task_id = ? ORDER BY id", (task_id,)
-        )
+        cur = await self._execute_now("SELECT * FROM errors WHERE task_id = ? ORDER BY id", (task_id,))
         return [dict(r) for r in await cur.fetchall()]
 
     async def get_errors_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
-        cur = await self._execute_now(
-            "SELECT * FROM errors WHERE url_key = ? ORDER BY id", (url_key,)
-        )
+        cur = await self._execute_now("SELECT * FROM errors WHERE url_key = ? ORDER BY id", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
     # -- robots_cache -------------------------------------------------------
