@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import datetime
 
-import pytest
-
 from crawlme.pioneer.robots import RobotsPolicy
 
 ROBOTS_ALLOW_ALL = """User-agent: *

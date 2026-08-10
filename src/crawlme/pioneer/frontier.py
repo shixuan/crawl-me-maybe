@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import heapq
-from typing import Callable
+from collections.abc import Callable
 
 from crawlme.schemas import FrontierItem, FrontierItemStatus, FrontierSnapshot
 
@@ -108,9 +108,7 @@ class Frontier:
                 item.enqueued_at = _utcnow()
                 item.seq = _next_seq()
                 self._items[item.url_key] = item
-                heapq.heappush(
-                    self._heap, (-item.priority, item.seq, item.url_key)
-                )
+                heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
 
     async def pop_next(
         self,
@@ -190,22 +188,16 @@ class Frontier:
             if item.url_key not in self._visited and item.url_key not in self._items:
                 item.seq = _next_seq()
                 self._items[item.url_key] = item
-                heapq.heappush(
-                    self._heap, (-item.priority, item.seq, item.url_key)
-                )
+                heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
         return len(ready) > 0
 
-    async def record_outcome(
-        self, item: FrontierItem, status: FrontierItemStatus
-    ) -> None:
+    async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None:
         async with self._lock:
             item.status = status
             self._visited.add(item.url_key)
             self._items.pop(item.url_key, None)
             if status == "COMPLETED":
-                self._domain_counters[item.reg_domain] = (
-                    self._domain_counters.get(item.reg_domain, 0) + 1
-                )
+                self._domain_counters[item.reg_domain] = self._domain_counters.get(item.reg_domain, 0) + 1
                 self._global_counter += 1
 
     async def mark_visited(self, url_key: str) -> None:
@@ -223,11 +215,7 @@ class Frontier:
         # Only capture heap-resident items (not pending ones, which are
         # tracked separately).  Pending items are already out of _items
         # and stored in _pending.
-        heap_items = [
-            self._items[url_key]
-            for _, _, url_key in self._heap
-            if url_key in self._items
-        ]
+        heap_items = [self._items[url_key] for _, _, url_key in self._heap if url_key in self._items]
         return FrontierSnapshot(
             task_id=task_id,
             heap=heap_items,

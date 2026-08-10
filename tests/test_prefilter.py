@@ -3,10 +3,15 @@ from __future__ import annotations
 import pytest
 
 from crawlme.pioneer.prefilter import Decision, PreFilter, PreFilterContext
-from crawlme.schemas import Candidate, CrawlGoal, URL
+from crawlme.schemas import URL, Candidate, CrawlGoal
 
 
-def _url(raw: str = "https://example.com/page", url_key: str = "k1", reg_domain: str = "example.com", path: str = "/page") -> URL:
+def _url(
+    raw: str = "https://example.com/page",
+    url_key: str = "k1",
+    reg_domain: str = "example.com",
+    path: str = "/page",
+) -> URL:
     return URL(raw=raw, canonical=raw, url_key=url_key, reg_domain=reg_domain, path=path)
 
 
@@ -31,7 +36,7 @@ def _drop(pf, c, ctx) -> str:
 
 
 def _allow(pf, c, ctx) -> None:
-    decision, reason = pf.check(c, CrawlGoal(prompt="test"), ctx)
+    decision, _ = pf.check(c, CrawlGoal(prompt="test"), ctx)
     assert decision == Decision.ALLOW
 
 
@@ -119,5 +124,4 @@ class TestDomainBudget:
 
     def test_allow_under_budget(self, pf):
         ctx = _ctx(domain_counters={"example.com": 30})
-        goal = CrawlGoal(prompt="test", domain_budget=50)
         _allow(pf, _candidate(), ctx)

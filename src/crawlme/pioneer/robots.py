@@ -76,7 +76,7 @@ class RobotsPolicy:
             fails = self._consecutive_fails[domain]
             if fails >= self._circuit_threshold:
                 self._circuit_until[domain] = now + self._circuit_cooldown
-            self._next_allowed[domain] = now + datetime.timedelta(seconds=min(2 ** fails, 300))
+            self._next_allowed[domain] = now + datetime.timedelta(seconds=min(2**fails, 300))
         elif 200 <= status < 300:
             self._consecutive_fails[domain] = 0
             if crawl_delay > 0:
@@ -93,6 +93,7 @@ class RobotsPolicy:
 
 def _extract_domain(url: str) -> str:
     from urllib.parse import urlparse
+
     return (urlparse(url).hostname or "").lower()
 
 

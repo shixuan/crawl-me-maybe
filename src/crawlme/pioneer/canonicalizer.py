@@ -25,11 +25,25 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 # Tracking / marketing query parameters to strip.
 # These carry no content and only change for each visitor / campaign.
-_TRACKING_PARAMS = frozenset({
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "fbclid", "gclid", "dclid", "msclkid",
-    "ref", "source", "spm", "sc_campaign", "mc_cid", "mc_eid",
-})
+_TRACKING_PARAMS = frozenset(
+    {
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "fbclid",
+        "gclid",
+        "dclid",
+        "msclkid",
+        "ref",
+        "source",
+        "spm",
+        "sc_campaign",
+        "mc_cid",
+        "mc_eid",
+    }
+)
 
 _DEFAULT_PORT = {"http": 80, "https": 443}
 _DUP_SLASH = re.compile(r"/+")
@@ -80,9 +94,6 @@ class Canonicalizer:
 def _clean_query(query: str, strip_params: set[str]) -> str:
     if not query:
         return ""
-    cleaned = [
-        (k, v) for k, v in parse_qsl(query, keep_blank_values=True)
-        if k.lower() not in strip_params
-    ]
+    cleaned = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True) if k.lower() not in strip_params]
     cleaned.sort(key=lambda x: x[0])
     return urlencode(cleaned) if cleaned else ""

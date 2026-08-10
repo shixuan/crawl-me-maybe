@@ -5,14 +5,15 @@ import datetime
 import pytest
 
 from crawlme.pioneer.frontier import Frontier
-from crawlme.schemas import FrontierItem, URL
+from crawlme.schemas import URL, FrontierItem
 
 
 def _item(url_key: str = "k1", priority: float = 0.5, domain: str = "example.com") -> FrontierItem:
     return FrontierItem(
-        url=URL(raw=f"https://{domain}/page", canonical=f"https://{domain}/page",
-                url_key=url_key, reg_domain=domain),
-        url_key=url_key, priority=priority, reg_domain=domain,
+        url=URL(raw=f"https://{domain}/page", canonical=f"https://{domain}/page", url_key=url_key, reg_domain=domain),
+        url_key=url_key,
+        priority=priority,
+        reg_domain=domain,
     )
 
 

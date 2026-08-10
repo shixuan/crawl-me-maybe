@@ -8,9 +8,9 @@ Fail-open on rule exceptions — a broken rule never blocks a candidate.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
 
 from crawlme.schemas import Candidate, CrawlGoal
 
@@ -59,6 +59,7 @@ _NEGATIVE_ANCHOR = re.compile(
 
 
 # -- rules ----------------------------------------------------------------
+
 
 def scope_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if ctx.allowed_domains and c.url.reg_domain not in ctx.allowed_domains:
