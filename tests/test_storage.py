@@ -153,16 +153,36 @@ def test_save_and_get_candidate(storage):
     assert c["depth"] == 2
 
 
-def test_save_rank_decision(storage):
+def test_save_and_get_rank_decision(storage):
     storage.save_rank_decision(
         {
             "candidate_id": "c1",
+            "url_key": "abc",
             "priority": 0.8,
             "ranker": "llm",
             "decided_at": "2026-01-01T00:00:00Z",
         }
     )
     _run(storage._write_queue.join())
+    rd = _run(storage.get_rank_decision("c1"))
+    assert rd is not None
+    assert rd["priority"] == 0.8
+    assert rd["ranker"] == "llm"
+
+
+def test_get_rank_decisions_by_url_key(storage):
+    for i in range(2):
+        storage.save_rank_decision(
+            {
+                "candidate_id": f"c{i}",
+                "url_key": "abc",
+                "priority": 0.5 + i * 0.1,
+                "decided_at": f"2026-01-0{i + 1}T00:00:00Z",
+            }
+        )
+    _run(storage._write_queue.join())
+    rds = _run(storage.get_rank_decisions_by_url_key("abc"))
+    assert len(rds) == 2
 
 
 def test_save_and_get_analyses(storage):
@@ -232,7 +252,7 @@ def test_save_and_get_events(storage):
     assert events[0]["type"] == "PAGE_FETCHED"
 
 
-def test_save_error(storage):
+def test_save_and_get_errors(storage):
     storage.save_error(
         {
             "task_id": "t1",
@@ -244,6 +264,13 @@ def test_save_error(storage):
         }
     )
     _run(storage._write_queue.join())
+    errors = _run(storage.get_errors_by_task("t1"))
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "fetch"
+    assert errors[0]["error_type"] == "timeout"
+
+    by_url = _run(storage.get_errors_by_url_key("abc"))
+    assert len(by_url) == 1
 
 
 def test_save_and_get_robots(storage):
