@@ -182,6 +182,8 @@ class Storage:
         return self._raw_dir
 
     async def start(self) -> None:
+        if self._conn is not None:
+            return
         self._conn = await aiosqlite.connect(self._db_path)
         # Log to a file inside the run directory (setup_logging runs first).
         from crawlme.logging import to_file

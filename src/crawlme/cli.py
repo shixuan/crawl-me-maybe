@@ -106,7 +106,6 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     task = CrawlTask(goal_id=goal.goal_id)
 
     scheduler = CrawlScheduler(settings=cfg)
-    await scheduler._storage.start()
 
     # Push seed URLs into the frontier via canonicalizer.
     canonicalizer = Canonicalizer()
