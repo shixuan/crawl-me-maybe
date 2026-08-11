@@ -52,5 +52,6 @@ class Settings(BaseSettings):
     circuit_breaker_cooldown_min: int = 10
 
     # --- Logging ---
-    log_level: str = "INFO"
+    # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
+    log_level: str = "OFF"
     log_format: str = "json"  # json | console

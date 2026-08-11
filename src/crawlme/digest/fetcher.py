@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import random
 import time
 from urllib.parse import urljoin
@@ -50,6 +51,8 @@ from urllib.parse import urljoin
 import httpx
 
 from crawlme.schemas import URL, FetchResult, FrontierItem
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime.datetime:
@@ -88,6 +91,14 @@ class Fetcher:
                 last_err = e.__cause__ or e
                 if attempt < self._max_retries:
                     delay = min(2**attempt, 60)
+                    logger.warning(
+                        "fetch.retry url=%s attempt=%d/%d delay=%.1fs error=%s",
+                        item.url.raw,
+                        attempt,
+                        self._max_retries,
+                        delay,
+                        e,
+                    )
                     await asyncio.sleep(delay)
             except FetchError:
                 raise
@@ -127,13 +138,22 @@ class Fetcher:
 
             # 5xx: transient server error — retry.
             if response.status_code >= 500:
+                logger.warning("fetch.5xx url=%s status=%d", item.url.raw, response.status_code)
                 raise _TransientError(f"Server error {response.status_code}")
 
             # 4xx (non-429): permanent — do not retry.
             if 400 <= response.status_code < 500:
+                logger.warning("fetch.4xx url=%s status=%d", item.url.raw, response.status_code)
                 raise FetchError(f"Permanent HTTP error: {response.status_code}")
 
             elapsed_ms = int((time.monotonic() - started) * 1000)
+            logger.debug(
+                "fetch.ok url=%s status=%d bytes=%d duration=%dms",
+                item.url.raw,
+                response.status_code,
+                len(response.content),
+                elapsed_ms,
+            )
 
             return FetchResult(
                 item_id=item.item_id,

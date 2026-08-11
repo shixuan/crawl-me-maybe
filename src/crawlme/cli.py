@@ -12,16 +12,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
 from crawlme.config import Settings
+from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
+    setup_logging(Settings())
     parser = argparse.ArgumentParser(prog="crawl", description="LLM-driven goal-directed crawler")
     sub = parser.add_subparsers(dest="command")
 
@@ -107,21 +112,28 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     if items:
         await scheduler._frontier.push_batch(items)
 
-    print(f"Task {task.task_id}: {args.prompt}")
-    print(f"Seeds: {seeds}")
-    print(f"Budget: pages={goal.max_pages} tokens={goal.max_tokens} time={goal.max_duration_sec}s")
-    print("---")
+    logger.info(
+        "task=%s prompt=%r seeds=%s pages=%d tokens=%d duration=%ds",
+        task.task_id,
+        args.prompt,
+        seeds,
+        goal.max_pages,
+        goal.max_tokens,
+        goal.max_duration_sec,
+    )
 
     try:
         await scheduler.run(goal, task)
     except KeyboardInterrupt:
-        print("\nInterrupted — saving checkpoint...")
+        logger.info("interrupted — saving checkpoint")
         await scheduler.pause()
     finally:
-        print(f"State: {task.state}")
-        if task.stopping_reason:
-            print(f"Stopped: {task.stopping_reason}")
-        print(f"Pages fetched: {scheduler._counters.get('pages_fetched', 0)}")
+        logger.info(
+            "state=%s reason=%s pages=%d",
+            task.state,
+            task.stopping_reason or "none",
+            scheduler._counters.get("pages_fetched", 0),
+        )
 
 
 def _parse_seeds(args: argparse.Namespace) -> list[str]:

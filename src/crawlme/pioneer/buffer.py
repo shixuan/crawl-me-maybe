@@ -20,10 +20,13 @@ ready() triggers:  size >= 100  |  non-empty > 30s  |  frontier hungry.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 
 from crawlme.schemas import Candidate
+
+logger = logging.getLogger(__name__)
 
 
 class CandidateBuffer:
@@ -46,6 +49,9 @@ class CandidateBuffer:
                 if len(self._candidates) >= self._capacity:
                     worst = self._worst_index()
                     if _quality(c) > _quality(self._candidates[worst]):
+                        logger.debug(
+                            "buffer.evict evicted=%s replaced=%s", self._candidates[worst].url.url_key, c.url.url_key
+                        )
                         self._candidates[worst] = c
                 else:
                     self._candidates.append(c)

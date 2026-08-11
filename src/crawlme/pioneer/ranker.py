@@ -7,11 +7,14 @@ M2: LLMRanker added as the second stage; RuleScorer narrows the field,
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Protocol
 
 from crawlme.pioneer.rule_scorer import RuleScorer
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
+
+logger = logging.getLogger(__name__)
 
 # Threshold from ranking.md §第1层: rule_score ≥ 0.35 advances to LLM.
 _RULE_THRESHOLD = 0.35
@@ -58,6 +61,7 @@ class HybridRanker:
         keywords = _extract_keywords(goal.prompt)
         domain_prior = _build_domain_prior(history)
         pc = page_contexts or {}
+        logger.debug("rank_batch.start candidates=%d keywords=%s pages=%d", len(candidates), keywords[:10], len(pc))
 
         # Group candidates by source page so each group gets the correct
         # source_page_title and page_link_count for title_match + position factors.

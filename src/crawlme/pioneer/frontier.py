@@ -55,9 +55,12 @@ from __future__ import annotations
 import asyncio
 import datetime
 import heapq
+import logging
 from collections.abc import Callable
 
 from crawlme.schemas import FrontierItem, FrontierItemStatus, FrontierSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime.datetime:
@@ -167,6 +170,9 @@ class Frontier:
 
             used = self._domain_counters.get(item.reg_domain, 0)
             if used >= self._domain_budget:
+                logger.warning(
+                    "frontier.domain_budget domain=%s used=%d/%d", item.reg_domain, used, self._domain_budget
+                )
                 heapq.heappop(self._heap)
                 continue
 

@@ -7,12 +7,15 @@ Fail-open on rule exceptions — a broken rule never blocks a candidate.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
 from crawlme.schemas import Candidate, CrawlGoal
+
+logger = logging.getLogger(__name__)
 
 
 class Decision(Enum):
@@ -144,5 +147,6 @@ class PreFilter:
                 if result is not None:
                     return result
             except Exception:
+                logger.warning("prefilter.rule_error rule=%s url=%s", rule.__name__, c.url.raw, exc_info=True)
                 continue
         return Decision.ALLOW, ""
