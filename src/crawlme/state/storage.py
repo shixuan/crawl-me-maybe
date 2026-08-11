@@ -159,6 +159,24 @@ class Storage:
         self._writer_task: asyncio.Task[None] | None = None
         self._conn: aiosqlite.Connection | None = None
 
+    @classmethod
+    def create(cls, base_dir: str | Path) -> Storage:
+        """Create a Storage with a timestamped subdirectory under *base_dir*.
+
+        Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``
+        """
+        import datetime
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = Path(base_dir) / ts
+        (run_dir / "raw").mkdir(parents=True, exist_ok=True)
+        (run_dir / "db").mkdir(parents=True, exist_ok=True)
+        return cls(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path
+
     @property
     def raw_dir(self) -> Path:
         return self._raw_dir

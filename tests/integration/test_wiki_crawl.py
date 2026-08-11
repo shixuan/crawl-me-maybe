@@ -107,7 +107,7 @@ async def test_wiki_rust_rewrite_basic_crawl(integration_settings):
         )
 
     # 5. Verify storage contents via direct DB queries.
-    db_path = str(cfg.db_path)
+    db_path = sched._storage.db_path
     async with aiosqlite.connect(db_path) as db:
         # Pages saved.
         row = await db.execute("SELECT COUNT(*) FROM pages")
