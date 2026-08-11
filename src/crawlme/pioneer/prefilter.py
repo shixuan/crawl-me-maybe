@@ -51,7 +51,8 @@ _EXT_DENYLIST = re.compile(
 
 _URL_PATTERN_DENYLIST = re.compile(
     r"/(login|logout|signup|register|signin|cart|checkout"
-    r"|account|admin|wp-admin|ajax|api/)/",
+    r"|account|admin|wp-admin|ajax|api/)/"
+    r"|[\U00002600-\U000027BF\U0001F300-\U0001F9FF\U0000FE00-\U0000FE0F]",  # emoji
     re.IGNORECASE,
 )
 
