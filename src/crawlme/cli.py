@@ -18,6 +18,9 @@ from pathlib import Path
 
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
+from crawlme.pioneer.sources.file import FileSource
+from crawlme.pioneer.sources.manual import ManualSource
+from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 
@@ -137,12 +140,8 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         )
 
 
-def _build_source(args: argparse.Namespace):
+def _build_source(args: argparse.Namespace) -> ManualSource | FileSource | RssSource:
     """Create a URL source from CLI arguments."""
-    from crawlme.pioneer.sources.file import FileSource
-    from crawlme.pioneer.sources.manual import ManualSource
-    from crawlme.pioneer.sources.rss import RssSource
-
     if args.source == "file" and args.source_path:
         return FileSource(args.source_path)
     if args.source == "rss" and args.source_path:
