@@ -183,6 +183,10 @@ class Storage:
 
     async def start(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
+        # Log to a file inside the run directory (setup_logging runs first).
+        from crawlme.logging import to_file
+
+        to_file(str(Path(self._db_path).parent.parent / "log"))
         await self._conn.executescript(DDL)
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row

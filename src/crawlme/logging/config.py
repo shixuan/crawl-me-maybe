@@ -49,6 +49,15 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def to_file(path: str) -> None:
+    """Also write logs to *path* (e.g. <run_dir>/crawl.log)."""
+    root = logging.getLogger()
+    h = logging.FileHandler(path)
+    h.setLevel(root.level)
+    h.setFormatter(ConsoleFormatter())
+    root.addHandler(h)
+
+
 def _level(name: str) -> int:
     if name.upper() in ("OFF", "NONE", ""):
         return _OFF

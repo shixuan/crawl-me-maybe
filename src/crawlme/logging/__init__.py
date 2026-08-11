@@ -11,6 +11,6 @@ Usage:
     logger = logging.getLogger(__name__)
 """
 
-from crawlme.logging.config import setup_logging
+from crawlme.logging.config import setup_logging, to_file
 
-__all__ = ["setup_logging"]
+__all__ = ["setup_logging", "to_file"]
