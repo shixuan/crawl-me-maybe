@@ -391,6 +391,19 @@ class CrawlScheduler:
 
             items: list[FrontierItem] = []
             for d in decisions:
+                # Persist every decision for audit trail.
+                self._storage.save_rank_decision(
+                    {
+                        "candidate_id": d.candidate_id,
+                        "url_key": d.url_key,
+                        "priority": d.priority,
+                        "dropped": 1 if d.dropped else 0,
+                        "rationale": d.rationale,
+                        "ranker": d.ranker,
+                        "tokens_used": d.tokens_used,
+                        "decided_at": d.decided_at.isoformat(),
+                    }
+                )
                 if d.dropped:
                     continue
                 c = _find_candidate(batch, d.candidate_id)

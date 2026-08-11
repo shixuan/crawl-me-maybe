@@ -43,4 +43,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "e2e: end-to-end tests that hit real websites (skip in CI)",
+    "integration: pipeline tests with mocked network",
 ]
