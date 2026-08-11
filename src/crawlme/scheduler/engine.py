@@ -227,12 +227,29 @@ class CrawlScheduler:
                         depth=item.depth + 1,
                         discovered_at=_utcnow(),
                     )
-                    decision, _rule = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
+                    decision, _rule_name = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
                     if decision.value == "allow":
                         c.status = "BUFFERED"
                         await self._buffer.add([c])
                     else:
                         c.status = "FILTERED_OUT"
+                    # Persist candidate for audit trail.
+                    self._storage.save_candidate(
+                        {
+                            "candidate_id": c.candidate_id,
+                            "url_key": c.url.url_key,
+                            "url_json": c.url.model_dump(),
+                            "anchor": c.anchor,
+                            "snippet": c.snippet,
+                            "parent_heading": c.parent_heading,
+                            "position": c.position,
+                            "source_page_id": c.source_page_id,
+                            "source_url_key": c.source_url_key,
+                            "depth": c.depth,
+                            "status": c.status,
+                            "discovered_at": c.discovered_at.isoformat() if c.discovered_at else "",
+                        }
+                    )
 
                 await self._frontier.record_outcome(item, "COMPLETED")
 
@@ -293,9 +310,10 @@ class CrawlScheduler:
         if self._task is None:
             return
         snap = self._frontier.snapshot(task_id=self._task.task_id)
+        snap_id = f"{self._task.task_id}-latest"
         self._storage.save_snapshot(
             {
-                "snapshot_id": snap.snapshot_id,
+                "snapshot_id": snap_id,
                 "task_id": snap.task_id,
                 "snapshot_json": snap.model_dump(),
                 "created_at": _utcnow().isoformat(),
@@ -303,9 +321,18 @@ class CrawlScheduler:
         )
 
     async def _load_latest_snapshot(self) -> FrontierSnapshot | None:
-        # V0.1: simple — return None, caller reconstructs from scratch.
-        # M2: load most recent snapshot from storage.
-        return None
+        if self._task is None:
+            return None
+        snap_id = f"{self._task.task_id}-latest"
+        row = await self._storage.get_snapshot(snap_id)
+        if row is None:
+            return None
+        snap_json = row.get("snapshot_json", {})
+        if isinstance(snap_json, str):
+            import json
+
+            snap_json = json.loads(snap_json)
+        return FrontierSnapshot(**snap_json)
 
 
 # -- helpers -------------------------------------------------------------
