@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     )
 
     # --- Paths ---
-    data_dir: Path = Path("data")
-    raw_dir: Path = Path("data/raw")
-    db_path: Path = Path("data/db/crawl.db")
+    data_dir: Path = Path("results")
+    raw_dir: Path = Path("results/raw")
+    db_path: Path = Path("results/db/crawl.db")
 
     # --- LLM ---
     llm_model: str = "openai/gpt-4o-mini"
