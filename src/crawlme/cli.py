@@ -33,9 +33,11 @@ def main() -> None:
     # -- run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
-    run_p.add_argument("--max-pages", type=int, help="Page budget limit")
+    run_p.add_argument("--max-pages", type=int, help="Page budget limit (0 = unlimited)")
     run_p.add_argument("--max-tokens", type=int, help="Token budget limit")
     run_p.add_argument("--max-duration", type=int, help="Time limit in seconds")
+    run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
+    run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
     run_p.add_argument("--seeds", help="Comma-separated seed URLs")
     run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
     run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
@@ -86,12 +88,19 @@ async def _dispatch(args: argparse.Namespace) -> None:
 async def _cmd_run(args: argparse.Namespace) -> None:
     cfg = Settings(data_dir=Path(args.data_dir))
     goal = CrawlGoal(prompt=args.prompt)
-    if args.max_pages is not None:
+    if args.draining:
+        if args.max_pages is not None and args.max_pages > 0:
+            print("Error: --draining and --max-pages are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        goal.max_pages = 0
+    elif args.max_pages is not None:
         goal.max_pages = args.max_pages
     if args.max_tokens is not None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
+    if args.depth_limit is not None:
+        goal.depth_limit = args.depth_limit
 
     seeds = _parse_seeds(args)
     task = CrawlTask(goal_id=goal.goal_id)
