@@ -12,6 +12,9 @@ dependencies = [
     "aiosqlite",
 ]
 
+[project.scripts]
+crawl = "crawlme.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/crawlme"]
 
