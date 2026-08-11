@@ -32,6 +32,16 @@ class Settings(BaseSettings):
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]
 
+    # --- Extract ---
+    # Timeout for trafilatura extraction + bs4 link parsing (per page).
+    # Trafilatura can degrade to O(n²) or worse on pathological HTML
+    # (e.g. 6MB wikidata structured-data pages, giant ad-heavy news sites).
+    # This is a safety valve, not a content filter — a healthy page under
+    # a few MB should complete in <10 s.  Raise this if targeting
+    # deliberately large / rich pages.  Future ideas: per-domain tuning,
+    # streaming extraction, or extractor-level cancellation.
+    extract_timeout: float = 120.0
+
     # --- Frontier ---
     candidate_buffer_size: int = 2_000
     rank_batch_size: int = 100

@@ -245,11 +245,20 @@ class CrawlScheduler:
                     await self._frontier.record_outcome(item, "FAILED")
                     return
 
-                # Extract content — offload to thread pool (trafilatura + bs4 are CPU-bound).
+                # Extract content — offload to thread pool with a timeout.
                 raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
                 logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
-                page = await asyncio.to_thread(self._extractor.extract, result, raw_path)
+                try:
+                    page = await asyncio.wait_for(
+                        asyncio.to_thread(self._extractor.extract, result, raw_path),
+                        timeout=self._cfg.extract_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+                    await self._frontier.record_outcome(item, "SKIPPED")
+                    self._counters["pages_fetched"] = self._counters.get("pages_fetched", 0) + 1
+                    return
                 self._storage.save_page(_page_to_json(page))
 
                 # Extract links → Candidates → PreFilter → Buffer.
