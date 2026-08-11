@@ -159,12 +159,34 @@ class Storage:
         self._writer_task: asyncio.Task[None] | None = None
         self._conn: aiosqlite.Connection | None = None
 
+    @classmethod
+    def create(cls, base_dir: str | Path) -> Storage:
+        """Create a Storage with a timestamped subdirectory under *base_dir*.
+
+        Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``
+        """
+        import datetime
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = Path(base_dir) / ts
+        (run_dir / "raw").mkdir(parents=True, exist_ok=True)
+        (run_dir / "db").mkdir(parents=True, exist_ok=True)
+        return cls(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path
+
     @property
     def raw_dir(self) -> Path:
         return self._raw_dir
 
     async def start(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
+        # Log to a file inside the run directory (setup_logging runs first).
+        from crawlme.logging import to_file
+
+        to_file(str(Path(self._db_path).parent.parent / "log"))
         await self._conn.executescript(DDL)
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
@@ -179,15 +201,22 @@ class Storage:
             except asyncio.CancelledError:
                 pass
         if self._conn:
+            # Final commit — flushes any writes since the last batch commit.
+            await self._conn.commit()
             await self._conn.close()
 
     async def _write_loop(self) -> None:
+        batch = 0
         while True:
             sql, params = await self._write_queue.get()
             try:
                 if self._conn:
                     await self._conn.execute(sql, params)
-                    await self._conn.commit()
+                    batch += 1
+                    # Commit every 200 writes to avoid thrashing SQLite.
+                    if batch >= 200:
+                        await self._conn.commit()
+                        batch = 0
             finally:
                 self._write_queue.task_done()
 

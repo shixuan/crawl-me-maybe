@@ -15,8 +15,10 @@ def test_run_help(capsys):
     assert "usage" in captured.out or "usage" in captured.err
 
 
-def test_run_prints_prompt(capsys):
-    """crawl run <prompt> should not crash."""
+def test_run_prints_prompt(caplog):
+    """crawl run <prompt> should log task info via logging."""
+    import logging
+
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
         with patch("crawlme.cli.CrawlScheduler") as mock_sched_cls:
             mock_sched = MagicMock()
@@ -28,11 +30,13 @@ def test_run_prints_prompt(capsys):
             mock_sched.run = AsyncMock()
             mock_sched_cls.return_value = mock_sched
 
-            # Don't actually do I/O.
-            try:
-                main()
-            except SystemExit:
-                pass
+            # setup_logging uses Settings() which defaults to OFF.
+            # Force the root logger to accept INFO so caplog captures it.
+            logging.getLogger().setLevel(logging.INFO)
+            with caplog.at_level(logging.INFO, logger="crawlme.cli"):
+                try:
+                    main()
+                except SystemExit:
+                    pass
 
-    captured = capsys.readouterr()
-    assert "test prompt" in captured.out
+    assert "test prompt" in caplog.text

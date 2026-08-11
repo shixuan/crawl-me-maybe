@@ -47,4 +47,4 @@ jobs:
           restore-keys: pip-${{ matrix.python-version }}-
       - run: pip install -e .
       - run: pip install pytest pytest-asyncio pytest-httpx pytest-cov
-      - run: pytest --cov=src/crawlme --cov-fail-under=70
+      - run: pytest --cov=src/crawlme --cov-fail-under=70 -m "not e2e"

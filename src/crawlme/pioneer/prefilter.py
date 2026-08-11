@@ -7,12 +7,15 @@ Fail-open on rule exceptions — a broken rule never blocks a candidate.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
 from crawlme.schemas import Candidate, CrawlGoal
+
+logger = logging.getLogger(__name__)
 
 
 class Decision(Enum):
@@ -48,7 +51,8 @@ _EXT_DENYLIST = re.compile(
 
 _URL_PATTERN_DENYLIST = re.compile(
     r"/(login|logout|signup|register|signin|cart|checkout"
-    r"|account|admin|wp-admin|ajax|api/)/",
+    r"|account|admin|wp-admin|ajax|api/)/"
+    r"|[\U00002600-\U000027BF\U0001F300-\U0001F9FF\U0000FE00-\U0000FE0F]",  # emoji
     re.IGNORECASE,
 )
 
@@ -59,6 +63,14 @@ _NEGATIVE_ANCHOR = re.compile(
 
 
 # -- rules ----------------------------------------------------------------
+
+
+def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+    from crawlme.pioneer.blacklist import DOMAIN_BLACKLIST
+
+    if c.url.reg_domain in DOMAIN_BLACKLIST or c.url.domain in DOMAIN_BLACKLIST:
+        return Decision.DROP, "blacklist"
+    return None
 
 
 def scope_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
@@ -126,6 +138,7 @@ class PreFilter:
         rules: list[RuleFunc] = [
             scope_check,
             dedup_check,
+            blacklist_check,
             robots_check,
             protocol_check,
             extension_check,
@@ -144,5 +157,6 @@ class PreFilter:
                 if result is not None:
                     return result
             except Exception:
+                logger.warning("prefilter.rule_error rule=%s url=%s", rule.__name__, c.url.raw, exc_info=True)
                 continue
         return Decision.ALLOW, ""

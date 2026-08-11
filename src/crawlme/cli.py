@@ -12,25 +12,32 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
 from crawlme.config import Settings
+from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
+    setup_logging(Settings())
     parser = argparse.ArgumentParser(prog="crawl", description="LLM-driven goal-directed crawler")
     sub = parser.add_subparsers(dest="command")
 
     # -- run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
-    run_p.add_argument("--max-pages", type=int, help="Page budget limit")
+    run_p.add_argument("--max-pages", type=int, help="Page budget limit (0 = unlimited)")
     run_p.add_argument("--max-tokens", type=int, help="Token budget limit")
     run_p.add_argument("--max-duration", type=int, help="Time limit in seconds")
+    run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
+    run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
     run_p.add_argument("--seeds", help="Comma-separated seed URLs")
     run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
     run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
@@ -81,12 +88,19 @@ async def _dispatch(args: argparse.Namespace) -> None:
 async def _cmd_run(args: argparse.Namespace) -> None:
     cfg = Settings(data_dir=Path(args.data_dir))
     goal = CrawlGoal(prompt=args.prompt)
-    if args.max_pages is not None:
+    if args.draining:
+        if args.max_pages is not None and args.max_pages > 0:
+            print("Error: --draining and --max-pages are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        goal.max_pages = 0
+    elif args.max_pages is not None:
         goal.max_pages = args.max_pages
     if args.max_tokens is not None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
+    if args.depth_limit is not None:
+        goal.depth_limit = args.depth_limit
 
     seeds = _parse_seeds(args)
     task = CrawlTask(goal_id=goal.goal_id)
@@ -107,21 +121,28 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     if items:
         await scheduler._frontier.push_batch(items)
 
-    print(f"Task {task.task_id}: {args.prompt}")
-    print(f"Seeds: {seeds}")
-    print(f"Budget: pages={goal.max_pages} tokens={goal.max_tokens} time={goal.max_duration_sec}s")
-    print("---")
+    logger.info(
+        "task=%s prompt=%r seeds=%s pages=%d tokens=%d duration=%ds",
+        task.task_id,
+        args.prompt,
+        seeds,
+        goal.max_pages,
+        goal.max_tokens,
+        goal.max_duration_sec,
+    )
 
     try:
         await scheduler.run(goal, task)
     except KeyboardInterrupt:
-        print("\nInterrupted — saving checkpoint...")
+        logger.info("interrupted — saving checkpoint")
         await scheduler.pause()
     finally:
-        print(f"State: {task.state}")
-        if task.stopping_reason:
-            print(f"Stopped: {task.stopping_reason}")
-        print(f"Pages fetched: {scheduler._counters.get('pages_fetched', 0)}")
+        logger.info(
+            "state=%s reason=%s pages=%d",
+            task.state,
+            task.stopping_reason or "none",
+            scheduler._counters.get("pages_fetched", 0),
+        )
 
 
 def _parse_seeds(args: argparse.Namespace) -> list[str]:
