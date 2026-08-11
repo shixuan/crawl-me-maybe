@@ -63,5 +63,5 @@ class Settings(BaseSettings):
 
     # --- Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
-    log_level: str = "OFF"
+    log_level: str = "INFO"
     log_format: str = "json"  # json | console
