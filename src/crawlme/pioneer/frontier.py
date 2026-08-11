@@ -176,7 +176,7 @@ class Frontier:
                 heapq.heappop(self._heap)
                 continue
 
-            if global_budget is not None and self._global_counter >= global_budget:
+            if global_budget is not None and global_budget > 0 and self._global_counter >= global_budget:
                 return None
 
             heapq.heappop(self._heap)
