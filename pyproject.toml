@@ -42,5 +42,5 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: end-to-end tests that hit real websites (skip in CI)",
+    "e2e: end-to-end tests that hit real websites (skip in CI)",
 ]

@@ -1,4 +1,4 @@
-"""Shared fixtures for integration tests — real network, real storage."""
+"""Shared fixtures for e2e tests — real network, real storage."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from crawlme.config import Settings
 
 
 @pytest.fixture
-def integration_settings() -> Settings:
+def e2e_settings() -> Settings:
     """Settings pointed at results/ — Storage.create() nests timestamped subdirs."""
     return Settings(
         data_dir=Path("results"),

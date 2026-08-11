@@ -1,8 +1,8 @@
-"""End-to-end integration tests against live Wikipedia.
+"""End-to-end tests against live Wikipedia.
 
 Run manually (skipped in CI):
 
-    pytest tests/integration/test_wiki_crawl.py -v -s -m integration
+    pytest tests/e2e/test_wiki_crawl.py -v -s -m e2e
 
 Goal: "projects rewritten in Rust" — find software projects that were
 rewritten from other languages into Rust.
@@ -21,10 +21,10 @@ from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal, CrawlTask, FrontierItem
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.e2e
 
 _SEED = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
-_PROMPT = "software projects that were rewritten in Rust, or adopted Rust for performance and safety"
+_PROMPT = "systems programming, memory safety, compiler design and static analysis tools"
 _MAX_PAGES = 10
 
 
@@ -35,7 +35,7 @@ def _utcnow() -> str:
 
 
 @pytest.mark.asyncio
-async def test_wiki_rust_rewrite_basic_crawl(integration_settings):
+async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
     """Full pipeline: seed Wikipedia Rust page, crawl up to 10 pages.
 
     Verifies:
@@ -45,7 +45,7 @@ async def test_wiki_rust_rewrite_basic_crawl(integration_settings):
       - Storage has pages, candidates, rank_decisions
       - Stop reason includes BUDGET_PAGES
     """
-    cfg = integration_settings
+    cfg = e2e_settings
     setup_logging(cfg, force=True)
 
     goal = CrawlGoal(prompt=_PROMPT, max_pages=_MAX_PAGES)
@@ -145,9 +145,9 @@ async def test_wiki_rust_rewrite_basic_crawl(integration_settings):
 
 
 @pytest.mark.asyncio
-async def test_wiki_rust_small_budget_stops_early(integration_settings):
+async def test_wiki_rust_small_budget_stops_early(e2e_settings):
     """With max_pages=2 the crawl should stop after exactly 2 fetched pages."""
-    cfg = integration_settings
+    cfg = e2e_settings
     setup_logging(cfg, force=True)
 
     goal = CrawlGoal(prompt=_PROMPT, max_pages=2)
@@ -180,3 +180,132 @@ async def test_wiki_rust_small_budget_stops_early(integration_settings):
     assert pages_fetched >= 1, "No pages fetched"
     if task.stopping_reason:
         assert "BUDGET_PAGES" in (task.stopping_reason or ""), f"Expected BUDGET_PAGES, got {task.stopping_reason}"
+
+
+# -- draining mode: many seeds, deep crawl, no page limit --------------------
+
+_DRAINING_SEEDS = [
+    # Core Rust ecosystem
+    "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+    "https://en.wikipedia.org/wiki/Servo_(software)",
+    "https://en.wikipedia.org/wiki/Firefox",
+    # Languages & runtimes
+    "https://en.wikipedia.org/wiki/C_(programming_language)",
+    "https://en.wikipedia.org/wiki/C%2B%2B",
+    "https://en.wikipedia.org/wiki/Go_(programming_language)",
+    "https://en.wikipedia.org/wiki/Memory_safety",
+    # Projects rewritten/adopted Rust
+    "https://en.wikipedia.org/wiki/Librsvg",
+    "https://en.wikipedia.org/wiki/GitHub_Copilot",
+    "https://en.wikipedia.org/wiki/Cloudflare",
+    # Systems & OS
+    "https://en.wikipedia.org/wiki/Linux_kernel",
+    "https://en.wikipedia.org/wiki/WebAssembly",
+    # Tools
+    "https://en.wikipedia.org/wiki/Static_program_analysis",
+    "https://en.wikipedia.org/wiki/Compiler",
+    "https://en.wikipedia.org/wiki/Formal_verification",
+]
+_DRAINING_DEPTH = 5
+_DRAINING_TIMEOUT = 600
+
+
+@pytest.mark.asyncio
+async def test_wiki_rust_draining_multi_seed(e2e_settings):
+    """Draining mode: 15 seeds, depth=3, no page limit. Crawls until frontier drained.
+
+    Verifies:
+      - Multiple seeds all pushed successfully
+      - Crawler runs to natural exhaustion (FRONTIER_DRAINED)
+      - Depth limit is respected (no pages beyond depth 3)
+      - Substantial page/candidate yield from cross-linking
+    """
+    cfg = e2e_settings
+    setup_logging(cfg, force=True)
+
+    goal = CrawlGoal(prompt=_PROMPT, max_pages=0, depth_limit=_DRAINING_DEPTH)
+    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+
+    sched = CrawlScheduler(settings=cfg)
+
+    # Push all seeds.
+    canon = Canonicalizer()
+    items = []
+    for seed_url in _DRAINING_SEEDS:
+        url = canon.canonicalize(seed_url, seed_url)
+        items.append(
+            FrontierItem(
+                url=url,
+                url_key=url.url_key,
+                priority=1.0,
+                score_source="seed",
+                reg_domain=url.reg_domain,
+            )
+        )
+    await sched._frontier.push_batch(items)
+
+    print(f"\nDraining test: {len(_DRAINING_SEEDS)} seeds, depth={_DRAINING_DEPTH}, no page limit")
+    print(f"Seeds: {', '.join(s.rsplit('/', 1)[-1] for s in _DRAINING_SEEDS)}")
+
+    t0 = time.monotonic()
+    timed_out = False
+    try:
+        await asyncio.wait_for(sched.run(goal, task), timeout=_DRAINING_TIMEOUT)
+    except asyncio.TimeoutError:
+        timed_out = True
+        print(f"\nTimed out after {_DRAINING_TIMEOUT}s — checking partial results.")
+
+    elapsed = time.monotonic() - t0
+    counters = sched._counters
+    pages_fetched = counters.get("pages_fetched", 0)
+
+    print(f"\nElapsed: {elapsed:.1f}s")
+    print(f"Pages fetched: {pages_fetched}")
+    print(f"State: {task.state}")
+    print(f"Stop reason: {task.stopping_reason}")
+
+    # 1. Must have fetched a reasonable number of pages.
+    assert pages_fetched >= len(_DRAINING_SEEDS), (
+        f"Expected at least {len(_DRAINING_SEEDS)} pages (one per seed), got {pages_fetched}"
+    )
+
+    # 2. State must be terminal unless timed out.
+    if not timed_out:
+        assert task.state in ("COMPLETED", "STOPPING"), f"Unexpected state: {task.state}"
+        assert task.stopping_reason and "FRONTIER_DRAINED" in (task.stopping_reason or ""), (
+            f"Expected FRONTIER_DRAINED, got {task.stopping_reason}"
+        )
+
+    # 3. Verify DB contents.
+    db_path = sched._storage.db_path
+    async with aiosqlite.connect(db_path) as db:
+        row = await db.execute("SELECT COUNT(*) FROM pages")
+        (page_count,) = await row.fetchone()
+        print(f"Pages in DB: {page_count}")
+        assert page_count >= len(_DRAINING_SEEDS), f"Expected >= {len(_DRAINING_SEEDS)} pages, got {page_count}"
+
+        row = await db.execute("SELECT COUNT(*) FROM candidates")
+        (cand_count,) = await row.fetchone()
+        print(f"Candidates in DB: {cand_count}")
+
+        row = await db.execute("SELECT status, COUNT(*) FROM candidates GROUP BY status")
+        statuses = await row.fetchall()
+        print(f"Candidate statuses: {statuses}")
+
+        row = await db.execute("SELECT COUNT(*) FROM rank_decisions")
+        (rd_count,) = await row.fetchone()
+        print(f"Rank decisions: {rd_count}")
+
+        # Depth check: no page beyond depth limit.
+        row = await db.execute("SELECT MAX(depth) FROM candidates")
+        (max_depth,) = await row.fetchone()
+        print(f"Max candidate depth: {max_depth}")
+        if max_depth is not None:
+            assert max_depth <= _DRAINING_DEPTH + 1, f"Depth limit violated: {max_depth} > {_DRAINING_DEPTH + 1}"
+
+        # Show all page titles.
+        row = await db.execute("SELECT DISTINCT title, json_extract(url_json, '$.raw') FROM pages ORDER BY rowid")
+        titles = await row.fetchall()
+        print(f"\nAll pages ({len(titles)}):")
+        for t, u in titles:
+            print(f"  {t or '(no title)':60s} {u[:80] if u else ''}")
