@@ -41,7 +41,7 @@ def main() -> None:
     run_p.add_argument("--seeds", help="Comma-separated seed URLs")
     run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
     run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
-    run_p.add_argument("--data-dir", default="data", help="Data directory (default: data)")
+    run_p.add_argument("--result-dir", help="Result directory (default: results)")
 
     # -- pause / resume / stop -------------------------------------------
     for cmd in ("pause", "resume", "stop"):
@@ -86,7 +86,9 @@ async def _dispatch(args: argparse.Namespace) -> None:
 
 
 async def _cmd_run(args: argparse.Namespace) -> None:
-    cfg = Settings(data_dir=Path(args.data_dir))
+    cfg = Settings()
+    if args.result_dir is not None:
+        cfg.result_dir = Path(args.result_dir)
     goal = CrawlGoal(prompt=args.prompt)
     if args.draining:
         if args.max_pages is not None and args.max_pages > 0:

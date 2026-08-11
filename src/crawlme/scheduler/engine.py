@@ -71,7 +71,7 @@ class CrawlScheduler:
     ) -> None:
         cfg = settings or Settings()
         self._cfg = cfg
-        self._storage = storage or Storage.create(cfg.data_dir)
+        self._storage = storage or Storage.create(cfg.result_dir)
         self._frontier = frontier or Frontier(domain_budget=cfg.default_domain_budget)
         self._fetcher = fetcher or Fetcher(
             user_agents=list(cfg.user_agents),

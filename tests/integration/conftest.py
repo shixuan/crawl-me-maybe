@@ -32,7 +32,7 @@ _TEST_HTML = """<!DOCTYPE html>
 def integration_settings(tmp_path: Path) -> Settings:
     """Settings for integration tests — temp dir, no robots check."""
     return Settings(
-        data_dir=tmp_path,
+        result_dir=tmp_path,
         ignore_robots=True,
         fetch_concurrency=1,
         log_level="INFO",

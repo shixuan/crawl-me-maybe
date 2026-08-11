@@ -13,7 +13,7 @@ from crawlme.config import Settings
 def e2e_settings() -> Settings:
     """Settings pointed at results/ — Storage.create() nests timestamped subdirs."""
     return Settings(
-        data_dir=Path("results"),
+        result_dir=Path("results"),
         ignore_robots=True,
         fetch_concurrency=2,
         fetch_timeout_connect=15.0,
