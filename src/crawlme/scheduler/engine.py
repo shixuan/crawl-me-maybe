@@ -410,11 +410,12 @@ class CrawlScheduler:
             return
         snap = self._frontier.snapshot(task_id=self._task.task_id)
         snap_id = f"{self._task.task_id}-latest"
+        snap_dict = snap.model_dump(mode="json")
         self._storage.save_snapshot(
             {
                 "snapshot_id": snap_id,
                 "task_id": snap.task_id,
-                "snapshot_json": snap.model_dump(),
+                "snapshot_json": snap_dict,
                 "created_at": _utcnow().isoformat(),
             }
         )
@@ -431,6 +432,9 @@ class CrawlScheduler:
             import json
 
             snap_json = json.loads(snap_json)
+        # JSON serializes set → list; restore to set for FrontierSnapshot.
+        if "visited" in snap_json and isinstance(snap_json["visited"], list):
+            snap_json["visited"] = set(snap_json["visited"])
         return FrontierSnapshot(**snap_json)
 
 
