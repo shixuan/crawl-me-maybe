@@ -181,6 +181,31 @@ async def test_frontier_drained_when_no_more_links(integration_settings):
 
 
 @pytest.mark.asyncio
+async def test_events_emitted(integration_settings):
+    """Events table should contain the full lifecycle for a single-page crawl."""
+    cfg = integration_settings
+    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
+    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+
+    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+
+    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+
+    async with aiosqlite.connect(sched._storage.db_path) as db:
+        db.row_factory = aiosqlite.Row
+        row = await db.execute("SELECT COUNT(*) FROM events")
+        (count,) = await row.fetchone()
+        assert count >= 4, f"Expected >= 4 events, got {count}"
+
+        # Key lifecycle events must be present.
+        row = await db.execute("SELECT type FROM events ORDER BY seq")
+        types = {r["type"] for r in await row.fetchall()}
+        for expected in ("TASK_STARTED", "FETCH_STARTED", "FETCH_COMPLETED", "PAGE_EXTRACTED", "STOPPED"):
+            assert expected in types, f"Missing event type: {expected}"
+
+
+@pytest.mark.asyncio
 async def test_rank_decisions_persisted(integration_settings):
     """Rank decisions should be written to the DB."""
     cfg = integration_settings
