@@ -8,7 +8,7 @@ M2: LLMRanker added as the second stage; RuleScorer narrows the field,
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from crawlme.pioneer.rule_scorer import RuleScorer
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
@@ -20,13 +20,18 @@ _WORD_RE = re.compile(r"\w+")
 
 
 class Ranker(Protocol):
-    """Protocol for pluggable ranking strategies."""
+    """Protocol for pluggable ranking strategies.
+
+    page_contexts maps source_url_key → {title, link_count} so the
+    scorer can use per-page signals (title match, position bias).
+    """
 
     async def rank_batch(
         self,
         goal: CrawlGoal,
         candidates: list[Candidate],
         history: RankHistorySummary,
+        page_contexts: dict[str, dict[str, Any]] | None = None,
     ) -> list[RankDecision]: ...
 
 
@@ -34,9 +39,10 @@ class HybridRanker:
     """Two-stage ranker.
 
     v0.1 path (no LLM):
-      1. RuleScorer scores every candidate
-      2. Candidates with rule_score < 0.35 are dropped
-      3. Survivors are returned sorted by priority descending
+      1. Candidates are grouped by source page url_key
+      2. RuleScorer scores each group with its source page's title + link count
+      3. Candidates with rule_score < 0.35 are dropped
+      4. Survivors are returned sorted by priority descending
     """
 
     def __init__(self, scorer: RuleScorer | None = None) -> None:
@@ -47,17 +53,35 @@ class HybridRanker:
         goal: CrawlGoal,
         candidates: list[Candidate],
         history: RankHistorySummary,
+        page_contexts: dict[str, dict[str, Any]] | None = None,
     ) -> list[RankDecision]:
-        # history is unused in M1 — accepted for protocol compatibility.
-        _ = history
-
         keywords = _extract_keywords(goal.prompt)
         domain_prior = _build_domain_prior(history)
+        pc = page_contexts or {}
 
-        scored = self._scorer.score_batch(candidates, goal_keywords=keywords, domain_prior=domain_prior)
+        # Group candidates by source page so each group gets the correct
+        # source_page_title and page_link_count for title_match + position factors.
+        groups: dict[str, list[Candidate]] = {}
+        for c in candidates:
+            key = c.source_url_key or ""
+            groups.setdefault(key, []).append(c)
+
+        all_scored: list[RankDecision] = []
+        for source_key, group in groups.items():
+            ctx = pc.get(source_key, {})
+            source_title = ctx.get("title", "")
+            link_count = ctx.get("link_count", 0)
+            scored = self._scorer.score_batch(
+                group,
+                goal_keywords=keywords,
+                source_page_title=source_title,
+                page_link_count=link_count,
+                domain_prior=domain_prior,
+            )
+            all_scored.extend(scored)
 
         kept: list[RankDecision] = []
-        for d in scored:
+        for d in all_scored:
             if d.priority < _RULE_THRESHOLD:
                 d.dropped = True
             else:

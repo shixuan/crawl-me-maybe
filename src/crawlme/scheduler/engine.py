@@ -91,6 +91,9 @@ class CrawlScheduler:
         self._task: CrawlTask | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
         self._inflight_tasks: set[asyncio.Task[None]] = set()
+        # Maps url_key → {title, link_count} so the ranker can use per-page
+        # signals (title_match F3 + position F7) instead of defaulting to 0.5.
+        self._page_contexts: dict[str, dict[str, Any]] = {}
 
     # -- public API -------------------------------------------------------
 
@@ -209,6 +212,12 @@ class CrawlScheduler:
 
                 # Extract links → Candidates → PreFilter → Buffer.
                 raw_links = extract_links(page)
+
+                # Record page context for ranker (F3 title_match + F7 position).
+                self._page_contexts[page.url_key] = {
+                    "title": page.title or "",
+                    "link_count": len(raw_links),
+                }
                 ctx = PreFilterContext(
                     visited=self._frontier._visited,
                     frontier_keys=set(self._frontier._items.keys()),
@@ -279,7 +288,7 @@ class CrawlScheduler:
 
             history = RankHistorySummary(pages_seen=self._counters.get("pages_fetched", 0))
             assert self._goal is not None
-            decisions = await self._ranker.rank_batch(self._goal, batch, history)
+            decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
 
             items: list[FrontierItem] = []
             for d in decisions:

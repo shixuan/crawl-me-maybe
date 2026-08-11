@@ -34,7 +34,7 @@ def ranker() -> HybridRanker:
 
 
 class _MockRanker:
-    async def rank_batch(self, goal, candidates, history) -> list[RankDecision]:
+    async def rank_batch(self, goal, candidates, history, page_contexts=None) -> list[RankDecision]:
         return [
             RankDecision(candidate_id=c.candidate_id, url_key=c.url.url_key, priority=0.5, ranker="mock")
             for c in candidates
@@ -137,3 +137,67 @@ async def test_domain_prior_from_history(ranker):
     # Shallow candidate with hub domain in history should survive.
     assert len(decisions) == 1
     assert decisions[0].priority >= 0.35
+
+
+@pytest.mark.asyncio
+async def test_page_contexts_flow_to_scorer(ranker):
+    """source_page_title and page_link_count from page_contexts affect scoring.
+
+    Two identical candidates from different source pages — the one whose
+    source title matches the goal keywords should score higher.
+    """
+    goal = _goal("machine learning")
+    # Candidate from a page whose title matches the goal.
+    c_good = _candidate(
+        url_key="good",
+        raw="https://a.com/page",
+        source_url_key="src1",
+        anchor="click here",
+    )
+    # Candidate from a page whose title is unrelated.
+    c_bad = _candidate(
+        url_key="bad",
+        raw="https://b.com/page",
+        source_url_key="src2",
+        anchor="click here",
+    )
+    page_contexts = {
+        "src1": {"title": "Machine Learning Papers", "link_count": 10},
+        "src2": {"title": "About Us", "link_count": 10},
+    }
+    decisions = await ranker.rank_batch(goal, [c_good, c_bad], _history(), page_contexts=page_contexts)
+    # c_good (matching source title) should score higher than c_bad.
+    assert len(decisions) >= 1
+    scored = ranker._scorer.score_batch(
+        [c_good],
+        goal_keywords=["machine", "learning"],
+        source_page_title="Machine Learning Papers",
+        page_link_count=10,
+    )
+    assert scored[0].priority > 0.35
+    # Title match factor should be above neutral for the matching title.
+    scored_bad = ranker._scorer.score_batch(
+        [c_bad],
+        goal_keywords=["machine", "learning"],
+        source_page_title="About Us",
+        page_link_count=10,
+    )
+    scored_good = scored[0].priority
+    scored_bad_priority = scored_bad[0].priority
+    assert scored_good > scored_bad_priority, f"Expected {scored_good} > {scored_bad_priority}"
+
+
+@pytest.mark.asyncio
+async def test_page_contexts_grouped_scoring(ranker):
+    """Candidates from different source pages get different title_match scores."""
+    goal = _goal("deep learning")
+    c1 = _candidate(url_key="a", source_url_key="src_a", anchor="some link")
+    c2 = _candidate(url_key="b", source_url_key="src_b", anchor="some link")
+    page_contexts = {
+        "src_a": {"title": "Deep Learning Tutorial", "link_count": 5},
+        "src_b": {"title": "Contact Information", "link_count": 5},
+    }
+    decisions = await ranker.rank_batch(goal, [c1, c2], _history(), page_contexts=page_contexts)
+    # c1 should score higher — title matches "deep learning".
+    priorities = {d.url_key: d.priority for d in decisions}
+    assert priorities.get("a", 0) > priorities.get("b", 0), f"Expected a > b, got {priorities}"
