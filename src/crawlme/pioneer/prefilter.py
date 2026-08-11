@@ -64,6 +64,14 @@ _NEGATIVE_ANCHOR = re.compile(
 # -- rules ----------------------------------------------------------------
 
 
+def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+    from crawlme.pioneer.blacklist import DOMAIN_BLACKLIST
+
+    if c.url.reg_domain in DOMAIN_BLACKLIST or c.url.domain in DOMAIN_BLACKLIST:
+        return Decision.DROP, "blacklist"
+    return None
+
+
 def scope_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if ctx.allowed_domains and c.url.reg_domain not in ctx.allowed_domains:
         return Decision.DROP, "scope"
@@ -129,6 +137,7 @@ class PreFilter:
         rules: list[RuleFunc] = [
             scope_check,
             dedup_check,
+            blacklist_check,
             robots_check,
             protocol_check,
             extension_check,

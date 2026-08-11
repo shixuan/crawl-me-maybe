@@ -1,0 +1,6 @@
+{
+  "_comment": "Domain blacklist — candidates from these domains are dropped before fetching. Add entries under 'domains' as you discover non-content or trafilatura-unfriendly sites.",
+  "domains": [
+    "wikidata.org"
+  ]
+}
