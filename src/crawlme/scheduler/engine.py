@@ -71,7 +71,7 @@ class CrawlScheduler:
     ) -> None:
         cfg = settings or Settings()
         self._cfg = cfg
-        self._storage = storage or Storage(str(cfg.db_path), str(cfg.raw_dir))
+        self._storage = storage or Storage.create(cfg.data_dir)
         self._frontier = frontier or Frontier(domain_budget=cfg.default_domain_budget)
         self._fetcher = fetcher or Fetcher(
             user_agents=list(cfg.user_agents),
@@ -245,15 +245,15 @@ class CrawlScheduler:
                     await self._frontier.record_outcome(item, "FAILED")
                     return
 
-                # Extract content.
+                # Extract content — offload to thread pool (trafilatura + bs4 are CPU-bound).
                 raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
                 logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                self._storage.save_raw_html(item.url_key, result.item_id, result.raw)
-                page = self._extractor.extract(result, raw_path)
+                await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
+                page = await asyncio.to_thread(self._extractor.extract, result, raw_path)
                 self._storage.save_page(_page_to_json(page))
 
                 # Extract links → Candidates → PreFilter → Buffer.
-                raw_links = extract_links(page)
+                raw_links = await asyncio.to_thread(extract_links, page)
                 logger.debug(
                     "extracted url_key=%s title=%r links=%d status=%s",
                     page.url_key,
@@ -292,26 +292,26 @@ class CrawlScheduler:
                         c.status = "BUFFERED"
                         await self._buffer.add([c])
                         n_allowed += 1
+                        # Persist BUFFERED candidates for audit trail.
+                        self._storage.save_candidate(
+                            {
+                                "candidate_id": c.candidate_id,
+                                "url_key": c.url.url_key,
+                                "url_json": c.url.model_dump(),
+                                "anchor": c.anchor,
+                                "snippet": c.snippet,
+                                "parent_heading": c.parent_heading,
+                                "position": c.position,
+                                "source_page_id": c.source_page_id,
+                                "source_url_key": c.source_url_key,
+                                "depth": c.depth,
+                                "status": c.status,
+                                "discovered_at": c.discovered_at.isoformat() if c.discovered_at else "",
+                            }
+                        )
                     else:
                         c.status = "FILTERED_OUT"
                         n_filtered += 1
-                    # Persist candidate for audit trail.
-                    self._storage.save_candidate(
-                        {
-                            "candidate_id": c.candidate_id,
-                            "url_key": c.url.url_key,
-                            "url_json": c.url.model_dump(),
-                            "anchor": c.anchor,
-                            "snippet": c.snippet,
-                            "parent_heading": c.parent_heading,
-                            "position": c.position,
-                            "source_page_id": c.source_page_id,
-                            "source_url_key": c.source_url_key,
-                            "depth": c.depth,
-                            "status": c.status,
-                            "discovered_at": c.discovered_at.isoformat() if c.discovered_at else "",
-                        }
-                    )
                     # Progress pulse — large pages take a while to persist.
                     total = n_allowed + n_filtered
                     if total % 500 == 0:
@@ -353,7 +353,9 @@ class CrawlScheduler:
     async def _rank_pump(self) -> None:
         ranked_total = 0
         while self._state == "RUNNING":
-            await self._buffer.wait_until(lambda: self._buffer.ready(self._frontier.size == 0))
+            await self._buffer.wait_until(
+                lambda: self._buffer.ready(self._frontier.size == 0) or self._state != "RUNNING"
+            )
             if self._state != "RUNNING":
                 break
 
