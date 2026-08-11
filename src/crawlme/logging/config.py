@@ -45,7 +45,7 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
     root.addHandler(h)
 
     # Quiet noisy third-party loggers.
-    for noisy in ("httpx", "httpcore", "trafilatura", "urllib3"):
+    for noisy in ("httpx", "httpcore", "trafilatura", "urllib3", "aiosqlite"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

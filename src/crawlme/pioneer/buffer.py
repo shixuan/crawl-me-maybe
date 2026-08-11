@@ -87,6 +87,11 @@ class CandidateBuffer:
         async with self._cond:
             await self._cond.wait_for(predicate or self.ready)
 
+    async def wake(self) -> None:
+        """Notify waiters — used to unblock the rank pump on shutdown."""
+        async with self._cond:
+            self._cond.notify_all()
+
     # -- properties -------------------------------------------------------
 
     @property

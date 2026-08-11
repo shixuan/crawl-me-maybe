@@ -179,15 +179,22 @@ class Storage:
             except asyncio.CancelledError:
                 pass
         if self._conn:
+            # Final commit — flushes any writes since the last batch commit.
+            await self._conn.commit()
             await self._conn.close()
 
     async def _write_loop(self) -> None:
+        batch = 0
         while True:
             sql, params = await self._write_queue.get()
             try:
                 if self._conn:
                     await self._conn.execute(sql, params)
-                    await self._conn.commit()
+                    batch += 1
+                    # Commit every 200 writes to avoid thrashing SQLite.
+                    if batch >= 200:
+                        await self._conn.commit()
+                        batch = 0
             finally:
                 self._write_queue.task_done()
 

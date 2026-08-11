@@ -209,16 +209,18 @@ class CrawlScheduler:
                     self._buffer.size,
                     self._counters.get("in_flight", 0),
                 )
+                await self._buffer.wake()
                 break
 
             item = await self._frontier.pop_next(
                 now=_utcnow(),
-                next_allowed=self._robots.next_allowed_at,
+                next_allowed=None if self._cfg.ignore_robots else self._robots.next_allowed_at,
                 global_budget=self._counters.get("max_pages"),
             )
             if item is None:
                 if self._buffer.is_empty and self._counters.get("in_flight", 0) == 0:
                     logger.info("fetch_pump.exhausted frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
+                    await self._buffer.wake()
                     break
                 await asyncio.sleep(_POP_SLEEP)
                 continue
@@ -245,6 +247,7 @@ class CrawlScheduler:
 
                 # Extract content.
                 raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
+                logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 self._storage.save_raw_html(item.url_key, result.item_id, result.raw)
                 page = self._extractor.extract(result, raw_path)
                 self._storage.save_page(_page_to_json(page))
@@ -309,6 +312,10 @@ class CrawlScheduler:
                             "discovered_at": c.discovered_at.isoformat() if c.discovered_at else "",
                         }
                     )
+                    # Progress pulse — large pages take a while to persist.
+                    total = n_allowed + n_filtered
+                    if total % 500 == 0:
+                        logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(raw_links))
                 logger.debug(
                     "prefilter url_key=%s total=%d allowed=%d filtered=%d",
                     page.url_key,
@@ -322,12 +329,13 @@ class CrawlScheduler:
                 self._counters["pages_fetched"] = self._counters.get("pages_fetched", 0) + 1
                 n = self._counters["pages_fetched"]
                 logger.info(
-                    "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d",
+                    "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
                     n,
                     page.url_key,
                     page.title,
                     len(raw_links),
                     n_allowed,
+                    (time.monotonic() - self._counters["started_at"]),
                 )
 
                 # Periodic checkpoint.
@@ -343,6 +351,7 @@ class CrawlScheduler:
     # -- rank loop --------------------------------------------------------
 
     async def _rank_pump(self) -> None:
+        ranked_total = 0
         while self._state == "RUNNING":
             await self._buffer.wait_until(lambda: self._buffer.ready(self._frontier.size == 0))
             if self._state != "RUNNING":
@@ -360,7 +369,14 @@ class CrawlScheduler:
 
             n_dropped = sum(1 for d in decisions if d.dropped)
             n_kept = len(decisions) - n_dropped
-            logger.info("rank.batch candidates=%d kept=%d dropped=%d threshold=0.35", len(batch), n_kept, n_dropped)
+            ranked_total += len(batch)
+            logger.info(
+                "rank.batch candidates=%d kept=%d dropped=%d ranked_total=%d",
+                len(batch),
+                n_kept,
+                n_dropped,
+                ranked_total,
+            )
 
             items: list[FrontierItem] = []
             for d in decisions:

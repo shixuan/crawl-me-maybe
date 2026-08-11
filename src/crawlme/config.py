@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     fetch_timeout_read: float = 30.0
     fetch_max_retries: int = 3
     user_agents: list[str] = [
-        ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"),
+        "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]
 
     # --- Frontier ---
