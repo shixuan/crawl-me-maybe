@@ -18,7 +18,6 @@ from pathlib import Path
 
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
-from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 
@@ -104,29 +103,21 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     if args.depth_limit is not None:
         goal.depth_limit = args.depth_limit
 
-    seeds = _parse_seeds(args)
-    task = CrawlTask(goal_id=goal.goal_id)
+    source = _build_source(args)
+    candidates = await source.discover(goal)
+    allowed_domains: set[str] | None = None
+    if hasattr(source, "allowed_domains"):
+        allowed_domains = source.allowed_domains
 
+    task = CrawlTask(goal_id=goal.goal_id)
     scheduler = CrawlScheduler(settings=cfg)
 
-    # Push seed URLs into the frontier via canonicalizer.
-    canonicalizer = Canonicalizer()
-    items = []
-    for url_str in seeds:
-        url = canonicalizer.canonicalize(url_str, url_str)
-        from crawlme.schemas import FrontierItem
-
-        items.append(
-            FrontierItem(url=url, url_key=url.url_key, priority=1.0, score_source="seed", reg_domain=url.reg_domain)
-        )
-    if items:
-        await scheduler._frontier.push_batch(items)
+    await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(
-        "task=%s prompt=%r seeds=%s pages=%d tokens=%d duration=%ds",
+        "task=%s prompt=%r pages=%d tokens=%d duration=%ds",
         task.task_id,
         args.prompt,
-        seeds,
         goal.max_pages,
         goal.max_tokens,
         goal.max_duration_sec,
@@ -146,11 +137,15 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         )
 
 
-def _parse_seeds(args: argparse.Namespace) -> list[str]:
-    if args.seeds:
-        return [s.strip() for s in args.seeds.split(",") if s.strip()]
+def _build_source(args: argparse.Namespace):
+    """Create a URL source from CLI arguments."""
+    from crawlme.pioneer.sources.file import FileSource
+    from crawlme.pioneer.sources.manual import ManualSource
+    from crawlme.pioneer.sources.rss import RssSource
+
     if args.source == "file" and args.source_path:
-        path = Path(args.source_path)
-        if path.exists():
-            return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    return []
+        return FileSource(args.source_path)
+    if args.source == "rss" and args.source_path:
+        return RssSource(args.source_path)
+    seeds = [s.strip() for s in (args.seeds or "").split(",") if s.strip()]
+    return ManualSource(seeds)

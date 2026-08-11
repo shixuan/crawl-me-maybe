@@ -95,11 +95,57 @@ class CrawlScheduler:
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
-        self._inflight_tasks: set[asyncio.Task[None]] = set()
         # Maps url_key → {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
         self._events: EventEmitter | None = None
+
+    # -- seed ingestion --------------------------------------------------
+
+    async def ingest_seeds(
+        self,
+        goal: CrawlGoal,
+        candidates: list[Candidate],
+        allowed_domains: set[str] | None = None,
+    ) -> int:
+        """Canonicalize, pre-filter, and enqueue seed candidates.
+
+        Seeds only go through a subset of PreFilter rules (dedup, blacklist,
+        protocol, scope) — we intentionally skip robots/extension/url-pattern/
+        depth/domain-budget since these are user-provided entry points.
+        """
+        ctx = PreFilterContext(
+            visited=self._frontier._visited,
+            frontier_keys=set(self._frontier._items.keys()),
+            domain_counters=self._frontier._domain_counters,
+            allow_fetch=lambda url: True,  # seeds bypass robots
+            allowed_domains=allowed_domains,
+        )
+        items: list[FrontierItem] = []
+        n_ingested = 0
+        for c in candidates:
+            url = self._canonicalizer.canonicalize(c.url.raw, c.url.raw)
+            c.url = url
+            decision, _ = self._prefilter.check(c, goal, ctx)
+            if decision.value != "allow":
+                logger.debug("seed.rejected url=%s reason=%s", url.raw, _)
+                continue
+            items.append(
+                FrontierItem(
+                    url=url,
+                    url_key=url.url_key,
+                    priority=1.0,
+                    score_source="seed",
+                    reg_domain=url.reg_domain,
+                )
+            )
+            n_ingested += 1
+        if items:
+            await self._frontier.push_batch(items)
+        if self._events and n_ingested > 0:
+            self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
+        logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
+        return n_ingested
 
     # -- public API -------------------------------------------------------
 
@@ -152,7 +198,10 @@ class CrawlScheduler:
             reason,
         )
         if self._events:
-            self._events.emit(EventType.STOPPED, {"reason": reason, "pages_fetched": self._counters.get("pages_fetched", 0)})
+            self._events.emit(
+                EventType.STOPPED,
+                {"reason": reason, "pages_fetched": self._counters.get("pages_fetched", 0)},
+            )
         await self._storage.close()
 
     async def pause(self) -> None:
@@ -237,7 +286,7 @@ class CrawlScheduler:
                 continue
 
             self._counters["in_flight"] = self._counters.get("in_flight", 0) + 1
-            self._inflight_tasks.add(asyncio.create_task(self._handle_fetch(item)))
+            asyncio.create_task(self._handle_fetch(item))  # noqa: RUF006 — errors handled inside
 
         self._state = "STOPPING"
 
@@ -382,9 +431,6 @@ class CrawlScheduler:
 
             finally:
                 self._counters["in_flight"] = max(0, self._counters.get("in_flight", 0) - 1)
-                task = asyncio.current_task()
-                if task:
-                    self._inflight_tasks.discard(task)
 
     # -- rank loop --------------------------------------------------------
 

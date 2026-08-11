@@ -22,10 +22,7 @@ def test_run_prints_prompt(caplog):
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
         with patch("crawlme.cli.CrawlScheduler") as mock_sched_cls:
             mock_sched = MagicMock()
-            mock_sched._storage = MagicMock()
-            mock_sched._storage.start = AsyncMock()
-            mock_sched._frontier = MagicMock()
-            mock_sched._frontier.push_batch = AsyncMock()
+            mock_sched.ingest_seeds = AsyncMock()
             mock_sched._counters = {"pages_fetched": 0}
             mock_sched.run = AsyncMock()
             mock_sched_cls.return_value = mock_sched
