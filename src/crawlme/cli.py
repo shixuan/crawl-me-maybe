@@ -16,8 +16,9 @@ import sys
 from pathlib import Path
 
 from crawlme.config import Settings
+from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.schemas import URL, CrawlGoal, CrawlTask
+from crawlme.schemas import CrawlGoal, CrawlTask
 
 
 def main() -> None:
@@ -93,14 +94,15 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     scheduler = CrawlScheduler(settings=cfg)
     await scheduler._storage.start()
 
-    # Push seed URLs into the frontier.
+    # Push seed URLs into the frontier via canonicalizer.
+    canonicalizer = Canonicalizer()
     items = []
     for url_str in seeds:
-        url = URL(raw=url_str, canonical=url_str, url_key=url_str)
+        url = canonicalizer.canonicalize(url_str, url_str)
         from crawlme.schemas import FrontierItem
 
         items.append(
-            FrontierItem(url=url, url_key=url_str, priority=1.0, score_source="seed", reg_domain=url.reg_domain)
+            FrontierItem(url=url, url_key=url.url_key, priority=1.0, score_source="seed", reg_domain=url.reg_domain)
         )
     if items:
         await scheduler._frontier.push_batch(items)
