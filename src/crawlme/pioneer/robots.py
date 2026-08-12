@@ -65,7 +65,11 @@ class RobotsPolicy:
         return rp.can_fetch("*", url)
 
     def next_allowed_at(self, domain: str) -> datetime.datetime:
-        return self._next_allowed.get(domain, _utcnow())
+        # Return epoch for unknown domains so the "allowed_at > now" gate
+        # never blocks them.  Returning _utcnow() here would cause a
+        # sub-millisecond race in _try_pop (the caller's `now` can be
+        # slightly before this method's `_utcnow()`).
+        return self._next_allowed.get(domain, _EPOCH)
 
     def record_response(self, domain: str, status: int, crawl_delay: float = 0) -> None:
         if self._ignore:
@@ -95,6 +99,9 @@ def _extract_domain(url: str) -> str:
     from urllib.parse import urlparse
 
     return (urlparse(url).hostname or "").lower()
+
+
+_EPOCH = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
 
 
 def _utcnow() -> datetime.datetime:
