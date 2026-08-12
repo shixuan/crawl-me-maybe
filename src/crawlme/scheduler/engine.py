@@ -273,10 +273,25 @@ class CrawlScheduler:
                 global_budget=self._counters.max_pages,
             )
             if item is None:
-                if self._buffer.is_empty and self._counters.in_flight == 0:
-                    logger.info("fetch_pump.exhausted frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
+                if self._buffer.is_empty:
+                    if self._counters.in_flight == 0:
+                        logger.info(
+                            "fetch_pump.exhausted frontier=%d buffer=%d",
+                            self._frontier.size,
+                            self._buffer.size,
+                        )
+                        await self._buffer.wake()
+                        break
+                    # Buffer is empty but in_flight > 0: tasks may produce
+                    # new candidates.  Wake the rank pump in case it is
+                    # blocked on wait_until so it can observe state changes.
                     await self._buffer.wake()
-                    break
+                elif self._frontier.size == 0 and self._counters.in_flight == 0:
+                    # Buffer has items but nothing is fetching: the rank
+                    # pump may be asleep on a stale predicate (frontier was
+                    # non-empty when it last checked).  Wake it.
+                    logger.debug("fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
+                    await self._buffer.wake()
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -413,8 +428,15 @@ class CrawlScheduler:
     async def _rank_pump(self) -> None:
         ranked_total = 0
         while self._state == "RUNNING":
+            logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
             await self._buffer.wait_until(
                 lambda: self._buffer.ready(self._frontier.size == 0) or self._state != "RUNNING"
+            )
+            logger.debug(
+                "rank_pump.woke frontier=%d buffer=%d state=%s",
+                self._frontier.size,
+                self._buffer.size,
+                self._state,
             )
             if self._state != "RUNNING":
                 break
