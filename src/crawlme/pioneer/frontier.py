@@ -57,7 +57,9 @@ import datetime
 import heapq
 import logging
 from collections.abc import Callable
+from typing import Any, Protocol
 
+from crawlme.pioneer.prefilter import PreFilterContext
 from crawlme.schemas import FrontierItem, FrontierItemStatus, FrontierSnapshot
 
 logger = logging.getLogger(__name__)
@@ -77,7 +79,30 @@ def _next_seq() -> int:
     return _SEQ
 
 
-class Frontier:
+class Frontier(Protocol):
+    """Contract for the priority-queue URL frontier."""
+
+    @property
+    def size(self) -> int: ...
+
+    async def push_batch(self, items: list[FrontierItem]) -> None: ...
+
+    async def pop_next(
+        self,
+        now: datetime.datetime | None = None,
+        next_allowed: Callable[[str], datetime.datetime] | None = None,
+        global_budget: int | None = None,
+    ) -> FrontierItem | None: ...
+
+    async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None: ...
+
+    def snapshot(self, task_id: str = "") -> FrontierSnapshot: ...
+    def restore(self, snap: FrontierSnapshot) -> None: ...
+
+    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
+
+
+class PriorityFrontier:
     def __init__(
         self,
         domain_budget: int = 50,
@@ -226,6 +251,21 @@ class Frontier:
 
     def contains(self, url_key: str) -> bool:
         return url_key in self._visited or url_key in self._items
+
+    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext:
+        """Return a PreFilterContext populated from Frontier's internal state.
+
+        The caller can pass *allow_fetch* and *allowed_domains* as keyword
+        overrides — those fields are owned by the scheduler (RobotsPolicy /
+        CLI) and are not stored in the Frontier.
+        """
+        kwargs: dict[str, Any] = {
+            "visited": self._visited.copy(),
+            "frontier_keys": set(self._items.keys()),
+            "domain_counters": dict(self._domain_counters),
+        }
+        kwargs.update(overrides)
+        return PreFilterContext(**kwargs)
 
     @property
     def size(self) -> int:

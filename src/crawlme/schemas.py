@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import uuid
 from typing import Any, Literal
@@ -194,3 +195,20 @@ class FrontierSnapshot(BaseModel):
     counters: dict[str, Any] = Field(default_factory=dict[str, Any])
     feedback_agg: dict[str, Any] = Field(default_factory=dict[str, Any])
     created_at: datetime.datetime = Field(default_factory=_utcnow)
+
+
+@dataclasses.dataclass
+class CrawlCounters:
+    """Mutable counters shared between the scheduler and stop-condition checks."""
+
+    max_pages: int = 0
+    max_tokens: int = 0
+    max_duration_sec: int = 0
+    min_relevant_hits: int = 3
+    relevance_threshold: float = 0.7
+    pages_fetched: int = 0
+    tokens_used: int = 0
+    started_at: float = 0.0
+    in_flight: int = 0
+    relevance_window: list[bool] = dataclasses.field(default_factory=list)
+    fatal_error: str = ""

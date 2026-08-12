@@ -26,16 +26,17 @@ from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.links import extract_links
 from crawlme.logging import setup_logging
-from crawlme.pioneer.buffer import CandidateBuffer
+from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
-from crawlme.pioneer.ranker import HybridRanker
+from crawlme.pioneer.prefilter import PreFilter
+from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.stop_conds import check_stop
 from crawlme.schemas import (
     URL,
     Candidate,
+    CrawlCounters,
     CrawlGoal,
     CrawlTask,
     FrontierItem,
@@ -57,41 +58,43 @@ def _utcnow() -> datetime.datetime:
 
 
 class CrawlScheduler:
+    """Orchestrator that wires all V0.1 modules together.
+
+    Accepts only interfaces (Protocols or simple concrete classes).
+    Call ``create_scheduler(settings)`` from ``crawlme.scheduler.factory``
+    to construct a fully-wired instance with default implementations.
+    """
+
     def __init__(
         self,
-        settings: Settings | None = None,
-        storage: Storage | None = None,
-        frontier: Frontier | None = None,
-        fetcher: Fetcher | None = None,
-        extractor: Extractor | None = None,
-        robots: RobotsPolicy | None = None,
-        prefilter: PreFilter | None = None,
-        buffer: CandidateBuffer | None = None,
-        ranker: HybridRanker | None = None,
-        canonicalizer: Canonicalizer | None = None,
+        *,
+        settings: Settings,
+        storage: Storage,
+        frontier: Frontier,
+        fetcher: Fetcher,
+        extractor: Extractor,
+        robots: RobotsPolicy,
+        prefilter: PreFilter,
+        buffer: Buffer,
+        ranker: Ranker,
+        canonicalizer: Canonicalizer,
     ) -> None:
-        cfg = settings or Settings()
-        self._cfg = cfg
-        self._storage = storage or Storage.create(cfg.result_dir)
-        self._frontier = frontier or Frontier(domain_budget=cfg.default_domain_budget)
-        self._fetcher = fetcher or Fetcher(
-            user_agents=list(cfg.user_agents),
-            connect_timeout=cfg.fetch_timeout_connect,
-            read_timeout=cfg.fetch_timeout_read,
-            max_retries=cfg.fetch_max_retries,
-        )
-        self._extractor = extractor or Extractor()
-        self._robots = robots or RobotsPolicy(ignore=cfg.ignore_robots)
-        self._prefilter = prefilter or PreFilter()
-        self._buffer = buffer or CandidateBuffer(capacity=cfg.candidate_buffer_size)
-        self._ranker = ranker or HybridRanker()
-        self._canonicalizer = canonicalizer or Canonicalizer()
+        self._cfg = settings
+        self._storage = storage
+        self._frontier = frontier
+        self._fetcher = fetcher
+        self._extractor = extractor
+        self._robots = robots
+        self._prefilter = prefilter
+        self._buffer = buffer
+        self._ranker = ranker
+        self._canonicalizer = canonicalizer
 
-        self._fetch_sem = asyncio.Semaphore(cfg.fetch_concurrency)
-        self._llm_sem = asyncio.Semaphore(cfg.llm_concurrency)
+        self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
+        self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
 
         self._state: str = "CREATED"
-        self._counters: dict[str, Any] = {}
+        self._counters: CrawlCounters = CrawlCounters()
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
@@ -114,10 +117,7 @@ class CrawlScheduler:
         protocol, scope) — we intentionally skip robots/extension/url-pattern/
         depth/domain-budget since these are user-provided entry points.
         """
-        ctx = PreFilterContext(
-            visited=self._frontier._visited,
-            frontier_keys=set(self._frontier._items.keys()),
-            domain_counters=self._frontier._domain_counters,
+        ctx = self._frontier.get_prefilter_context(
             allow_fetch=lambda url: True,  # seeds bypass robots
             allowed_domains=allowed_domains,
         )
@@ -168,19 +168,14 @@ class CrawlScheduler:
         self._events = EventEmitter(self._storage, task.task_id)
         self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
 
-        self._counters = {
-            "max_pages": goal.max_pages,
-            "max_tokens": goal.max_tokens,
-            "max_duration_sec": goal.max_duration_sec,
-            "min_relevant_hits": goal.min_relevant_hits,
-            "relevance_threshold": goal.relevance_threshold,
-            "pages_fetched": 0,
-            "tokens_used": 0,
-            "started_at": time.monotonic(),
-            "in_flight": 0,
-            "relevance_window": [],
-            "fatal_error": "",
-        }
+        self._counters = CrawlCounters(
+            max_pages=goal.max_pages,
+            max_tokens=goal.max_tokens,
+            max_duration_sec=goal.max_duration_sec,
+            min_relevant_hits=goal.min_relevant_hits,
+            relevance_threshold=goal.relevance_threshold,
+            started_at=time.monotonic(),
+        )
 
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
@@ -194,21 +189,21 @@ class CrawlScheduler:
         logger.info(
             "task.done task_id=%s pages=%d reason=%s",
             task.task_id,
-            self._counters.get("pages_fetched", 0),
+            self._counters.pages_fetched,
             reason,
         )
         if self._events:
             self._events.emit(
                 EventType.STOPPED,
-                {"reason": reason, "pages_fetched": self._counters.get("pages_fetched", 0)},
+                {"reason": reason, "pages_fetched": self._counters.pages_fetched},
             )
         await self._storage.close()
 
     async def pause(self) -> None:
-        logger.info("pause.requested inflight=%d", self._counters.get("in_flight", 0))
+        logger.info("pause.requested inflight=%d", self._counters.in_flight)
         self._state = "PAUSING"
         # Wait for in-flight fetches to finish.
-        while self._counters.get("in_flight", 0) > 0:
+        while self._counters.in_flight > 0:
             await asyncio.sleep(0.1)
         self._state = "PAUSED"
         if self._task:
@@ -235,7 +230,7 @@ class CrawlScheduler:
             self._task.state = "RUNNING"
         if self._events:
             self._events.emit(EventType.TASK_RESUMED)
-        self._counters["started_at"] = time.monotonic()
+        self._counters.started_at = time.monotonic()
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
@@ -264,10 +259,10 @@ class CrawlScheduler:
                 logger.info(
                     "stop.triggered reasons=%s pages=%d frontier=%d buffer=%d inflight=%d",
                     codes,
-                    self._counters.get("pages_fetched", 0),
+                    self._counters.pages_fetched,
                     self._frontier.size,
                     self._buffer.size,
-                    self._counters.get("in_flight", 0),
+                    self._counters.in_flight,
                 )
                 await self._buffer.wake()
                 break
@@ -275,17 +270,17 @@ class CrawlScheduler:
             item = await self._frontier.pop_next(
                 now=_utcnow(),
                 next_allowed=None if self._cfg.ignore_robots else self._robots.next_allowed_at,
-                global_budget=self._counters.get("max_pages"),
+                global_budget=self._counters.max_pages,
             )
             if item is None:
-                if self._buffer.is_empty and self._counters.get("in_flight", 0) == 0:
+                if self._buffer.is_empty and self._counters.in_flight == 0:
                     logger.info("fetch_pump.exhausted frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
                     await self._buffer.wake()
                     break
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
-            self._counters["in_flight"] = self._counters.get("in_flight", 0) + 1
+            self._counters.in_flight = self._counters.in_flight + 1
             asyncio.create_task(self._handle_fetch(item))  # noqa: RUF006 — errors handled inside
 
         self._state = "STOPPING"
@@ -321,9 +316,9 @@ class CrawlScheduler:
                 except asyncio.TimeoutError:
                     logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                     await self._frontier.record_outcome(item, "SKIPPED")
-                    self._counters["pages_fetched"] = self._counters.get("pages_fetched", 0) + 1
+                    self._counters.pages_fetched = self._counters.pages_fetched + 1
                     return
-                self._storage.save_page(_page_to_json(page))
+                self._storage.save_page(page)
                 if self._events:
                     self._events.emit(
                         EventType.FETCH_COMPLETED,
@@ -349,10 +344,7 @@ class CrawlScheduler:
                     "title": page.title or "",
                     "link_count": len(raw_links),
                 }
-                ctx = PreFilterContext(
-                    visited=self._frontier._visited,
-                    frontier_keys=set(self._frontier._items.keys()),
-                    domain_counters=self._frontier._domain_counters,
+                ctx = self._frontier.get_prefilter_context(
                     allow_fetch=lambda url: self._robots.allow_fetch(url),
                 )
                 n_allowed = 0
@@ -374,23 +366,7 @@ class CrawlScheduler:
                         c.status = "BUFFERED"
                         await self._buffer.add([c])
                         n_allowed += 1
-                        # Persist BUFFERED candidates for audit trail.
-                        self._storage.save_candidate(
-                            {
-                                "candidate_id": c.candidate_id,
-                                "url_key": c.url.url_key,
-                                "url_json": c.url.model_dump(),
-                                "anchor": c.anchor,
-                                "snippet": c.snippet,
-                                "parent_heading": c.parent_heading,
-                                "position": c.position,
-                                "source_page_id": c.source_page_id,
-                                "source_url_key": c.source_url_key,
-                                "depth": c.depth,
-                                "status": c.status,
-                                "discovered_at": c.discovered_at.isoformat() if c.discovered_at else "",
-                            }
-                        )
+                        self._storage.save_candidate(c)
                     else:
                         c.status = "FILTERED_OUT"
                         n_filtered += 1
@@ -413,8 +389,8 @@ class CrawlScheduler:
 
                 await self._frontier.record_outcome(item, "COMPLETED")
 
-                self._counters["pages_fetched"] = self._counters.get("pages_fetched", 0) + 1
-                n = self._counters["pages_fetched"]
+                self._counters.pages_fetched = self._counters.pages_fetched + 1
+                n = self._counters.pages_fetched
                 logger.info(
                     "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
                     n,
@@ -422,15 +398,15 @@ class CrawlScheduler:
                     page.title,
                     len(raw_links),
                     n_allowed,
-                    (time.monotonic() - self._counters["started_at"]),
+                    (time.monotonic() - self._counters.started_at),
                 )
 
                 # Periodic checkpoint.
-                if self._counters["pages_fetched"] % _CHECKPOINT_INTERVAL == 0:
+                if self._counters.pages_fetched % _CHECKPOINT_INTERVAL == 0:
                     await self._checkpoint()
 
             finally:
-                self._counters["in_flight"] = max(0, self._counters.get("in_flight", 0) - 1)
+                self._counters.in_flight = max(0, self._counters.in_flight - 1)
 
     # -- rank loop --------------------------------------------------------
 
@@ -449,7 +425,7 @@ class CrawlScheduler:
 
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
 
-            history = RankHistorySummary(pages_seen=self._counters.get("pages_fetched", 0))
+            history = RankHistorySummary(pages_seen=self._counters.pages_fetched)
             assert self._goal is not None
             decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
 
@@ -466,19 +442,7 @@ class CrawlScheduler:
 
             items: list[FrontierItem] = []
             for d in decisions:
-                # Persist every decision for audit trail.
-                self._storage.save_rank_decision(
-                    {
-                        "candidate_id": d.candidate_id,
-                        "url_key": d.url_key,
-                        "priority": d.priority,
-                        "dropped": 1 if d.dropped else 0,
-                        "rationale": d.rationale,
-                        "ranker": d.ranker,
-                        "tokens_used": d.tokens_used,
-                        "decided_at": d.decided_at.isoformat(),
-                    }
-                )
+                self._storage.save_rank_decision(d)
                 if d.dropped:
                     continue
                 c = _find_candidate(batch, d.candidate_id)
@@ -503,7 +467,7 @@ class CrawlScheduler:
                 )
 
             # In V0.1, tokens_used is always 0 (no LLM calls).
-            self._counters["tokens_used"] = self._counters.get("tokens_used", 0)
+            # In V0.1, tokens_used is always 0 (no LLM calls).
 
     # -- checkpoint -------------------------------------------------------
 
@@ -522,7 +486,7 @@ class CrawlScheduler:
             }
         )
         if self._events:
-            self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self._counters.get("pages_fetched", 0)})
+            self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self._counters.pages_fetched})
 
     async def _load_latest_snapshot(self) -> FrontierSnapshot | None:
         if self._task is None:
@@ -558,18 +522,3 @@ def _find_candidate(batch: list[Candidate], candidate_id: str) -> Candidate | No
     return None
 
 
-def _page_to_json(page: Any) -> dict[str, Any]:
-    return {
-        "page_id": page.page_id,
-        "url_key": page.url_key,
-        "url_json": page.url.model_dump() if hasattr(page.url, "model_dump") else {},
-        "raw_html_path": page.raw_html_path,
-        "title": page.title,
-        "markdown": page.markdown,
-        "plain_text": page.plain_text,
-        "metadata_json": page.metadata,
-        "text_hash": page.text_hash,
-        "text_len": page.text_len,
-        "extracted_at": page.extracted_at.isoformat() if page.extracted_at else "",
-        "extraction_status": page.extraction_status,
-    }

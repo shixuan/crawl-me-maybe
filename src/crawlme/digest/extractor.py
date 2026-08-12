@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+from typing import Protocol
 
 import trafilatura
 from bs4 import BeautifulSoup
@@ -19,11 +20,17 @@ from bs4 import BeautifulSoup
 from crawlme.schemas import ExtractionStatus, FetchResult, Page
 
 
+class Extractor(Protocol):
+    """Contract for HTML content extraction."""
+
+    def extract(self, fetch_result: FetchResult, raw_html_path: str = "") -> Page: ...
+
+
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class Extractor:
+class TrafExtractor:
     def extract(self, fetch_result: FetchResult, raw_html_path: str = "") -> Page:
         html_bytes = fetch_result.raw
         html_str = _decode(html_bytes)

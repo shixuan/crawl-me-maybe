@@ -8,7 +8,7 @@ import aiosqlite
 import pytest
 
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask, FetchResult, FrontierItem
 
 # ── test HTML pages (simplified, known structure) ────────────────────────
@@ -98,13 +98,13 @@ async def test_fetch_extract_links_pipeline(integration_settings):
     )
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher())
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
     assert task.state == "COMPLETED"
-    assert sched._counters.get("pages_fetched", 0) == 1
+    assert sched._counters.pages_fetched == 1
 
     # Verify DB contents.
     async with aiosqlite.connect(sched._storage.db_path) as db:
@@ -127,7 +127,7 @@ async def test_prefilter_drops_junk(integration_settings):
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher())
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
@@ -152,12 +152,12 @@ async def test_stops_on_budget_pages(integration_settings):
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2, depth_limit=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher())
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
-    pages = sched._counters.get("pages_fetched", 0)
+    pages = sched._counters.pages_fetched
     assert 1 <= pages <= 2 + 1  # budget + possible in-flight
     assert "BUDGET_PAGES" in (task.stopping_reason or "")
 
@@ -169,7 +169,7 @@ async def test_frontier_drained_when_no_more_links(integration_settings):
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=100, depth_limit=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher())
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
@@ -177,7 +177,7 @@ async def test_frontier_drained_when_no_more_links(integration_settings):
     # With our small mock site (3 pages) and depth_limit=1, should drain naturally.
     assert task.state == "COMPLETED"
     # At minimum the seed page was fetched.
-    assert sched._counters.get("pages_fetched", 0) >= 1
+    assert sched._counters.pages_fetched >= 1
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_events_emitted(integration_settings):
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher())
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
@@ -212,7 +212,7 @@ async def test_rank_decisions_persisted(integration_settings):
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg, fetcher=_MockFetcher())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher())
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)

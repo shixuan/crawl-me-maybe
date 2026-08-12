@@ -4,18 +4,18 @@ import time
 
 import pytest
 
-from crawlme.pioneer.buffer import CandidateBuffer
-from crawlme.pioneer.frontier import Frontier
+from crawlme.pioneer.buffer import InMemoryBuffer
+from crawlme.pioneer.frontier import PriorityFrontier
 from crawlme.scheduler.stop_conds import check_stop
-from crawlme.schemas import URL, CrawlTask, FrontierItem
+from crawlme.schemas import URL, CrawlCounters, CrawlTask, FrontierItem
 
 
 def _task(state: str = "RUNNING") -> CrawlTask:
     return CrawlTask(task_id="t1", state=state)  # type: ignore[arg-type]
 
 
-def _frontier(size: int = 0) -> Frontier:
-    f = Frontier()
+def _frontier(size: int = 0) -> PriorityFrontier:
+    f = PriorityFrontier()
     for i in range(size):
         f._items[f"k{i}"] = FrontierItem(
             url=URL(raw=f"https://x.com/{i}", canonical=f"https://x.com/{i}", url_key=f"k{i}"),
@@ -26,12 +26,12 @@ def _frontier(size: int = 0) -> Frontier:
     return f
 
 
-def _buffer() -> CandidateBuffer:
-    return CandidateBuffer()
+def _buffer() -> InMemoryBuffer:
+    return InMemoryBuffer()
 
 
-def _counters(**kw) -> dict:
-    return dict(kw)
+def _counters(**kw) -> CrawlCounters:
+    return CrawlCounters(**kw)
 
 
 # -- budget --------------------------------------------------------------
@@ -126,7 +126,7 @@ def test_goal_satisfied():
         _task(),
         _frontier(),
         _buffer(),
-        _counters(relevant_hits=5, min_relevant_hits=3, avg_relevance=0.85, relevance_threshold=0.7),
+        _counters(relevance_window=[True] * 5, min_relevant_hits=3),
     )
     assert any(r.code == "GOAL_SATISFIED" for r in reasons)
 
@@ -136,7 +136,7 @@ def test_goal_satisfied_not_enough_hits():
         _task(),
         _frontier(),
         _buffer(),
-        _counters(relevant_hits=2, min_relevant_hits=3, avg_relevance=0.85, relevance_threshold=0.7),
+        _counters(relevance_window=[True, True, False], min_relevant_hits=3),
     )
     assert not any(r.code == "GOAL_SATISFIED" for r in reasons)
 
@@ -213,7 +213,6 @@ def test_no_reasons_when_everything_fine():
             max_duration_sec=3600,
             started_at=time.monotonic(),
             in_flight=2,
-            relevant_hits=1,
             min_relevant_hits=3,
             relevance_window=[True, False],
         ),

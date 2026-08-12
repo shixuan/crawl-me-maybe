@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from crawlme.schemas import Candidate, Page, RankDecision
 
 DDL = """
 CREATE TABLE IF NOT EXISTS crawl_goals (
@@ -151,7 +154,28 @@ CREATE TABLE IF NOT EXISTS robots_cache (
 """
 
 
-class Storage:
+class Storage(Protocol):
+    """Contract for persistent state — SQLite today, Postgres tomorrow."""
+
+    @property
+    def db_path(self) -> str: ...
+
+    async def start(self) -> None: ...
+    async def close(self) -> None: ...
+
+    def raw_html_path(self, url_key: str, fetch_id: str) -> str: ...
+    def save_raw_html(self, url_key: str, fetch_id: str, content: bytes) -> str: ...
+
+    def save_page(self, page: Page) -> None: ...
+    def save_candidate(self, candidate: Candidate) -> None: ...
+    def save_rank_decision(self, rd: RankDecision) -> None: ...
+    def save_snapshot(self, snapshot_json: dict[str, Any]) -> None: ...
+    def save_event(self, event_json: dict[str, Any]) -> None: ...
+
+    async def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None: ...
+
+
+class SqliteStorage:
     def __init__(self, db_path: str, raw_dir: str):
         self._db_path = db_path
         self._raw_dir = Path(raw_dir)
@@ -160,7 +184,7 @@ class Storage:
         self._conn: aiosqlite.Connection | None = None
 
     @classmethod
-    def create(cls, base_dir: str | Path) -> Storage:
+    def create(cls, base_dir: str | Path) -> SqliteStorage:
         """Create a Storage with a timestamped subdirectory under *base_dir*.
 
         Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``
@@ -324,25 +348,25 @@ class Storage:
 
     # -- pages --------------------------------------------------------------
 
-    def save_page(self, page_json: dict[str, Any]) -> None:
+    def save_page(self, page: Page) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO pages(page_id, url_key, url_json, raw_html_path, "
             "title, markdown, plain_text, metadata_json, text_hash, text_len, "
             "extracted_at, extraction_status) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                page_json["page_id"],
-                page_json.get("url_key", ""),
-                json.dumps(page_json.get("url_json", {})),
-                page_json.get("raw_html_path", ""),
-                page_json.get("title"),
-                page_json.get("markdown"),
-                page_json.get("plain_text"),
-                json.dumps(page_json.get("metadata_json", {})),
-                page_json.get("text_hash", ""),
-                page_json.get("text_len", 0),
-                page_json.get("extracted_at", ""),
-                page_json.get("extraction_status", "OK"),
+                page.page_id,
+                page.url_key,
+                json.dumps(page.url.model_dump()),
+                page.raw_html_path,
+                page.title,
+                page.markdown,
+                page.plain_text,
+                json.dumps(page.metadata),
+                page.text_hash,
+                page.text_len,
+                page.extracted_at.isoformat() if page.extracted_at else "",
+                page.extraction_status,
             ),
         )
 
@@ -357,25 +381,25 @@ class Storage:
 
     # -- candidates ---------------------------------------------------------
 
-    def save_candidate(self, candidate_json: dict[str, Any]) -> None:
+    def save_candidate(self, candidate: Candidate) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO candidates(candidate_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
             "source_url_key, depth, status, discovered_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                candidate_json["candidate_id"],
-                candidate_json.get("url_key", ""),
-                json.dumps(candidate_json.get("url_json", {})),
-                candidate_json.get("anchor"),
-                candidate_json.get("snippet"),
-                candidate_json.get("parent_heading"),
-                candidate_json.get("position", 0),
-                candidate_json.get("source_page_id"),
-                candidate_json.get("source_url_key"),
-                candidate_json.get("depth", 0),
-                candidate_json.get("status", "INGESTED"),
-                candidate_json.get("discovered_at", ""),
+                candidate.candidate_id,
+                candidate.url.url_key,
+                json.dumps(candidate.url.model_dump()),
+                candidate.anchor,
+                candidate.snippet,
+                candidate.parent_heading,
+                candidate.position,
+                candidate.source_page_id,
+                candidate.source_url_key,
+                candidate.depth,
+                candidate.status,
+                candidate.discovered_at.isoformat() if candidate.discovered_at else "",
             ),
         )
 
@@ -386,20 +410,20 @@ class Storage:
 
     # -- rank_decisions -----------------------------------------------------
 
-    def save_rank_decision(self, rd_json: dict[str, Any]) -> None:
+    def save_rank_decision(self, rd: RankDecision) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO rank_decisions(candidate_id, url_key, priority, "
             "dropped, rationale, ranker, tokens_used, decided_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                rd_json["candidate_id"],
-                rd_json.get("url_key", ""),
-                rd_json.get("priority", 0.0),
-                1 if rd_json.get("dropped") else 0,
-                rd_json.get("rationale"),
-                rd_json.get("ranker", "rule"),
-                rd_json.get("tokens_used", 0),
-                rd_json.get("decided_at", ""),
+                rd.candidate_id,
+                rd.url_key,
+                rd.priority,
+                1 if rd.dropped else 0,
+                rd.rationale,
+                rd.ranker,
+                rd.tokens_used,
+                rd.decided_at.isoformat(),
             ),
         )
 

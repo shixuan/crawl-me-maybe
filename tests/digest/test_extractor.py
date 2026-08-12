@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.digest.extractor import Extractor
+from crawlme.digest.extractor import TrafExtractor
 from crawlme.schemas import URL, FetchResult
 
 SAMPLE_HTML = b"""<!DOCTYPE html>
@@ -26,8 +26,8 @@ def _result(html: bytes = SAMPLE_HTML, status: int = 200) -> FetchResult:
 
 
 @pytest.fixture
-def extractor() -> Extractor:
-    return Extractor()
+def extractor() -> TrafExtractor:
+    return TrafExtractor()
 
 
 def test_extracts_title(extractor, tmp_path):

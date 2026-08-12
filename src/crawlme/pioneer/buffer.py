@@ -23,13 +23,31 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import Protocol
 
 from crawlme.schemas import Candidate
 
 logger = logging.getLogger(__name__)
 
 
-class CandidateBuffer:
+class Buffer(Protocol):
+    """Contract for the in-memory candidate staging area."""
+
+    @property
+    def size(self) -> int: ...
+    @property
+    def is_empty(self) -> bool: ...
+
+    async def add(self, candidates: list[Candidate]) -> None: ...
+    async def drain(self, n: int | None = None) -> list[Candidate]: ...
+
+    def ready(self, frontier_hungry: bool = False) -> bool: ...
+
+    async def wait_until(self, predicate: Callable[[], bool] | None = None) -> None: ...
+    async def wake(self) -> None: ...
+
+
+class InMemoryBuffer:
     def __init__(self, capacity: int = 2000) -> None:
         self._capacity = capacity
         self._candidates: list[Candidate] = []

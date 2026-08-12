@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pytest_httpx import HTTPXMock
 
-from crawlme.digest.fetcher import Fetcher, FetchError
+from crawlme.digest.fetcher import FetchError, HttpFetcher
 from crawlme.schemas import URL, FrontierItem
 
 
@@ -15,8 +15,8 @@ def _item(url_str: str = "https://example.com/page") -> FrontierItem:
 
 
 @pytest.fixture
-def fetcher() -> Fetcher:
-    return Fetcher(max_retries=2)
+def fetcher() -> HttpFetcher:
+    return HttpFetcher(max_retries=2)
 
 
 @pytest.mark.asyncio

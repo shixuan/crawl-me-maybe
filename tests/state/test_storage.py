@@ -4,7 +4,12 @@ import asyncio
 
 import pytest
 
-from crawlme.state.storage import Storage
+from crawlme.schemas import URL, Candidate, Page, RankDecision
+from crawlme.state.storage import SqliteStorage
+
+
+def _url(url_key: str = "abc") -> URL:
+    return URL(raw="https://x.com", canonical="https://x.com", url_key=url_key, reg_domain="example.com")
 
 
 def _run(coro):
@@ -18,7 +23,7 @@ def storage(tmp_path):
     db = tmp_path / "test.db"
     raw = tmp_path / "raw"
     raw.mkdir()
-    s = Storage(str(db), str(raw))
+    s = SqliteStorage(str(db), str(raw))
     loop.run_until_complete(s.start())
     yield s
     loop.run_until_complete(s.close())
@@ -97,15 +102,9 @@ def test_save_and_get_url(storage):
 
 
 def test_save_and_get_page(storage):
+    url = _url("abc")
     storage.save_page(
-        {
-            "page_id": "p1",
-            "url_key": "abc",
-            "url_json": {"raw": "x"},
-            "raw_html_path": "",
-            "title": "Test Page",
-            "extracted_at": "2026-01-01T00:00:00Z",
-        }
+        Page(page_id="p1", url_key="abc", url=url, title="Test Page")
     )
     _run(storage._write_queue.join())
     p = _run(storage.get_page("p1"))
@@ -114,15 +113,10 @@ def test_save_and_get_page(storage):
 
 
 def test_get_pages_by_url_key(storage):
+    url = _url("abc")
     for i in range(3):
         storage.save_page(
-            {
-                "page_id": f"p{i}",
-                "url_key": "abc",
-                "url_json": {},
-                "title": f"Page {i}",
-                "extracted_at": f"2026-01-0{i + 1}T00:00:00Z",
-            }
+            Page(page_id=f"p{i}", url_key="abc", url=url, title=f"Page {i}")
         )
     _run(storage._write_queue.join())
     pages = _run(storage.get_pages_by_url_key("abc"))
@@ -138,14 +132,7 @@ def test_save_raw_html(storage):
 
 def test_save_and_get_candidate(storage):
     storage.save_candidate(
-        {
-            "candidate_id": "c1",
-            "url_key": "abc",
-            "url_json": {},
-            "depth": 2,
-            "status": "BUFFERED",
-            "discovered_at": "2026-01-01T00:00:00Z",
-        }
+        Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED")
     )
     _run(storage._write_queue.join())
     c = _run(storage.get_candidate("c1"))
@@ -155,13 +142,7 @@ def test_save_and_get_candidate(storage):
 
 def test_save_and_get_rank_decision(storage):
     storage.save_rank_decision(
-        {
-            "candidate_id": "c1",
-            "url_key": "abc",
-            "priority": 0.8,
-            "ranker": "llm",
-            "decided_at": "2026-01-01T00:00:00Z",
-        }
+        RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm")
     )
     _run(storage._write_queue.join())
     rd = _run(storage.get_rank_decision("c1"))
@@ -173,12 +154,7 @@ def test_save_and_get_rank_decision(storage):
 def test_get_rank_decisions_by_url_key(storage):
     for i in range(2):
         storage.save_rank_decision(
-            {
-                "candidate_id": f"c{i}",
-                "url_key": "abc",
-                "priority": 0.5 + i * 0.1,
-                "decided_at": f"2026-01-0{i + 1}T00:00:00Z",
-            }
+            RankDecision(candidate_id=f"c{i}", url_key="abc", priority=0.5 + i * 0.1)
         )
     _run(storage._write_queue.join())
     rds = _run(storage.get_rank_decisions_by_url_key("abc"))

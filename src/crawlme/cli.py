@@ -18,10 +18,11 @@ from pathlib import Path
 
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
+from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         allowed_domains = source.allowed_domains
 
     task = CrawlTask(goal_id=goal.goal_id)
-    scheduler = CrawlScheduler(settings=cfg)
+    scheduler = create_scheduler(cfg)
 
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
@@ -136,11 +137,11 @@ async def _cmd_run(args: argparse.Namespace) -> None:
             "state=%s reason=%s pages=%d",
             task.state,
             task.stopping_reason or "none",
-            scheduler._counters.get("pages_fetched", 0),
+            scheduler._counters.pages_fetched,
         )
 
 
-def _build_source(args: argparse.Namespace) -> ManualSource | FileSource | RssSource:
+def _build_source(args: argparse.Namespace) -> UrlSource:
     """Create a URL source from CLI arguments."""
     if args.source == "file" and args.source_path:
         return FileSource(args.source_path)

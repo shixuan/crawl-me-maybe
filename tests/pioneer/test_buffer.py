@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from crawlme.pioneer.buffer import CandidateBuffer
+from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.schemas import URL, Candidate
 
 
@@ -23,8 +23,8 @@ def _batch(n: int) -> list[Candidate]:
 
 
 @pytest.fixture
-def buf() -> CandidateBuffer:
-    return CandidateBuffer(capacity=10)
+def buf() -> InMemoryBuffer:
+    return InMemoryBuffer(capacity=10)
 
 
 # -- add ----------------------------------------------------------------
@@ -45,7 +45,7 @@ async def test_dedup_skips_seen_url_key(buf):
 
 @pytest.mark.asyncio
 async def test_eviction_when_full(buf):
-    small = CandidateBuffer(capacity=2)
+    small = InMemoryBuffer(capacity=2)
     # Add 2 good candidates (shallow depth, early position).
     await small.add([_candidate("k1", depth=0, position=1), _candidate("k2", depth=0, position=2)])
     assert small.size == 2
@@ -57,7 +57,7 @@ async def test_eviction_when_full(buf):
 
 @pytest.mark.asyncio
 async def test_eviction_keeps_better_quality(buf):
-    small = CandidateBuffer(capacity=2)
+    small = InMemoryBuffer(capacity=2)
     await small.add([_candidate("deep", depth=5, position=50)])
     await small.add([_candidate("good", depth=0, position=1)])
     # Buffer full; add another good candidate — should evict "deep".
@@ -108,7 +108,7 @@ async def test_drain_preserves_seen(buf):
 
 @pytest.mark.asyncio
 async def test_ready_when_size_reaches_100(buf):
-    big = CandidateBuffer(capacity=200)
+    big = InMemoryBuffer(capacity=200)
     await big.add([_candidate(f"k{i}") for i in range(100)])
     assert big.ready()
 
@@ -131,7 +131,7 @@ async def test_ready_when_frontier_hungry(buf):
 
 @pytest.mark.asyncio
 async def test_wait_until_wakes_on_add():
-    buf = CandidateBuffer(capacity=200)
+    buf = InMemoryBuffer(capacity=200)
 
     async def delayed_add():
         await asyncio.sleep(0.05)

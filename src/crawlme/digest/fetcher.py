@@ -46,6 +46,7 @@ import datetime
 import logging
 import random
 import time
+from typing import Protocol
 from urllib.parse import urljoin
 
 import httpx
@@ -66,7 +67,13 @@ class FetchError(Exception):
     pass
 
 
-class Fetcher:
+class Fetcher(Protocol):
+    """Contract for HTTP fetch workers."""
+
+    async def fetch(self, item: FrontierItem) -> FetchResult: ...
+
+
+class HttpFetcher:
     def __init__(
         self,
         user_agents: list[str] | None = None,
