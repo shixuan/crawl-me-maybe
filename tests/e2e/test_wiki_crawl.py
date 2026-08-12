@@ -18,7 +18,7 @@ import pytest
 
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask, FrontierItem
 
 pytestmark = pytest.mark.e2e
@@ -51,7 +51,7 @@ async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
     goal = CrawlGoal(prompt=_PROMPT, max_pages=_MAX_PAGES)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg)
+    sched = create_scheduler(cfg)
 
     # Push seed into frontier.
     canon = Canonicalizer()
@@ -83,7 +83,7 @@ async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
     # ── assertions ──────────────────────────────────────────────────
 
     counters = sched._counters
-    pages_fetched = counters.get("pages_fetched", 0)
+    pages_fetched = counters.pages_fetched
 
     print(f"\nElapsed: {elapsed:.1f}s")
     print(f"Pages fetched: {pages_fetched}")
@@ -153,7 +153,7 @@ async def test_wiki_rust_small_budget_stops_early(e2e_settings):
     goal = CrawlGoal(prompt=_PROMPT, max_pages=2)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg)
+    sched = create_scheduler(cfg)
 
     canon = Canonicalizer()
     url = canon.canonicalize(_SEED, _SEED)
@@ -172,7 +172,7 @@ async def test_wiki_rust_small_budget_stops_early(e2e_settings):
     except asyncio.TimeoutError:
         pass
 
-    pages_fetched = sched._counters.get("pages_fetched", 0)
+    pages_fetched = sched._counters.pages_fetched
     print(f"Pages fetched: {pages_fetched}, Stop: {task.stopping_reason}")
 
     # Budget stop may fire while a fetch is in-flight; that page still completes.
@@ -226,7 +226,7 @@ async def test_wiki_rust_draining_multi_seed(e2e_settings):
     goal = CrawlGoal(prompt=_PROMPT, max_pages=0, depth_limit=_DRAINING_DEPTH)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = CrawlScheduler(settings=cfg)
+    sched = create_scheduler(cfg)
 
     # Push all seeds.
     canon = Canonicalizer()
@@ -257,7 +257,7 @@ async def test_wiki_rust_draining_multi_seed(e2e_settings):
 
     elapsed = time.monotonic() - t0
     counters = sched._counters
-    pages_fetched = counters.get("pages_fetched", 0)
+    pages_fetched = counters.pages_fetched
 
     print(f"\nElapsed: {elapsed:.1f}s")
     print(f"Pages fetched: {pages_fetched}")
