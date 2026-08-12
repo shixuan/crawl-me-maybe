@@ -103,9 +103,7 @@ def test_save_and_get_url(storage):
 
 def test_save_and_get_page(storage):
     url = _url("abc")
-    storage.save_page(
-        Page(page_id="p1", url_key="abc", url=url, title="Test Page")
-    )
+    storage.save_page(Page(page_id="p1", url_key="abc", url=url, title="Test Page"))
     _run(storage._write_queue.join())
     p = _run(storage.get_page("p1"))
     assert p is not None
@@ -115,9 +113,7 @@ def test_save_and_get_page(storage):
 def test_get_pages_by_url_key(storage):
     url = _url("abc")
     for i in range(3):
-        storage.save_page(
-            Page(page_id=f"p{i}", url_key="abc", url=url, title=f"Page {i}")
-        )
+        storage.save_page(Page(page_id=f"p{i}", url_key="abc", url=url, title=f"Page {i}"))
     _run(storage._write_queue.join())
     pages = _run(storage.get_pages_by_url_key("abc"))
     assert len(pages) == 3
@@ -131,9 +127,7 @@ def test_save_raw_html(storage):
 
 
 def test_save_and_get_candidate(storage):
-    storage.save_candidate(
-        Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED")
-    )
+    storage.save_candidate(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
     _run(storage._write_queue.join())
     c = _run(storage.get_candidate("c1"))
     assert c is not None
@@ -141,9 +135,7 @@ def test_save_and_get_candidate(storage):
 
 
 def test_save_and_get_rank_decision(storage):
-    storage.save_rank_decision(
-        RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm")
-    )
+    storage.save_rank_decision(RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm"))
     _run(storage._write_queue.join())
     rd = _run(storage.get_rank_decision("c1"))
     assert rd is not None
@@ -153,9 +145,7 @@ def test_save_and_get_rank_decision(storage):
 
 def test_get_rank_decisions_by_url_key(storage):
     for i in range(2):
-        storage.save_rank_decision(
-            RankDecision(candidate_id=f"c{i}", url_key="abc", priority=0.5 + i * 0.1)
-        )
+        storage.save_rank_decision(RankDecision(candidate_id=f"c{i}", url_key="abc", priority=0.5 + i * 0.1))
     _run(storage._write_queue.join())
     rds = _run(storage.get_rank_decisions_by_url_key("abc"))
     assert len(rds) == 2

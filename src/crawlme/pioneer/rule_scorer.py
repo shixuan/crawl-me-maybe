@@ -1,19 +1,19 @@
-"""Rule-based candidate scoring — cheap heuristic scores without LLM.
+"""Rule-based candidate scoring: cheap heuristic scores without LLM.
 
 Used by HybridRanker as the first-stage filter (see docs/ranking.md).
-Computes a weighted-average rule_score ∈ [0, 1] per candidate.  Does NOT
-rank or drop — the caller (HybridRanker) handles ordering and thresholding.
+Computes a weighted-average rule_score in [0, 1] per candidate.  Does NOT
+rank or drop: the caller (HybridRanker) handles ordering and thresholding.
 
-Formula:  rule_score = Σ (weight_i * factor_i) / Σ weight_i
+Formula:  rule_score = sum(weight_i * factor_i) / sum(weight_i)
 
-  1. Anchor text match       (w=0.30)  — Jaccard(anchor words, goal keywords)
-  2. Surrounding text match  (w=0.15)  — Jaccard(snippet words, goal keywords)
-  3. Source page title match (w=0.15)  — Jaccard(title words, goal keywords)
-  4. Domain prior            (w=0.15)  — avg_relevance from cross-task history
-  5. Path depth penalty      (w=0.10)  — 1 / sqrt(depth + 1)
-  6. URL path signal         (w=0.10)  — about/contact/privacy → 0,
-                                         docs/blog/news → 1, default → 0.5
-  7. Position signal         (w=0.05)  — 1 - (position / page_link_count)
+  1. Anchor text match       (w=0.30) : Jaccard(anchor words, goal keywords)
+  2. Surrounding text match  (w=0.15) : Jaccard(snippet words, goal keywords)
+  3. Source page title match (w=0.15) : Jaccard(title words, goal keywords)
+  4. Domain prior            (w=0.15) : avg_relevance from cross-task history
+  5. Path depth penalty      (w=0.10) : 1 / sqrt(depth + 1)
+  6. URL path signal         (w=0.10) : about/contact/privacy -> 0,
+                                         docs/blog/news -> 1, default -> 0.5
+  7. Position signal         (w=0.05) : 1 - (position / page_link_count)
 
 When goal_keywords is missing, factors 1-3 default to 0.5 (neutral).
 Domain prior defaults to 0.5 for unseen domains.
@@ -103,7 +103,7 @@ class RuleScorer:
         return decisions
 
 
-# -- factors -----------------------------------------------------------
+#: factors -----------------------------------------------------------
 
 _F1_W, _F2_W, _F3_W = 0.30, 0.15, 0.15
 _F4_W, _F5_W, _F6_W, _F7_W = 0.15, 0.10, 0.10, 0.05
@@ -164,7 +164,7 @@ def _format_rationale(score: float, factors: dict[str, float]) -> str:
     return " ".join(parts)
 
 
-# -- helpers -----------------------------------------------------------
+#: helpers -----------------------------------------------------------
 
 
 def _words(text: str) -> set[str]:
@@ -180,7 +180,7 @@ def _jaccard(a: set[str], b: list[str], original_text: str = "") -> float:
     at 1.0).
     """
     if not a or not b:
-        return 0.5  # no text or no keywords → no signal, stay neutral
+        return 0.5  # no text or no keywords: no signal, stay neutral
     # Split multi-word keywords for word-level comparison.
     b_words: set[str] = set()
     for kw in b:

@@ -1,4 +1,4 @@
-"""Stop conditions — 8 independent checks, each returning StopReason or None.
+"""Stop conditions: 8 independent checks, each returning StopReason or None.
 
 check_stop() runs them all each iteration and returns every triggered reason.
 The scheduler decides whether to pause (USER_REQUESTED) or terminate (everything
@@ -22,14 +22,17 @@ class StopReason:
     detail: str = ""
 
 
-# -- individual checks ---------------------------------------------------
+#: individual checks ---------------------------------------------------
 
 # All checks share the same signature so _CHECKS is a flat list.
 _CheckFunc = Callable[[CrawlTask, Frontier, Buffer, CrawlCounters], StopReason | None]
 
 
 def _budget_pages(
-    _task: CrawlTask, _frontier: Frontier, _buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     if c.max_pages > 0 and c.pages_fetched >= c.max_pages:
         return StopReason("BUDGET_PAGES", f"fetched {c.pages_fetched}/{c.max_pages} pages")
@@ -37,7 +40,10 @@ def _budget_pages(
 
 
 def _budget_tokens(
-    _task: CrawlTask, _frontier: Frontier, _buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     if c.max_tokens > 0 and c.tokens_used >= c.max_tokens:
         return StopReason("BUDGET_TOKENS", f"used {c.tokens_used}/{c.max_tokens} tokens")
@@ -45,7 +51,10 @@ def _budget_tokens(
 
 
 def _budget_time(
-    _task: CrawlTask, _frontier: Frontier, _buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     if c.max_duration_sec > 0 and c.started_at > 0 and (time.monotonic() - c.started_at) >= c.max_duration_sec:
         return StopReason("BUDGET_TIME", f"ran {c.max_duration_sec}s")
@@ -53,7 +62,10 @@ def _budget_time(
 
 
 def _frontier_drained(
-    _task: CrawlTask, frontier: Frontier, buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    frontier: Frontier,
+    buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     if frontier.size == 0 and buffer.is_empty and c.in_flight == 0:
         return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
@@ -61,7 +73,10 @@ def _frontier_drained(
 
 
 def _goal_satisfied(
-    _task: CrawlTask, _frontier: Frontier, _buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     hits = c.relevance_window.count(True)  # best-effort from window
     if c.min_relevant_hits > 0 and hits >= c.min_relevant_hits:
@@ -70,7 +85,10 @@ def _goal_satisfied(
 
 
 def _diminishing_returns(
-    _task: CrawlTask, _frontier: Frontier, _buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     window = c.relevance_window
     if len(window) >= 20 and sum(window) < 2:
@@ -79,7 +97,10 @@ def _diminishing_returns(
 
 
 def _user_requested(
-    task: CrawlTask, _frontier: Frontier, _buffer: Buffer, _counters: CrawlCounters,
+    task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    _counters: CrawlCounters,
 ) -> StopReason | None:
     if task.state == "STOPPING":
         return StopReason("USER_REQUESTED", "stop requested by user")
@@ -87,14 +108,17 @@ def _user_requested(
 
 
 def _fatal(
-    _task: CrawlTask, _frontier: Frontier, _buffer: Buffer, c: CrawlCounters,
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
 ) -> StopReason | None:
     if c.fatal_error:
         return StopReason("FATAL", c.fatal_error)
     return None
 
 
-# -- main entry ----------------------------------------------------------
+#: main entry ----------------------------------------------------------
 
 _CHECKS: list[_CheckFunc] = [
     _budget_pages,

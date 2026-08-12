@@ -1,4 +1,4 @@
-"""File URL source — reads seeds from a JSON file.
+"""File URL source: reads seeds from a JSON file.
 
 Supports two formats:
   Bare list:    ["https://a.com", "https://b.com"]

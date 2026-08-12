@@ -1,10 +1,10 @@
-"""CrawlScheduler — the orchestrator that wires all V0.1 modules together.
+"""CrawlScheduler: the orchestrator that wires all v0.1 modules together.
 
 Drives two concurrent asyncio tasks (fetch_pump + rank_pump), runs stop-condition
 checks each iteration, handles pause / resume / stop, and saves periodic
 checkpoints for crash recovery.
 
-V0.1 path (no LLM):
+v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
   - FeedbackStore is empty (v0.2)
   - tokens_used always 0
@@ -58,7 +58,7 @@ def _utcnow() -> datetime.datetime:
 
 
 class CrawlScheduler:
-    """Orchestrator that wires all V0.1 modules together.
+    """Orchestrator that wires all v0.1 modules together.
 
     Accepts only interfaces (Protocols or simple concrete classes).
     Call ``create_scheduler(settings)`` from ``crawlme.scheduler.factory``
@@ -98,12 +98,12 @@ class CrawlScheduler:
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
-        # Maps url_key → {title, link_count} so the ranker can use per-page
+        # Maps url_key -> {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
         self._events: EventEmitter | None = None
 
-    # -- seed ingestion --------------------------------------------------
+    #: seed ingestion --------------------------------------------------
 
     async def ingest_seeds(
         self,
@@ -114,7 +114,7 @@ class CrawlScheduler:
         """Canonicalize, pre-filter, and enqueue seed candidates.
 
         Seeds only go through a subset of PreFilter rules (dedup, blacklist,
-        protocol, scope) — we intentionally skip robots/extension/url-pattern/
+        protocol, scope): we intentionally skip robots/extension/url-pattern/
         depth/domain-budget since these are user-provided entry points.
         """
         ctx = self._frontier.get_prefilter_context(
@@ -147,7 +147,7 @@ class CrawlScheduler:
         logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
         return n_ingested
 
-    # -- public API -------------------------------------------------------
+    #: public API -------------------------------------------------------
 
     async def run(self, goal: CrawlGoal, task: CrawlTask) -> None:
         self._goal = goal
@@ -242,7 +242,7 @@ class CrawlScheduler:
         if self._task:
             self._task.state = "STOPPING"
 
-    # -- fetch loop -------------------------------------------------------
+    #: fetch loop -------------------------------------------------------
 
     async def _fetch_pump(self) -> None:
         while self._state == "RUNNING":
@@ -281,7 +281,7 @@ class CrawlScheduler:
                 continue
 
             self._counters.in_flight = self._counters.in_flight + 1
-            asyncio.create_task(self._handle_fetch(item))  # noqa: RUF006 — errors handled inside
+            asyncio.create_task(self._handle_fetch(item))  # noqa: RUF006
 
         self._state = "STOPPING"
 
@@ -304,7 +304,7 @@ class CrawlScheduler:
                     await self._frontier.record_outcome(item, "FAILED")
                     return
 
-                # Extract content — offload to thread pool with a timeout.
+                # Extract content: offload to thread pool with a timeout.
                 raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
                 logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
@@ -329,7 +329,7 @@ class CrawlScheduler:
                         {"url_key": page.url_key, "title": page.title, "status": page.extraction_status},
                     )
 
-                # Extract links → Candidates → PreFilter → Buffer.
+                # Extract links -> Candidates -> PreFilter -> Buffer.
                 raw_links = await asyncio.to_thread(extract_links, page)
                 logger.debug(
                     "extracted url_key=%s title=%r links=%d status=%s",
@@ -370,7 +370,7 @@ class CrawlScheduler:
                     else:
                         c.status = "FILTERED_OUT"
                         n_filtered += 1
-                    # Progress pulse — large pages take a while to persist.
+                    # Progress pulse: large pages take a while to persist.
                     total = n_allowed + n_filtered
                     if total % 500 == 0:
                         logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(raw_links))
@@ -408,7 +408,7 @@ class CrawlScheduler:
             finally:
                 self._counters.in_flight = max(0, self._counters.in_flight - 1)
 
-    # -- rank loop --------------------------------------------------------
+    #: rank loop --------------------------------------------------------
 
     async def _rank_pump(self) -> None:
         ranked_total = 0
@@ -466,10 +466,10 @@ class CrawlScheduler:
                     {"count": len(items), "dropped": n_dropped},
                 )
 
-            # In V0.1, tokens_used is always 0 (no LLM calls).
-            # In V0.1, tokens_used is always 0 (no LLM calls).
+            # In v0.1, tokens_used is always 0 (no LLM calls).
+            # In v0.1, tokens_used is always 0 (no LLM calls).
 
-    # -- checkpoint -------------------------------------------------------
+    #: checkpoint -------------------------------------------------------
 
     async def _checkpoint(self) -> None:
         if self._task is None:
@@ -500,13 +500,13 @@ class CrawlScheduler:
             import json
 
             snap_json = json.loads(snap_json)
-        # JSON serializes set → list; restore to set for FrontierSnapshot.
+        # JSON serializes set -> list; restore to set for FrontierSnapshot.
         if "visited" in snap_json and isinstance(snap_json["visited"], list):
             snap_json["visited"] = set(snap_json["visited"])
         return FrontierSnapshot(**snap_json)
 
 
-# -- helpers -------------------------------------------------------------
+#: helpers -------------------------------------------------------------
 
 
 def _extract_domain(raw_url: str) -> str:
@@ -520,5 +520,3 @@ def _find_candidate(batch: list[Candidate], candidate_id: str) -> Candidate | No
         if c.candidate_id == candidate_id:
             return c
     return None
-
-

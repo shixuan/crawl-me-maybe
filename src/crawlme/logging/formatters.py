@@ -1,4 +1,4 @@
-"""Log formatters — human-readable console and machine-readable JSON."""
+"""Log formatters: human-readable console and machine-readable JSON."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 
 
 class ConsoleFormatter(logging.Formatter):
-    """`timestamp level [name] message` — compact, grep-friendly."""
+    """`timestamp level [name] message`: compact, grep-friendly."""
 
     def __init__(self) -> None:
         super().__init__(

@@ -1,6 +1,6 @@
-"""RSS/Atom URL source — extracts links from feed entries.
+"""RSS/Atom URL source: extracts links from feed entries.
 
-Requires feedparser (optional — raises ImportError if not installed).
+Requires feedparser (optional: raises ImportError if not installed).
 """
 
 from __future__ import annotations

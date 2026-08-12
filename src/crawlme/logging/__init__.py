@@ -1,4 +1,4 @@
-"""Structured logging — configure once from Settings, then use stdlib loggers.
+"""Structured logging: configure once from Settings, then use stdlib loggers.
 
 Usage:
     from crawlme.logging import setup_logging

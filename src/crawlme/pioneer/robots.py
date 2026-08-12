@@ -4,14 +4,14 @@ Well, you definitely don't wanna get banned right?
 
 Three mechanisms work together to avoid overloading target servers:
 
-1. robots.txt cache — fetched once per domain, cached for TTL (default 24h).
+1. robots.txt cache: fetched once per domain, cached for TTL (default 24h).
    `allow_fetch(url)` checks the cached rules before every request.
 
-2. crawl-delay — after a successful fetch, the domain is gated until
+2. crawl-delay: after a successful fetch, the domain is gated until
    `now + crawl_delay`.  The delay is the max of robots.txt Crawl-delay and
    any adaptive backoff.
 
-3. Circuit breaker — if a domain returns 429/503 more than *circuit_threshold*
+3. Circuit breaker: if a domain returns 429/503 more than *circuit_threshold*
    times in a row, it is blocked entirely for *circuit_cooldown* (default 10 min).
    A successful (2xx) response resets the counter.
 

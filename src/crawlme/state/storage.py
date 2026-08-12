@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS robots_cache (
 
 
 class Storage(Protocol):
-    """Contract for persistent state — SQLite today, Postgres tomorrow."""
+    """Contract for persistent state: SQLite today, Postgres tomorrow."""
 
     @property
     def db_path(self) -> str: ...
@@ -227,7 +227,7 @@ class SqliteStorage:
             except asyncio.CancelledError:
                 pass
         if self._conn:
-            # Final commit — flushes any writes since the last batch commit.
+            # Final commit: flushes any writes since the last batch commit.
             await self._conn.commit()
             await self._conn.close()
 
@@ -253,7 +253,7 @@ class SqliteStorage:
         assert self._conn is not None
         return await self._conn.execute(sql, params)
 
-    # -- raw HTML -----------------------------------------------------------
+    #: raw HTML -----------------------------------------------------------
 
     def raw_html_path(self, url_key: str, fetch_id: str) -> str:
         return str(self._raw_dir / url_key / f"{fetch_id}.html")
@@ -264,7 +264,7 @@ class SqliteStorage:
         path.write_bytes(content)
         return str(path)
 
-    # -- crawl_goals --------------------------------------------------------
+    #: crawl_goals --------------------------------------------------------
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -294,7 +294,7 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # -- crawl_tasks --------------------------------------------------------
+    #: crawl_tasks --------------------------------------------------------
 
     def save_task(self, task_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -318,7 +318,7 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # -- urls ---------------------------------------------------------------
+    #: urls ---------------------------------------------------------------
 
     def save_url(self, url_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -346,7 +346,7 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # -- pages --------------------------------------------------------------
+    #: pages --------------------------------------------------------------
 
     def save_page(self, page: Page) -> None:
         self._enqueue_write(
@@ -379,7 +379,7 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM pages WHERE url_key = ? ORDER BY extracted_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    # -- candidates ---------------------------------------------------------
+    #: candidates ---------------------------------------------------------
 
     def save_candidate(self, candidate: Candidate) -> None:
         self._enqueue_write(
@@ -408,7 +408,7 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # -- rank_decisions -----------------------------------------------------
+    #: rank_decisions -----------------------------------------------------
 
     def save_rank_decision(self, rd: RankDecision) -> None:
         self._enqueue_write(
@@ -436,7 +436,7 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM rank_decisions WHERE url_key = ? ORDER BY decided_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    # -- analyses -----------------------------------------------------------
+    #: analyses -----------------------------------------------------------
 
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -466,7 +466,7 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    # -- feedback -----------------------------------------------------------
+    #: feedback -----------------------------------------------------------
 
     def save_feedback(self, fb_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -486,7 +486,7 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # -- frontier_snapshots -------------------------------------------------
+    #: frontier_snapshots -------------------------------------------------
 
     def save_snapshot(self, snapshot_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -505,7 +505,7 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # -- events -------------------------------------------------------------
+    #: events -------------------------------------------------------------
 
     def save_event(self, event_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -525,7 +525,7 @@ class SqliteStorage:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    # -- errors -------------------------------------------------------------
+    #: errors -------------------------------------------------------------
 
     def save_error(self, error_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -550,7 +550,7 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM errors WHERE url_key = ? ORDER BY id", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    # -- robots_cache -------------------------------------------------------
+    #: robots_cache -------------------------------------------------------
 
     def save_robots(self, robots_json: dict[str, Any]) -> None:
         self._enqueue_write(

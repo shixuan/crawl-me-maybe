@@ -1,4 +1,4 @@
-"""URL Source protocol — produces seed Candidates from external inputs."""
+"""URL Source protocol: produces seed Candidates from external inputs."""
 
 from __future__ import annotations
 

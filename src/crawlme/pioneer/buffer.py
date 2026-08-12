@@ -1,16 +1,15 @@
-"""Candidate buffer — in-memory staging area between link extraction and ranking.
+"""Candidate buffer: in-memory staging area between prefilter and ranking.
 
-Links extracted from each page become Candidates and accumulate here.  The
-scheduler calls ready() to decide when to flush; when ready, drain(n) hands
-candidates to the PreFilter → Ranker chain.
+Candidates that pass PreFilter accumulate here.  The scheduler calls ready()
+to decide when to flush; when ready, drain(n) hands candidates to the Ranker.
 
 Key behaviours:
 
-  1. Eviction    — when full, the lowest-quality candidate (by depth +
+  1. Eviction   : when full, the lowest-quality candidate (by depth +
                    position heuristic) is evicted to make room.
-  2. Dedup       — url_key checked against _seen; duplicates silently
+  2. Dedup      : url_key checked against _seen; duplicates silently
                    dropped.  _seen persists across drain().
-  3. Backpressure— add() never blocks; over-full is handled by eviction.
+  3. Backpressure: add() never blocks; over-full is handled by eviction.
                    wait_until() provides asyncio.Condition-based blocking
                    for the rank loop to idle until ready() is true.
 
@@ -55,7 +54,7 @@ class InMemoryBuffer:
         self._cond = asyncio.Condition()
         self._last_added_at: float = 0.0
 
-    # -- write path -------------------------------------------------------
+    #: write path -------------------------------------------------------
 
     async def add(self, candidates: list[Candidate]) -> None:
         """Add a batch of candidates.  Evicts low-quality ones when full."""
@@ -77,7 +76,7 @@ class InMemoryBuffer:
             self._last_added_at = time.monotonic()
             self._cond.notify_all()
 
-    # -- read / drain path ------------------------------------------------
+    #: read / drain path ------------------------------------------------
 
     async def drain(self, n: int | None = None) -> list[Candidate]:
         """Remove and return up to *n* candidates (all if None)."""
@@ -106,11 +105,11 @@ class InMemoryBuffer:
             await self._cond.wait_for(predicate or self.ready)
 
     async def wake(self) -> None:
-        """Notify waiters — used to unblock the rank pump on shutdown."""
+        """Notify waiters: used to unblock the rank pump on shutdown."""
         async with self._cond:
             self._cond.notify_all()
 
-    # -- properties -------------------------------------------------------
+    #: properties -------------------------------------------------------
 
     @property
     def size(self) -> int:
@@ -124,7 +123,7 @@ class InMemoryBuffer:
     def seen_count(self) -> int:
         return len(self._seen)
 
-    # -- internal ---------------------------------------------------------
+    #: internal ---------------------------------------------------------
 
     def _worst_index(self) -> int:
         worst = 0

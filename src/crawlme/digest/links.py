@@ -1,4 +1,4 @@
-"""Link extraction — finds all <a href> in a Page and produces RawLink records.
+"""Link extraction: finds all <a href> in a Page and produces RawLink records.
 
 - anchor: link text, stripped.  None if only contains an image.
 - snippet: parent element text truncated to ~200 chars.

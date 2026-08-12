@@ -2,18 +2,18 @@
 
 The Frontier is the crawler's scheduling hub: it owns the set of URLs waiting
 to be fetched and decides *which one goes next*.  It does NOT call AI and does
-NOT know page content — it only manages state.
+NOT know page content: it only manages state.
 
 Data structures
 ---------------
-_heap    — min-heap keyed on (-priority, seq, url_key).  Python heapq is a
+_heap   : min-heap keyed on (-priority, seq, url_key).  Python heapq is a
            min-heap, so negating priority makes the highest-priority item
            sort first.  seq is a monotonic tie-breaker (earlier push wins).
-_items   — url_key -> FrontierItem for heap-resident items only.  When an
+_items  : url_key -> FrontierItem for heap-resident items only.  When an
            item is gated (moved to pending), it is REMOVED from _items so
            that drain_pending can re-add it cleanly.
-_visited — url_keys of pages already fetched (or permanently failed).
-_pending — items whose next_available_at hasn't arrived yet.  Periodically
+_visited: url_keys of pages already fetched (or permanently failed).
+_pending: items whose next_available_at hasn't arrived yet.  Periodically
            drained back into the heap.
 
 Gating (two levels)
@@ -41,7 +41,7 @@ pop_next retry loop
 _try_pop scans the heap.  If the top item is gated it moves to pending and
 continues scanning.  If the heap runs out, _drain_pending moves cooled-down
 items from pending back into the heap.  If anything was drained, the loop
-retries _try_pop — otherwise pop_next returns None (frontier exhausted).
+retries _try_pop: otherwise pop_next returns None (frontier exhausted).
 
 Snapshot / restore
 ------------------
@@ -256,7 +256,7 @@ class PriorityFrontier:
         """Return a PreFilterContext populated from Frontier's internal state.
 
         The caller can pass *allow_fetch* and *allowed_domains* as keyword
-        overrides — those fields are owned by the scheduler (RobotsPolicy /
+        overrides: those fields are owned by the scheduler (RobotsPolicy /
         CLI) and are not stored in the Frontier.
         """
         kwargs: dict[str, Any] = {

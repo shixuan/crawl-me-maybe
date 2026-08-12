@@ -16,7 +16,7 @@ Responses are classified into three buckets:
 
     Permanent (fatal)
         4xx client errors (except 429).  These raise FetchError immediately
-        without retrying — the page doesn't exist, we're forbidden, etc.
+        without retrying: the page doesn't exist, we're forbidden, etc.
 
     Success (2xx, 3xx)
         Returned normally.  3xx redirects are followed manually (not via
@@ -133,7 +133,7 @@ class HttpFetcher:
                 redirects.append(final_url_obj)
                 response = await client.get(final_url_str)
 
-            # 429: rate-limited — wait Retry-After seconds, then retry.
+            # 429: rate-limited: wait Retry-After seconds, then retry.
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After", "5")
                 try:
@@ -143,12 +143,12 @@ class HttpFetcher:
                 await asyncio.sleep(delay)
                 raise _TransientError("429 Too Many Requests")
 
-            # 5xx: transient server error — retry.
+            # 5xx: transient server error: retry.
             if response.status_code >= 500:
                 logger.warning("fetch.5xx url=%s status=%d", item.url.raw, response.status_code)
                 raise _TransientError(f"Server error {response.status_code}")
 
-            # 4xx (non-429): permanent — do not retry.
+            # 4xx (non-429): permanent: do not retry.
             if 400 <= response.status_code < 500:
                 logger.warning("fetch.4xx url=%s status=%d", item.url.raw, response.status_code)
                 raise FetchError(f"Permanent HTTP error: {response.status_code}")

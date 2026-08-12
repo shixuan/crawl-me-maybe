@@ -1,4 +1,4 @@
-"""Manual URL source — parses comma-separated --seeds argument."""
+"""Manual URL source: parses comma-separated --seeds argument."""
 
 from __future__ import annotations
 

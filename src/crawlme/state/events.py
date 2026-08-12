@@ -1,4 +1,4 @@
-"""Event emitter — append-only audit trail for the crawl state machine.
+"""Event emitter: append-only audit trail for the crawl state machine.
 
 Every significant state transition gets recorded in the events table
 (append-only, seq-ordered).  Events are the foundation for:
@@ -7,7 +7,7 @@ Every significant state transition gets recorded in the events table
   - replay / debugging
 
 Event types cover the full state machine referenced in arch.md:
-  TASK_STARTED → URL_DISCOVERED → CANDIDATE_BUFFERED → ... → STOPPED
+  TASK_STARTED -> URL_DISCOVERED -> CANDIDATE_BUFFERED -> ... -> STOPPED
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-# -- event type constants ------------------------------------------------
+#: event type constants ------------------------------------------------
 
 
 class EventType:
@@ -44,7 +44,7 @@ class EventType:
     STOPPED = "STOPPED"
 
 
-# -- emitter ------------------------------------------------------------
+#: emitter ------------------------------------------------------------
 
 
 class EventEmitter:

@@ -1,4 +1,4 @@
-"""Scheduler factory — the single place where concrete implementations are chosen.
+"""Scheduler factory: the single place where concrete implementations are chosen.
 
 Every concrete import lives here.  Engine itself depends only on Protocols.
 """

@@ -1,4 +1,4 @@
-"""CLI entry point — argparse + print, no third-party framework.
+"""CLI entry point: argparse + print, no third-party framework.
 
 Commands:
   crawl run "<prompt>" [--max-pages N] [--seeds URL,...]
@@ -33,7 +33,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="crawl", description="LLM-driven goal-directed crawler")
     sub = parser.add_subparsers(dest="command")
 
-    # -- run -------------------------------------------------------------
+    #: run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
     run_p.add_argument("--max-pages", type=int, help="Page budget limit (0 = unlimited)")
@@ -46,22 +46,22 @@ def main() -> None:
     run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
 
-    # -- pause / resume / stop -------------------------------------------
+    #: pause / resume / stop -------------------------------------------
     for cmd in ("pause", "resume", "stop"):
         p = sub.add_parser(cmd, help=f"{cmd.capitalize()} a running task")
         p.add_argument("task_id", help="Task ID")
 
-    # -- status ----------------------------------------------------------
+    #: status ----------------------------------------------------------
     status_p = sub.add_parser("status", help="Show task progress")
     status_p.add_argument("task_id", help="Task ID")
 
-    # -- results ---------------------------------------------------------
+    #: results ---------------------------------------------------------
     results_p = sub.add_parser("results", help="Export task results")
     results_p.add_argument("task_id", help="Task ID")
     results_p.add_argument("--export", choices=["json", "csv"], help="Export format")
 
-    # -- replay (V0.2 stub) ----------------------------------------------
-    replay_p = sub.add_parser("replay", help="Re-analyze a completed task (V0.2)")
+    #: replay (v0.2 stub) ----------------------------------------------
+    replay_p = sub.add_parser("replay", help="Re-analyze a completed task (v0.2)")
     replay_p.add_argument("task_id", help="Task ID")
     replay_p.add_argument("--prompt", help="New analysis prompt")
 
@@ -79,13 +79,13 @@ async def _dispatch(args: argparse.Namespace) -> None:
     if cmd == "run":
         await _cmd_run(args)
     elif cmd in ("pause", "resume", "stop"):
-        print(f"{cmd}: task state management requires a running daemon (V0.2)")
+        print(f"{cmd}: task state management requires a running daemon (v0.2)")
     elif cmd == "status":
-        print(f"status: reading task {args.task_id} (stub — V0.2)")
+        print(f"status: reading task {args.task_id} (stub: v0.2)")
     elif cmd == "results":
-        print(f"results: exporting task {args.task_id} (stub — V0.2)")
+        print(f"results: exporting task {args.task_id} (stub: v0.2)")
     elif cmd == "replay":
-        print(f"replay: re-analyzing task {args.task_id} (stub — V0.2)")
+        print(f"replay: re-analyzing task {args.task_id} (stub: v0.2)")
 
 
 async def _cmd_run(args: argparse.Namespace) -> None:
@@ -130,7 +130,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     try:
         await scheduler.run(goal, task)
     except KeyboardInterrupt:
-        logger.info("interrupted — saving checkpoint")
+        logger.info("interrupted: saving checkpoint")
         await scheduler.pause()
     finally:
         logger.info(

@@ -1,4 +1,4 @@
-# Integration Test Results
+# How to read?
 
 Each run creates a timestamped directory: `results/YYYYMMDD_HHMMSS/`
 

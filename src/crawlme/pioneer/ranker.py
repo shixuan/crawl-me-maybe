@@ -1,8 +1,23 @@
 """Ranker protocol + HybridRanker.
 
-M1: HybridRanker wraps RuleScorer with a ≥0.35 threshold.  No LLM.
-M2: LLMRanker added as the second stage; RuleScorer narrows the field,
-     LLMRanker does fine-grained ranking on the top 30.
+The Ranker is responsible for scoring candidates and deciding which ones
+deserve a place in the Frontier.  It does NOT mutate candidates: it returns
+immutable RankDecision records.
+
+HybridRanker implements a pluggable multi-stage scoring pipeline:
+
+  v0.1  RuleScorer only (7-factor heuristic, zero LLM cost).
+        Candidates scoring below _RULE_THRESHOLD are dropped; survivors are
+        returned sorted by priority descending.
+
+  v0.2  Two-stage: RuleScorer pre-filters with a relaxed threshold (0.25),
+        then LLMScorer fine-ranks the top 30 in a single batched LLM call.
+        LLM failures fall back to RuleScorer scores.
+
+  v0.3  Three-stage: EmbeddingRanker inserted between RuleScorer and
+        LLMScorer for semantic similarity scoring at zero LLM cost.
+
+See docs/ranking.md for the full funnel design and factor weight rationale.
 """
 
 from __future__ import annotations
@@ -16,7 +31,9 @@ from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySumma
 
 logger = logging.getLogger(__name__)
 
-# Threshold from ranking.md §第1层: rule_score ≥ 0.35 advances to LLM.
+# Candidates with rule_score below this threshold are dropped.
+# v0.1: 0.35 (conservative: RuleScorer is the final decision maker).
+# v0.2: 0.25 (relaxed: LLMScorer can correct RuleScorer's mistakes).
 _RULE_THRESHOLD = 0.35
 
 _WORD_RE = re.compile(r"\w+")
@@ -25,8 +42,10 @@ _WORD_RE = re.compile(r"\w+")
 class Ranker(Protocol):
     """Protocol for pluggable ranking strategies.
 
-    page_contexts maps source_url_key → {title, link_count} so the
-    scorer can use per-page signals (title match, position bias).
+    Implementations receive a batch of candidates, the crawl goal, a
+    summary of what has been seen so far, and optional per-page context
+    so they can incorporate source-page signals (title match, position
+    bias) into the scoring decision.
     """
 
     async def rank_batch(
@@ -39,13 +58,22 @@ class Ranker(Protocol):
 
 
 class HybridRanker:
-    """Two-stage ranker.
+    """Pluggable multi-stage scoring pipeline.
 
-    v0.1 path (no LLM):
-      1. Candidates are grouped by source page url_key
-      2. RuleScorer scores each group with its source page's title + link count
-      3. Candidates with rule_score < 0.35 are dropped
-      4. Survivors are returned sorted by priority descending
+    v0.1 (current):
+      RuleScorer only.  Candidates are grouped by source page so each group
+      is scored with the correct source-page title and link count.  Those
+      scoring below _RULE_THRESHOLD are marked dropped; the rest are returned
+      sorted by priority descending.
+
+    v0.2 (planned):
+      Two-stage: RuleScorer pre-filters (relaxed 0.25 threshold), then
+      LLMScorer fine-ranks the top 30 candidates in a single batched call.
+      LLM failures gracefully fall back to RuleScorer scores.
+
+    v0.3 (planned):
+      Three-stage: EmbeddingRanker inserted between RuleScorer and LLMScorer
+      for zero-LLM semantic similarity scoring.
     """
 
     def __init__(self, scorer: RuleScorer | None = None) -> None:
@@ -102,9 +130,11 @@ def _extract_keywords(prompt: str) -> list[str]:
 def _build_domain_prior(history: RankHistorySummary) -> dict[str, float]:
     """Extract domain prior scores from history hub domains.
 
-    hub_domains is list[str] in M1 — just domain names with no scores yet.
-    Assign a moderate boost (0.75) so they get a lift over unseen domains
-    (0.5), but not a free pass.  M2 will add per-domain avg_relevance from
-    the feedback table.
+    v0.1: hub_domains is a plain list of domain names with no per-domain
+    scores yet.  Each hub domain gets a moderate boost (0.75) over unseen
+    domains (0.5), but not a free pass.
+
+    v0.2: FeedbackStore will provide per-domain avg_relevance from the
+    feedback table, giving this factor real statistical weight.
     """
     return {d: 0.75 for d in history.hub_domains if d}

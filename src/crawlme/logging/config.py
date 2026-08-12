@@ -1,4 +1,4 @@
-"""Setup function — wires the root logger from Settings."""
+"""Setup function: wires the root logger from Settings."""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ _OFF = logging.CRITICAL + 10
 def setup_logging(settings: Settings, *, force: bool = False) -> None:
     """Configure the root logger from *settings*.
 
-    Idempotent — only configures once unless *force* is True.
+    Idempotent: only configures once unless *force* is True.
 
     log_level values: DEBUG, INFO, WARNING, ERROR, CRITICAL, OFF.
-    OFF disables all output — no handler is added.
+    OFF disables all output: no handler is added.
     """
     root = logging.getLogger()
     if root.handlers and not force:

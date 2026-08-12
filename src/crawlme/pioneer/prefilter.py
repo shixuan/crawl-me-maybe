@@ -2,7 +2,7 @@
 
 Each rule is an independent callable returning (ALLOW | DROP, reason_str).
 Rules execute in priority order and short-circuit on first DROP.
-Fail-open on rule exceptions — a broken rule never blocks a candidate.
+Fail-open on rule exceptions: a broken rule never blocks a candidate.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ _NEGATIVE_ANCHOR = re.compile(
 )
 
 
-# -- rules ----------------------------------------------------------------
+#: rules ----------------------------------------------------------------
 
 
 def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:

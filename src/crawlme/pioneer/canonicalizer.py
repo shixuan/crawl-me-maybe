@@ -1,4 +1,4 @@
-"""URL canonicalization — normalize equivalent URLs into a single canonical form.
+"""URL canonicalization: normalize equivalent URLs into a single canonical form.
 
 Returns a fully-populated URL object with scheme, host, path, query, domain,
 and reg_domain extracted.  The url_key field is a sha256[:16] fingerprint
@@ -9,10 +9,10 @@ Normalization steps (order matters):
   2. Lowercase scheme + host
   3. Remove default ports (80/443)
   4. Collapse duplicate slashes in path
-  5. Strip tracking parameters (utm_*, fbclid, gclid, etc.)
-  6. Sort remaining query params by key
-  7. Drop fragment
-  8. sha256 fingerprint → url_key
+  5. Strip tracking parameters (utm_*, fbclid, gclid, etc.) and sort
+     remaining query params by key
+  6. Reassemble without fragment
+  7. sha256 fingerprint -> url_key
 
 reg_domain is computed by stripping common subdomains (www, m, api, etc.).
 For multi-part TLDs like .co.uk this heuristic is imperfect; a proper
@@ -97,7 +97,7 @@ class Canonicalizer:
         else:
             netloc = host
 
-        # 4. Collapse runs of slashes (/a//b → /a/b).
+        # 4. Collapse runs of slashes (/a//b -> /a/b).
         path = _DUP_SLASH.sub("/", parts.path or "/")
 
         # 5. Drop tracking params, sort remaining params by key.
@@ -138,8 +138,8 @@ def _extract_reg_domain(host: str) -> str:
 
     Strips known subdomain prefixes and returns the shortest label chain
     that is at least 2 labels long.  Not correct for multi-part TLDs
-    (e.g. example.co.uk → returns co.uk instead of example.co.uk), but
-    good enough for M1 budget enforcement.
+    (e.g. example.co.uk -> returns co.uk instead of example.co.uk), but
+    good enough for v0.1 budget enforcement.
     """
     if not host:
         return ""
