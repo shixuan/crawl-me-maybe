@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from crawlme.schemas import (
+    URL,
     AnalysisResult,
     AnalyzerFeedback,
     Candidate,
@@ -16,7 +17,6 @@ from crawlme.schemas import (
     RankDecision,
     RankHistorySummary,
     RawLink,
-    URL,
 )
 
 
@@ -81,8 +81,11 @@ class TestCandidate:
 
     def test_full(self):
         c = Candidate(
-            url=make_url(), anchor="link", depth=3,
-            source_url_key="src", status="BUFFERED",
+            url=make_url(),
+            anchor="link",
+            depth=3,
+            source_url_key="src",
+            status="BUFFERED",
         )
         assert c.depth == 3
         assert c.status == "BUFFERED"
@@ -100,8 +103,12 @@ class TestFrontierItem:
     def test_full(self):
         u = make_url()
         fi = FrontierItem(
-            url=u, url_key=u.url_key, priority=0.9,
-            score_source="rule", depth=2, seq=42,
+            url=u,
+            url_key=u.url_key,
+            priority=0.9,
+            score_source="rule",
+            depth=2,
+            seq=42,
         )
         assert fi.priority == 0.9
         assert fi.score_source == "rule"
@@ -119,8 +126,12 @@ class TestFetchResult:
     def test_with_data(self):
         u = make_url()
         fr = FetchResult(
-            item_id="i1", url_key=u.url_key, url=u,
-            status_code=200, raw=b"<html>", fetch_duration_ms=150,
+            item_id="i1",
+            url_key=u.url_key,
+            url=u,
+            status_code=200,
+            raw=b"<html>",
+            fetch_duration_ms=150,
         )
         assert fr.status_code == 200
         assert fr.raw == b"<html>"
@@ -137,8 +148,10 @@ class TestPage:
     def test_degraded(self):
         u = make_url()
         p = Page(
-            url_key=u.url_key, url=u,
-            extraction_status="DEGRADED", title="Partial",
+            url_key=u.url_key,
+            url=u,
+            extraction_status="DEGRADED",
+            title="Partial",
         )
         assert p.extraction_status == "DEGRADED"
         assert p.title == "Partial"
@@ -161,8 +174,10 @@ class TestAnalysisResult:
 
     def test_relevant(self):
         ar = AnalysisResult(
-            classification="RELEVANT", relevance_score=0.95,
-            summary="Great find", tags=["AI", "funding"],
+            classification="RELEVANT",
+            relevance_score=0.95,
+            summary="Great find",
+            tags=["AI", "funding"],
         )
         assert ar.classification == "RELEVANT"
         assert ar.summary == "Great find"
@@ -192,7 +207,8 @@ class TestRankHistorySummary:
             goal="AI news",
             relevant_pages=[{"url": "x.com", "title": "X"}],
             hub_domains=["github.com"],
-            pages_seen=10, fetched=5,
+            pages_seen=10,
+            fetched=5,
         )
         assert len(rhs.relevant_pages) == 1
         assert rhs.hub_domains == ["github.com"]
@@ -219,8 +235,11 @@ class TestFrontierSnapshot:
         u = make_url()
         fi = FrontierItem(url=u, url_key=u.url_key, priority=0.5)
         fs = FrontierSnapshot(
-            task_id="t1", heap=[fi], visited={"k1", "k2"},
-            budgets={"example.com": 5}, counters={"fetched": 42},
+            task_id="t1",
+            heap=[fi],
+            visited={"k1", "k2"},
+            budgets={"example.com": 5},
+            counters={"fetched": 42},
         )
         assert len(fs.heap) == 1
         assert fs.heap[0].priority == 0.5

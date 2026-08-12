@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -27,7 +28,7 @@ class CrawlGoal(BaseModel):
     relevance_threshold: float = 0.7
     depth_limit: int = 5
     domain_budget: int = 50
-    extraction_spec: dict | None = None
+    extraction_spec: dict[str, Any] | None = None
     created_at: datetime.datetime = Field(default_factory=_utcnow)
 
 
@@ -51,9 +52,7 @@ class RawLink(BaseModel):
     position: int = 0
 
 
-CandidateStatus = Literal[
-    "INGESTED", "FILTERED_OUT", "BUFFERED", "DROPPED", "ENQUEUED", "FETCHED"
-]
+CandidateStatus = Literal["INGESTED", "FILTERED_OUT", "BUFFERED", "DROPPED", "ENQUEUED", "FETCHED"]
 
 
 class Candidate(BaseModel):
@@ -70,9 +69,7 @@ class Candidate(BaseModel):
     discovered_at: datetime.datetime = Field(default_factory=_utcnow)
 
 
-FrontierItemStatus = Literal[
-    "QUEUED", "IN_FLIGHT", "COMPLETED", "FAILED", "SKIPPED", "DROPPED"
-]
+FrontierItemStatus = Literal["QUEUED", "IN_FLIGHT", "COMPLETED", "FAILED", "SKIPPED", "DROPPED"]
 
 
 class FrontierItem(BaseModel):
@@ -98,7 +95,7 @@ class FetchResult(BaseModel):
     status_code: int = 0
     final_url: URL | None = None
     redirects: list[URL] = Field(default_factory=list)
-    headers: dict = Field(default_factory=dict)
+    headers: dict[str, Any] = Field(default_factory=dict[str, Any])
     content_type: str | None = None
     raw: bytes = b""
     fetch_duration_ms: int = 0
@@ -117,16 +114,14 @@ class Page(BaseModel):
     title: str | None = None
     markdown: str | None = None
     plain_text: str | None = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
     text_hash: str = ""
     text_len: int = 0
     extracted_at: datetime.datetime = Field(default_factory=_utcnow)
     extraction_status: ExtractionStatus = "OK"
 
 
-Classification = Literal[
-    "RELEVANT", "HUB", "AGGREGATOR", "IRRELEVANT", "NAVIGATION", "UNKNOWN"
-]
+Classification = Literal["RELEVANT", "HUB", "AGGREGATOR", "IRRELEVANT", "NAVIGATION", "UNKNOWN"]
 
 
 class AnalyzerFeedback(BaseModel):
@@ -147,7 +142,7 @@ class AnalysisResult(BaseModel):
     classification: Classification = "UNKNOWN"
     relevance_score: float = 0.0
     summary: str | None = None
-    structured_data: dict = Field(default_factory=dict)
+    structured_data: dict[str, Any] = Field(default_factory=dict[str, Any])
     tags: list[str] = Field(default_factory=list)
     feedback: AnalyzerFeedback = Field(default_factory=AnalyzerFeedback)
     model: str = ""
@@ -169,7 +164,7 @@ class RankDecision(BaseModel):
 
 class RankHistorySummary(BaseModel):
     goal: str = ""
-    relevant_pages: list[dict] = Field(default_factory=list)
+    relevant_pages: list[dict[str, Any]] = Field(default_factory=list)
     hub_domains: list[str] = Field(default_factory=list)
     top_topics: list[str] = Field(default_factory=list)
     pages_seen: int = 0
@@ -183,7 +178,7 @@ class CrawlTask(BaseModel):
     task_id: str = Field(default_factory=_new_id)
     goal_id: str = ""
     state: TaskState = "CREATED"
-    counters: dict = Field(default_factory=dict)
+    counters: dict[str, Any] = Field(default_factory=dict[str, Any])
     start_at: datetime.datetime = Field(default_factory=_utcnow)
     end_at: datetime.datetime | None = None
     stopping_reason: str | None = None
@@ -196,7 +191,24 @@ class FrontierSnapshot(BaseModel):
     heap: list[FrontierItem] = Field(default_factory=list)
     pending: list[FrontierItem] = Field(default_factory=list)
     visited: set[str] = Field(default_factory=set)
-    budgets: dict = Field(default_factory=dict)
-    counters: dict = Field(default_factory=dict)
-    feedback_agg: dict = Field(default_factory=dict)
+    budgets: dict[str, Any] = Field(default_factory=dict[str, Any])
+    counters: dict[str, Any] = Field(default_factory=dict[str, Any])
+    feedback_agg: dict[str, Any] = Field(default_factory=dict[str, Any])
     created_at: datetime.datetime = Field(default_factory=_utcnow)
+
+
+@dataclasses.dataclass
+class CrawlCounters:
+    """Mutable counters shared between the scheduler and stop-condition checks."""
+
+    max_pages: int = 0
+    max_tokens: int = 0
+    max_duration_sec: int = 0
+    min_relevant_hits: int = 3
+    relevance_threshold: float = 0.7
+    pages_fetched: int = 0
+    tokens_used: int = 0
+    started_at: float = 0.0
+    in_flight: int = 0
+    relevance_window: list[bool] = dataclasses.field(default_factory=list)
+    fatal_error: str = ""

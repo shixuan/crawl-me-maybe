@@ -22,8 +22,6 @@ def tmp_data_dir() -> Path:
 def test_settings(tmp_data_dir: Path) -> Settings:
     """Settings pointed at a temp directory."""
     return Settings(
-        data_dir=tmp_data_dir,
-        raw_dir=tmp_data_dir / "raw",
-        db_path=tmp_data_dir / "db" / "test.db",
+        result_dir=tmp_data_dir,
         ignore_robots=True,
     )

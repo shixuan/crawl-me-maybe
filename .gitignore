@@ -1,7 +1,3 @@
-data/raw/*
-data/db/*
-!data/raw/.gitkeep
-!data/db/.gitkeep
 .env
 .venv
 __pycache__/
@@ -13,3 +9,5 @@ dist/
 *.egg-info/
 .playwright/
 docs/
+results/*
+!results/README.md
