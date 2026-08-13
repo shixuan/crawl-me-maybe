@@ -16,7 +16,8 @@ Headline numbers so far: embedding keeps **72% of pages on the seed domain vs 30
 | `build_eval_set.py` | Samples 300 candidates from finished run DBs in stratified layers and drafts labels by keyword rules. | Yes: deterministic (seed=42), regenerates the eval set |
 | `review_dump.py` | Prints one line per eval candidate for human spot-checking. | Yes: how you audit labels |
 | `apply_labels.py` | Applies a `[index, relevant]` patch to the eval set. | Yes: how label corrections land |
-| `score_eval.py` | Scores the eval set with the REAL RuleRanker and EmbeddingRanker, prints the metric table. | Yes: the number-maker |
+| `score_eval.py` | Scores the eval set with the REAL RuleRanker and EmbeddingRanker, prints the metric table, per-layer sim distributions, and a floor-survival preview. Dumps raw scores for the offline sweeps. | Yes: the number-maker |
+| `sweep_params.py` | Offline floor/keep/blend sweep on the raw-score dump from score_eval.py. No re-embedding. | Yes: where the E5 knobs get tuned |
 
 One-shot tools that served their purpose and were deleted: `enrich_eval.py` (only 13/300 candidates had fetched pages to attach) and the intermediate dump files.
 

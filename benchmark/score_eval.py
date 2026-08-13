@@ -13,6 +13,11 @@ Metrics (binary relevance):
   recall@k  share of all relevant items found in the top k
             (recall@60 mirrors the EMBEDDING_KEEP gate)
   AP        average precision over the full ranking
+
+Per-layer sim distributions and a coarse floor-survival preview are
+printed, and per-candidate raw scores (sim + rule) are dumped to
+results/eval_raw_scores.json. The E5 floor/keep/blend sweeps consume
+that dump, so they never re-embed the eval set.
 """
 
 from __future__ import annotations
@@ -94,6 +99,43 @@ def compute_metrics(entries: list[dict[str, object]], score_by_id: dict[str, flo
     return out
 
 
+def _percentile(values: list[float], p: float) -> float:
+    """Linear-interpolated percentile of a non-empty list."""
+    s = sorted(values)
+    k = (len(s) - 1) * p / 100.0
+    lo, hi = int(k), min(int(k) + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+
+def _layer_distribution(entries: list[dict[str, object]], scores: dict[str, float]) -> None:
+    """Per-layer sim percentiles. Do the noise and hard layers separate?"""
+    by_layer: dict[str, list[float]] = {}
+    for i, e in enumerate(entries):
+        by_layer.setdefault(str(e["layer"]), []).append(scores.get(f"eval-{i:04d}", 0.0))
+    print(f"\n{'layer':18} {'n':>4} {'p5':>6} {'p25':>6} {'p50':>6} {'p75':>6} {'p90':>6} {'max':>6}")
+    for layer in sorted(by_layer):
+        vals = by_layer[layer]
+        row = " ".join(f"{_percentile(vals, p):6.3f}" for p in (5, 25, 50, 75, 90))
+        print(f"{layer:18} {len(vals):4d} {row} {max(vals):6.3f}")
+
+
+def _floor_preview(entries: list[dict[str, object]], scores: dict[str, float]) -> None:
+    """Fraction of each layer surviving a raw-sim floor, coarse sweep."""
+    layers = sorted({str(e["layer"]) for e in entries})
+    header = " ".join(f"{name:>16}" for name in layers)
+    print(f"\nfloor survival by layer:\n{'floor':>6} {header}")
+    for f in (0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45):
+        hits = {name: 0 for name in layers}
+        totals = {name: 0 for name in layers}
+        for i, e in enumerate(entries):
+            name = str(e["layer"])
+            totals[name] += 1
+            if scores.get(f"eval-{i:04d}", 0.0) >= f:
+                hits[name] += 1
+        row = " ".join(f"{hits[name] / totals[name]:16.3f}" for name in layers)
+        print(f"{f:6.2f} {row}")
+
+
 async def _score_rule(goal: CrawlGoal, candidates: list[Candidate]) -> dict[str, float]:
     ranker = RuleRanker(threshold=0.0)  # no gate: we want scores for everyone
     decisions = await ranker.rank_batch(goal, candidates, RankHistorySummary())
@@ -146,6 +188,27 @@ async def main() -> None:
     print("-" * 34)
     for k in keys:
         print(f"{k:12} {rule_metrics[k]:>10} {emb_metrics[k]:>10}")
+
+    print("\nper-layer sim distribution (embedding):")
+    _layer_distribution(entries, emb_scores)
+    _floor_preview(entries, emb_scores)
+
+    # Raw scores for the offline sweeps. E5 floor/keep/blend runs consume
+    # this dump, so re-scoring never re-embeds the eval set.
+    raw = [
+        {
+            "idx": i,
+            "layer": e["layer"],
+            "relevant": e["relevant"],
+            "sim": round(emb_scores.get(f"eval-{i:04d}", 0.0), 6),
+            "rule": round(rule_scores.get(f"eval-{i:04d}", 0.0), 6),
+        }
+        for i, e in enumerate(entries)
+    ]
+    raw_out = Path("results") / "eval_raw_scores.json"
+    raw_out.parent.mkdir(parents=True, exist_ok=True)
+    raw_out.write_text(json.dumps(raw, indent=2))
+    print(f"\nraw scores written: {raw_out}")
 
     result = {
         "eval_set": str(EVAL_PATH),
