@@ -150,7 +150,7 @@ async def test_domain_prior_from_history(ranker):
 async def test_page_contexts_flow_to_scorer(ranker):
     """source_page_title and page_link_count from page_contexts affect scoring.
 
-    Two identical candidates from different source pages — the one whose
+    Two identical candidates from different source pages. The one whose
     source title matches the goal keywords should score higher.
     """
     goal = _goal("machine learning")
@@ -186,7 +186,7 @@ async def test_page_contexts_grouped_scoring(ranker):
         "src_b": {"title": "Contact Information", "link_count": 5},
     }
     decisions = await ranker.rank_batch(goal, [c1, c2], _history(), page_contexts=page_contexts)
-    # c1 should score higher — title matches "deep learning".
+    # c1 should score higher, since its title matches "deep learning".
     priorities = {d.url_key: d.priority for d in decisions}
     assert priorities.get("a", 0) > priorities.get("b", 0), f"Expected a > b, got {priorities}"
 

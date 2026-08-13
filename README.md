@@ -8,7 +8,7 @@
 >
 > So crawl me, maybe?
 
-A goal-driven crawler. You tell what you are looking for, and it figures out where to go, what to skip, and when to stop — all on its own, within a budget.
+A goal-driven crawler. You tell what you are looking for, and it figures out where to go, what to skip, and when to stop. All on its own, within a budget.
 
 Traditional crawlers try to grab everything. This one tries to grab *the right things*. Big difference.
 
@@ -20,7 +20,7 @@ Traditional crawlers try to grab everything. This one tries to grab *the right t
 pip install -e .
 ```
 
-That's it — nothing else to configure. Then point it at something:
+That's it, nothing else to configure. Then point it at something:
 
 ```bash
 crawl run "recent funding news for AI startups" \
@@ -28,9 +28,9 @@ crawl run "recent funding news for AI startups" \
   --max-pages 200
 ```
 
-It starts from the seeds, discovers links, filters out the noise, scores what's left, and only follows paths that actually look relevant. Stops when the budget runs out or the goal is satisfied — whichever comes first.
+It starts from the seeds, discovers links, filters out the noise, scores what's left, and only follows paths that actually look relevant. Stops when the budget runs out or the goal is satisfied, whichever comes first.
 
-Semantic ranking is on by default (local embedding model). The first run downloads the model weights (~220MB) to a local cache — one time only.
+Semantic ranking is on by default (local embedding model). The first run downloads the model weights (~220MB) to a local cache, one time only.
 
 A few more ways to launch:
 
@@ -61,7 +61,7 @@ Launch a new task.
 | `--seeds` | string | Comma-separated seed URLs |
 | `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
 | `--source-path` | path | File path or RSS feed URL for seeds |
-| `--max-pages` | int | Page budget — 0 means no limit |
+| `--max-pages` | int | Page budget: 0 means no limit |
 | `--max-tokens` | int | Token budget (kicks in at v0.2) |
 | `--max-duration` | int | Time budget, in seconds |
 | `--depth-limit` | int | How deep to go from seeds (default: 5) |
@@ -87,7 +87,7 @@ Tell a running task to wrap it up gracefully.
 
 ### `crawl status <task-id>`
 
-See how a task is doing. (stub — v0.2)
+See how a task is doing. (stub: v0.2)
 
 ### `crawl results <task-id>`
 
@@ -99,7 +99,7 @@ Export what we found.
 
 ### `crawl replay <task-id>`
 
-Re-analyze an already-crawled task with a new prompt. No re-fetching — raw HTML is already on disk. (stub — v0.2)
+Re-analyze an already-crawled task with a new prompt. No re-fetching needed, since raw HTML is already on disk. (stub: v0.2)
 
 | Flag | Type | What it does |
 |------|------|--------------|
@@ -131,15 +131,15 @@ Think of it as a funnel. Each layer filters harder and costs more:
   └─  Pages we already fetched feed back to adjust priorities
 ```
 
-Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores candidates and pushes them into the frontier. They don't wait on each other — just coordinate through the Frontier and Buffer when they need to.
+Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores candidates and pushes them into the frontier. They don't wait on each other; they just coordinate through the Frontier and Buffer when they need to.
 
 ---
 
 ## Current status
 
-**v0.1 is done ✅** — a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter — the whole thing works end to end.
+**v0.1 is done ✅**: a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter. The whole thing works end to end.
 
-**v0.1.1** adds the EmbeddingRanker — semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
+**v0.1.1** adds the EmbeddingRanker for semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
 
 ### What's next
 
@@ -154,10 +154,10 @@ Under the hood, two async loops run side by side: `fetch_pump` downloads pages a
 
 Two entry points, one rule of thumb:
 
-- **`crawl run --help` flags** — per-run choices and things you experiment with (budgets, robots, embedding provider, log verbosity)
-- **`.env` / env vars** — set once and forget (secrets, timeouts, deep-tuning knobs). See [`.env.example`](.env.example) for the full annotated list — every knob has a default, so `.env` is entirely optional.
+- **`crawl run --help` flags**: per-run choices and things you experiment with (budgets, robots, embedding provider, log verbosity)
+- **`.env` / env vars**: set once and forget (secrets, timeouts, deep-tuning knobs). See [`.env.example`](.env.example) for the full annotated list. Every knob has a default, so `.env` is entirely optional.
 
-**Secrets (API keys) are env-only, never flags.** Priority is uniform: `defaults → env vars → CLI flags` — when a flag and an env var target the same knob, the flag wins.
+**Secrets (API keys) are env-only, never flags.** Priority is uniform: `defaults → env vars → CLI flags`. When a flag and an env var target the same knob, the flag wins.
 
 Want the API embedding provider instead of the default local model? The key lives in `.env`, the choice is per run:
 
@@ -176,7 +176,7 @@ crawl run "..." --embedding api --embedding-model jina-embeddings-v3
 
 Nothing groundbreaking, but we stick to them:
 
-- **Each module does one thing.** Fetch downloads. Extractor extracts. Ranker ranks. They don't call each other — CrawlScheduler wires everything together.
+- **Each module does one thing.** Fetch downloads. Extractor extracts. Ranker ranks. They don't call each other. CrawlScheduler wires everything together.
 - **Engine depends on interfaces, not implementations.** `factory.py` is the only place that imports concrete classes. Everything else talks to Protocols.
 - **Swap components by implementing a Protocol.** Want a different ranker? Write one, drop it in. Nothing else changes.
 - **Crash-safe.** Checkpoints save Frontier state. Restore and keep going.
@@ -190,7 +190,7 @@ Nothing groundbreaking, but we stick to them:
 ```bash
 pip install -e .
 
-# Unit + integration (skip e2e — those hit the network)
+# Unit + integration (skip e2e, those hit the network)
 pytest tests/ -q --ignore=tests/e2e
 
 # Keep it clean

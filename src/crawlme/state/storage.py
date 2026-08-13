@@ -594,7 +594,7 @@ class SqliteEmbeddingCache:
     """EmbeddingCache backed by a global SQLite file shared across tasks.
 
     Unlike SqliteStorage (one timestamped DB per crawl run), this cache
-    lives at a fixed path — typically ``results/embedding_cache.db`` —
+    lives at a fixed path (typically ``results/embedding_cache.db``),
     so vectors persist across runs and tasks.  It owns its own
     aiosqlite connection, opened lazily on first use, and commits after
     every put: an ungraceful process exit loses nothing.  Callers that

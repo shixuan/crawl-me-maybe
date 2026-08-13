@@ -1,4 +1,4 @@
-"""Unit tests for CrawlScheduler — mock all I/O, verify control flow."""
+"""Unit tests for CrawlScheduler (mock all I/O, verify control flow)."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ async def test_stops_on_budget_pages():
 
     await sched._fetch_pump()
 
-    # BUDGET_PAGES fires immediately — never reaches pop_next.
+    # BUDGET_PAGES fires immediately, so it never reaches pop_next.
     assert sched._state == "STOPPING"
 
 

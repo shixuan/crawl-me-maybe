@@ -33,7 +33,7 @@ def test_run_prints_prompt(caplog):
             logging.getLogger().setLevel(logging.INFO)
             with caplog.at_level(logging.INFO, logger="crawlme.cli"):
                 # _cmd_run force-reconfigures logging, which would wipe the
-                # caplog handler — stub it out for this test.
+                # caplog handler, so stub it out for this test.
                 with patch("crawlme.cli.setup_logging"):
                     try:
                         main()
@@ -104,7 +104,7 @@ def test_run_flags_override_settings(tmp_path):
 
 
 def test_run_flags_left_off_keep_env_defaults(monkeypatch):
-    """Without flags, defaults apply — embedding is ON (local) out of the box.
+    """Without flags, defaults apply. Embedding is ON (local) out of the box.
 
     Env vars are pinned explicitly: they outrank the developer's .env
     file, so this test is deterministic regardless of local config.

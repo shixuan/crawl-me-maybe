@@ -1,4 +1,4 @@
-"""Tests for crawlme.logging — configuration and formatters."""
+"""Tests for crawlme.logging (configuration and formatters)."""
 
 from __future__ import annotations
 

@@ -330,7 +330,7 @@ def test_local_embedder_missing_package_error(monkeypatch):
 def test_local_embedder_real_encode():
     """Integration: encode returns normalized vectors.
 
-    Skips unless CRAWLME_MODEL_TEST=1 — the default model download
+    Skips unless CRAWLME_MODEL_TEST=1, since the default model download
     (~220MB) doesn't belong in every test-suite run.
     """
     import os
@@ -439,9 +439,7 @@ async def test_embedder_chunks_large_batches():
 
 @pytest.mark.asyncio
 async def test_embedder_single_batch_under_limit():
-    handler, state = _counting_handler(
-        [httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})]
-    )
+    handler, state = _counting_handler([httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})])
     transport = httpx.MockTransport(handler)
     embedder = OpenAICompatibleEmbedder(model="m", api_key="k", max_batch=100, transport=transport)
 

@@ -4,8 +4,8 @@ Run manually (skipped in CI):
 
     pytest tests/e2e/test_wiki_crawl.py -v -s -m e2e
 
-Goal: "projects rewritten in Rust" — find software projects that were
-rewritten from other languages into Rust.
+Goal: find software projects that were rewritten from other languages
+into Rust ("projects rewritten in Rust").
 """
 
 from __future__ import annotations
