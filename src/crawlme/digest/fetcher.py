@@ -9,10 +9,10 @@ Error handling
 Responses are classified into three buckets:
 
     Transient (retryable)
-        5xx server errors, connection timeouts, DNS failures, and 429 rate
-        limits.  Exponential backoff: 2^attempt seconds, capped at 60s.
-        For 429 specifically, the Retry-After header is respected before
-        retrying.
+        5xx server errors, connection timeouts, DNS failures, 429 rate
+        limits, and attempts that exceed the total deadline (below).
+        Exponential backoff: 2^attempt seconds, capped at 60s.  For 429
+        specifically, the Retry-After header is respected before retrying.
 
     Permanent (fatal)
         4xx client errors (except 429).  These raise FetchError immediately
@@ -23,6 +23,13 @@ Responses are classified into three buckets:
         httpx's follow_redirects) so we can record the full redirect chain
         in FetchResult.redirects.
 
+Total deadline
+--------------
+Per-phase timeouts (connect/read) are not enough: a host that trickles a
+few bytes every couple of seconds resets the read timer forever.  Each
+attempt therefore runs under asyncio.wait_for with a hard total deadline
+(default: connect + read + 10s).  Hitting it counts as transient.
+
 _TransientError is an internal signal used in _do_fetch to tell the outer
 fetch() retry loop to back off and try again.  It never escapes the module.
 
@@ -31,7 +38,8 @@ Redirect handling
 httpx's built-in follow_redirects discards the intermediate hops.  We need
 the full chain for canonicalization and link-graph tracking, so we follow
 manually: loop on 3xx, resolve Location relative to the current URL, append
-to redirects, and repeat until we land on a non-3xx response.
+to redirects, and repeat until we land on a non-3xx response.  Chains are
+capped at 10 hops and cycles are detected (permanent FetchError, no retry).
 
 User-Agent rotation
 -------------------
@@ -62,6 +70,9 @@ def _utcnow() -> datetime.datetime:
 
 _DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
 
+# Hard cap on the manual redirect chain; loops are detected separately.
+_MAX_REDIRECTS = 10
+
 
 class FetchError(Exception):
     pass
@@ -80,11 +91,17 @@ class HttpFetcher:
         connect_timeout: float = 10.0,
         read_timeout: float = 30.0,
         max_retries: int = 3,
+        total_timeout: float | None = None,
     ) -> None:
         self._uas = user_agents if user_agents else [_DEFAULT_UA]
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
         self._max_retries = max_retries
+        # Hard deadline per attempt.  Per-phase timeouts (connect/read)
+        # are not enough: a host that trickles a few bytes every few
+        # seconds resets the read timer forever and hangs the fetch.
+        # Default: connect + read + 10s of slack.
+        self._total_timeout = total_timeout if total_timeout is not None else connect_timeout + read_timeout + 10.0
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
         last_err: BaseException | None = None
@@ -92,8 +109,24 @@ class HttpFetcher:
         for attempt in range(1, self._max_retries + 1):
             started = time.monotonic()
             try:
-                result = await self._do_fetch(item, attempt, started)
+                result = await asyncio.wait_for(
+                    self._do_fetch(item, attempt, started),
+                    timeout=self._total_timeout,
+                )
                 return result
+            except asyncio.TimeoutError as e:
+                last_err = e
+                if attempt < self._max_retries:
+                    delay = min(2**attempt, 60)
+                    logger.warning(
+                        "fetch.retry url=%s attempt=%d/%d delay=%.1fs error=total timeout %.0fs",
+                        item.url.raw,
+                        attempt,
+                        self._max_retries,
+                        delay,
+                        self._total_timeout,
+                    )
+                    await asyncio.sleep(delay)
             except _TransientError as e:
                 last_err = e.__cause__ or e
                 if attempt < self._max_retries:
@@ -123,12 +156,18 @@ class HttpFetcher:
             redirects: list[URL] = []
             final_url_str = item.url.raw
             final_url_obj = item.url
+            seen: set[str] = {final_url_str}
 
             while response.status_code in (301, 302, 303, 307, 308):
+                if len(redirects) >= _MAX_REDIRECTS:
+                    raise FetchError(f"too many redirects (>{_MAX_REDIRECTS})")
                 location = response.headers.get("Location", "")
                 if not location:
                     break
                 final_url_str = urljoin(final_url_str, location)
+                if final_url_str in seen:
+                    raise FetchError(f"redirect loop detected at {final_url_str}")
+                seen.add(final_url_str)
                 final_url_obj = URL(raw=final_url_str, canonical=final_url_str, url_key=final_url_str)
                 redirects.append(final_url_obj)
                 response = await client.get(final_url_str)
