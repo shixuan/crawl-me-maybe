@@ -20,6 +20,15 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
 
     Idempotent: only configures once unless *force* is True.
 
+    Calling convention (two deliberate call sites):
+      - CLI: ``_cmd_run`` calls once with force=True AFTER applying
+        flag overrides — the single place where per-run log settings
+        land.  Never call before flags are known, or the flag values
+        will silently not apply (idempotency swallows the second call).
+      - engine.run(): calls again WITHOUT force as a safety net for
+        library users who never went through the CLI; in the CLI flow
+        this call is a no-op.
+
     log_level values: DEBUG, INFO, WARNING, ERROR, CRITICAL, OFF.
     OFF disables all output: no handler is added.
     """

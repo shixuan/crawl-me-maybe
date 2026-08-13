@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    setup_logging(Settings())
+    # No logging setup here: _cmd_run configures once after flags are
+    # applied (force), and engine.run() re-calls defensively for library
+    # users.  Stub commands print, they don't log.
     parser = argparse.ArgumentParser(prog="crawl", description="LLM-driven goal-directed crawler")
     sub = parser.add_subparsers(dest="command")
 
@@ -117,6 +119,10 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         cfg.embedding_model = args.embedding_model
     if args.log_level is not None:
         cfg.log_level = args.log_level
+    # Reconfigure with the final settings: main() already configured once
+    # (env defaults), and setup_logging is idempotent — without force the
+    # --log-level flag would silently never apply.
+    setup_logging(cfg, force=True)
     goal = CrawlGoal(prompt=args.prompt)
     if args.draining:
         if args.max_pages is not None and args.max_pages > 0:

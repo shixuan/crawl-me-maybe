@@ -32,10 +32,13 @@ def test_run_prints_prompt(caplog):
             # Force the root logger to accept INFO so caplog captures it.
             logging.getLogger().setLevel(logging.INFO)
             with caplog.at_level(logging.INFO, logger="crawlme.cli"):
-                try:
-                    main()
-                except SystemExit:
-                    pass
+                # _cmd_run force-reconfigures logging, which would wipe the
+                # caplog handler — stub it out for this test.
+                with patch("crawlme.cli.setup_logging"):
+                    try:
+                        main()
+                    except SystemExit:
+                        pass
 
     assert "test prompt" in caplog.text
 
