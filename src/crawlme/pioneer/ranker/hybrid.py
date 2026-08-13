@@ -32,9 +32,12 @@ from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySumma
 logger = logging.getLogger(__name__)
 
 # Weight of the embedding stage in the blended final priority.
-# Embedding dominates: it is the better relevance signal; the rule
-# score keeps structural signals (depth, domain prior) in play.
-_EMBEDDING_WEIGHT = 0.7
+# Tuned on the E5 sweep (benchmark/sweep_params.py): at keep=60 the
+# 0.8/0.2 blend keeps the same survivor set as pure sim but orders it
+# best (AP 0.994 vs 0.965).  More rule weight (0.6) drops a couple of
+# noise items at the cost of AP; less (0.9+) sinks semantic_hard items
+# to the bottom of the keep window.
+_EMBEDDING_WEIGHT = 0.8
 
 
 class HybridRanker:
