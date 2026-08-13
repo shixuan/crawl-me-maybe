@@ -14,6 +14,7 @@ from crawlme.pioneer.ranker.embedding import (
     _cosine,
     _normalize,
     _text_for,
+    _truncate,
 )
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
 
@@ -113,6 +114,16 @@ def test_text_for_appends_source_title():
 def test_text_for_falls_back_to_url():
     c = _candidate(anchor=None, snippet=None, parent_heading=None, raw="https://x.com/only-hope")
     assert _text_for(c, None) == "https://x.com/only-hope"
+
+
+def test_text_for_truncates_long_texts():
+    long_anchor = "word " * 500  # 2500 chars
+    c = _candidate(anchor=long_anchor, snippet=None, parent_heading=None)
+    assert len(_text_for(c, None)) == 512
+
+
+def test_truncate_short_text_untouched():
+    assert _truncate("hello world") == "hello world"
 
 
 # -- rank_batch --------------------------------------------------------
@@ -233,6 +244,46 @@ async def test_cache_hit_skips_provider():
 
 
 @pytest.mark.asyncio
+async def test_cache_dims_mismatch_treated_as_miss():
+    """Stale cache rows from a different vector space are re-embedded."""
+    embedder = _StubEmbedder({"a": [1.0, 0.0, 0.0]})
+    cache = _DictCache()
+    ranker = EmbeddingRanker(embedder, keep=10, cache=cache)
+
+    c = _candidate("k1", anchor="a", snippet=None, parent_heading=None)
+    goal = _goal()
+    await ranker.rank_batch(goal, [c], _history())  # warm: dims=3 learned, "a" cached
+    embedder.calls.clear()
+
+    # Corrupt the cached entry: 2 dims instead of 3.
+    h = _content_hash("test/stub", "a")
+    cache._store[h] = [1.0, 2.0]
+
+    await ranker.rank_batch(goal, [c], _history())
+    # Mismatched row is rejected and the text re-embedded.
+    assert len(embedder.calls) == 1
+    assert embedder.calls[0] == ["a"]
+    # And the cache is healed with a fresh 3-dim vector.
+    assert len(cache._store[h]) == 3
+
+
+@pytest.mark.asyncio
+async def test_goal_embedding_truncated():
+    """Very long goals are truncated before they reach the provider."""
+    embedder = _StubEmbedder({})
+    ranker = EmbeddingRanker(embedder, keep=10)
+    long_prompt = "x" * 1000
+
+    await ranker.rank_batch(
+        CrawlGoal(prompt=long_prompt),
+        [_candidate("k1", anchor="a", snippet=None, parent_heading=None)],
+        _history(),
+    )
+    # The goal text the provider saw is capped at 512 chars.
+    assert all(len(t) <= 512 for t in embedder.calls[0])
+
+
+@pytest.mark.asyncio
 async def test_cache_partial_hit_embeds_only_misses():
     embedder = _StubEmbedder({"a": [1.0, 0.0], "b": [0.0, 1.0]})
     cache = _DictCache()
@@ -350,3 +401,119 @@ async def test_embedder_raises_on_http_error():
 
     with pytest.raises(httpx.HTTPStatusError):
         await embedder.embed(["x"])
+
+
+def _counting_handler(responses: list[httpx.Response]):
+    """Return a MockTransport handler that replays *responses* in order."""
+    state = {"calls": 0, "inputs": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["calls"] += 1
+        state["inputs"].append(json.loads(request.content)["input"])
+        return responses[min(state["calls"] - 1, len(responses) - 1)]
+
+    return handler, state
+
+
+# -- E3: chunking ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embedder_chunks_large_batches():
+    """Batch larger than max_batch is split into multiple requests."""
+    handler, state = _counting_handler(
+        [
+            httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.0]}, {"index": 1, "embedding": [1.0]}]}),
+            httpx.Response(200, json={"data": [{"index": 0, "embedding": [2.0]}, {"index": 1, "embedding": [3.0]}]}),
+            httpx.Response(200, json={"data": [{"index": 0, "embedding": [4.0]}]}),
+        ]
+    )
+    transport = httpx.MockTransport(handler)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", max_batch=2, transport=transport)
+
+    vecs = await embedder.embed(["a", "b", "c", "d", "e"])
+    # Chunked into [a,b], [c,d], [e] and concatenated in order.
+    assert state["inputs"] == [["a", "b"], ["c", "d"], ["e"]]
+    assert vecs == [[0.0], [1.0], [2.0], [3.0], [4.0]]
+
+
+@pytest.mark.asyncio
+async def test_embedder_single_batch_under_limit():
+    handler, state = _counting_handler(
+        [httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})]
+    )
+    transport = httpx.MockTransport(handler)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", max_batch=100, transport=transport)
+
+    await embedder.embed(["only-one"])
+    assert state["calls"] == 1
+
+
+# -- E3: retries -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embedder_retries_transient_then_succeeds(monkeypatch):
+    import crawlme.pioneer.ranker.embedding as embedding_module
+
+    monkeypatch.setattr(embedding_module, "_EMBED_RETRY_BASE", 0.0)  # no sleeping in tests
+
+    handler, state = _counting_handler(
+        [
+            httpx.Response(500, json={"error": "boom"}),
+            httpx.Response(503, json={"error": "boom"}),
+            httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]}),
+        ]
+    )
+    transport = httpx.MockTransport(handler)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
+
+    vecs = await embedder.embed(["x"])
+    assert vecs == [[1.0]]
+    assert state["calls"] == 3  # 1 initial + 2 retries
+
+
+@pytest.mark.asyncio
+async def test_embedder_retries_429(monkeypatch):
+    import crawlme.pioneer.ranker.embedding as embedding_module
+
+    monkeypatch.setattr(embedding_module, "_EMBED_RETRY_BASE", 0.0)
+
+    handler, state = _counting_handler(
+        [
+            httpx.Response(429, json={"error": "rate limited"}),
+            httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]}),
+        ]
+    )
+    transport = httpx.MockTransport(handler)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
+
+    await embedder.embed(["x"])
+    assert state["calls"] == 2
+
+
+@pytest.mark.asyncio
+async def test_embedder_gives_up_after_retries(monkeypatch):
+    import crawlme.pioneer.ranker.embedding as embedding_module
+
+    monkeypatch.setattr(embedding_module, "_EMBED_RETRY_BASE", 0.0)
+
+    handler, state = _counting_handler([httpx.Response(500, json={"error": "boom"})])
+    transport = httpx.MockTransport(handler)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await embedder.embed(["x"])
+    assert state["calls"] == 3  # initial + 2 retries, then give up
+
+
+@pytest.mark.asyncio
+async def test_embedder_no_retry_on_permanent_4xx():
+    """400 is permanent: fail immediately, no retry."""
+    handler, state = _counting_handler([httpx.Response(400, json={"error": "bad request"})])
+    transport = httpx.MockTransport(handler)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await embedder.embed(["x"])
+    assert state["calls"] == 1

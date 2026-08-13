@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_base_url: str = ""
     embedding_keep: int = 60
+    # Max texts per API request (api provider only); larger batches
+    # are split automatically.  Local inference has no such limit.
+    embedding_batch_size: int = 100
 
     # -: Fetch ---
     fetch_concurrency: int = 6

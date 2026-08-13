@@ -32,6 +32,7 @@ import datetime
 import hashlib
 import logging
 import math
+from collections.abc import Awaitable, Callable
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any, Protocol
@@ -43,6 +44,14 @@ from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySumma
 logger = logging.getLogger(__name__)
 
 _EMBED_TIMEOUT = 30.0
+# Transient failures (timeout, 429, 5xx) get this many retries with
+# exponential backoff before the HybridRanker falls back to rule scores.
+_EMBED_MAX_RETRIES = 2
+_EMBED_RETRY_BASE = 0.5  # seconds; doubled per attempt
+# Safety valve: very long texts (e.g. a verbose goal) are truncated so
+# providers don't hit token limits.  512 chars is a balance between the
+# 128-token window of small local models and keeping most of the signal.
+_MAX_EMBED_CHARS = 512
 
 
 def _utcnow() -> datetime.datetime:
@@ -88,8 +97,13 @@ class FastEmbedEmbedder:
     fastembed ships as a core dependency, so this works out of the box.
     """
 
-    def __init__(self, model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2") -> None:
+    def __init__(
+        self,
+        model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        max_batch: int | None = None,
+    ) -> None:
         self._model = model
+        self._max_batch = max_batch
         self._fm: Any | None = None
 
     @property
@@ -120,9 +134,15 @@ class FastEmbedEmbedder:
         return self._fm
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
         fm = self._load()
-        vecs = await asyncio.to_thread(lambda: list(fm.embed(texts)))
-        return [_normalize(v) for v in vecs]
+
+        async def _run(chunk: list[str]) -> list[list[float]]:
+            vecs = await asyncio.to_thread(lambda: list(fm.embed(chunk)))
+            return [_normalize(v) for v in vecs]
+
+        return await _chunk(texts, self._max_batch, _run)
 
 
 def _normalize(vec: Any) -> list[float]:
@@ -134,12 +154,35 @@ def _normalize(vec: Any) -> list[float]:
     return list(v.tolist())
 
 
+def _truncate(text: str) -> str:
+    return text[:_MAX_EMBED_CHARS]
+
+
+async def _chunk(
+    texts: list[str],
+    max_batch: int | None,
+    fn: Callable[[list[str]], Awaitable[list[list[float]]]],
+) -> list[list[float]]:
+    """Split *texts* into provider-sized batches and concatenate in order."""
+    if max_batch is None or len(texts) <= max_batch:
+        return await fn(texts)
+    out: list[list[float]] = []
+    for i in range(0, len(texts), max_batch):
+        out.extend(await fn(texts[i : i + max_batch]))
+    return out
+
+
 class OpenAICompatibleEmbedder:
     """POST {base_url}/embeddings — OpenAI, Jina, and most other providers.
 
     Defaults to OpenAI's endpoint.  Pass *base_url* to point at another
     OpenAI-compatible provider (e.g. https://api.jina.ai/v1); *api_key*
     is omitted from the headers when empty (local endpoints).
+
+    Batches larger than *max_batch* are split into multiple requests.
+    Transient failures (timeout, connect errors, 429, 5xx) retry
+    _EMBED_MAX_RETRIES times with exponential backoff; permanent 4xx
+    errors raise immediately.
     """
 
     def __init__(
@@ -147,11 +190,13 @@ class OpenAICompatibleEmbedder:
         model: str,
         api_key: str = "",
         base_url: str = "",
+        max_batch: int | None = 100,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self._max_batch = max_batch
         self._transport = transport
 
     @property
@@ -159,6 +204,34 @@ class OpenAICompatibleEmbedder:
         return f"api/{self._model}"
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        last_err: BaseException | None = None
+        for attempt in range(_EMBED_MAX_RETRIES + 1):
+            try:
+                return await _chunk(texts, self._max_batch, self._post_embed)
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_err = e
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status == 429 or status >= 500:
+                    last_err = e
+                else:
+                    raise
+            if attempt < _EMBED_MAX_RETRIES:
+                delay = _EMBED_RETRY_BASE * (2**attempt)
+                logger.warning(
+                    "embed.retry attempt=%d/%d delay=%.1fs error=%s",
+                    attempt + 1,
+                    _EMBED_MAX_RETRIES,
+                    delay,
+                    last_err,
+                )
+                await asyncio.sleep(delay)
+        assert last_err is not None  # loop only ends by exhausting retries
+        raise last_err
+
+    async def _post_embed(self, texts: list[str]) -> list[list[float]]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -193,6 +266,9 @@ class EmbeddingRanker:
         self._keep = keep
         self._cache = cache
         self._goal_cache: dict[str, list[float]] = {}
+        # Vector dimensionality learned from the first provider response;
+        # used to reject cache entries from an incompatible vector space.
+        self._dims: int | None = None
 
     async def rank_batch(
         self,
@@ -242,7 +318,7 @@ class EmbeddingRanker:
         if cached is not None:
             return cached
         text = goal.goal_statement or goal.prompt
-        emb = (await self._embed_texts([text]))[0]
+        emb = (await self._embed_texts([_truncate(text)]))[0]
         self._goal_cache[goal.goal_id] = emb
         return emb
 
@@ -255,10 +331,20 @@ class EmbeddingRanker:
         hashes = [_content_hash(model, t) for t in texts]
         cached = await self._cache.get_vectors(hashes)
 
+        # Reject cache entries whose dimensionality doesn't match the
+        # live provider (stale rows from a different vector space).
+        if self._dims is not None:
+            for h, v in list(cached.items()):
+                if len(v) != self._dims:
+                    logger.warning("embed.cache.dims_mismatch hash=%s cached=%d expected=%d", h, len(v), self._dims)
+                    del cached[h]
+
         miss = [(i, t) for i, t in enumerate(texts) if hashes[i] not in cached]
         new_by_hash: dict[str, list[float]] = {}
         if miss:
             new_vecs = await self._embedder.embed([t for _, t in miss])
+            if new_vecs:
+                self._dims = len(new_vecs[0])
             entries = [(hashes[i], v) for (i, _), v in zip(miss, new_vecs)]
             await self._cache.put_vectors(entries, model)
             new_by_hash = {h: v for h, v in entries}
@@ -273,7 +359,7 @@ def _text_for(c: Candidate, page_contexts: dict[str, dict[str, Any]] | None) -> 
     if page_contexts:
         parts.append(page_contexts.get(c.source_url_key or "", {}).get("title", ""))
     text = " ".join(p for p in parts if p).strip()
-    return text or c.url.raw
+    return _truncate(text) if text else c.url.raw[:_MAX_EMBED_CHARS]
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

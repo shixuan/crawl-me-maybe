@@ -104,6 +104,7 @@ def _build_ranker(settings: Settings) -> HybridRanker:
             model=model,
             api_key=settings.embedding_api_key,
             base_url=settings.embedding_base_url,
+            max_batch=settings.embedding_batch_size,
         )
     return HybridRanker(
         rule=RuleRanker(threshold=0.0),
