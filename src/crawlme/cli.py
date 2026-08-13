@@ -45,6 +45,21 @@ def main() -> None:
     run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
     run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
+    run_p.add_argument(
+        "--embedding",
+        choices=["local", "api", "off"],
+        default=None,
+        help="Semantic ranking provider (default: local; 'off' = rule-only)",
+    )
+    run_p.add_argument("--embedding-model", default=None, help="Model id, overriding the provider default")
+    run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
+    run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
+    run_p.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF"],
+        default=None,
+        help="Log verbosity (overrides env LOG_LEVEL)",
+    )
 
     #: pause / resume / stop -------------------------------------------
     for cmd in ("pause", "resume", "stop"):
@@ -90,8 +105,18 @@ async def _dispatch(args: argparse.Namespace) -> None:
 
 async def _cmd_run(args: argparse.Namespace) -> None:
     cfg = Settings()
+    # Flags override env/defaults (see config.py for the layering).
     if args.result_dir is not None:
         cfg.result_dir = Path(args.result_dir)
+    if args.ignore_robots:
+        cfg.ignore_robots = True
+    if args.embedding is not None:
+        # "off" maps to "" (disabled); otherwise pass the provider through.
+        cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
+    if args.embedding_model is not None:
+        cfg.embedding_model = args.embedding_model
+    if args.log_level is not None:
+        cfg.log_level = args.log_level
     goal = CrawlGoal(prompt=args.prompt)
     if args.draining:
         if args.max_pages is not None and args.max_pages > 0:
@@ -106,6 +131,8 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         goal.max_duration_sec = args.max_duration
     if args.depth_limit is not None:
         goal.depth_limit = args.depth_limit
+    if args.domain_budget is not None:
+        goal.domain_budget = args.domain_budget
 
     source = _build_source(args)
     candidates = await source.discover(goal)
@@ -114,7 +141,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         allowed_domains = source.allowed_domains
 
     task = CrawlTask(goal_id=goal.goal_id)
-    scheduler = create_scheduler(cfg)
+    scheduler = create_scheduler(cfg, goal=goal)
 
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 

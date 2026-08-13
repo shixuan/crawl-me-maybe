@@ -8,25 +8,37 @@ the same thing still score well.
 
     goal embedding     : computed once per task, cached by goal_id
     candidate embedding: anchor + snippet + parent_heading + source
-                         page title, batched into one API call
+                         page title, batched into one provider call
+
+Vectors are persisted through an optional EmbeddingCache keyed by
+content hash (sha256 of model + text).  Vectors from different models
+are never mixed: the model name is part of the hash.
 
 Selection: candidates are ranked by similarity and only the top
 *keep* survive; the rest are marked dropped.  Priority is the raw
 cosine similarity in [0, 1].
 
-Providers: any OpenAI-compatible /embeddings endpoint works (OpenAI,
-Jina, Ollama, self-hosted).  See OpenAICompatibleEmbedder below.
+Providers (both implement Embedder):
+  - FastEmbedEmbedder       : local ONNX model via fastembed, zero API
+                              cost, no torch dependency
+  - OpenAICompatibleEmbedder: any OpenAI-compatible /embeddings
+                              endpoint (OpenAI, Jina, self-hosted)
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
+import hashlib
+import logging
 import math
 from typing import Any, Protocol
 
 import httpx
 
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
+
+logger = logging.getLogger(__name__)
 
 _EMBED_TIMEOUT = 30.0
 
@@ -35,10 +47,82 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _content_hash(model: str, text: str) -> str:
+    """Model-scoped content fingerprint: same text under a different
+    model is a different hash, so vectors are never compared across
+    incompatible models."""
+    return hashlib.sha256(f"{model}\x00{text}".encode()).hexdigest()
+
+
 class Embedder(Protocol):
-    """Contract for embedding providers: batch of texts -> vectors."""
+    """Contract for embedding providers: batch of texts -> vectors.
+
+    *model_name* identifies the model (and thus the vector space);
+    EmbeddingRanker uses it for cache scoping.
+    """
+
+    @property
+    def model_name(self) -> str: ...
 
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+
+class EmbeddingCache(Protocol):
+    """Contract for persistent vector storage."""
+
+    async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]: ...
+
+    async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None: ...
+
+
+class FastEmbedEmbedder:
+    """Local embedding via fastembed (ONNX runtime, no torch).
+
+    The model is loaded lazily on first use: constructing this class
+    imports nothing heavy, and the model weights download (and cache)
+    on the first embed() call.  Inference runs in a worker thread;
+    vectors are L2-normalized so cosine == dot product.
+
+    fastembed ships as a core dependency, so this works out of the box.
+    """
+
+    def __init__(self, model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2") -> None:
+        self._model = model
+        self._fm: Any | None = None
+
+    @property
+    def model_name(self) -> str:
+        return f"local/{self._model}"
+
+    def _load(self) -> Any:
+        if self._fm is None:
+            try:
+                from fastembed import TextEmbedding
+            except ImportError as e:
+                raise RuntimeError(
+                    "local embedding requires the 'fastembed' package, which ships as a "
+                    "core dependency: reinstall with `pip install -e .`"
+                ) from e
+            logger.info(
+                "embed.local.load model=%s (first use downloads the model if not cached)",
+                self._model,
+            )
+            self._fm = TextEmbedding(model_name=self._model)
+        return self._fm
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        fm = self._load()
+        vecs = await asyncio.to_thread(lambda: list(fm.embed(texts)))
+        return [_normalize(v) for v in vecs]
+
+
+def _normalize(vec: Any) -> list[float]:
+    """L2-normalize a numpy vector and convert to a plain list."""
+    v = vec.astype(float)
+    norm = float((v @ v) ** 0.5)
+    if norm > 0:
+        v = v / norm
+    return list(v.tolist())
 
 
 class OpenAICompatibleEmbedder:
@@ -60,6 +144,10 @@ class OpenAICompatibleEmbedder:
         self._api_key = api_key
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self._transport = transport
+
+    @property
+    def model_name(self) -> str:
+        return f"api/{self._model}"
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         headers = {"Content-Type": "application/json"}
@@ -83,13 +171,18 @@ class EmbeddingRanker:
 
     Candidates scoring below the top-*keep* are dropped.  On provider
     failure the exception propagates: HybridRanker catches it and falls
-    back to the rule stage, so a dead embedding API never blocks the
-    pipeline.
+    back to the rule stage, so a dead embedding provider never blocks
+    the pipeline.
+
+    When *cache* is provided, vectors are persisted model-scoped by
+    content hash: repeated texts (same candidates re-ranked, replay,
+    new tasks) skip the provider entirely.
     """
 
-    def __init__(self, embedder: Embedder, keep: int = 60) -> None:
+    def __init__(self, embedder: Embedder, keep: int = 60, cache: EmbeddingCache | None = None) -> None:
         self._embedder = embedder
         self._keep = keep
+        self._cache = cache
         self._goal_cache: dict[str, list[float]] = {}
 
     async def rank_batch(
@@ -104,7 +197,7 @@ class EmbeddingRanker:
 
         goal_emb = await self._goal_embedding(goal)
         texts = [_text_for(c, page_contexts) for c in candidates]
-        embs = await self._embedder.embed(texts)
+        embs = await self._embed_texts(texts)
         if len(embs) != len(candidates):
             raise RuntimeError(f"embedder returned {len(embs)} vectors for {len(candidates)} texts")
 
@@ -130,14 +223,39 @@ class EmbeddingRanker:
         return decisions
 
     async def _goal_embedding(self, goal: CrawlGoal) -> list[float]:
-        """Embed the goal once per task and cache by goal_id."""
+        """Embed the goal once per task; in-memory cache by goal_id.
+
+        The persistent cache (if wired) also applies: the goal text is
+        hashed like any other text, so a re-run of the same goal under
+        the same model reuses the stored vector.
+        """
         cached = self._goal_cache.get(goal.goal_id)
         if cached is not None:
             return cached
         text = goal.goal_statement or goal.prompt
-        emb = (await self._embedder.embed([text]))[0]
+        emb = (await self._embed_texts([text]))[0]
         self._goal_cache[goal.goal_id] = emb
         return emb
+
+    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Cache-aside embedding: hit the cache first, embed only misses."""
+        if self._cache is None:
+            return await self._embedder.embed(texts)
+
+        model = self._embedder.model_name
+        hashes = [_content_hash(model, t) for t in texts]
+        cached = await self._cache.get_vectors(hashes)
+
+        miss = [(i, t) for i, t in enumerate(texts) if hashes[i] not in cached]
+        new_by_hash: dict[str, list[float]] = {}
+        if miss:
+            new_vecs = await self._embedder.embed([t for _, t in miss])
+            entries = [(hashes[i], v) for (i, _), v in zip(miss, new_vecs)]
+            await self._cache.put_vectors(entries, model)
+            new_by_hash = {h: v for h, v in entries}
+        if hashes:
+            logger.debug("embed.cache total=%d hit=%d miss=%d", len(texts), len(texts) - len(miss), len(miss))
+        return [cached[h] if h in cached else new_by_hash[h] for h in hashes]
 
 
 def _text_for(c: Candidate, page_contexts: dict[str, dict[str, Any]] | None) -> str:

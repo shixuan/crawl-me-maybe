@@ -276,13 +276,21 @@ async def test_embedding_failure_falls_back_to_rule():
 def test_blend_combines_priorities():
     prev = [
         RankDecision(
-            candidate_id="k1", url_key="k1", priority=0.5, dropped=False, ranker="rule",
+            candidate_id="k1",
+            url_key="k1",
+            priority=0.5,
+            dropped=False,
+            ranker="rule",
             rationale="rule_score=0.5000",
         )
     ]
     new = [
         RankDecision(
-            candidate_id="k1", url_key="k1", priority=0.9, dropped=False, ranker="embedding",
+            candidate_id="k1",
+            url_key="k1",
+            priority=0.9,
+            dropped=False,
+            ranker="embedding",
             rationale="emb_sim=0.9000",
         )
     ]

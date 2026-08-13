@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import httpx
 import pytest
 
-from crawlme.pioneer.ranker.embedding import EmbeddingRanker, OpenAICompatibleEmbedder, _cosine, _text_for
+from crawlme.pioneer.ranker.embedding import (
+    EmbeddingRanker,
+    FastEmbedEmbedder,
+    OpenAICompatibleEmbedder,
+    _content_hash,
+    _cosine,
+    _normalize,
+    _text_for,
+)
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
 
 
@@ -38,9 +47,29 @@ class _StubEmbedder:
         self._goal_vector = goal_vector or [1.0, 0.0, 0.0]
         self.calls: list[list[str]] = []
 
+    @property
+    def model_name(self) -> str:
+        return "test/stub"
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [self._vectors.get(t, self._goal_vector) for t in texts]
+
+
+class _DictCache:
+    """In-memory EmbeddingCache for testing cache-aside behavior."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, list[float]] = {}
+        self.puts: list[list[tuple[str, list[float]]]] = []
+
+    async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]:
+        return {h: self._store[h] for h in content_hashes if h in self._store}
+
+    async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None:
+        self.puts.append(list(entries))
+        for h, v in entries:
+            self._store[h] = v
 
 
 class _FailingEmbedder:
@@ -150,6 +179,130 @@ async def test_mismatched_vector_count_raises():
     ranker = EmbeddingRanker(_ShortEmbedder())
     with pytest.raises(RuntimeError):
         await ranker.rank_batch(_goal(), [_candidate("k1"), _candidate("k2")], _history())
+
+
+# -- content hash ------------------------------------------------------
+
+
+def test_content_hash_model_scoped():
+    """Same text under different models must hash differently."""
+    assert _content_hash("model-a", "hello") != _content_hash("model-b", "hello")
+    assert _content_hash("model-a", "hello") == _content_hash("model-a", "hello")
+
+
+# -- cache-aside -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_embeds_all_and_writes_back():
+    embedder = _StubEmbedder({"a": [1.0, 0.0], "b": [0.0, 1.0]})
+    cache = _DictCache()
+    ranker = EmbeddingRanker(embedder, keep=10, cache=cache)
+
+    await ranker.rank_batch(
+        _goal(),
+        [
+            _candidate("k1", anchor="a", snippet=None, parent_heading=None),
+            _candidate("k2", anchor="b", snippet=None, parent_heading=None),
+        ],
+        _history(),
+    )
+    # Goal embedded in one call, both candidates in another.
+    assert len(embedder.calls) == 2
+    assert embedder.calls[0] == [_goal().prompt]
+    assert set(embedder.calls[1]) == {"a", "b"}
+    # Cache got goal + candidate vectors written back.
+    assert len(cache.puts) == 2
+    assert sum(len(p) for p in cache.puts) == 3
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_skips_provider():
+    embedder = _StubEmbedder({"a": [1.0, 0.0]})
+    cache = _DictCache()
+    ranker = EmbeddingRanker(embedder, keep=10, cache=cache)
+
+    c = _candidate("k1", anchor="a", snippet=None, parent_heading=None)
+    goal = _goal()
+    await ranker.rank_batch(goal, [c], _history())
+    embedder.calls.clear()  # reset after warm-up
+
+    await ranker.rank_batch(goal, [c], _history())
+    # Goal is in the in-memory cache; candidate vector comes from _DictCache.
+    assert embedder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cache_partial_hit_embeds_only_misses():
+    embedder = _StubEmbedder({"a": [1.0, 0.0], "b": [0.0, 1.0]})
+    cache = _DictCache()
+    ranker = EmbeddingRanker(embedder, keep=10, cache=cache)
+
+    goal = _goal()
+    c_a = _candidate("k1", anchor="a", snippet=None, parent_heading=None)
+    c_b = _candidate("k2", anchor="b", snippet=None, parent_heading=None)
+    await ranker.rank_batch(goal, [c_a], _history())  # warms "a"
+    embedder.calls.clear()
+
+    await ranker.rank_batch(goal, [c_a, c_b], _history())
+    # Only "b" needs embedding.
+    assert len(embedder.calls) == 1
+    assert embedder.calls[0] == ["b"]
+
+
+# -- FastEmbedEmbedder --------------------------------------------------
+
+
+def test_local_embedder_model_name():
+    e = FastEmbedEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    assert e.model_name == "local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def test_local_embedder_constructs_without_importing_fastembed():
+    """Construction must stay lazy: no heavy import at init time."""
+    e = FastEmbedEmbedder()
+    assert e._fm is None
+
+
+def test_local_embedder_missing_package_error(monkeypatch):
+    """Without fastembed, a helpful RuntimeError is raised."""
+    monkeypatch.setitem(sys.modules, "fastembed", None)
+    e = FastEmbedEmbedder()
+    with pytest.raises(RuntimeError, match="fastembed"):
+        e._load()
+
+
+def test_local_embedder_real_encode():
+    """Integration: encode returns normalized vectors.
+
+    Skips unless CRAWLME_MODEL_TEST=1 — the default model download
+    (~220MB) doesn't belong in every test-suite run.
+    """
+    import os
+
+    if os.environ.get("CRAWLME_MODEL_TEST") != "1":
+        pytest.skip("set CRAWLME_MODEL_TEST=1 to run real model inference")
+    pytest.importorskip("fastembed")
+    e = FastEmbedEmbedder()
+    fm = e._load()
+    vecs = list(fm.embed(["hello world", "goodbye"]))
+    assert len(vecs) == 2
+    for v in vecs:
+        assert len(v) > 0
+
+
+def test_normalize_unit_vector():
+    import numpy as np
+
+    v = _normalize(np.array([3.0, 4.0]))
+    assert v == pytest.approx([0.6, 0.8], abs=1e-6)
+
+
+def test_normalize_zero_vector():
+    import numpy as np
+
+    v = _normalize(np.array([0.0, 0.0]))
+    assert v == [0.0, 0.0]
 
 
 # -- OpenAICompatibleEmbedder -------------------------------------------

@@ -20,7 +20,7 @@ Traditional crawlers try to grab everything. This one tries to grab *the right t
 pip install -e .
 ```
 
-Then point it at something:
+That's it — nothing else to configure. Then point it at something:
 
 ```bash
 crawl run "recent funding news for AI startups" \
@@ -29,6 +29,8 @@ crawl run "recent funding news for AI startups" \
 ```
 
 It starts from the seeds, discovers links, filters out the noise, scores what's left, and only follows paths that actually look relevant. Stops when the budget runs out or the goal is satisfied — whichever comes first.
+
+Semantic ranking is on by default (local embedding model). The first run downloads the model weights (~220MB) to a local cache — one time only.
 
 A few more ways to launch:
 
@@ -64,6 +66,11 @@ Launch a new task.
 | `--max-duration` | int | Time budget, in seconds |
 | `--depth-limit` | int | How deep to go from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop only when the frontier runs dry |
+| `--embedding` | `local` \| `api` \| `off` | Semantic ranking provider (default: `local`) |
+| `--embedding-model` | string | Model id, overriding the provider default |
+| `--ignore-robots` | flag | Bypass robots.txt checks |
+| `--domain-budget` | int | Max pages per domain |
+| `--log-level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` \| `OFF` | Log verbosity (overrides env `LOG_LEVEL`) |
 | `--result-dir` | path | Where to put results (default: `results`) |
 
 ### `crawl pause <task-id>`
@@ -132,7 +139,7 @@ Under the hood, two async loops run side by side: `fetch_pump` downloads pages a
 
 **v0.1 is done ✅** — a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter — the whole thing works end to end.
 
-**v0.1.1** adds the EmbeddingRanker — semantic ranking at near-zero cost. Set `EMBEDDING_MODEL` in `.env` to enable it (rule-only v0.1 behavior stays the default when it's unset).
+**v0.1.1** adds the EmbeddingRanker — semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
 
 ### What's next
 
@@ -145,86 +152,22 @@ Under the hood, two async loops run side by side: `fetch_pump` downloads pages a
 
 ## Configuration
 
-Configuration is handled by pydantic-settings — `.env` file or environment variables both work (env vars take precedence). Here's everything you can tweak:
+Two entry points, one rule of thumb:
+
+- **`crawl run --help` flags** — per-run choices and things you experiment with (budgets, robots, embedding provider, log verbosity)
+- **`.env` / env vars** — set once and forget (secrets, timeouts, deep-tuning knobs). See [`.env.example`](.env.example) for the full annotated list — every knob has a default, so `.env` is entirely optional.
+
+**Secrets (API keys) are env-only, never flags.** Priority is uniform: `defaults → env vars → CLI flags` — when a flag and an env var target the same knob, the flag wins.
+
+Want the API embedding provider instead of the default local model? The key lives in `.env`, the choice is per run:
 
 ```bash
-# ---- Paths ----
-# Where to store results (raw HTML, pages, database, logs).
-# Override with --result-dir on the CLI.
-RESULT_DIR=results
+# .env (once)
+EMBEDDING_API_KEY=jina_xxx
+EMBEDDING_BASE_URL=https://api.jina.ai/v1
 
-# ---- LLM (v0.2+) ----
-# Model identifier in litellm format: provider/model-name.
-LLM_MODEL=openai/gpt-4o-mini
-# API key for the LLM provider. Leave empty to use provider defaults.
-LLM_API_KEY=
-# Custom base URL for self-hosted / proxied endpoints. Leave empty for default.
-LLM_BASE_URL=
-# Max concurrent LLM calls. Keep low to avoid rate limits.
-LLM_CONCURRENCY=2
-
-# ---- Embedding (v0.1.1+) ----
-# Leave EMPTY to disable the embedding stage (v0.1 rule-only behavior).
-# Any OpenAI-compatible /embeddings endpoint works: OpenAI, Jina, Ollama.
-EMBEDDING_MODEL=
-# API key. Leave empty for local endpoints that need no auth.
-EMBEDDING_API_KEY=
-# Base URL of the embeddings endpoint. Empty = OpenAI's default.
-EMBEDDING_BASE_URL=
-# How many top candidates the embedding stage lets through per batch.
-EMBEDDING_KEEP=60
-
-# ---- Fetch ----
-# How many pages to download in parallel.
-FETCH_CONCURRENCY=6
-# TCP / TLS handshake timeout, in seconds.
-FETCH_TIMEOUT_CONNECT=10.0
-# Time to wait for the first byte of response, in seconds.
-FETCH_TIMEOUT_READ=30.0
-# Retries on transient errors (5xx, timeout, DNS). 429s add extra backoff.
-FETCH_MAX_RETRIES=3
-
-# ---- Extraction ----
-# Hard timeout for trafilatura extraction + link parsing (per page).
-# Safety valve for pathological HTML. Bump this for large / rich pages.
-EXTRACT_TIMEOUT=120.0
-
-# ---- Frontier ----
-# Max candidates the in-memory buffer can hold before eviction kicks in.
-CANDIDATE_BUFFER_SIZE=2000
-# Number of candidates the ranker scores in one batch.
-RANK_BATCH_SIZE=100
-# Minimum interval between rank pump cycles, in seconds.
-RANK_COOLDOWN_SEC=30.0
-# Save a frontier snapshot every N pages fetched.
-CHECKPOINT_INTERVAL=10
-# Priority aging time window, in seconds. Older items get a gentle boost
-# so they don't starve behind newer high-priority items.
-PRIORITY_AGING_WINDOW=600.0
-
-# ---- Budget defaults ----
-# CLI flags --max-pages / --max-tokens / --max-duration override these.
-DEFAULT_MAX_PAGES=500
-DEFAULT_MAX_TOKENS=2000000
-DEFAULT_MAX_DURATION_SEC=3600
-# Max pages per domain before we stop accepting new links from that domain.
-DEFAULT_DOMAIN_BUDGET=50
-
-# ---- Robots ----
-# Set to true to ignore robots.txt entirely (dev / intranet use).
-IGNORE_ROBOTS=false
-# How long to cache fetched robots.txt files, in hours.
-ROBOTS_TTL_HOURS=24
-# Number of consecutive 429/503 errors before a domain is circuit-broken.
-CIRCUIT_BREAKER_THRESHOLD=5
-# How long a circuit-broken domain stays blocked, in minutes.
-CIRCUIT_BREAKER_COOLDOWN_MIN=10
-
-# ---- Logging ----
-# One of: DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
-LOG_LEVEL=INFO
-# One of: json | console
-LOG_FORMAT=json
+# per run
+crawl run "..." --embedding api --embedding-model jina-embeddings-v3
 ```
 
 ---
@@ -245,9 +188,12 @@ Nothing groundbreaking, but we stick to them:
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e .
 
 # Unit + integration (skip e2e — those hit the network)
 pytest tests/ -q --ignore=tests/e2e
 
+# Keep it clean
+ruff check src/ tests/
+mypy src/
 ```
