@@ -36,7 +36,10 @@ class Settings(BaseSettings):
     embedding_model: str = ""  # "" = provider default
 
     # -: LLM (v0.2+) ---
-    llm_model: str = "openai/gpt-4o-mini"
+    # On by default.  Degrades automatically: without a key and without
+    # a base url the LLM stages are skipped at wiring time, and runtime
+    # failures fall back to rule scoring.
+    llm_model: str = ""  # "" = provider default (openai/gpt-4o-mini)
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2

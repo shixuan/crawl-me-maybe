@@ -1,0 +1,234 @@
+"""Tests for the LLM client wrapper, with a stub provider.
+
+litellm is never imported here: the provider is injected by patching
+the module's cached _litellm reference, so the suite runs without the
+optional dependency installed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import builtins
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from crawlme.config import Settings
+from crawlme.state import llm as llm_mod
+from crawlme.state.llm import LLMClient, LLMError
+
+
+class _StubLitellm:
+    """Fake litellm module with a scripted acompletion.
+
+    The script is a list of responses (SimpleNamespace) or exceptions,
+    consumed one per call.  Tracks active calls to test the semaphore.
+    """
+
+    RateLimitError = type("RateLimitError", (Exception,), {})
+    Timeout = type("Timeout", (Exception,), {})
+    APIConnectionError = type("APIConnectionError", (Exception,), {})
+    ServiceUnavailableError = type("ServiceUnavailableError", (Exception,), {})
+    InternalServerError = type("InternalServerError", (Exception,), {})
+
+    def __init__(self, script: list, hold: float = 0.0) -> None:
+        self._script = list(script)
+        self._hold = hold
+        self.kwargs: list[dict] = []
+        self.active = 0
+        self.max_active = 0
+
+    async def acompletion(self, **kwargs):
+        self.kwargs.append(dict(kwargs))
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if self._hold:
+                await asyncio.sleep(self._hold)
+            item = self._script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        finally:
+            self.active -= 1
+
+
+def _resp(content: str, in_tok: int = 10, out_tok: int = 5, model: str = "stub-model"):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(prompt_tokens=in_tok, completion_tokens=out_tok),
+        model=model,
+    )
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    stub = _StubLitellm([_resp("hello")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    return stub
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        calls.append(seconds)
+
+    monkeypatch.setattr(llm_mod, "_sleep", fake_sleep)
+    return calls
+
+
+async def test_chat_returns_content_usage_and_model(provider, no_sleep):
+    client = LLMClient("openai/gpt-4o-mini")
+    r = await client.chat("hello?", system="be brief")
+    assert r.content == "hello"
+    assert r.input_tokens == 10
+    assert r.output_tokens == 5
+    assert r.model == "stub-model"
+    sent = provider.kwargs[0]
+    assert sent["messages"] == [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "hello?"},
+    ]
+    assert sent["max_tokens"] == 512
+    assert sent["model"] == "openai/gpt-4o-mini"
+    assert "response_format" not in sent
+    assert no_sleep == []
+
+
+async def test_json_mode_passes_response_format(provider):
+    client = LLMClient("openai/gpt-4o-mini")
+    await client.chat("return json", json_mode=True)
+    assert provider.kwargs[0]["response_format"] == {"type": "json_object"}
+
+
+async def test_key_and_base_url_only_sent_when_set(monkeypatch):
+    stub = _StubLitellm([_resp("a"), _resp("b")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+
+    bare = LLMClient("openai/gpt-4o-mini")
+    await bare.chat("hi")
+    assert "api_key" not in stub.kwargs[0]
+    assert "api_base" not in stub.kwargs[0]
+
+    wired = LLMClient("openai/gpt-4o-mini", api_key="sk-1", base_url="http://localhost:11434/v1")
+    await wired.chat("hi")
+    assert stub.kwargs[1]["api_key"] == "sk-1"
+    assert stub.kwargs[1]["api_base"] == "http://localhost:11434/v1"
+
+
+async def test_transient_error_retries_then_succeeds(monkeypatch, no_sleep):
+    stub = _StubLitellm([_StubLitellm.RateLimitError(), _resp("ok")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    r = await LLMClient("openai/gpt-4o-mini").chat("hi")
+    assert r.content == "ok"
+    assert len(stub.kwargs) == 2
+    assert no_sleep == [1.0]
+
+
+async def test_transient_errors_exhaust_retries(monkeypatch, no_sleep):
+    stub = _StubLitellm([_StubLitellm.RateLimitError(), _StubLitellm.Timeout(), _StubLitellm.ServiceUnavailableError()])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    with pytest.raises(LLMError, match="3 attempts"):
+        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    assert len(stub.kwargs) == 3
+    assert no_sleep == [1.0, 2.0]
+
+
+async def test_httpx_connect_error_is_transient(monkeypatch, no_sleep):
+    stub = _StubLitellm([httpx.ConnectError("provider down"), _resp("ok")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    r = await LLMClient("openai/gpt-4o-mini").chat("hi")
+    assert r.content == "ok"
+    assert no_sleep == [1.0]
+
+
+async def test_permanent_error_raises_without_retry(monkeypatch, no_sleep):
+    stub = _StubLitellm([ValueError("bad request body")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    with pytest.raises(LLMError, match="rejected"):
+        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    assert len(stub.kwargs) == 1
+    assert no_sleep == []
+
+
+async def test_missing_credentials_is_permanent_despite_5xx_mapping(monkeypatch, no_sleep):
+    # litellm maps missing credentials to InternalServerError, which is
+    # normally transient.  The message check must win.
+    stub = _StubLitellm([_StubLitellm.InternalServerError("Missing credentials. Please pass an `api_key`.")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    with pytest.raises(LLMError, match="rejected"):
+        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    assert len(stub.kwargs) == 1
+    assert no_sleep == []
+
+
+async def test_concurrency_semaphore_caps_active_calls(monkeypatch):
+    stub = _StubLitellm([_resp("r") for _ in range(6)], hold=0.01)
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    client = LLMClient("openai/gpt-4o-mini", concurrency=2)
+    results = await asyncio.gather(*[client.chat("hi") for _ in range(6)])
+    assert all(r.content == "r" for r in results)
+    assert stub.max_active == 2
+
+
+async def test_missing_litellm_fails_fast_with_install_hint(monkeypatch):
+    monkeypatch.setattr(llm_mod, "_litellm", None)
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "litellm":
+            raise ImportError("no litellm")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(LLMError, match="litellm"):
+        await LLMClient("openai/gpt-4o-mini").chat("hi")
+
+
+def test_from_settings_wires_all_knobs():
+    settings = Settings(
+        llm_model="anthropic/claude-haiku-4-5",
+        llm_api_key="sk-test",
+        llm_base_url="http://localhost:11434/v1",
+        llm_concurrency=5,
+    )
+    client = LLMClient.from_settings(settings)
+    assert client._model == "anthropic/claude-haiku-4-5"
+    assert client._api_key == "sk-test"
+    assert client._base_url == "http://localhost:11434/v1"
+    assert client._sem._value == 5
+
+
+def test_configured_flags_credentials():
+    assert not LLMClient("openai/gpt-4o-mini").configured
+    assert LLMClient("openai/gpt-4o-mini", api_key="sk-1").configured
+    assert LLMClient("openai/gpt-4o-mini", base_url="http://localhost:11434/v1").configured
+
+
+def test_from_settings_if_configured_skips_without_credentials():
+    settings = Settings(llm_model="openai/gpt-4o-mini")
+    assert LLMClient.from_settings_if_configured(settings) is None
+
+
+def test_from_settings_if_configured_wires_with_key():
+    # Key alone is enough: the model falls back to the provider default.
+    settings = Settings(llm_api_key="sk-1")
+    client = LLMClient.from_settings_if_configured(settings)
+    assert client is not None
+    assert client._api_key == "sk-1"
+    assert client._model == "openai/gpt-4o-mini"
+
+
+def test_from_settings_resolves_default_model_when_empty():
+    client = LLMClient.from_settings(Settings())
+    assert client._model == "openai/gpt-4o-mini"
+
+
+def test_from_settings_if_configured_allows_keyless_local_endpoint():
+    settings = Settings(llm_model="openai/gpt-4o-mini", llm_base_url="http://localhost:11434/v1")
+    client = LLMClient.from_settings_if_configured(settings)
+    assert client is not None
+    assert client._base_url == "http://localhost:11434/v1"
