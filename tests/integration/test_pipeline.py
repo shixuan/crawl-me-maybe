@@ -1,4 +1,4 @@
-"""Integration tests — full pipeline with mocked network layer."""
+"""Integration tests (full pipeline with mocked network layer)."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ async def test_fetch_extract_links_pipeline(integration_settings):
 
 @pytest.mark.asyncio
 async def test_prefilter_drops_junk(integration_settings):
-    """PDF, javascript, wikidata URLs should be filtered — only BUFFERED persisted."""
+    """PDF, javascript, wikidata URLs should be filtered out, so only BUFFERED ones persist."""
     cfg = integration_settings
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
@@ -137,7 +137,7 @@ async def test_prefilter_drops_junk(integration_settings):
         row = await db.execute("SELECT COUNT(*) FROM candidates")
         (total,) = await row.fetchone()
         # 7 links on the page; junk ones (pdf, js, wikidata) are not persisted.
-        # Only BUFFERED candidates are saved — should be < 7.
+        # Only BUFFERED candidates are saved, so the total stays below 7.
         assert 1 <= total <= 7, f"Expected 1-7 candidates, got {total}"
 
         row = await db.execute("SELECT DISTINCT status FROM candidates")

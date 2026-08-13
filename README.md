@@ -8,7 +8,7 @@
 >
 > So crawl me, maybe?
 
-A goal-driven crawler. You tell what you are looking for, and it figures out where to go, what to skip, and when to stop — all on its own, within a budget.
+A goal-driven crawler. You tell what you are looking for, and it figures out where to go, what to skip, and when to stop. All on its own, within a budget.
 
 Traditional crawlers try to grab everything. This one tries to grab *the right things*. Big difference.
 
@@ -20,7 +20,7 @@ Traditional crawlers try to grab everything. This one tries to grab *the right t
 pip install -e .
 ```
 
-Then point it at something:
+That's it, nothing else to configure. Then point it at something:
 
 ```bash
 crawl run "recent funding news for AI startups" \
@@ -28,7 +28,9 @@ crawl run "recent funding news for AI startups" \
   --max-pages 200
 ```
 
-It starts from the seeds, discovers links, filters out the noise, scores what's left, and only follows paths that actually look relevant. Stops when the budget runs out or the goal is satisfied — whichever comes first.
+It starts from the seeds, discovers links, filters out the noise, scores what's left, and only follows paths that actually look relevant. Stops when the budget runs out or the goal is satisfied, whichever comes first.
+
+Semantic ranking is on by default (local embedding model). The first run downloads the model weights (~220MB) to a local cache, one time only.
 
 A few more ways to launch:
 
@@ -59,11 +61,16 @@ Launch a new task.
 | `--seeds` | string | Comma-separated seed URLs |
 | `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
 | `--source-path` | path | File path or RSS feed URL for seeds |
-| `--max-pages` | int | Page budget — 0 means no limit |
+| `--max-pages` | int | Page budget: 0 means no limit |
 | `--max-tokens` | int | Token budget (kicks in at v0.2) |
 | `--max-duration` | int | Time budget, in seconds |
 | `--depth-limit` | int | How deep to go from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop only when the frontier runs dry |
+| `--embedding` | `local` \| `api` \| `off` | Semantic ranking provider (default: `local`) |
+| `--embedding-model` | string | Model id, overriding the provider default |
+| `--ignore-robots` | flag | Bypass robots.txt checks |
+| `--domain-budget` | int | Max pages per domain |
+| `--log-level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` \| `OFF` | Log verbosity (overrides env `LOG_LEVEL`) |
 | `--result-dir` | path | Where to put results (default: `results`) |
 
 ### `crawl pause <task-id>`
@@ -80,7 +87,7 @@ Tell a running task to wrap it up gracefully.
 
 ### `crawl status <task-id>`
 
-See how a task is doing. (stub — v0.2)
+See how a task is doing. (stub: v0.2)
 
 ### `crawl results <task-id>`
 
@@ -92,7 +99,7 @@ Export what we found.
 
 ### `crawl replay <task-id>`
 
-Re-analyze an already-crawled task with a new prompt. No re-fetching — raw HTML is already on disk. (stub — v0.2)
+Re-analyze an already-crawled task with a new prompt. No re-fetching needed, since raw HTML is already on disk. (stub: v0.2)
 
 | Flag | Type | What it does |
 |------|------|--------------|
@@ -111,103 +118,56 @@ Think of it as a funnel. Each layer filters harder and costs more:
   ├─  Dedup, blacklist, robots.txt, file extensions, login pages,
   │   emoji links, depth limit, domain budget. Fast and cheap.
   │   ~200 → 10–30 candidates
-  ▼  Layer 1: RuleScorer (7-factor heuristic, still zero LLM)
+  ▼  Layer 1: RuleRanker (7-factor heuristic, still zero LLM)
   ├─  Anchor text + snippet + title match + domain prior
   │   + depth + URL path + position. Score < 0.35 → dropped.
-  ▼  Layer 2: LLMScorer (batched inference) 📋 v0.2
+  │   With embedding on, it stops dropping and just orders.
+  ▼  Layer 1.5: EmbeddingRanker (semantic similarity) ✅ v0.1.1
+  ├─  Goal + candidate texts embedded, ranked by cosine similarity.
+  │   Top 60 survive. Catches synonyms rule scoring misses.
+  ▼  Layer 2: LLMRanker (batched inference) 📋 v0.2
   ├─  One batch call re-ranks the top 30
   ▼  Layer 3: Feedback multiplier (runtime) 📋 v0.2
   └─  Pages we already fetched feed back to adjust priorities
 ```
 
-Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores candidates and pushes them into the frontier. They don't wait on each other — just coordinate through the Frontier and Buffer when they need to.
+Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores candidates and pushes them into the frontier. They don't wait on each other; they just coordinate through the Frontier and Buffer when they need to.
 
 ---
 
 ## Current status
 
-**v0.1 is done ✅** — a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleScorer, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter — the whole thing works end to end.
+**v0.1 is done ✅**: a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter. The whole thing works end to end.
+
+**v0.1.1** adds the EmbeddingRanker for semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
 
 ### What's next
 
 | Version | Theme | Actually means |
 |---------|-------|----------------|
-| v0.2 | Brains | LLMScorer batched re-rank, PageAnalyzer, FeedbackStore, rebalanced weights, Replay |
-| v0.3 | Polish | EmbeddingRanker, Playwright for JS-heavy pages, Prompt Cache, user feedback |
+| v0.2 | Brains | LLMRanker batched re-rank, PageAnalyzer, FeedbackStore, rebalanced weights, Replay |
+| v0.3 | Polish | Playwright for JS-heavy pages, Prompt Cache, user feedback |
 
 ---
 
 ## Configuration
 
-Configuration is handled by pydantic-settings — `.env` file or environment variables both work (env vars take precedence). Here's everything you can tweak:
+Two entry points, one rule of thumb:
+
+- **`crawl run --help` flags**: per-run choices and things you experiment with (budgets, robots, embedding provider, log verbosity)
+- **`.env` / env vars**: set once and forget (secrets, timeouts, deep-tuning knobs). See [`.env.example`](.env.example) for the full annotated list. Every knob has a default, so `.env` is entirely optional.
+
+**Secrets (API keys) are env-only, never flags.** Priority is uniform: `defaults → env vars → CLI flags`. When a flag and an env var target the same knob, the flag wins.
+
+Want the API embedding provider instead of the default local model? The key lives in `.env`, the choice is per run:
 
 ```bash
-# ---- Paths ----
-# Where to store results (raw HTML, pages, database, logs).
-# Override with --result-dir on the CLI.
-RESULT_DIR=results
+# .env (once)
+EMBEDDING_API_KEY=jina_xxx
+EMBEDDING_BASE_URL=https://api.jina.ai/v1
 
-# ---- LLM (v0.2+) ----
-# Model identifier in litellm format: provider/model-name.
-LLM_MODEL=openai/gpt-4o-mini
-# API key for the LLM provider. Leave empty to use provider defaults.
-LLM_API_KEY=
-# Custom base URL for self-hosted / proxied endpoints. Leave empty for default.
-LLM_BASE_URL=
-# Max concurrent LLM calls. Keep low to avoid rate limits.
-LLM_CONCURRENCY=2
-
-# ---- Fetch ----
-# How many pages to download in parallel.
-FETCH_CONCURRENCY=6
-# TCP / TLS handshake timeout, in seconds.
-FETCH_TIMEOUT_CONNECT=10.0
-# Time to wait for the first byte of response, in seconds.
-FETCH_TIMEOUT_READ=30.0
-# Retries on transient errors (5xx, timeout, DNS). 429s add extra backoff.
-FETCH_MAX_RETRIES=3
-
-# ---- Extraction ----
-# Hard timeout for trafilatura extraction + link parsing (per page).
-# Safety valve for pathological HTML. Bump this for large / rich pages.
-EXTRACT_TIMEOUT=120.0
-
-# ---- Frontier ----
-# Max candidates the in-memory buffer can hold before eviction kicks in.
-CANDIDATE_BUFFER_SIZE=2000
-# Number of candidates the ranker scores in one batch.
-RANK_BATCH_SIZE=100
-# Minimum interval between rank pump cycles, in seconds.
-RANK_COOLDOWN_SEC=30.0
-# Save a frontier snapshot every N pages fetched.
-CHECKPOINT_INTERVAL=10
-# Priority aging time window, in seconds. Older items get a gentle boost
-# so they don't starve behind newer high-priority items.
-PRIORITY_AGING_WINDOW=600.0
-
-# ---- Budget defaults ----
-# CLI flags --max-pages / --max-tokens / --max-duration override these.
-DEFAULT_MAX_PAGES=500
-DEFAULT_MAX_TOKENS=2000000
-DEFAULT_MAX_DURATION_SEC=3600
-# Max pages per domain before we stop accepting new links from that domain.
-DEFAULT_DOMAIN_BUDGET=50
-
-# ---- Robots ----
-# Set to true to ignore robots.txt entirely (dev / intranet use).
-IGNORE_ROBOTS=false
-# How long to cache fetched robots.txt files, in hours.
-ROBOTS_TTL_HOURS=24
-# Number of consecutive 429/503 errors before a domain is circuit-broken.
-CIRCUIT_BREAKER_THRESHOLD=5
-# How long a circuit-broken domain stays blocked, in minutes.
-CIRCUIT_BREAKER_COOLDOWN_MIN=10
-
-# ---- Logging ----
-# One of: DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
-LOG_LEVEL=INFO
-# One of: json | console
-LOG_FORMAT=json
+# per run
+crawl run "..." --embedding api --embedding-model jina-embeddings-v3
 ```
 
 ---
@@ -216,7 +176,7 @@ LOG_FORMAT=json
 
 Nothing groundbreaking, but we stick to them:
 
-- **Each module does one thing.** Fetch downloads. Extractor extracts. Ranker ranks. They don't call each other — CrawlScheduler wires everything together.
+- **Each module does one thing.** Fetch downloads. Extractor extracts. Ranker ranks. They don't call each other. CrawlScheduler wires everything together.
 - **Engine depends on interfaces, not implementations.** `factory.py` is the only place that imports concrete classes. Everything else talks to Protocols.
 - **Swap components by implementing a Protocol.** Want a different ranker? Write one, drop it in. Nothing else changes.
 - **Crash-safe.** Checkpoints save Frontier state. Restore and keep going.
@@ -228,9 +188,12 @@ Nothing groundbreaking, but we stick to them:
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e .
 
-# Unit + integration (skip e2e — those hit the network)
+# Unit + integration (skip e2e, those hit the network)
 pytest tests/ -q --ignore=tests/e2e
 
+# Keep it clean
+ruff check src/ tests/
+mypy src/
 ```

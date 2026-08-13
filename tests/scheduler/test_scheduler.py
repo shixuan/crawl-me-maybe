@@ -1,7 +1,8 @@
-"""Unit tests for CrawlScheduler — mock all I/O, verify control flow."""
+"""Unit tests for CrawlScheduler (mock all I/O, verify control flow)."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -92,8 +93,58 @@ async def test_stops_on_budget_pages():
 
     await sched._fetch_pump()
 
-    # BUDGET_PAGES fires immediately — never reaches pop_next.
+    # BUDGET_PAGES fires immediately, so it never reaches pop_next.
     assert sched._state == "STOPPING"
+
+
+@pytest.mark.asyncio
+async def test_budget_gate_blocks_pops_while_inflight():
+    """Committed budget (fetched + in-flight) must block new pops.
+
+    Regression: the pump used to keep popping while fetches were in
+    the air, overshooting max_pages by up to fetch_concurrency-1.
+    """
+    sched = _make_sched()
+    sched._state = "RUNNING"
+    sched._goal = _goal(max_pages=10)
+    sched._task = _task()
+    sched._counters = CrawlCounters(
+        max_pages=10,
+        pages_fetched=8,
+        in_flight=2,  # 8 + 2 = 10 committed: nothing may be popped
+    )
+
+    pop_mock = AsyncMock(return_value=None)
+    sched._frontier.pop_next = pop_mock
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(sched._fetch_pump(), timeout=0.5)
+
+    pop_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_budget_gate_allows_pops_under_budget():
+    """Below budget, pops still happen (gate is a cap, not a stall)."""
+    sched = _make_sched()
+    sched._state = "RUNNING"
+    sched._goal = _goal(max_pages=10)
+    sched._task = _task()
+    sched._counters = CrawlCounters(
+        max_pages=10,
+        pages_fetched=8,
+        in_flight=1,  # 9 committed < 10: one more pop is allowed
+    )
+
+    pop_mock = AsyncMock(return_value=None)
+    sched._frontier.pop_next = pop_mock
+    sched._frontier.size = 0
+    sched._buffer.is_empty = True
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(sched._fetch_pump(), timeout=0.5)
+
+    pop_mock.assert_called()
 
 
 @pytest.mark.asyncio

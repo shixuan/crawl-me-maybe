@@ -1,4 +1,4 @@
-"""Shared fixtures for integration tests — mock network, real pipeline."""
+"""Shared fixtures for integration tests (mock network, real pipeline)."""
 
 from __future__ import annotations
 
@@ -30,13 +30,21 @@ _TEST_HTML = """<!DOCTYPE html>
 
 @pytest.fixture
 def integration_settings(tmp_path: Path) -> Settings:
-    """Settings for integration tests — temp dir, no robots check."""
+    """Settings for integration tests (temp dir, no robots, rule-only).
+
+    Everything pinned explicitly so tests are deterministic regardless
+    of the developer's .env.
+    """
     return Settings(
         result_dir=tmp_path,
         ignore_robots=True,
         fetch_concurrency=1,
         log_level="INFO",
         log_format="console",
+        embedding_provider="",
+        embedding_model="",
+        embedding_api_key="",
+        embedding_base_url="",
     )
 
 

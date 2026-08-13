@@ -8,7 +8,7 @@ v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
   - FeedbackStore is empty (v0.2)
   - tokens_used always 0
-  - HybridRanker uses RuleScorer only
+  - HybridRanker uses RuleRanker only
 
 See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
 """
@@ -267,6 +267,19 @@ class CrawlScheduler:
                 await self._buffer.wake()
                 break
 
+            # Page budget gates pops, not just completions: committed
+            # in-flight fetches count against it, otherwise the pump keeps
+            # popping while fetches are in the air and overshoots max_pages
+            # by up to fetch_concurrency-1 (check_stop only sees landed
+            # pages).  Failed in-flight fetches release their slot, so we
+            # wait here rather than break.
+            if (
+                self._counters.max_pages > 0
+                and self._counters.pages_fetched + self._counters.in_flight >= self._counters.max_pages
+            ):
+                await asyncio.sleep(_POP_SLEEP)
+                continue
+
             item = await self._frontier.pop_next(
                 now=_utcnow(),
                 next_allowed=None if self._cfg.ignore_robots else self._robots.next_allowed_at,
@@ -488,7 +501,6 @@ class CrawlScheduler:
                     {"count": len(items), "dropped": n_dropped},
                 )
 
-            # In v0.1, tokens_used is always 0 (no LLM calls).
             # In v0.1, tokens_used is always 0 (no LLM calls).
 
     #: checkpoint -------------------------------------------------------

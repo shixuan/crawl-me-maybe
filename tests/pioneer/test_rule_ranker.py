@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.pioneer.rule_scorer import RuleScorer, _jaccard, _path_signal, _words
+from crawlme.pioneer.ranker.rule import RuleRanker, _jaccard, _path_signal, _words
 from crawlme.schemas import URL, Candidate
 
 
@@ -19,8 +19,8 @@ def _candidate(url_key: str = "k1", raw: str = "https://example.com/page", **kw)
 
 
 @pytest.fixture
-def scorer() -> RuleScorer:
-    return RuleScorer()
+def scorer() -> RuleRanker:
+    return RuleRanker()
 
 
 # -- helpers -----------------------------------------------------------

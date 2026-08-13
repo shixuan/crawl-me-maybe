@@ -1,3 +1,17 @@
+"""Configuration.
+
+One Settings class reads env vars / .env for every knob.  CLI flags
+override it at runtime, so the effective priority is:
+
+    defaults  ->  .env  ->  env vars  ->  CLI flags
+
+Documentation discipline: `.env.example` advertises only the set-once
+knobs (secrets, timeouts, deep tuning).  The per-run knobs (result_dir,
+ignore_robots, embedding_*, log_level) also exist here so flags can
+override them, but their env twins are deliberately undocumented.
+When both are given, the flag wins.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,14 +26,30 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # -: Paths ---
+    # -: Per-run knobs (flags are the documented entry; env twins exist
+    #    mechanically but are not advertised in .env.example) ---------
     result_dir: Path = Path("results")
+    ignore_robots: bool = False
+    # "local" default: the full pipeline (rule + embedding) runs out of
+    # the box.  "" (--embedding off) = rule-only v0.1 behavior.
+    embedding_provider: str = "local"  # local | api | ""
+    embedding_model: str = ""  # "" = provider default
 
-    # -: LLM ---
+    # -: LLM (v0.2+) ---
     llm_model: str = "openai/gpt-4o-mini"
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2
+
+    # -: Embedding ---
+    # Credentials for the api provider (--embedding api).  Keys are
+    # secrets: env vars only, never flags.
+    embedding_api_key: str = ""
+    embedding_base_url: str = ""
+    embedding_keep: int = 60
+    # Max texts per API request (api provider only); larger batches
+    # are split automatically.  Local inference has no such limit.
+    embedding_batch_size: int = 100
 
     # -: Fetch ---
     fetch_concurrency: int = 6
@@ -36,8 +66,7 @@ class Settings(BaseSettings):
     # (e.g. 6MB wikidata structured-data pages, giant ad-heavy news sites).
     # This is a safety valve, not a content filter: a healthy page under
     # a few MB should complete in <10 s.  Raise this if targeting
-    # deliberately large / rich pages.  Future ideas: per-domain tuning,
-    # streaming extraction, or extractor-level cancellation.
+    # deliberately large / rich pages.
     extract_timeout: float = 120.0
 
     # -: Frontier ---
@@ -47,19 +76,13 @@ class Settings(BaseSettings):
     checkpoint_interval: int = 10
     priority_aging_window: float = 600.0
 
-    # -: Budget defaults ---
-    default_max_pages: int = 500
-    default_max_tokens: int = 2_000_000
-    default_max_duration_sec: int = 3600
-    default_domain_budget: int = 50
-
     # -: Robots ---
-    ignore_robots: bool = False
     robots_ttl_hours: int = 24
     circuit_breaker_threshold: int = 5
     circuit_breaker_cooldown_min: int = 10
 
     # -: Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
+    # Documented dual knob: the --log-level flag overrides this default.
     log_level: str = "INFO"
     log_format: str = "json"  # json | console
