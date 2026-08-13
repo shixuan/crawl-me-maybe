@@ -53,7 +53,9 @@ def test_build_ranker_wires_local_embedding_stage(tmp_path: Path, monkeypatch):
     ranker = _build_ranker(cfg)
     assert isinstance(ranker._embedding, EmbeddingRanker)
     assert isinstance(ranker._embedding._embedder, FastEmbedEmbedder)
-    assert ranker._embedding._embedder.model_name == "local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    assert ranker._embedding._embedder.model_name.startswith(
+        "local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2@fastembed"
+    )
     assert isinstance(ranker._embedding._cache, SqliteEmbeddingCache)
 
 

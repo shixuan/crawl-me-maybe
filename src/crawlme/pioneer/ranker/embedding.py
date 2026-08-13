@@ -32,6 +32,8 @@ import datetime
 import hashlib
 import logging
 import math
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any, Protocol
 
 import httpx
@@ -92,7 +94,14 @@ class FastEmbedEmbedder:
 
     @property
     def model_name(self) -> str:
-        return f"local/{self._model}"
+        # The fastembed version is part of the cache identity: pooling
+        # strategies and ONNX artifacts change between releases, so
+        # vectors from different versions must never share a cache key.
+        try:
+            v = _pkg_version("fastembed")
+        except PackageNotFoundError:
+            v = "unknown"
+        return f"local/{self._model}@fastembed{v}"
 
     def _load(self) -> Any:
         if self._fm is None:

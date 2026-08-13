@@ -255,7 +255,11 @@ async def test_cache_partial_hit_embeds_only_misses():
 
 def test_local_embedder_model_name():
     e = FastEmbedEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-    assert e.model_name == "local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    name = e.model_name
+    assert name.startswith("local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2@fastembed")
+    # Version-scoped: different fastembed releases must not share cache entries.
+    e2 = FastEmbedEmbedder(model="BAAI/bge-small-en-v1.5")
+    assert e2.model_name.startswith("local/BAAI/bge-small-en-v1.5@fastembed")
 
 
 def test_local_embedder_constructs_without_importing_fastembed():
