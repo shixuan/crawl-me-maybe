@@ -30,6 +30,14 @@ class Settings(BaseSettings):
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]
 
+    # -: Embedding (v0.1.1) ---
+    # Empty embedding_model disables the embedding stage entirely
+    # (pure v0.1 rule-only behavior).  Set it to enable semantic ranking.
+    embedding_model: str = ""
+    embedding_api_key: str = ""
+    embedding_base_url: str = ""
+    embedding_keep: int = 60
+
     # -: Extract ---
     # Timeout for trafilatura extraction + bs4 link parsing (per page).
     # Trafilatura can degrade to O(n^2) or worse on pathological HTML

@@ -1,10 +1,10 @@
-"""Rule-based candidate scoring: cheap heuristic scores without LLM.
+"""RuleRanker: 7-factor heuristic scoring, zero LLM cost.
 
-Used by HybridRanker as the first-stage filter (see docs/ranking.md).
-Computes a weighted-average rule_score in [0, 1] per candidate.  Does NOT
-rank or drop: the caller (HybridRanker) handles ordering and thresholding.
+v0.1's only ranker.  Computes a weighted-average score in [0, 1] per
+candidate and applies a hard threshold: candidates below it are marked
+dropped, survivors are returned sorted by priority descending.
 
-Formula:  rule_score = sum(weight_i * factor_i) / sum(weight_i)
+Formula:  score = sum(weight_i * factor_i) / sum(weight_i)
 
   1. Anchor text match       (w=0.30) : Jaccard(anchor words, goal keywords)
   2. Surrounding text match  (w=0.15) : Jaccard(snippet words, goal keywords)
@@ -12,11 +12,13 @@ Formula:  rule_score = sum(weight_i * factor_i) / sum(weight_i)
   4. Domain prior            (w=0.15) : avg_relevance from cross-task history
   5. Path depth penalty      (w=0.10) : 1 / sqrt(depth + 1)
   6. URL path signal         (w=0.10) : about/contact/privacy -> 0,
-                                         docs/blog/news -> 1, default -> 0.5
+                                        docs/blog/news -> 1, default -> 0.5
   7. Position signal         (w=0.05) : 1 - (position / page_link_count)
 
 When goal_keywords is missing, factors 1-3 default to 0.5 (neutral).
 Domain prior defaults to 0.5 for unseen domains.
+
+See docs/ranking.md for the funnel design and factor weight rationale.
 """
 
 from __future__ import annotations
@@ -24,9 +26,10 @@ from __future__ import annotations
 import datetime
 import math
 import re
+from typing import Any
 from urllib.parse import urlparse
 
-from crawlme.schemas import Candidate, RankDecision
+from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
 
 # URL paths that signal low-value pages.
 _NEGATIVE_PATH_TOKENS = frozenset(
@@ -73,7 +76,60 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class RuleScorer:
+class RuleRanker:
+    """Heuristic scoring with a hard threshold.
+
+    v0.1: threshold 0.35 (conservative: RuleRanker is the final decision
+    maker).  v0.2: 0.25 (relaxed: later stages can correct its mistakes).
+    """
+
+    def __init__(self, threshold: float = 0.35) -> None:
+        self._threshold = threshold
+
+    async def rank_batch(
+        self,
+        goal: CrawlGoal,
+        candidates: list[Candidate],
+        history: RankHistorySummary,
+        page_contexts: dict[str, dict[str, Any]] | None = None,
+    ) -> list[RankDecision]:
+        """Score all candidates, mark below-threshold ones dropped.
+
+        Candidates are grouped by source page so each group is scored
+        with the correct source-page title and link count (factors 3
+        and 7).  Returns one decision per input candidate: survivors
+        first (priority descending), then dropped ones.
+        """
+        keywords = _extract_keywords(goal.prompt)
+        domain_prior = _build_domain_prior(history)
+        pc = page_contexts or {}
+
+        groups: dict[str, list[Candidate]] = {}
+        for c in candidates:
+            key = c.source_url_key or ""
+            groups.setdefault(key, []).append(c)
+
+        kept: list[RankDecision] = []
+        dropped: list[RankDecision] = []
+        for source_key, group in groups.items():
+            ctx = pc.get(source_key, {})
+            scored = self.score_batch(
+                group,
+                goal_keywords=keywords,
+                source_page_title=ctx.get("title", ""),
+                page_link_count=ctx.get("link_count", 0),
+                domain_prior=domain_prior,
+            )
+            for d in scored:
+                if d.priority < self._threshold:
+                    d.dropped = True
+                    dropped.append(d)
+                else:
+                    kept.append(d)
+
+        kept.sort(key=lambda d: d.priority, reverse=True)
+        return kept + dropped
+
     def score_batch(
         self,
         candidates: list[Candidate],
@@ -83,6 +139,10 @@ class RuleScorer:
         page_link_count: int = 0,
         domain_prior: dict[str, float] | None = None,
     ) -> list[RankDecision]:
+        """Pure scoring without thresholding or ordering.
+
+        Public so factor-level behavior is directly testable.
+        """
         gk = goal_keywords or []
         dp = domain_prior or {}
         decisions: list[RankDecision] = []
@@ -162,6 +222,23 @@ def _format_rationale(score: float, factors: dict[str, float]) -> str:
     parts = [f"rule_score={score:.4f}"]
     parts.extend(f"{k}={v:.3f}" for k, v in factors.items())
     return " ".join(parts)
+
+
+def _extract_keywords(prompt: str) -> list[str]:
+    return list(dict.fromkeys(w.lower() for w in _WORD_RE.findall(prompt)))
+
+
+def _build_domain_prior(history: RankHistorySummary) -> dict[str, float]:
+    """Extract domain prior scores from history hub domains.
+
+    v0.1: hub_domains is a plain list of domain names with no per-domain
+    scores yet.  Each hub domain gets a moderate boost (0.75) over unseen
+    domains (0.5), but not a free pass.
+
+    v0.2: FeedbackStore will provide per-domain avg_relevance from the
+    feedback table, giving this factor real statistical weight.
+    """
+    return {d: 0.75 for d in history.hub_domains if d}
 
 
 #: helpers -----------------------------------------------------------

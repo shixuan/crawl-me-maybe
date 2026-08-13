@@ -111,10 +111,14 @@ Think of it as a funnel. Each layer filters harder and costs more:
   ├─  Dedup, blacklist, robots.txt, file extensions, login pages,
   │   emoji links, depth limit, domain budget. Fast and cheap.
   │   ~200 → 10–30 candidates
-  ▼  Layer 1: RuleScorer (7-factor heuristic, still zero LLM)
+  ▼  Layer 1: RuleRanker (7-factor heuristic, still zero LLM)
   ├─  Anchor text + snippet + title match + domain prior
   │   + depth + URL path + position. Score < 0.35 → dropped.
-  ▼  Layer 2: LLMScorer (batched inference) 📋 v0.2
+  │   With embedding on, it stops dropping and just orders.
+  ▼  Layer 1.5: EmbeddingRanker (semantic similarity) ✅ v0.1.1
+  ├─  Goal + candidate texts embedded, ranked by cosine similarity.
+  │   Top 60 survive. Catches synonyms rule scoring misses.
+  ▼  Layer 2: LLMRanker (batched inference) 📋 v0.2
   ├─  One batch call re-ranks the top 30
   ▼  Layer 3: Feedback multiplier (runtime) 📋 v0.2
   └─  Pages we already fetched feed back to adjust priorities
@@ -126,14 +130,16 @@ Under the hood, two async loops run side by side: `fetch_pump` downloads pages a
 
 ## Current status
 
-**v0.1 is done ✅** — a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleScorer, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter — the whole thing works end to end.
+**v0.1 is done ✅** — a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter — the whole thing works end to end.
+
+**v0.1.1** adds the EmbeddingRanker — semantic ranking at near-zero cost. Set `EMBEDDING_MODEL` in `.env` to enable it (rule-only v0.1 behavior stays the default when it's unset).
 
 ### What's next
 
 | Version | Theme | Actually means |
 |---------|-------|----------------|
-| v0.2 | Brains | LLMScorer batched re-rank, PageAnalyzer, FeedbackStore, rebalanced weights, Replay |
-| v0.3 | Polish | EmbeddingRanker, Playwright for JS-heavy pages, Prompt Cache, user feedback |
+| v0.2 | Brains | LLMRanker batched re-rank, PageAnalyzer, FeedbackStore, rebalanced weights, Replay |
+| v0.3 | Polish | Playwright for JS-heavy pages, Prompt Cache, user feedback |
 
 ---
 
@@ -156,6 +162,17 @@ LLM_API_KEY=
 LLM_BASE_URL=
 # Max concurrent LLM calls. Keep low to avoid rate limits.
 LLM_CONCURRENCY=2
+
+# ---- Embedding (v0.1.1+) ----
+# Leave EMPTY to disable the embedding stage (v0.1 rule-only behavior).
+# Any OpenAI-compatible /embeddings endpoint works: OpenAI, Jina, Ollama.
+EMBEDDING_MODEL=
+# API key. Leave empty for local endpoints that need no auth.
+EMBEDDING_API_KEY=
+# Base URL of the embeddings endpoint. Empty = OpenAI's default.
+EMBEDDING_BASE_URL=
+# How many top candidates the embedding stage lets through per batch.
+EMBEDDING_KEEP=60
 
 # ---- Fetch ----
 # How many pages to download in parallel.

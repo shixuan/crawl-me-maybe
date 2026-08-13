@@ -8,7 +8,7 @@ v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
   - FeedbackStore is empty (v0.2)
   - tokens_used always 0
-  - HybridRanker uses RuleScorer only
+  - HybridRanker uses RuleRanker only
 
 See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
 """
@@ -488,7 +488,6 @@ class CrawlScheduler:
                     {"count": len(items), "dropped": n_dropped},
                 )
 
-            # In v0.1, tokens_used is always 0 (no LLM calls).
             # In v0.1, tokens_used is always 0 (no LLM calls).
 
     #: checkpoint -------------------------------------------------------

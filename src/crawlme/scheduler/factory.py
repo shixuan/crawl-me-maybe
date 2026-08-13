@@ -14,7 +14,8 @@ from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import PriorityFrontier
 from crawlme.pioneer.prefilter import PreFilter
-from crawlme.pioneer.ranker import HybridRanker
+from crawlme.pioneer.ranker import HybridRanker, RuleRanker
+from crawlme.pioneer.ranker.embedding import EmbeddingRanker, OpenAICompatibleEmbedder
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.state.storage import SqliteStorage
@@ -40,8 +41,31 @@ def create_scheduler(settings: Settings, **overrides: Any) -> CrawlScheduler:
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
         "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
-        "ranker": HybridRanker(),
+        "ranker": _build_ranker(settings),
         "canonicalizer": Canonicalizer(),
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _build_ranker(settings: Settings) -> HybridRanker:
+    """Wire the ranking pipeline according to settings.
+
+    No EMBEDDING_MODEL configured: pure v0.1 rule-only behavior
+    (RuleRanker threshold 0.35 is the sole gate).
+
+    EMBEDDING_MODEL configured: rule stage stops dropping (threshold
+    0) and only orders; EmbeddingRanker becomes the gate via top-K
+    semantic selection.
+    """
+    if not settings.embedding_model:
+        return HybridRanker()
+    embedder = OpenAICompatibleEmbedder(
+        model=settings.embedding_model,
+        api_key=settings.embedding_api_key,
+        base_url=settings.embedding_base_url,
+    )
+    return HybridRanker(
+        rule=RuleRanker(threshold=0.0),
+        embedding=EmbeddingRanker(embedder, keep=settings.embedding_keep),
+    )
