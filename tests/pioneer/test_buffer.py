@@ -49,7 +49,7 @@ async def test_eviction_when_full(buf):
     # Add 2 good candidates (shallow depth, early position).
     await small.add([_candidate("k1", depth=0, position=1), _candidate("k2", depth=0, position=2)])
     assert small.size == 2
-    # Add a better candidate — should evict k2 (deeper position).
+    # Adding a better candidate should evict k2 (deeper position).
     await small.add([_candidate("k3", depth=0, position=1)])
     assert small.size == 2
     assert any(c.url.url_key == "k3" for c in await small.drain())
@@ -60,7 +60,7 @@ async def test_eviction_keeps_better_quality(buf):
     small = InMemoryBuffer(capacity=2)
     await small.add([_candidate("deep", depth=5, position=50)])
     await small.add([_candidate("good", depth=0, position=1)])
-    # Buffer full; add another good candidate — should evict "deep".
+    # Buffer full; adding another good candidate should evict "deep".
     await small.add([_candidate("good2", depth=0, position=2)])
     batch = await small.drain()
     keys = {c.url.url_key for c in batch}

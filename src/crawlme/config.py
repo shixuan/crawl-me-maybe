@@ -8,8 +8,8 @@ override it at runtime, so the effective priority is:
 Documentation discipline: `.env.example` advertises only the set-once
 knobs (secrets, timeouts, deep tuning).  The per-run knobs (result_dir,
 ignore_robots, embedding_*, log_level) also exist here so flags can
-override them, but their env twins are deliberately undocumented —
-when both are given, the flag wins.
+override them, but their env twins are deliberately undocumented.
+When both are given, the flag wins.
 """
 
 from __future__ import annotations

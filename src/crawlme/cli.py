@@ -120,7 +120,7 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
-    # (env defaults), and setup_logging is idempotent — without force the
+    # (env defaults), and setup_logging is idempotent, so without force the
     # --log-level flag would silently never apply.
     setup_logging(cfg, force=True)
     goal = CrawlGoal(prompt=args.prompt)

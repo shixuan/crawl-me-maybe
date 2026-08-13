@@ -1,4 +1,4 @@
-"""Shared fixtures for e2e tests — real network, real storage."""
+"""Shared fixtures for e2e tests (real network, real storage)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from crawlme.config import Settings
 
 @pytest.fixture
 def e2e_settings() -> Settings:
-    """Settings for e2e runs — result dir defaults to results/, the
+    """Settings for e2e runs. result dir defaults to results/, the
     real layout e2e tests want; robots bypassed, embedding off."""
     return Settings(
         fetch_concurrency=2,

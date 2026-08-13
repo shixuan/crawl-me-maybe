@@ -173,7 +173,7 @@ async def _chunk(
 
 
 class OpenAICompatibleEmbedder:
-    """POST {base_url}/embeddings — OpenAI, Jina, and most other providers.
+    """POST {base_url}/embeddings (OpenAI, Jina, and most other providers).
 
     Defaults to OpenAI's endpoint.  Pass *base_url* to point at another
     OpenAI-compatible provider (e.g. https://api.jina.ai/v1); *api_key*

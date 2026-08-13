@@ -22,7 +22,7 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
 
     Calling convention (two deliberate call sites):
       - CLI: ``_cmd_run`` calls once with force=True AFTER applying
-        flag overrides — the single place where per-run log settings
+        flag overrides, the single place where per-run log settings
         land.  Never call before flags are known, or the flag values
         will silently not apply (idempotency swallows the second call).
       - engine.run(): calls again WITHOUT force as a safety net for
