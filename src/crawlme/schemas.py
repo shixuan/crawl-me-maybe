@@ -20,6 +20,10 @@ class CrawlGoal(BaseModel):
     goal_id: str = Field(default_factory=_new_id)
     prompt: str
     goal_statement: str = ""
+    # LLM-curated keywords from the Goal Enhancer (2.0).  Empty means
+    # the rule stage falls back to bare tokenization of the prompt.
+    keywords: list[str] = Field(default_factory=list)
+    since: datetime.datetime | None = None
     embedding: list[float] | None = None
     max_pages: int = 500
     max_tokens: int = 2_000_000

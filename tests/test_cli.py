@@ -5,7 +5,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.cli import main
+from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.schemas import CrawlCounters
+
+
+@pytest.fixture(autouse=True)
+def _inert_goal_enhancer(monkeypatch):
+    """Keep CLI tests hermetic: never touch a real LLM, whatever the
+    developer's .env says."""
+
+    def _inert(cls, settings):
+        return GoalEnhancer(None)
+
+    monkeypatch.setattr(GoalEnhancer, "from_settings", classmethod(_inert))
 
 
 def test_run_help(capsys):
@@ -129,6 +141,31 @@ def test_run_flags_left_off_keep_env_defaults(monkeypatch):
     assert cfg.log_level == "INFO"
     assert goal.max_pages == 500
     assert goal.domain_budget == 50
+
+
+def test_run_applies_enhanced_goal(monkeypatch):
+    """When the enhancer produces fields, they land on the goal."""
+    captured: dict = {}
+
+    class _StubEnhancer:
+        @classmethod
+        def from_settings(cls, settings):
+            return cls()
+
+        async def enhance(self, goal):
+            return EnhancedGoal(statement="Find ML papers", keywords=["ml", "papers"], since=None)
+
+    monkeypatch.setattr("crawlme.cli.GoalEnhancer", _StubEnhancer)
+    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
+        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+    goal = captured["goal"]
+    assert goal.goal_statement == "Find ML papers"
+    assert goal.keywords == ["ml", "papers"]
 
 
 def test_run_embedding_off_flag():

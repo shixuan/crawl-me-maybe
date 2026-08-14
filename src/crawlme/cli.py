@@ -18,6 +18,7 @@ from pathlib import Path
 
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
+from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
@@ -139,6 +140,20 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         goal.depth_limit = args.depth_limit
     if args.domain_budget is not None:
         goal.domain_budget = args.domain_budget
+
+    # One LLM call per task: enrich statement, keywords, and the time
+    # window.  Inert without credentials, never blocks the crawl.
+    enhanced = await GoalEnhancer.from_settings(cfg).enhance(goal)
+    if enhanced is not None:
+        goal.goal_statement = enhanced.statement
+        goal.keywords = enhanced.keywords
+        goal.since = enhanced.since
+        logger.info(
+            "goal.enhanced statement_len=%d keywords=%d since=%s",
+            len(enhanced.statement),
+            len(enhanced.keywords),
+            enhanced.since.isoformat() if enhanced.since else "none",
+        )
 
     source = _build_source(args)
     candidates = await source.discover(goal)

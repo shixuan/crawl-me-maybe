@@ -209,13 +209,14 @@ def test_configured_flags_credentials():
 
 
 def test_from_settings_if_configured_skips_without_credentials():
-    settings = Settings(llm_model="openai/gpt-4o-mini")
+    # Explicit empties beat whatever the developer's .env holds.
+    settings = Settings(llm_model="", llm_api_key="", llm_base_url="")
     assert LLMClient.from_settings_if_configured(settings) is None
 
 
 def test_from_settings_if_configured_wires_with_key():
     # Key alone is enough: the model falls back to the provider default.
-    settings = Settings(llm_api_key="sk-1")
+    settings = Settings(llm_model="", llm_api_key="sk-1", llm_base_url="")
     client = LLMClient.from_settings_if_configured(settings)
     assert client is not None
     assert client._api_key == "sk-1"
@@ -223,12 +224,12 @@ def test_from_settings_if_configured_wires_with_key():
 
 
 def test_from_settings_resolves_default_model_when_empty():
-    client = LLMClient.from_settings(Settings())
+    client = LLMClient.from_settings(Settings(llm_model=""))
     assert client._model == "openai/gpt-4o-mini"
 
 
 def test_from_settings_if_configured_allows_keyless_local_endpoint():
-    settings = Settings(llm_model="openai/gpt-4o-mini", llm_base_url="http://localhost:11434/v1")
+    settings = Settings(llm_model="", llm_api_key="", llm_base_url="http://localhost:11434/v1")
     client = LLMClient.from_settings_if_configured(settings)
     assert client is not None
     assert client._base_url == "http://localhost:11434/v1"

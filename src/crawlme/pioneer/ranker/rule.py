@@ -100,7 +100,9 @@ class RuleRanker:
         and 7).  Returns one decision per input candidate: survivors
         first (priority descending), then dropped ones.
         """
-        keywords = _extract_keywords(goal.prompt)
+        # LLM-curated keywords when the Goal Enhancer ran; bare
+        # tokenization otherwise.
+        keywords = list(goal.keywords) if goal.keywords else _extract_keywords(goal.prompt)
         domain_prior = _build_domain_prior(history)
         pc = page_contexts or {}
 

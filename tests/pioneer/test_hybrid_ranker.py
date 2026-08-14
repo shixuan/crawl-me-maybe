@@ -191,6 +191,19 @@ async def test_page_contexts_grouped_scoring(ranker):
     assert priorities.get("a", 0) > priorities.get("b", 0), f"Expected a > b, got {priorities}"
 
 
+@pytest.mark.asyncio
+async def test_llm_curated_keywords_override_bare_tokenization():
+    """keywords set by the Goal Enhancer drive the rule stage, instead
+    of the bare tokenization of the prompt."""
+    r = RuleRanker(threshold=0.0)
+    c = _candidate(depth=0, position=1, anchor="rust compiler internals", raw="https://x.com/docs")
+    bare = (await r.rank_batch(_goal("find papers"), [c], _history()))[0].priority
+    curated = _goal("find papers")
+    curated.keywords = ["rust", "compiler"]
+    boosted = (await r.rank_batch(curated, [c], _history()))[0].priority
+    assert boosted > bare
+
+
 # -- multi-stage funnel -------------------------------------------------
 
 

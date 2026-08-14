@@ -168,6 +168,18 @@ async def test_empty_batch_no_embed_calls():
 
 
 @pytest.mark.asyncio
+async def test_goal_embedding_combines_statement_with_prompt():
+    """The original prompt stays in the embedded text: the enhanced
+    statement supplements it, never replaces it."""
+    goal = _goal("find ml papers")
+    goal.goal_statement = "I am looking for machine learning research papers"
+    embedder = _StubEmbedder({})
+    ranker = EmbeddingRanker(embedder, keep=10)
+    await ranker.rank_batch(goal, [_candidate("k1", anchor="x", snippet=None, parent_heading=None)], _history())
+    assert embedder.calls[0] == ["I am looking for machine learning research papers find ml papers"]
+
+
+@pytest.mark.asyncio
 async def test_goal_embedding_cached_across_batches():
     goal = _goal()
     embedder = _StubEmbedder({"a": [1.0, 0.0], "b": [0.5, 0.0]})

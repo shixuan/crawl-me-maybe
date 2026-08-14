@@ -317,7 +317,9 @@ class EmbeddingRanker:
         cached = self._goal_cache.get(goal.goal_id)
         if cached is not None:
             return cached
-        text = goal.goal_statement or goal.prompt
+        # The original prompt always stays in the embedded text: the
+        # statement supplements it, it never replaces it.
+        text = f"{goal.goal_statement} {goal.prompt}" if goal.goal_statement else goal.prompt
         emb = (await self._embed_texts([_truncate(text)]))[0]
         self._goal_cache[goal.goal_id] = emb
         return emb
