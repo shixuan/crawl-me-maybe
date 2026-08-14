@@ -22,14 +22,12 @@ the house rule is to over-crawl rather than lose good links.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
-import re
 from typing import Any
 
 from crawlme.config import Settings
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
-from crawlme.state.llm import LLMClient, LLMError, TokenBudget
+from crawlme.state.llm import LLMClient, LLMError, TokenBudget, parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -195,23 +193,8 @@ def _trunc(text: str) -> str:
 
 
 def _parse_response(content: str) -> dict[str, Any] | None:
-    """Parse the model's JSON, tolerating prose wrapped around it.
-
-    When the raw block fails to parse, one cheap repair is attempted:
-    trailing commas are the most common malformation.
-    """
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if match is None:
-        return None
-    block = match.group()
-    for attempt in (block, re.sub(r",\s*([}\]])", r"\1", block)):
-        try:
-            data = json.loads(attempt)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            return data
-    return None
+    """Parse the model's JSON with the shared tolerant parser."""
+    return parse_json_response(content)
 
 
 def _to_decisions(

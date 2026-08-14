@@ -160,6 +160,7 @@ def test_save_and_get_analyses(storage):
             "page_id": "p1",
             "url_key": "abc",
             "classification": "RELEVANT",
+            "feedback": {"classification": "RELEVANT", "hub_score": 0.6, "endorsed_links": ["https://x.com/y"]},
             "analyzed_at": "2026-01-01T00:00:00Z",
         }
     )
@@ -167,6 +168,9 @@ def test_save_and_get_analyses(storage):
     results = _run(storage.get_analyses_by_url_key("abc"))
     assert len(results) == 1
     assert results[0]["classification"] == "RELEVANT"
+    # The scheduler-facing feedback signals must survive persistence.
+    assert '"hub_score": 0.6' in results[0]["feedback_json"]
+    assert "https://x.com/y" in results[0]["feedback_json"]
 
 
 def test_save_and_get_feedback(storage):

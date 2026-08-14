@@ -12,7 +12,7 @@ from crawlme.pioneer.ranker.embedding import (
     OpenAICompatibleEmbedder,
 )
 from crawlme.pioneer.ranker.rule import RuleRanker
-from crawlme.scheduler.factory import _build_ranker
+from crawlme.scheduler.factory import _build_ranker, create_scheduler
 from crawlme.state.storage import SqliteEmbeddingCache
 
 
@@ -138,3 +138,33 @@ def test_build_ranker_without_llm_keeps_v01_defaults(tmp_path: Path):
     ranker = _build_ranker(cfg, llm=None)
     assert ranker._llm is None
     assert ranker._rule._threshold == 0.35
+
+
+# -- v0.2 analyzer stage ------------------------------------------------
+
+
+def test_create_scheduler_binds_analyzer_sink(tmp_path: Path):
+    """The analyzer's persistence sink is wired to the storage layer."""
+    captured: dict = {}
+
+    class _StubAnalyzer:
+        def bind_sink(self, sink):
+            captured["sink"] = sink
+
+        async def analyze(self, page, goal):
+            return None
+
+        async def aclose(self):
+            pass
+
+    analyzer = _StubAnalyzer()
+    cfg = Settings(result_dir=tmp_path, embedding_provider="")
+    sched = create_scheduler(cfg, analyzer=analyzer)
+    assert sched._analyzer is analyzer
+    assert "sink" in captured
+
+
+def test_create_scheduler_without_analyzer_leaves_stage_off(tmp_path: Path):
+    cfg = Settings(result_dir=tmp_path, embedding_provider="")
+    sched = create_scheduler(cfg)
+    assert sched._analyzer is None

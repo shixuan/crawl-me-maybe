@@ -196,3 +196,16 @@ async def test_stop_sets_stopping():
 
     assert sched._state == "STOPPING"
     assert sched._task.state == "STOPPING"
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_analyzer_and_ranker():
+    """Shutdown must release stage-held resources (drain tasks, caches)."""
+    analyzer = MagicMock(aclose=AsyncMock())
+    ranker = MagicMock(aclose=AsyncMock())
+    storage = MagicMock(close=AsyncMock())
+    sched = _make_sched(analyzer=analyzer, ranker=ranker, storage=storage)
+    await sched.aclose()
+    analyzer.aclose.assert_awaited_once()
+    ranker.aclose.assert_awaited_once()
+    storage.close.assert_awaited_once()

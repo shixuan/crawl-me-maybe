@@ -15,15 +15,13 @@ stays on the goal and is always embedded alongside the statement.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
-import re
 from dataclasses import dataclass
 
 from crawlme.config import Settings
 from crawlme.pioneer.ranker.rule import _extract_keywords
 from crawlme.schemas import CrawlGoal
-from crawlme.state.llm import LLMClient, LLMError, TokenBudget
+from crawlme.state.llm import LLMClient, LLMError, TokenBudget, parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +88,8 @@ class GoalEnhancer:
 
     def _parse(self, content: str) -> tuple[str, list[str], datetime.datetime | None] | None:
         """Parse the LLM's JSON, tolerating prose wrapped around it."""
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match is None:
-            return None
-        try:
-            data = json.loads(match.group())
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(data, dict):
+        data = parse_json_response(content)
+        if data is None:
             return None
 
         raw_statement = data.get("goal_statement")

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from crawlme.config import Settings
+from crawlme.digest.analyzer import PageAnalyzer
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
@@ -153,7 +154,10 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     llm_ranker = LLMRanker.from_settings(cfg, budget=budget)
     if llm_ranker is not None:
         logger.info("llm.ranker enabled")
-    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker)
+    analyzer = PageAnalyzer.from_settings(cfg, budget=budget)
+    if analyzer is not None:
+        logger.info("llm.analyzer enabled")
+    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, analyzer=analyzer)
     budget.bind_sink(scheduler.note_tokens_used)
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.

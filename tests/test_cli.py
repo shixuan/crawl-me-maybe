@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.cli import main
+from crawlme.digest.analyzer import PageAnalyzer
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.schemas import CrawlCounters
@@ -29,6 +30,16 @@ def _inert_llm_ranker(monkeypatch):
         return None
 
     monkeypatch.setattr(LLMRanker, "from_settings", classmethod(_inert))
+
+
+@pytest.fixture(autouse=True)
+def _inert_analyzer(monkeypatch):
+    """Same for the page-analysis stage: skip it in CLI tests."""
+
+    def _inert(cls, settings, *, budget=None):
+        return None
+
+    monkeypatch.setattr(PageAnalyzer, "from_settings", classmethod(_inert))
 
 
 def test_run_help(capsys):
@@ -224,6 +235,27 @@ def test_run_wires_llm_ranker_into_factory(monkeypatch):
                 pass
 
     assert captured["overrides"]["llm_ranker"] is sentinel
+
+
+def test_run_wires_analyzer_into_factory(monkeypatch):
+    """A configured page analyzer is passed to the scheduler factory."""
+    captured: dict = {}
+    sentinel = object()
+
+    def _fake_from_settings(cls, settings, *, budget=None):
+        return sentinel
+
+    monkeypatch.setattr(
+        "crawlme.cli.PageAnalyzer", type("_Stub", (), {"from_settings": classmethod(_fake_from_settings)})
+    )
+    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
+        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+    assert captured["overrides"]["analyzer"] is sentinel
 
 
 def test_run_binds_budget_sink_to_scheduler(monkeypatch):

@@ -226,3 +226,37 @@ async def test_rank_decisions_persisted(integration_settings):
         row = await db.execute("SELECT COUNT(*) FROM rank_decisions WHERE dropped = 0")
         (kept,) = await row.fetchone()
         assert kept >= 1, f"Expected >= 1 kept decision, got {kept}"
+
+
+class _RecordingAnalyzer:
+    """Stub analyzer: records pages it saw, produces no results."""
+
+    def __init__(self) -> None:
+        self.pages: list[str] = []
+
+    def bind_sink(self, sink) -> None:
+        pass
+
+    async def analyze(self, page, goal):
+        self.pages.append(page.url_key)
+        return None
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_analyzer_sees_every_fetched_page(integration_settings):
+    """The v0.2 analysis stage runs after each page extraction."""
+    cfg = integration_settings
+    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
+    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+
+    analyzer = _RecordingAnalyzer()
+    sched = create_scheduler(cfg, fetcher=_MockFetcher(), analyzer=analyzer)
+    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+
+    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+
+    seed_key = Canonicalizer().canonicalize(_SEED_URL, _SEED_URL).url_key
+    assert analyzer.pages == [seed_key]

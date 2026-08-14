@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.digest.analyzer import Analyzer
 from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.links import extract_links
@@ -78,6 +79,7 @@ class CrawlScheduler:
         buffer: Buffer,
         ranker: Ranker,
         canonicalizer: Canonicalizer,
+        analyzer: Analyzer | None = None,
     ) -> None:
         self._cfg = settings
         self._storage = storage
@@ -89,6 +91,7 @@ class CrawlScheduler:
         self._buffer = buffer
         self._ranker = ranker
         self._canonicalizer = canonicalizer
+        self._analyzer = analyzer
 
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
         self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
@@ -241,6 +244,8 @@ class CrawlScheduler:
         thread would otherwise keep the interpreter alive after the
         crawl, so it must close before the process exits.
         """
+        if self._analyzer is not None:
+            await self._analyzer.aclose()
         await self._ranker.aclose()
         await self._storage.close()
 
@@ -402,6 +407,13 @@ class CrawlScheduler:
                     self._counters.pages_fetched = self._counters.pages_fetched + 1
                     return
                 self._storage.save_page(page)
+                # One LLM call per page (v0.2): classification, summary,
+                # and feedback signals for the FeedbackStore.  Failures
+                # park on the analyzer's own retry queue and never block
+                # this loop.
+                if self._analyzer is not None:
+                    assert self._goal is not None
+                    await self._analyzer.analyze(page, self._goal)
                 if self._events:
                     self._events.emit(
                         EventType.FETCH_COMPLETED,

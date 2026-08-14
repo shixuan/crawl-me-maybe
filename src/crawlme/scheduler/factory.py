@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.digest.analyzer import Analyzer
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import HttpFetcher
 from crawlme.pioneer.buffer import InMemoryBuffer
@@ -33,15 +34,18 @@ def create_scheduler(
     settings: Settings,
     goal: CrawlGoal | None = None,
     llm_ranker: Ranker | None = None,
+    analyzer: Analyzer | None = None,
     **overrides: Any,
 ) -> CrawlScheduler:
     """Create a fully-wired CrawlScheduler.
 
     *settings* holds every knob (env + flag overrides, see config.py);
     *goal* supplies the domain budget.  *llm_ranker* enables the v0.2
-    LLM fine-ranking stage; None (the default) keeps the pipeline
-    rule/embedding-only, which tests and credential-less runs rely on.
-    Pass keyword overrides to swap individual components in tests:
+    LLM fine-ranking stage; *analyzer* enables the per-page analysis
+    stage (its sink is bound here so results persist to the analyses
+    table).  None (the default) keeps those stages off, which tests
+    and credential-less runs rely on.  Pass keyword overrides to swap
+    individual components in tests:
     ``create_scheduler(cfg, goal, fetcher=_MockFetcher())``.
     """
     storage = SqliteStorage.create(settings.result_dir)
@@ -61,7 +65,12 @@ def create_scheduler(
         "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
         "ranker": _build_ranker(settings, llm=llm_ranker),
         "canonicalizer": Canonicalizer(),
+        "analyzer": analyzer,
     }
+    if analyzer is not None:
+        # Every successful analysis persists to the analyses table,
+        # including ones that only succeeded on a background retry.
+        analyzer.bind_sink(lambda r: storage.save_analysis(r.model_dump(mode="json")))
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
 

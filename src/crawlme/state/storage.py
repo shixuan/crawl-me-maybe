@@ -432,7 +432,9 @@ class SqliteStorage:
                 analysis_json.get("summary"),
                 json.dumps(analysis_json.get("structured_data", {})),
                 json.dumps(analysis_json.get("tags", [])),
-                json.dumps(analysis_json.get("feedback_json", {})),
+                # The schema field is "feedback"; a plain model dump
+                # carries it under that key (never "feedback_json").
+                json.dumps(analysis_json.get("feedback", {})),
                 analysis_json.get("model", ""),
                 analysis_json.get("prompt_version", ""),
                 analysis_json.get("tokens_used", 0),
