@@ -34,7 +34,6 @@ def test_init_creates_all_tables(storage):
     tables = [
         "crawl_goals",
         "crawl_tasks",
-        "urls",
         "pages",
         "candidates",
         "rank_decisions",
@@ -44,7 +43,6 @@ def test_init_creates_all_tables(storage):
         "events",
         "errors",
         "robots_cache",
-        "embeddings",
     ]
     for t in tables:
         cur = _run(storage._execute_now("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)))
@@ -68,6 +66,26 @@ def test_save_and_get_goal(storage):
     assert g["max_pages"] == 10
 
 
+def test_save_goal_roundtrips_enhanced_fields(storage):
+    """The Goal Enhancer's keywords and since survive persistence."""
+    storage.save_goal(
+        {
+            "goal_id": "g2",
+            "prompt": "最近半年的LLM推理框架进展",
+            "goal_statement": "Find recent progress on LLM inference frameworks / 找最近LLM推理框架进展",
+            "keywords": ["llm", "inference", "vllm"],
+            "since": "2026-02-13T00:00:00+00:00",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    g = _run(storage.get_goal("g2"))
+    assert g is not None
+    assert g["goal_statement"].startswith("Find recent progress")
+    assert '"vllm"' in g["keywords"]
+    assert g["since"] == "2026-02-13T00:00:00+00:00"
+
+
 def test_save_and_get_task(storage):
     storage.save_task(
         {
@@ -82,24 +100,6 @@ def test_save_and_get_task(storage):
     t = _run(storage.get_task("t1"))
     assert t is not None
     assert t["state"] == "RUNNING"
-
-
-def test_save_and_get_url(storage):
-    storage.save_url(
-        {
-            "url_key": "abc",
-            "raw": "https://x.com",
-            "canonical": "https://x.com",
-            "domain": "x.com",
-            "reg_domain": "x.com",
-            "first_seen": "2026-01-01T00:00:00Z",
-            "last_seen": "2026-01-01T00:00:00Z",
-        }
-    )
-    _run(storage._write_queue.join())
-    u = _run(storage.get_url("abc"))
-    assert u is not None
-    assert u["raw"] == "https://x.com"
 
 
 def test_save_and_get_page(storage):
@@ -256,7 +256,6 @@ def test_save_and_get_robots(storage):
 
 def test_get_nonexistent(storage):
     assert _run(storage.get_goal("noexist")) is None
-    assert _run(storage.get_url("noexist")) is None
     assert _run(storage.get_page("noexist")) is None
 
 

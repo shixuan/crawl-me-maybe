@@ -200,6 +200,10 @@ class CrawlScheduler:
             started_at=time.monotonic(),
             tokens_used=self._tokens_used_start,
         )
+        # Persist goal (with its enhanced statement / keywords / since)
+        # and task rows so replay and introspection have a record.
+        self._storage.save_goal(goal.model_dump(mode="json"))
+        self._storage.save_task(task.model_dump(mode="json"))
 
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
@@ -222,6 +226,9 @@ class CrawlScheduler:
                 EventType.STOPPED,
                 {"reason": reason, "pages_fetched": self._counters.pages_fetched},
             )
+        # Final task row: state, counters, and the stop reason.
+        task.counters = {"tokens_used": self._counters.tokens_used, "pages_fetched": self._counters.pages_fetched}
+        self._storage.save_task(task.model_dump(mode="json"))
         await self._storage.close()
 
     async def pause(self) -> None:
@@ -348,12 +355,22 @@ class CrawlScheduler:
                     result = await self._fetcher.fetch(item)
                     domain = item.url.reg_domain or _extract_domain(item.url.raw)
                     self._robots.record_response(domain, result.status_code)
-                except Exception:
+                except Exception as e:
                     logger.warning(
                         "fetch.failed url_key=%s domain=%s depth=%d", item.url_key, item.reg_domain, item.depth
                     )
                     if self._events:
                         self._events.emit(EventType.FETCH_FAILED, {"url_key": item.url_key, "depth": item.depth})
+                    self._storage.save_error(
+                        {
+                            "task_id": self._task.task_id if self._task else "",
+                            "url_key": item.url_key,
+                            "stage": "fetch",
+                            "error_type": type(e).__name__,
+                            "attempt": item.attempts,
+                            "created_at": _utcnow().isoformat(),
+                        }
+                    )
                     await self._frontier.record_outcome(item, "FAILED")
                     return
 

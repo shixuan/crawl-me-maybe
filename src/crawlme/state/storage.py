@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     goal_id    TEXT PRIMARY KEY,
     prompt     TEXT NOT NULL,
     goal_statement TEXT DEFAULT '',
+    keywords   TEXT DEFAULT '[]',
+    since      TEXT,
     embedding  TEXT,
     max_pages  INTEGER DEFAULT 500,
     max_tokens INTEGER DEFAULT 500000,
@@ -38,21 +40,6 @@ CREATE TABLE IF NOT EXISTS crawl_tasks (
     end_at       TEXT,
     stopping_reason TEXT,
     checkpoint_ref TEXT
-);
-
-CREATE TABLE IF NOT EXISTS urls (
-    url_key    TEXT PRIMARY KEY,
-    raw        TEXT NOT NULL,
-    canonical  TEXT NOT NULL,
-    scheme     TEXT DEFAULT '',
-    host       TEXT DEFAULT '',
-    path       TEXT DEFAULT '',
-    query      TEXT DEFAULT '',
-    domain     TEXT DEFAULT '',
-    reg_domain TEXT DEFAULT '',
-    first_seen TEXT NOT NULL,
-    last_seen  TEXT NOT NULL,
-    status     TEXT DEFAULT 'NEW'
 );
 
 CREATE TABLE IF NOT EXISTS pages (
@@ -154,13 +141,6 @@ CREATE TABLE IF NOT EXISTS robots_cache (
     ttl        INTEGER DEFAULT 86400
 );
 
-CREATE TABLE IF NOT EXISTS embeddings (
-    content_hash TEXT PRIMARY KEY,
-    model        TEXT DEFAULT '',
-    dims         INTEGER DEFAULT 0,
-    vector       BLOB,
-    created_at   TEXT NOT NULL
-);
 """
 
 
@@ -178,6 +158,9 @@ class Storage(Protocol):
     def raw_html_path(self, url_key: str, fetch_id: str) -> str: ...
     def save_raw_html(self, url_key: str, fetch_id: str, content: bytes) -> str: ...
 
+    def save_goal(self, goal_json: dict[str, Any]) -> None: ...
+    def save_task(self, task_json: dict[str, Any]) -> None: ...
+    def save_error(self, error_json: dict[str, Any]) -> None: ...
     def save_page(self, page: Page) -> None: ...
     def save_candidate(self, candidate: Candidate) -> None: ...
     def save_rank_decision(self, rd: RankDecision) -> None: ...
@@ -226,6 +209,7 @@ class SqliteStorage:
         await self._conn.executescript(DDL)
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
+        self._writer_task = asyncio.create_task(self._write_loop())
 
     def attach_log_file(self) -> None:
         """Write logs to the run dir's log file (idempotent per path).
@@ -236,7 +220,6 @@ class SqliteStorage:
         from crawlme.logging import to_file
 
         to_file(str(Path(self._db_path).parent.parent / "log"))
-        self._writer_task = asyncio.create_task(self._write_loop())
 
     async def close(self) -> None:
         if self._writer_task:
@@ -288,14 +271,16 @@ class SqliteStorage:
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, embedding, "
-            "max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
+            "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
+            "embedding, max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
                 goal_json.get("goal_statement", ""),
+                json.dumps(goal_json.get("keywords", [])),
+                goal_json.get("since"),
                 json.dumps(goal_json.get("embedding")),
                 goal_json.get("max_pages", 500),
                 goal_json.get("max_tokens", 500_000),
@@ -335,34 +320,6 @@ class SqliteStorage:
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         cur = await self._execute_now("SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-
-    #: urls ---------------------------------------------------------------
-
-    def save_url(self, url_json: dict[str, Any]) -> None:
-        self._enqueue_write(
-            "INSERT OR REPLACE INTO urls(url_key, raw, canonical, scheme, host, "
-            "path, query, domain, reg_domain, first_seen, last_seen, status) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                url_json["url_key"],
-                url_json["raw"],
-                url_json["canonical"],
-                url_json.get("scheme", ""),
-                url_json.get("host", ""),
-                url_json.get("path", ""),
-                url_json.get("query", ""),
-                url_json.get("domain", ""),
-                url_json.get("reg_domain", ""),
-                url_json.get("first_seen", url_json.get("last_seen", "")),
-                url_json.get("last_seen", ""),
-                url_json.get("status", "NEW"),
-            ),
-        )
-
-    async def get_url(self, url_key: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM urls WHERE url_key = ?", (url_key,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
