@@ -62,7 +62,7 @@ Launch a new task.
 | `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
 | `--source-path` | path | File path or RSS feed URL for seeds |
 | `--max-pages` | int | Page budget: 0 means no limit |
-| `--max-tokens` | int | Token budget (kicks in at v0.2) |
+| `--max-tokens` | int | LLM token budget: the task stops when exhausted (default: 500000) |
 | `--max-duration` | int | Time budget, in seconds |
 | `--depth-limit` | int | How deep to go from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop only when the frontier runs dry |

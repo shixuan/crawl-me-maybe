@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +42,50 @@ class LLMError(Exception):
     provider error.  Callers catch this to fall back to rule scoring."""
 
 
+class TokenBudgetError(LLMError):
+    """Raised before a call that would exceed the task token budget."""
+
+
+class TokenBudget:
+    """Task-wide LLM token accounting with a hard limit.
+
+    Shared by every LLM consumer (Goal Enhancer today, LLMRanker
+    later).  record() logs per-call and cumulative totals so usage is
+    visible in the run log.  check() is the emergency brake: it raises
+    before any call once the limit is reached.  The optional sink feeds
+    the scheduler's counters, whose BUDGET_TOKENS stop condition then
+    ends the crawl gracefully.
+    """
+
+    def __init__(self, limit: int, *, sink: Callable[[int], None] | None = None) -> None:
+        self.limit = limit
+        self.used = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.calls = 0
+        self._sink = sink
+
+    def check(self) -> None:
+        if self.limit > 0 and self.used >= self.limit:
+            raise TokenBudgetError(f"token budget exhausted: {self.used}/{self.limit}")
+
+    def record(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.used += input_tokens + output_tokens
+        self.calls += 1
+        if self._sink is not None:
+            self._sink(self.used)
+        logger.info(
+            "llm.tokens call=%d used=%d/%d (+%d in, +%d out)",
+            self.calls,
+            self.used,
+            self.limit,
+            input_tokens,
+            output_tokens,
+        )
+
+
 @dataclass(frozen=True)
 class LLMResponse:
     content: str
@@ -51,6 +96,13 @@ class LLMResponse:
 
 async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
+
+
+def litellm_loaded() -> bool:
+    """True once the litellm package has been imported (an LLM call
+    happened).  Used by the CLI to decide whether to give litellm's
+    background logging worker time to drain before loop teardown."""
+    return _litellm is not None
 
 
 def _litellm_module() -> Any:
@@ -106,14 +158,16 @@ class LLMClient:
         api_key: str = "",
         base_url: str = "",
         concurrency: int = 2,
+        budget: TokenBudget | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
         self._sem = asyncio.Semaphore(concurrency)
+        self._budget = budget
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> LLMClient:
+    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient:
         """Build from Settings: llm_model, llm_api_key, llm_base_url,
         llm_concurrency.  An empty llm_model resolves to the provider
         default, so a key alone is enough to get a working client."""
@@ -124,10 +178,11 @@ class LLMClient:
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
             concurrency=settings.llm_concurrency,
+            budget=budget,
         )
 
     @classmethod
-    def from_settings_if_configured(cls, settings: Settings) -> LLMClient | None:
+    def from_settings_if_configured(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient | None:
         """Default-on with graceful auto-off, mirroring the embedding
         provider.  Without a key and without a custom endpoint there is
         no way to authenticate, so return None and let the caller skip
@@ -135,7 +190,7 @@ class LLMClient:
         if not settings.llm_api_key and not settings.llm_base_url:
             logger.info("llm.auto_off no api key or base url configured")
             return None
-        return cls.from_settings(settings)
+        return cls.from_settings(settings, budget=budget)
 
     @property
     def configured(self) -> bool:
@@ -161,6 +216,9 @@ class LLMClient:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
+        if self._budget is not None:
+            self._budget.check()
+
         last_err: BaseException | None = None
         async with self._sem:
             for attempt in range(_LLM_MAX_RETRIES + 1):
@@ -168,10 +226,14 @@ class LLMClient:
                     resp = await self._complete(messages, max_tokens, json_mode)
                     content = (resp.choices[0].message.content or "").strip()
                     usage = resp.usage
+                    input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                    output_tokens = getattr(usage, "completion_tokens", 0) or 0
+                    if self._budget is not None:
+                        self._budget.record(input_tokens, output_tokens)
                     return LLMResponse(
                         content=content,
-                        input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                        output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
                         model=str(getattr(resp, "model", "") or self._model),
                     )
                 except LLMError:

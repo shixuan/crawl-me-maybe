@@ -14,7 +14,7 @@ def _inert_goal_enhancer(monkeypatch):
     """Keep CLI tests hermetic: never touch a real LLM, whatever the
     developer's .env says."""
 
-    def _inert(cls, settings):
+    def _inert(cls, settings, *, budget=None):
         return GoalEnhancer(None)
 
     monkeypatch.setattr(GoalEnhancer, "from_settings", classmethod(_inert))
@@ -149,7 +149,7 @@ def test_run_applies_enhanced_goal(monkeypatch):
 
     class _StubEnhancer:
         @classmethod
-        def from_settings(cls, settings):
+        def from_settings(cls, settings, *, budget=None):
             return cls()
 
         async def enhance(self, goal):

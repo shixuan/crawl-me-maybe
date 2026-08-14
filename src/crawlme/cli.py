@@ -25,6 +25,7 @@ from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
+from crawlme.state.llm import TokenBudget, litellm_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +142,18 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     if args.domain_budget is not None:
         goal.domain_budget = args.domain_budget
 
+    task = CrawlTask(goal_id=goal.goal_id)
+    scheduler = create_scheduler(cfg, goal=goal)
+    # The run dir exists now: log to its file from here on, so the
+    # Goal Enhancer's early lines land in the file too.
+    scheduler.attach_log_file()
+
     # One LLM call per task: enrich statement, keywords, and the time
-    # window.  Inert without credentials, never blocks the crawl.
-    enhanced = await GoalEnhancer.from_settings(cfg).enhance(goal)
+    # window.  Inert without credentials, never blocks the crawl.  The
+    # shared TokenBudget feeds the scheduler's BUDGET_TOKENS stop
+    # condition, which is the emergency brake on spend.
+    budget = TokenBudget(limit=goal.max_tokens, sink=scheduler.note_tokens_used)
+    enhanced = await GoalEnhancer.from_settings(cfg, budget=budget).enhance(goal)
     if enhanced is not None:
         goal.goal_statement = enhanced.statement
         goal.keywords = enhanced.keywords
@@ -160,9 +170,6 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     allowed_domains: set[str] | None = None
     if hasattr(source, "allowed_domains"):
         allowed_domains = source.allowed_domains
-
-    task = CrawlTask(goal_id=goal.goal_id)
-    scheduler = create_scheduler(cfg, goal=goal)
 
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
@@ -182,11 +189,27 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         await scheduler.pause()
     finally:
         logger.info(
-            "state=%s reason=%s pages=%d",
+            "state=%s reason=%s pages=%d tokens=%d",
             task.state,
             task.stopping_reason or "none",
             scheduler._counters.pages_fetched,
+            scheduler._counters.tokens_used,
         )
+
+    # litellm caches aiohttp/httpx clients that are only torn down when
+    # the event loop closes, and asyncio then logs a scary SSL error
+    # after the task is already COMPLETED.  Close them while the loop
+    # is still alive, then give the logging worker a beat to drain.
+    # Only relevant when litellm was loaded; best-effort because the
+    # cleanup helper is a litellm internal.
+    if litellm_loaded():
+        try:
+            from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients
+
+            await close_litellm_async_clients()  # type: ignore[no-untyped-call]
+        except Exception as e:
+            logger.debug("llm.shutdown cleanup best-effort failed: %s", e)
+        await asyncio.sleep(0.2)
 
 
 def _build_source(args: argparse.Namespace) -> UrlSource:

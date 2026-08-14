@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -59,8 +60,16 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
 
 
 def to_file(path: str) -> None:
-    """Also write logs to *path* (e.g. <run_dir>/crawl.log)."""
+    """Also write logs to *path* (e.g. <run_dir>/log).
+
+    Idempotent per path: callers attach early and late, and only the
+    first call wins.
+    """
     root = logging.getLogger()
+    target = os.path.abspath(path)
+    for existing in root.handlers:
+        if isinstance(existing, logging.FileHandler) and os.path.abspath(existing.baseFilename) == target:
+            return
     h = logging.FileHandler(path)
     h.setLevel(root.level)
     h.setFormatter(ConsoleFormatter())

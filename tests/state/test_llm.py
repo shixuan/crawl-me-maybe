@@ -202,6 +202,50 @@ def test_from_settings_wires_all_knobs():
     assert client._sem._value == 5
 
 
+def test_token_budget_records_and_sinks():
+    totals: list[int] = []
+    budget = llm_mod.TokenBudget(limit=100, sink=totals.append)
+    budget.record(10, 5)
+    assert budget.used == 15
+    assert budget.input_tokens == 10
+    assert budget.output_tokens == 5
+    assert totals == [15]
+    budget.record(0, 0)
+    assert budget.used == 15
+    assert budget.calls == 2
+
+
+def test_token_budget_check_raises_at_limit():
+    budget = llm_mod.TokenBudget(limit=10)
+    budget.record(10, 0)
+    with pytest.raises(llm_mod.TokenBudgetError):
+        budget.check()
+    # limit 0 means uncapped.
+    uncapped = llm_mod.TokenBudget(limit=0)
+    uncapped.record(9999, 0)
+    uncapped.check()
+
+
+async def test_budget_check_blocks_call_before_provider(monkeypatch, no_sleep):
+    stub = _StubLitellm([_resp("hi")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    budget = llm_mod.TokenBudget(limit=1)
+    budget.record(1, 0)
+    with pytest.raises(llm_mod.TokenBudgetError):
+        await LLMClient("openai/gpt-4o-mini", budget=budget).chat("hi")
+    assert stub.kwargs == []
+    assert no_sleep == []
+
+
+async def test_chat_records_tokens_into_budget(monkeypatch):
+    stub = _StubLitellm([_resp("hello", in_tok=12, out_tok=7)])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    budget = llm_mod.TokenBudget(limit=1000)
+    await LLMClient("openai/gpt-4o-mini", budget=budget).chat("hi")
+    assert budget.used == 19
+    assert budget.calls == 1
+
+
 def test_configured_flags_credentials():
     assert not LLMClient("openai/gpt-4o-mini").configured
     assert LLMClient("openai/gpt-4o-mini", api_key="sk-1").configured

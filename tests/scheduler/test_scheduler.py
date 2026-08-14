@@ -50,6 +50,14 @@ def _make_sched(**overrides) -> CrawlScheduler:
     return CrawlScheduler(**kwargs)  # type: ignore[arg-type]
 
 
+def test_note_tokens_used_updates_counters():
+    """The TokenBudget sink lands in the shared counters, which the
+    BUDGET_TOKENS stop condition reads every pump iteration."""
+    sched = _make_sched()
+    sched.note_tokens_used(1234)
+    assert sched._counters.tokens_used == 1234
+
+
 @pytest.mark.asyncio
 async def test_stops_when_frontier_empty():
     """Scheduler should stop immediately when frontier is empty and buffer empty."""

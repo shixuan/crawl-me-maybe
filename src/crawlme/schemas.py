@@ -26,7 +26,11 @@ class CrawlGoal(BaseModel):
     since: datetime.datetime | None = None
     embedding: list[float] | None = None
     max_pages: int = 500
-    max_tokens: int = 2_000_000
+    # LLM token budget for the whole task (v0.2).  Sized so an
+    # unspecified user can finish a typical crawl: a 300-page run
+    # with LLM reranking spends roughly 100-150k tokens, and even
+    # the full 500k costs cents on the default model.
+    max_tokens: int = 500_000
     max_duration_sec: int = 3600
     min_relevant_hits: int = 3
     relevance_threshold: float = 0.7

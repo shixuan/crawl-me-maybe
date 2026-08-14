@@ -23,14 +23,17 @@ from dataclasses import dataclass
 from crawlme.config import Settings
 from crawlme.pioneer.ranker.rule import _extract_keywords
 from crawlme.schemas import CrawlGoal
-from crawlme.state.llm import LLMClient, LLMError
+from crawlme.state.llm import LLMClient, LLMError, TokenBudget
 
 logger = logging.getLogger(__name__)
 
 _MAX_KEYWORDS = 12
 _SINCE_MAX_AGE_DAYS = 3650
 
+# The model cannot know today's date on its own, and time-window goals
+# ("recent", "last week") need it to compute since correctly.
 _SYSTEM = (
+    f"Today is {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d} (UTC). "
     "You turn a user's crawl goal into structured fields. Reply with JSON only, "
     "no prose. Fields: goal_statement (one complete statement of what to find; "
     "if the prompt is not in English, write the statement in English, then append "
@@ -58,10 +61,11 @@ class GoalEnhancer:
         self._client = client
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> GoalEnhancer:
+    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> GoalEnhancer:
         """Wire the client with the default-on auto-off semantics: no
-        credentials means the enhancer stays inert."""
-        return cls(LLMClient.from_settings_if_configured(settings))
+        credentials means the enhancer stays inert.  *budget* is shared
+        across all LLM consumers of the task."""
+        return cls(LLMClient.from_settings_if_configured(settings, budget=budget))
 
     async def enhance(self, goal: CrawlGoal) -> EnhancedGoal | None:
         """One chat call, then validation.  None means apply nothing."""

@@ -37,7 +37,7 @@ class TestCrawlGoal:
 
     def test_defaults(self):
         g = CrawlGoal(prompt="test")
-        assert g.max_tokens == 2_000_000
+        assert g.max_tokens == 500_000
         assert g.depth_limit == 5
         assert g.domain_budget == 50
 

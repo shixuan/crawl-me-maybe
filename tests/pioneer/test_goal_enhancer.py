@@ -10,7 +10,7 @@ import datetime
 
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.schemas import CrawlGoal
-from crawlme.state.llm import LLMError, LLMResponse
+from crawlme.state.llm import LLMError, LLMResponse, TokenBudgetError
 
 
 class _StubClient:
@@ -62,6 +62,10 @@ async def test_chat_called_with_system_and_json_mode():
     assert call["prompt"] == "find machine learning papers"
     assert call["json_mode"] is True
     assert "JSON" in call["system"]
+    # The model cannot know today's date: the prompt must carry it so
+    # time-window goals resolve since correctly.
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    assert f"Today is {today}" in call["system"]
 
 
 async def test_prose_wrapped_around_json_is_tolerated():
@@ -73,6 +77,11 @@ async def test_prose_wrapped_around_json_is_tolerated():
 
 async def test_llm_error_returns_none():
     enhancer = GoalEnhancer(_StubClient([LLMError("provider down")]))
+    assert await enhancer.enhance(_goal()) is None
+
+
+async def test_token_budget_exceeded_returns_none():
+    enhancer = GoalEnhancer(_StubClient([TokenBudgetError("token budget exhausted")]))
     assert await enhancer.enhance(_goal()) is None
 
 

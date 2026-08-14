@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     goal_statement TEXT DEFAULT '',
     embedding  TEXT,
     max_pages  INTEGER DEFAULT 500,
-    max_tokens INTEGER DEFAULT 2000000,
+    max_tokens INTEGER DEFAULT 500000,
     max_duration_sec INTEGER DEFAULT 3600,
     min_relevant_hits INTEGER DEFAULT 3,
     relevance_threshold REAL DEFAULT 0.7,
@@ -173,6 +173,8 @@ class Storage(Protocol):
     async def start(self) -> None: ...
     async def close(self) -> None: ...
 
+    def attach_log_file(self) -> None: ...
+
     def raw_html_path(self, url_key: str, fetch_id: str) -> str: ...
     def save_raw_html(self, url_key: str, fetch_id: str, content: bytes) -> str: ...
 
@@ -219,13 +221,21 @@ class SqliteStorage:
         if self._conn is not None:
             return
         self._conn = await aiosqlite.connect(self._db_path)
-        # Log to a file inside the run directory (setup_logging runs first).
-        from crawlme.logging import to_file
-
-        to_file(str(Path(self._db_path).parent.parent / "log"))
+        # Library users may skip the early attach: cover them here.
+        self.attach_log_file()
         await self._conn.executescript(DDL)
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
+
+    def attach_log_file(self) -> None:
+        """Write logs to the run dir's log file (idempotent per path).
+
+        The CLI calls this right after the run dir exists, so pre-run
+        logs (the Goal Enhancer) land in the file too.
+        """
+        from crawlme.logging import to_file
+
+        to_file(str(Path(self._db_path).parent.parent / "log"))
         self._writer_task = asyncio.create_task(self._write_loop())
 
     async def close(self) -> None:
@@ -288,7 +298,7 @@ class SqliteStorage:
                 goal_json.get("goal_statement", ""),
                 json.dumps(goal_json.get("embedding")),
                 goal_json.get("max_pages", 500),
-                goal_json.get("max_tokens", 2_000_000),
+                goal_json.get("max_tokens", 500_000),
                 goal_json.get("max_duration_sec", 3600),
                 goal_json.get("min_relevant_hits", 3),
                 goal_json.get("relevance_threshold", 0.7),

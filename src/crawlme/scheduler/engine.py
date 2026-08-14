@@ -7,7 +7,7 @@ checkpoints for crash recovery.
 v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
   - FeedbackStore is empty (v0.2)
-  - tokens_used always 0
+  - tokens_used is fed externally via note_tokens_used (v0.2)
   - HybridRanker uses RuleRanker only
 
 See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
@@ -95,6 +95,10 @@ class CrawlScheduler:
 
         self._state: str = "CREATED"
         self._counters: CrawlCounters = CrawlCounters()
+        # LLM usage that landed before run() recreated _counters (the
+        # Goal Enhancer runs first).  run() seeds the fresh counters
+        # from this so the total survives the reset.
+        self._tokens_used_start = 0
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
@@ -149,6 +153,25 @@ class CrawlScheduler:
 
     #: public API -------------------------------------------------------
 
+    def attach_log_file(self) -> None:
+        """Start writing logs to the run dir's log file.
+
+        Called by the CLI before the Goal Enhancer runs, so those early
+        logs land in the file, not just the terminal.
+        """
+        self._storage.attach_log_file()
+
+    def note_tokens_used(self, total: int) -> None:
+        """Feed the shared LLM token counter from the outside.
+
+        The TokenBudget sink calls here after every LLM call, so the
+        BUDGET_TOKENS stop condition sees fresh numbers while the pumps
+        run.  Usage recorded before run() survives its _counters reset
+        through _tokens_used_start.
+        """
+        self._tokens_used_start = total
+        self._counters.tokens_used = total
+
     async def run(self, goal: CrawlGoal, task: CrawlTask) -> None:
         self._goal = goal
         self._task = task
@@ -175,6 +198,7 @@ class CrawlScheduler:
             min_relevant_hits=goal.min_relevant_hits,
             relevance_threshold=goal.relevance_threshold,
             started_at=time.monotonic(),
+            tokens_used=self._tokens_used_start,
         )
 
         self._pump_tasks = [
@@ -187,9 +211,10 @@ class CrawlScheduler:
         task.end_at = _utcnow()
         reason = task.stopping_reason or "none"
         logger.info(
-            "task.done task_id=%s pages=%d reason=%s",
+            "task.done task_id=%s pages=%d tokens=%d reason=%s",
             task.task_id,
             self._counters.pages_fetched,
+            self._counters.tokens_used,
             reason,
         )
         if self._events:
