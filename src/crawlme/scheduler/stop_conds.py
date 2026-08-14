@@ -13,7 +13,8 @@ from dataclasses import dataclass
 
 from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.schemas import CrawlCounters, CrawlTask
+from crawlme.schemas import CrawlTask
+from crawlme.state.context import CrawlCounters
 
 
 @dataclass

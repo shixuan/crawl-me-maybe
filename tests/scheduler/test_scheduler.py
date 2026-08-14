@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.schemas import URL, CrawlCounters, CrawlGoal, CrawlTask, FrontierItem
+from crawlme.schemas import URL, CrawlGoal, CrawlTask, FrontierItem
+from crawlme.state.context import CrawlCounters
 
 
 def _goal(**kw) -> CrawlGoal:
@@ -209,3 +210,26 @@ async def test_aclose_closes_analyzer_and_ranker():
     analyzer.aclose.assert_awaited_once()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
+
+
+def test_summary_reports_run_statistics():
+    """summary() reads counters and stats straight from the context."""
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=12, tokens_used=5000, started_at=100.0)
+    sched._ctx.stats.links_discovered = 123
+    sched._ctx.stats.candidates_ranked = 45
+    sched._ctx.stats.fetch_errors = 2
+    sched._ctx.stats.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
+    sched._ctx.stats.embedding_cache_hits = 4
+    sched._ctx.stats.embedding_cache_misses = 9
+
+    summary = sched.summary()
+
+    assert summary["pages_fetched"] == 12
+    assert summary["tokens_used"] == 5000
+    assert summary["candidates_discovered"] == 123
+    assert summary["candidates_ranked"] == 45
+    assert summary["fetch_errors"] == 2
+    assert summary["analyses"] == {"RELEVANT": 3, "IRRELEVANT": 1}
+    assert summary["embedding_cache_hits"] == 4
+    assert summary["embedding_cache_misses"] == 9

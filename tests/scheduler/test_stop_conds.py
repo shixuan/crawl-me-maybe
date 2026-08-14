@@ -7,7 +7,8 @@ import pytest
 from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.frontier import PriorityFrontier
 from crawlme.scheduler.stop_conds import check_stop
-from crawlme.schemas import URL, CrawlCounters, CrawlTask, FrontierItem
+from crawlme.schemas import URL, CrawlTask, FrontierItem
+from crawlme.state.context import CrawlCounters
 
 
 def _task(state: str = "RUNNING") -> CrawlTask:

@@ -27,6 +27,7 @@ from crawlme.pioneer.ranker.embedding import (
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
+from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.storage import SqliteEmbeddingCache, SqliteStorage
 
 
@@ -42,13 +43,17 @@ def create_scheduler(
     *settings* holds every knob (env + flag overrides, see config.py);
     *goal* supplies the domain budget.  *llm_ranker* enables the v0.2
     LLM fine-ranking stage; *analyzer* enables the per-page analysis
-    stage (its sink is bound here so results persist to the analyses
-    table).  None (the default) keeps those stages off, which tests
-    and credential-less runs rely on.  Pass keyword overrides to swap
-    individual components in tests:
-    ``create_scheduler(cfg, goal, fetcher=_MockFetcher())``.
+    stage (the engine binds its persistence sink).  None (the default)
+    keeps those stages off, which tests and credential-less runs rely
+    on.  Pass keyword overrides to swap individual components in
+    tests: ``create_scheduler(cfg, goal, fetcher=_MockFetcher())``.
     """
     storage = SqliteStorage.create(settings.result_dir)
+    # The run context: one mutable object that every stage records
+    # into (stop-condition counters + report statistics).  The engine
+    # resets it in place when run() starts, so the references handed
+    # out here stay valid for the scheduler's lifetime.
+    ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
@@ -63,14 +68,11 @@ def create_scheduler(
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
         "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
-        "ranker": _build_ranker(settings, llm=llm_ranker),
+        "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
         "canonicalizer": Canonicalizer(),
         "analyzer": analyzer,
+        "context": ctx,
     }
-    if analyzer is not None:
-        # Every successful analysis persists to the analyses table,
-        # including ones that only succeeded on a background retry.
-        analyzer.bind_sink(lambda r: storage.save_analysis(r.model_dump(mode="json")))
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
 
@@ -79,7 +81,7 @@ _LOCAL_DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12
 _API_DEFAULT_MODEL = "text-embedding-3-small"
 
 
-def _build_ranker(settings: Settings, llm: Ranker | None = None) -> HybridRanker:
+def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats | None = None) -> HybridRanker:
     """Wire the ranking pipeline according to settings.
 
     embedding_provider "" (--embedding off): pure v0.1 rule-only
@@ -130,6 +132,7 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None) -> HybridRanker
             embedder,
             keep=settings.embedding_keep,
             cache=SqliteEmbeddingCache(Path(settings.result_dir) / "embedding_cache.db"),
+            stats=stats,
         ),
         llm=llm,
     )

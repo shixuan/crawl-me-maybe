@@ -40,6 +40,7 @@ from typing import Any, Protocol
 import httpx
 
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
+from crawlme.state.context import RunStats
 
 logger = logging.getLogger(__name__)
 
@@ -263,10 +264,18 @@ class EmbeddingRanker:
     new tasks) skip the provider entirely.
     """
 
-    def __init__(self, embedder: Embedder, keep: int = 60, cache: EmbeddingCache | None = None) -> None:
+    def __init__(
+        self,
+        embedder: Embedder,
+        keep: int = 60,
+        cache: EmbeddingCache | None = None,
+        stats: RunStats | None = None,
+    ) -> None:
         self._embedder = embedder
         self._keep = keep
         self._cache = cache
+        # Cache tallies land in the shared run stats when provided.
+        self._stats = stats
         self._goal_cache: dict[str, list[float]] = {}
         # Vector dimensionality learned from the first provider response;
         # used to reject cache entries from an incompatible vector space.
@@ -353,6 +362,9 @@ class EmbeddingRanker:
                     del cached[h]
 
         miss = [(i, t) for i, t in enumerate(texts) if hashes[i] not in cached]
+        if self._stats is not None:
+            self._stats.embedding_cache_hits += len(texts) - len(miss)
+            self._stats.embedding_cache_misses += len(miss)
         new_by_hash: dict[str, list[float]] = {}
         if miss:
             new_vecs = await self._embedder.embed([t for _, t in miss])

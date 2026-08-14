@@ -36,14 +36,15 @@ from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.stop_conds import check_stop
 from crawlme.schemas import (
     URL,
+    AnalysisResult,
     Candidate,
-    CrawlCounters,
     CrawlGoal,
     CrawlTask,
     FrontierItem,
     FrontierSnapshot,
     RankHistorySummary,
 )
+from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.events import EventEmitter, EventType
 from crawlme.state.storage import Storage
 
@@ -80,6 +81,7 @@ class CrawlScheduler:
         ranker: Ranker,
         canonicalizer: Canonicalizer,
         analyzer: Analyzer | None = None,
+        context: CrawlContext | None = None,
     ) -> None:
         self._cfg = settings
         self._storage = storage
@@ -92,15 +94,22 @@ class CrawlScheduler:
         self._ranker = ranker
         self._canonicalizer = canonicalizer
         self._analyzer = analyzer
+        # The run context: one mutable object holding the stop-condition
+        # counters and the report statistics.  The factory injects it;
+        # a bare scheduler creates its own so tests stay cheap.
+        self._ctx = context or CrawlContext(counters=CrawlCounters(), stats=RunStats())
+        if analyzer is not None:
+            # Every successful analysis persists and counts here,
+            # including ones that only succeeded on a background retry.
+            analyzer.bind_sink(self._on_analysis)
 
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
         self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
 
         self._state: str = "CREATED"
-        self._counters: CrawlCounters = CrawlCounters()
-        # LLM usage that landed before run() recreated _counters (the
-        # Goal Enhancer runs first).  run() seeds the fresh counters
-        # from this so the total survives the reset.
+        # LLM usage that landed before run() recreated the counters
+        # (the Goal Enhancer runs first).  run() seeds the fresh
+        # counters from this so the total survives the reset.
         self._tokens_used_start = 0
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
@@ -194,15 +203,7 @@ class CrawlScheduler:
         self._events = EventEmitter(self._storage, task.task_id)
         self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
 
-        self._counters = CrawlCounters(
-            max_pages=goal.max_pages,
-            max_tokens=goal.max_tokens,
-            max_duration_sec=goal.max_duration_sec,
-            min_relevant_hits=goal.min_relevant_hits,
-            relevance_threshold=goal.relevance_threshold,
-            started_at=time.monotonic(),
-            tokens_used=self._tokens_used_start,
-        )
+        self._ctx.reset(goal=goal, tokens_used_start=self._tokens_used_start)
         # Persist goal (with its enhanced statement / keywords / since)
         # and task rows so replay and introspection have a record.
         self._storage.save_goal(goal.model_dump(mode="json"))
@@ -248,6 +249,49 @@ class CrawlScheduler:
             await self._analyzer.aclose()
         await self._ranker.aclose()
         await self._storage.close()
+
+    def _on_analysis(self, result: AnalysisResult) -> None:
+        """Analyzer sink: persist the result and keep the tally."""
+        self._storage.save_analysis(result.model_dump(mode="json"))
+        by_class = self._ctx.stats.analyses_by_class
+        by_class[result.classification] = by_class.get(result.classification, 0) + 1
+
+    def summary(self) -> dict[str, Any]:
+        """End-of-run statistics for the CLI's terminal report.
+
+        Everything reads from the run context; stages record into it
+        as they work, so no merge step is needed here.
+        """
+        counters = self._ctx.counters
+        stats = self._ctx.stats
+        report: dict[str, Any] = {
+            "pages_fetched": counters.pages_fetched,
+            "tokens_used": counters.tokens_used,
+            "candidates_discovered": stats.links_discovered,
+            "candidates_ranked": stats.candidates_ranked,
+            "fetch_errors": stats.fetch_errors,
+            "analyses": dict(stats.analyses_by_class),
+        }
+        if counters.started_at:
+            report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
+        if stats.embedding_cache_hits or stats.embedding_cache_misses:
+            report["embedding_cache_hits"] = stats.embedding_cache_hits
+            report["embedding_cache_misses"] = stats.embedding_cache_misses
+        return report
+
+    @property
+    def context(self) -> CrawlContext:
+        """The run context: the CLI reads it for the terminal report."""
+        return self._ctx
+
+    @property
+    def _counters(self) -> CrawlCounters:
+        """Stop-condition counters; they live inside the run context."""
+        return self._ctx.counters
+
+    @_counters.setter
+    def _counters(self, counters: CrawlCounters) -> None:
+        self._ctx.counters = counters
 
     async def pause(self) -> None:
         logger.info("pause.requested inflight=%d", self._counters.in_flight)
@@ -389,6 +433,7 @@ class CrawlScheduler:
                             "created_at": _utcnow().isoformat(),
                         }
                     )
+                    self._ctx.stats.fetch_errors += 1
                     await self._frontier.record_outcome(item, "FAILED")
                     return
 
@@ -426,6 +471,7 @@ class CrawlScheduler:
 
                 # Extract links -> Candidates -> PreFilter -> Buffer.
                 raw_links = await asyncio.to_thread(extract_links, page)
+                self._ctx.stats.links_discovered += len(raw_links)
                 logger.debug(
                     "extracted url_key=%s title=%r links=%d status=%s",
                     page.url_key,
@@ -534,6 +580,7 @@ class CrawlScheduler:
             n_dropped = sum(1 for d in decisions if d.dropped)
             n_kept = len(decisions) - n_dropped
             ranked_total += len(batch)
+            self._ctx.stats.candidates_ranked = ranked_total
             logger.info(
                 "rank.batch candidates=%d kept=%d dropped=%d ranked_total=%d",
                 len(batch),

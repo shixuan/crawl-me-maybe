@@ -143,8 +143,8 @@ def test_build_ranker_without_llm_keeps_v01_defaults(tmp_path: Path):
 # -- v0.2 analyzer stage ------------------------------------------------
 
 
-def test_create_scheduler_binds_analyzer_sink(tmp_path: Path):
-    """The analyzer's persistence sink is wired to the storage layer."""
+def test_create_scheduler_wires_analyzer_with_sink(tmp_path: Path):
+    """The analyzer reaches the engine, which binds its persistence sink."""
     captured: dict = {}
 
     class _StubAnalyzer:
@@ -161,10 +161,22 @@ def test_create_scheduler_binds_analyzer_sink(tmp_path: Path):
     cfg = Settings(result_dir=tmp_path, embedding_provider="")
     sched = create_scheduler(cfg, analyzer=analyzer)
     assert sched._analyzer is analyzer
-    assert "sink" in captured
+    assert "sink" in captured  # bound by the engine at construction
 
 
 def test_create_scheduler_without_analyzer_leaves_stage_off(tmp_path: Path):
     cfg = Settings(result_dir=tmp_path, embedding_provider="")
     sched = create_scheduler(cfg)
     assert sched._analyzer is None
+
+
+def test_create_scheduler_injects_context(tmp_path: Path, monkeypatch):
+    """The context created by the factory reaches the engine and the
+    embedding stage, so every tally accumulates in one shared object."""
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    cfg = Settings(result_dir=tmp_path)
+    sched = create_scheduler(cfg)
+    assert sched.context is sched._ctx
+    assert sched._ranker._embedding._stats is sched._ctx.stats

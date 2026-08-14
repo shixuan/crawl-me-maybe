@@ -15,6 +15,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from crawlme.config import Settings
 from crawlme.digest.analyzer import PageAnalyzer
@@ -25,6 +26,7 @@ from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
+from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 from crawlme.state.llm import TokenBudget, litellm_loaded
@@ -225,6 +227,69 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         except Exception as e:
             logger.debug("llm.shutdown cleanup best-effort failed: %s", e)
         await asyncio.sleep(0.2)
+
+    # Printed last on purpose: the cleanup above emits its own teardown
+    # log lines, and the report should be the final word on the
+    # terminal, not buried between shutdown noise.
+    _print_summary(scheduler, task, budget)
+    # The run is over: mute the whole logging tree.  Interpreter
+    # teardown still fires litellm's atexit worker (which creates a
+    # fresh event loop and logs about its empty queue) and asyncio's
+    # loop-close debug records, all of which would otherwise print
+    # after the report at DEBUG level.
+    logging.getLogger().setLevel(logging.CRITICAL)
+
+
+def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:
+    """Print the end-of-run report: the numbers a user cares about.
+
+    The scheduler's summary carries crawl-level tallies (pages,
+    candidates, errors, analyses, stage stats); the budget adds the
+    per-call token breakdown the engine never sees.
+    """
+    summary = scheduler.summary()
+    if not isinstance(summary, dict):
+        return
+    summary["state"] = task.state
+    summary["reason"] = task.stopping_reason or "none"
+    summary["llm_calls"] = budget.calls
+    summary["tokens_in"] = budget.input_tokens
+    summary["tokens_out"] = budget.output_tokens
+    print(_format_summary(summary))
+
+
+def _format_summary(s: dict[str, Any]) -> str:
+    """Render the summary dict as aligned terminal lines."""
+    lines = [f"crawl finished: {s.get('state', '?')} ({s.get('reason', 'none')})"]
+
+    pages = f"{s.get('pages_fetched', 0)} fetched"
+    if s.get("candidates_discovered"):
+        pages += f", {s['candidates_discovered']} links discovered"
+    if s.get("candidates_ranked"):
+        pages += f", {s['candidates_ranked']} ranked"
+    lines.append(f"  pages:      {pages}")
+
+    calls = s.get("llm_calls", 0)
+    tokens = f"{s.get('tokens_used', 0)}"
+    if calls:
+        tokens += f" ({s.get('tokens_in', 0)} in / {s.get('tokens_out', 0)} out), {calls} calls"
+    lines.append(f"  tokens:     {tokens}")
+
+    if s.get("embedding_cache_hits") or s.get("embedding_cache_misses"):
+        lines.append(
+            f"  embeddings: {s.get('embedding_cache_hits', 0)} cache hits, {s.get('embedding_cache_misses', 0)} misses"
+        )
+
+    lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
+
+    analyses = s.get("analyses") or {}
+    if analyses:
+        parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))
+        lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")
+
+    if s.get("duration_sec") is not None:
+        lines.append(f"  duration:   {s['duration_sec']}s")
+    return "\n".join(lines)
 
 
 def _build_source(args: argparse.Namespace) -> UrlSource:

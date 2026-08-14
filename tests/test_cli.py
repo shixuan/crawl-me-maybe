@@ -8,7 +8,7 @@ from crawlme.cli import main
 from crawlme.digest.analyzer import PageAnalyzer
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
-from crawlme.schemas import CrawlCounters
+from crawlme.state.context import CrawlCounters
 
 
 @pytest.fixture(autouse=True)
@@ -283,3 +283,39 @@ def test_run_binds_budget_sink_to_scheduler(monkeypatch):
                 pass
 
     assert recorded == [note]
+
+
+def test_run_prints_end_of_run_summary(capsys):
+    """After a run, the terminal report shows the numbers that matter."""
+
+    def _capture(cfg, goal=None, **overrides):
+        sched = MagicMock()
+        sched.ingest_seeds = AsyncMock()
+        sched._counters = CrawlCounters(pages_fetched=5, tokens_used=1234)
+        sched.run = AsyncMock()
+        sched.summary = lambda: {
+            "pages_fetched": 5,
+            "tokens_used": 1234,
+            "candidates_discovered": 100,
+            "candidates_ranked": 30,
+            "fetch_errors": 1,
+            "analyses": {"RELEVANT": 2, "IRRELEVANT": 1},
+            "duration_sec": 7.5,
+            "embedding_cache_hits": 3,
+            "embedding_cache_misses": 2,
+        }
+        return sched
+
+    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
+        with patch("crawlme.cli.create_scheduler", side_effect=_capture):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+    out = capsys.readouterr().out
+    assert "crawl finished" in out
+    assert "5 fetched" in out
+    assert "100 links discovered" in out
+    assert "2 RELEVANT" in out
+    assert "7.5s" in out

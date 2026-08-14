@@ -17,6 +17,7 @@ from crawlme.pioneer.ranker.embedding import (
     _truncate,
 )
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
+from crawlme.state.context import RunStats
 
 
 def _candidate(url_key: str = "k1", raw: str = "https://example.com/page", **kw) -> Candidate:
@@ -547,3 +548,24 @@ async def test_aclose_closes_cache():
 async def test_aclose_without_cache_is_noop():
     ranker = EmbeddingRanker(_StubEmbedder({}))
     await ranker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stats_record_cache_hits_and_misses():
+    """Cache activity lands in the shared RunStats the factory injects."""
+    embedder = _StubEmbedder({"a": [1.0, 0.0, 0.0]})
+    stats = RunStats()
+    cache = _DictCache()
+    ranker = EmbeddingRanker(embedder, keep=10, cache=cache, stats=stats)
+    goal = _goal()
+    cand = _candidate("k1", anchor="a", snippet=None, parent_heading=None)
+
+    await ranker.rank_batch(goal, [cand], _history())
+    misses_after_first = stats.embedding_cache_misses
+    assert misses_after_first >= 2  # goal + candidate
+
+    await ranker.rank_batch(goal, [cand], _history())
+    # The candidate hits the persistent cache; the goal comes from the
+    # in-memory per-task cache, so it never reaches the cache layer.
+    assert stats.embedding_cache_hits == 1
+    assert stats.embedding_cache_misses == misses_after_first
