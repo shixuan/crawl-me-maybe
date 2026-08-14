@@ -6,6 +6,7 @@ import pytest
 
 from crawlme.cli import main
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
+from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.schemas import CrawlCounters
 
 
@@ -18,6 +19,16 @@ def _inert_goal_enhancer(monkeypatch):
         return GoalEnhancer(None)
 
     monkeypatch.setattr(GoalEnhancer, "from_settings", classmethod(_inert))
+
+
+@pytest.fixture(autouse=True)
+def _inert_llm_ranker(monkeypatch):
+    """Same for the LLM ranking stage: skip it in CLI tests."""
+
+    def _inert(cls, settings, *, budget=None):
+        return None
+
+    monkeypatch.setattr(LLMRanker, "from_settings", classmethod(_inert))
 
 
 def test_run_help(capsys):
@@ -56,11 +67,12 @@ def test_run_prints_prompt(caplog):
 
 
 def _capturing_factory(captured: dict):
-    """Factory stub that records the Settings / goal it receives."""
+    """Factory stub that records the Settings / goal / overrides it receives."""
 
     def _capture(cfg, goal=None, **overrides):
         captured["cfg"] = cfg
         captured["goal"] = goal
+        captured["overrides"] = overrides
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched._counters = CrawlCounters()
@@ -193,3 +205,49 @@ def test_run_flag_beats_env_twin(monkeypatch):
             except SystemExit:
                 pass
     assert captured["cfg"].embedding_provider == ""
+
+
+def test_run_wires_llm_ranker_into_factory(monkeypatch):
+    """A configured LLM ranker is passed to the scheduler factory."""
+    captured: dict = {}
+    sentinel = object()
+
+    def _fake_from_settings(cls, settings, *, budget=None):
+        return sentinel
+
+    monkeypatch.setattr("crawlme.cli.LLMRanker", type("_Stub", (), {"from_settings": classmethod(_fake_from_settings)}))
+    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
+        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+    assert captured["overrides"]["llm_ranker"] is sentinel
+
+
+def test_run_binds_budget_sink_to_scheduler(monkeypatch):
+    """The shared token budget's sink reaches the scheduler, which is
+    what makes the BUDGET_TOKENS stop condition see LLM usage."""
+    from crawlme.state.llm import TokenBudget
+
+    note = object()
+    recorded: list = []
+
+    def _capture(cfg, goal=None, **overrides):
+        sched = MagicMock()
+        sched.ingest_seeds = AsyncMock()
+        sched._counters = CrawlCounters()
+        sched.run = AsyncMock()
+        sched.note_tokens_used = note
+        return sched
+
+    monkeypatch.setattr(TokenBudget, "bind_sink", lambda self, sink: recorded.append(sink))
+    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
+        with patch("crawlme.cli.create_scheduler", side_effect=_capture):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+    assert recorded == [note]

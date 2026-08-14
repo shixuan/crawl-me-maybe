@@ -233,6 +233,7 @@ class SqliteStorage:
             # Final commit: flushes any writes since the last batch commit.
             await self._conn.commit()
             await self._conn.close()
+            self._conn = None
 
     async def _write_loop(self) -> None:
         batch = 0

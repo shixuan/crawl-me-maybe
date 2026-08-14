@@ -63,6 +63,7 @@ class _DictCache:
     def __init__(self) -> None:
         self._store: dict[str, list[float]] = {}
         self.puts: list[list[tuple[str, list[float]]]] = []
+        self.closed = False
 
     async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]:
         return {h: self._store[h] for h in content_hashes if h in self._store}
@@ -71,6 +72,9 @@ class _DictCache:
         self.puts.append(list(entries))
         for h, v in entries:
             self._store[h] = v
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class _FailingEmbedder:
@@ -527,3 +531,19 @@ async def test_embedder_no_retry_on_permanent_4xx():
     with pytest.raises(httpx.HTTPStatusError):
         await embedder.embed(["x"])
     assert state["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_cache():
+    """aclose releases the vector cache, whose real implementation
+    owns an aiosqlite connection with a worker thread."""
+    cache = _DictCache()
+    ranker = EmbeddingRanker(_StubEmbedder({}), cache=cache)
+    await ranker.aclose()
+    assert cache.closed
+
+
+@pytest.mark.asyncio
+async def test_aclose_without_cache_is_noop():
+    ranker = EmbeddingRanker(_StubEmbedder({}))
+    await ranker.aclose()

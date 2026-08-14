@@ -85,6 +85,8 @@ class EmbeddingCache(Protocol):
 
     async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None: ...
 
+    async def close(self) -> None: ...
+
 
 class FastEmbedEmbedder:
     """Local embedding via fastembed (ONNX runtime, no torch).
@@ -307,6 +309,15 @@ class EmbeddingRanker:
             )
         return decisions
 
+    async def aclose(self) -> None:
+        """Close the persistent vector cache when present.
+
+        The cache owns an aiosqlite connection whose worker thread
+        would otherwise keep the interpreter alive at exit.
+        """
+        if self._cache is not None:
+            await self._cache.close()
+
     async def _goal_embedding(self, goal: CrawlGoal) -> list[float]:
         """Embed the goal once per task; in-memory cache by goal_id.
 
@@ -361,7 +372,7 @@ def _text_for(c: Candidate, page_contexts: dict[str, dict[str, Any]] | None) -> 
     if page_contexts:
         parts.append(page_contexts.get(c.source_url_key or "", {}).get("title", ""))
     text = " ".join(p for p in parts if p).strip()
-    return _truncate(text) if text else c.url.raw[:_MAX_EMBED_CHARS]
+    return _truncate(text) if text else c.url.canonical[:_MAX_EMBED_CHARS]
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

@@ -98,7 +98,7 @@ class TrafExtractor:
                 pass
 
         if title is None:
-            title = fetch_result.url.raw
+            title = fetch_result.url.canonical
 
         text_blob = plain_text or ""
         text_hash = hashlib.sha256(text_blob.encode()).hexdigest()[:16]

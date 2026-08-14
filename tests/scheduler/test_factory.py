@@ -102,3 +102,39 @@ def test_build_ranker_api_keyless_custom_endpoint_allowed(tmp_path: Path):
     )
     ranker = _build_ranker(cfg)
     assert ranker._embedding._embedder.model_name == "api/text-embedding-3-small"
+
+
+# -- v0.2 LLM stage -----------------------------------------------------
+
+
+def test_build_ranker_llm_relaxes_rule_threshold(tmp_path: Path):
+    """LLM stage + embedding off: the rule threshold relaxes to 0.25 so
+    the coarse filter favors recall; the LLM is the final gate."""
+    cfg = Settings(result_dir=tmp_path, embedding_provider="")
+    llm = object()
+    ranker = _build_ranker(cfg, llm=llm)
+    assert ranker._llm is llm
+    assert ranker._embedding is None
+    assert ranker._rule._threshold == 0.25
+
+
+def test_build_ranker_llm_with_embedding_stage(tmp_path: Path, monkeypatch):
+    """LLM + embedding: rule passes everything through, embedding top-K
+    gates, and the LLM fine-ranks the survivors."""
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    cfg = Settings(result_dir=tmp_path)
+    llm = object()
+    ranker = _build_ranker(cfg, llm=llm)
+    assert ranker._llm is llm
+    assert ranker._rule._threshold == 0.0
+    assert isinstance(ranker._embedding, EmbeddingRanker)
+
+
+def test_build_ranker_without_llm_keeps_v01_defaults(tmp_path: Path):
+    """No LLM stage: rule-only pipeline stays at the v0.1 threshold."""
+    cfg = Settings(result_dir=tmp_path, embedding_provider="")
+    ranker = _build_ranker(cfg, llm=None)
+    assert ranker._llm is None
+    assert ranker._rule._threshold == 0.35

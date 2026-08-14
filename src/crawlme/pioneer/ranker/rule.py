@@ -132,6 +132,10 @@ class RuleRanker:
         kept.sort(key=lambda d: d.priority, reverse=True)
         return kept + dropped
 
+    async def aclose(self) -> None:
+        """Pure heuristics hold no resources."""
+        return None
+
     def score_batch(
         self,
         candidates: list[Candidate],

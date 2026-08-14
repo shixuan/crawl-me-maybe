@@ -19,6 +19,7 @@ from pathlib import Path
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
+from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
@@ -143,16 +144,23 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         goal.domain_budget = args.domain_budget
 
     task = CrawlTask(goal_id=goal.goal_id)
-    scheduler = create_scheduler(cfg, goal=goal)
+    # One shared TokenBudget covers every LLM consumer (the ranker and
+    # the Goal Enhancer).  It is created before the scheduler because
+    # the ranker needs it at construction time; the sink that feeds the
+    # BUDGET_TOKENS stop condition is bound right after the scheduler
+    # exists.
+    budget = TokenBudget(limit=goal.max_tokens)
+    llm_ranker = LLMRanker.from_settings(cfg, budget=budget)
+    if llm_ranker is not None:
+        logger.info("llm.ranker enabled")
+    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker)
+    budget.bind_sink(scheduler.note_tokens_used)
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.
     scheduler.attach_log_file()
 
     # One LLM call per task: enrich statement, keywords, and the time
-    # window.  Inert without credentials, never blocks the crawl.  The
-    # shared TokenBudget feeds the scheduler's BUDGET_TOKENS stop
-    # condition, which is the emergency brake on spend.
-    budget = TokenBudget(limit=goal.max_tokens, sink=scheduler.note_tokens_used)
+    # window.  Inert without credentials, never blocks the crawl.
     enhanced = await GoalEnhancer.from_settings(cfg, budget=budget).enhance(goal)
     if enhanced is not None:
         goal.goal_statement = enhanced.statement
@@ -187,6 +195,9 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         logger.info("interrupted: saving checkpoint")
         await scheduler.pause()
+        # run() never closed the resources on this path; close them so
+        # the process can exit instead of hanging on leaked threads.
+        await scheduler.aclose()
     finally:
         logger.info(
             "state=%s reason=%s pages=%d tokens=%d",

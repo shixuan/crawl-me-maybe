@@ -286,6 +286,47 @@ async def test_embedding_failure_falls_back_to_rule():
     assert not decisions[0].dropped
 
 
+class _FailingLLMRanker:
+    async def rank_batch(self, goal, candidates, history, page_contexts=None) -> list[RankDecision]:
+        raise RuntimeError("LLM API down")
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_keeps_earlier_stage_scores():
+    """A dead LLM stage must not block the pipeline or lose earlier scores."""
+    c = _candidate(depth=0, position=1, anchor="machine learning tutorial", raw="https://x.com/docs")
+    hybrid = HybridRanker(rule=RuleRanker(), llm=_FailingLLMRanker())
+
+    decisions = await hybrid.rank_batch(_goal("machine learning"), [c], _history())
+    assert len(decisions) == 1
+    assert decisions[0].ranker == "rule"
+    assert not decisions[0].dropped
+
+
+class _ClosingRanker:
+    """Stub stage that records aclose()."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def rank_batch(self, goal, candidates, history, page_contexts=None) -> list[RankDecision]:
+        return []
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_aclose_chains_to_later_stages():
+    """The embedding cache lives in stage 2; aclose must reach it."""
+    emb = _ClosingRanker()
+    llm = _ClosingRanker()
+    hybrid = HybridRanker(rule=RuleRanker(), embedding=emb, llm=llm)
+    await hybrid.aclose()
+    assert emb.closed
+    assert llm.closed
+
+
 def test_blend_combines_priorities():
     prev = [
         RankDecision(

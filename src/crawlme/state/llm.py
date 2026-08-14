@@ -65,6 +65,15 @@ class TokenBudget:
         self.calls = 0
         self._sink = sink
 
+    def bind_sink(self, sink: Callable[[int], None]) -> None:
+        """Attach the scheduler counter sink after both objects exist.
+
+        The budget is created before the scheduler (the LLM ranker
+        needs it at construction time), so the sink cannot be passed
+        in the constructor in that wiring.
+        """
+        self._sink = sink
+
     def check(self) -> None:
         if self.limit > 0 and self.used >= self.limit:
             raise TokenBudgetError(f"token budget exhausted: {self.used}/{self.limit}")

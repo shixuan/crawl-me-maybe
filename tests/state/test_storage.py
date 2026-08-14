@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -283,6 +284,23 @@ def test_embedding_roundtrip(embedding_cache):
 def test_embedding_missing_hashes(embedding_cache):
     got = _run(embedding_cache.get_vectors(["nope1", "nope2"]))
     assert got == {}
+
+
+def test_embedding_cache_close_stops_worker_thread(embedding_cache):
+    """The cache's aiosqlite worker thread must exit on close.  It is a
+    non-daemon thread, so a leak keeps the interpreter hanging at
+    process exit long after the crawl is COMPLETED."""
+    _run(embedding_cache.put_vectors([("h1", [0.5])], "local/a"))
+    assert embedding_cache._conn is not None
+    thread = embedding_cache._conn._thread
+    assert thread.is_alive()
+    _run(embedding_cache.close())
+    # The close future resolves just before the worker exits its loop.
+    for _ in range(100):
+        if not thread.is_alive():
+            break
+        time.sleep(0.01)
+    assert not thread.is_alive()
 
 
 def test_embedding_empty_list(embedding_cache):

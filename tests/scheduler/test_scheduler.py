@@ -43,7 +43,7 @@ def _make_sched(**overrides) -> CrawlScheduler:
         "robots": MagicMock(),
         "prefilter": MagicMock(),
         "buffer": buffer_mock,
-        "ranker": MagicMock(),
+        "ranker": MagicMock(aclose=AsyncMock()),
         "canonicalizer": MagicMock(),
     }
     kwargs.update(overrides)

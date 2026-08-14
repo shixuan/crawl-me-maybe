@@ -229,6 +229,19 @@ class CrawlScheduler:
         # Final task row: state, counters, and the stop reason.
         task.counters = {"tokens_used": self._counters.tokens_used, "pages_fetched": self._counters.pages_fetched}
         self._storage.save_task(task.model_dump(mode="json"))
+        # Deliberately not a finally: on KeyboardInterrupt the CLI runs
+        # pause() (which checkpoints through this storage) before its
+        # own aclose(), so resources must still be open here.
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Release stage-owned resources (ranker cache, storage).
+
+        The embedding cache holds an aiosqlite connection whose worker
+        thread would otherwise keep the interpreter alive after the
+        crawl, so it must close before the process exits.
+        """
+        await self._ranker.aclose()
         await self._storage.close()
 
     async def pause(self) -> None:
@@ -353,7 +366,7 @@ class CrawlScheduler:
                 raw_path = ""
                 try:
                     result = await self._fetcher.fetch(item)
-                    domain = item.url.reg_domain or _extract_domain(item.url.raw)
+                    domain = item.url.reg_domain or _extract_domain(item.url.canonical)
                     self._robots.record_response(domain, result.status_code)
                 except Exception as e:
                     logger.warning(
