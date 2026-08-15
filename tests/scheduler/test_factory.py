@@ -12,9 +12,9 @@ from crawlme.pioneer.ranker.embedding import (
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
 )
-from crawlme.pioneer.ranker.embedding_cache import SqliteEmbeddingCache
 from crawlme.pioneer.ranker.rule import RuleRanker
 from crawlme.scheduler.factory import _build_ranker, create_scheduler
+from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
 def test_build_ranker_rule_only_when_provider_off(tmp_path: Path):

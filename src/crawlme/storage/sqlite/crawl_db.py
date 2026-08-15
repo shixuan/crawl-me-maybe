@@ -1,10 +1,17 @@
+"""SqliteCrawlDb: one crawl run's state in one SQLite file.
+
+Created per run under results/<timestamp>/db/crawl.db by
+SqliteCrawlDb.create().  Implements the CrawlDb contract from
+storage/contracts.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import datetime
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
@@ -143,34 +150,9 @@ CREATE TABLE IF NOT EXISTS robots_cache (
 """
 
 
-class Storage(Protocol):
-    """Contract for persistent state: SQLite today, Postgres tomorrow."""
+class SqliteCrawlDb:
+    """CrawlDb backed by one SQLite file per run."""
 
-    @property
-    def db_path(self) -> str: ...
-
-    async def start(self) -> None: ...
-    async def close(self) -> None: ...
-
-    def attach_log_file(self) -> None: ...
-
-    def raw_html_path(self, url_key: str, fetch_id: str) -> str: ...
-    def save_raw_html(self, url_key: str, fetch_id: str, content: bytes) -> str: ...
-
-    def save_goal(self, goal_json: dict[str, Any]) -> None: ...
-    def save_task(self, task_json: dict[str, Any]) -> None: ...
-    def save_error(self, error_json: dict[str, Any]) -> None: ...
-    def save_page(self, page: Page) -> None: ...
-    def save_candidate(self, candidate: Candidate) -> None: ...
-    def save_rank_decision(self, rd: RankDecision) -> None: ...
-    def save_analysis(self, analysis_json: dict[str, Any]) -> None: ...
-    def save_snapshot(self, snapshot_json: dict[str, Any]) -> None: ...
-    def save_event(self, event_json: dict[str, Any]) -> None: ...
-
-    async def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None: ...
-
-
-class SqliteStorage:
     def __init__(self, db_path: str, raw_dir: str):
         self._db_path = db_path
         self._raw_dir = Path(raw_dir)
@@ -179,7 +161,7 @@ class SqliteStorage:
         self._conn: aiosqlite.Connection | None = None
 
     @classmethod
-    def create(cls, base_dir: str | Path) -> SqliteStorage:
+    def create(cls, base_dir: str | Path) -> SqliteCrawlDb:
         """Create a Storage with a timestamped subdirectory under *base_dir*.
 
         Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``

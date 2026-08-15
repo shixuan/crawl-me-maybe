@@ -2,9 +2,9 @@
 
 A global file shared across tasks (results/embedding_cache.db), so
 vectors persist model-scoped by content hash and repeated texts skip
-the provider entirely.  Lives with the ranker, not in the state
-package: the cache exists to serve EmbeddingRanker and is swapped or
-dropped together with it.
+the provider entirely.  Implements the EmbeddingCache contract from storage/contracts.py.
+Constructed by the factory and injected into EmbeddingRanker, which
+codes against the contract only.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
 class SqliteEmbeddingCache:
     """EmbeddingCache backed by a global SQLite file shared across tasks.
 
-    Unlike SqliteStorage (one timestamped DB per crawl run), this cache
+    Unlike SqliteCrawlDb (one timestamped DB per crawl run), this cache
     lives at a fixed path (typically ``results/embedding_cache.db``),
     so vectors persist across runs and tasks.  It owns its own
     aiosqlite connection, opened lazily on first use, and commits after

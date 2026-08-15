@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.feedback.domain_prior import DomainPriorStore
 from crawlme.feedback.signals import InflightSignals
 from crawlme.feedback.system import FeedbackLoop
 from crawlme.schemas import AnalyzerFeedback
+from crawlme.storage.sqlite.domain_prior import SqliteDomainPrior
 
 
 class _StubAnalyzer:
@@ -67,7 +67,7 @@ def test_update_forwards_to_signals():
 @pytest.mark.asyncio
 async def test_aclose_closes_analyzer_and_flushes_prior(tmp_path):
     analyzer = _StubAnalyzer()
-    prior = DomainPriorStore(tmp_path / "feedback.db")
+    prior = SqliteDomainPrior(tmp_path / "feedback.db")
     loop = FeedbackLoop(analyzer=analyzer, signals=InflightSignals(prior), prior_store=prior)
     loop.update(AnalyzerFeedback(classification="RELEVANT", relevance_score=1.0, domain="d.com"))
     await loop.aclose()

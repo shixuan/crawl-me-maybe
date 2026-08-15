@@ -41,6 +41,7 @@ import httpx
 
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
 from crawlme.state.context import RunStats
+from crawlme.storage.contracts import EmbeddingCache
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +78,6 @@ class Embedder(Protocol):
     def model_name(self) -> str: ...
 
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
-
-
-class EmbeddingCache(Protocol):
-    """Contract for persistent vector storage."""
-
-    async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]: ...
-
-    async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None: ...
-
-    async def close(self) -> None: ...
 
 
 class FastEmbedEmbedder:

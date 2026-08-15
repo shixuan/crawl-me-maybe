@@ -46,7 +46,7 @@ from crawlme.schemas import (
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.events import EventEmitter, EventType
-from crawlme.state.storage import Storage
+from crawlme.storage.contracts import CrawlDb
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class CrawlScheduler:
         self,
         *,
         settings: Settings,
-        storage: Storage,
+        storage: CrawlDb,
         frontier: Frontier,
         fetcher: Fetcher,
         extractor: Extractor,

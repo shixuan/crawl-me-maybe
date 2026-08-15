@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from crawlme.schemas import URL, Candidate, Page, RankDecision
-from crawlme.state.storage import SqliteStorage
+from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 
 def _url(url_key: str = "abc") -> URL:
@@ -23,7 +23,7 @@ def storage(tmp_path):
     db = tmp_path / "test.db"
     raw = tmp_path / "raw"
     raw.mkdir()
-    s = SqliteStorage(str(db), str(raw))
+    s = SqliteCrawlDb(str(db), str(raw))
     loop.run_until_complete(s.start())
     yield s
     loop.run_until_complete(s.close())

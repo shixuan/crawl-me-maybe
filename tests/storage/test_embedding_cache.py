@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from crawlme.pioneer.ranker.embedding_cache import SqliteEmbeddingCache
+from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
 def _run(coro):

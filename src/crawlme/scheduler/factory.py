@@ -13,7 +13,6 @@ from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import HttpFetcher
 from crawlme.feedback.analyzer import PageAnalyzer
-from crawlme.feedback.domain_prior import DomainPriorStore
 from crawlme.feedback.signals import InflightSignals
 from crawlme.feedback.system import FeedbackLoop, FeedbackSystem
 from crawlme.llm import TokenBudget
@@ -28,12 +27,13 @@ from crawlme.pioneer.ranker.embedding import (
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
 )
-from crawlme.pioneer.ranker.embedding_cache import SqliteEmbeddingCache
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
-from crawlme.state.storage import SqliteStorage
+from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.storage.sqlite.domain_prior import SqliteDomainPrior
+from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
 def create_scheduler(
@@ -56,7 +56,7 @@ def create_scheduler(
     respect.  Pass keyword overrides to swap individual components in
     tests: ``create_scheduler(cfg, goal, fetcher=_MockFetcher())``.
     """
-    storage = SqliteStorage.create(settings.result_dir)
+    storage = SqliteCrawlDb.create(settings.result_dir)
     # The run context: one mutable object that every stage records
     # into (stop-condition counters + report statistics).  The engine
     # resets it in place when run() starts, so the references handed
@@ -98,7 +98,7 @@ def _build_feedback(settings: Settings, budget: TokenBudget | None = None) -> Fe
     if not settings.feedback_enabled:
         return None
     analyzer = PageAnalyzer.from_settings(settings, budget=budget)
-    prior_store = DomainPriorStore(Path(settings.result_dir) / "feedback.db")
+    prior_store = SqliteDomainPrior(Path(settings.result_dir) / "feedback.db")
     return FeedbackLoop(analyzer=analyzer, signals=InflightSignals(prior_store), prior_store=prior_store)
 
 

@@ -18,7 +18,6 @@ from collections.abc import Callable
 from typing import Protocol
 
 from crawlme.feedback.analyzer import Analyzer
-from crawlme.feedback.domain_prior import DomainPriorStore
 from crawlme.feedback.signals import InflightSignals
 from crawlme.schemas import (
     AnalysisResult,
@@ -27,6 +26,7 @@ from crawlme.schemas import (
     Page,
     RankHistorySummary,
 )
+from crawlme.storage.contracts import DomainPrior
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class FeedbackLoop:
         self,
         analyzer: Analyzer | None,
         signals: InflightSignals,
-        prior_store: DomainPriorStore | None = None,
+        prior_store: DomainPrior | None = None,
     ) -> None:
         self._analyzer = analyzer
         self._signals = signals

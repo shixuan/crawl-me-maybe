@@ -1,4 +1,8 @@
-"""DomainPriorStore: the cross-task persistence of the feedback loop.
+"""The cross-task persistence of the feedback loop.
+
+Implements the DomainPrior contract from storage/contracts.py.
+Constructed by the factory and injected into the feedback loop,
+which codes against the contract only.
 
 One global SQLite file (results/feedback.db) accumulates every
 analyzed page's contribution per domain, so later tasks start informed
@@ -40,8 +44,8 @@ CREATE TABLE IF NOT EXISTS domain_prior (
 """
 
 
-class DomainPriorStore:
-    """Cross-task per-domain reputation in one global SQLite file.
+class SqliteDomainPrior:
+    """DomainPrior backed by one global SQLite file.
 
     ``record()`` is synchronous and buffers in memory; ``close()``
     writes everything through atomic counter-increment upserts and

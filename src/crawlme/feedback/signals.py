@@ -17,7 +17,7 @@ the guidance the schedulers and rankers read during the run:
 
 The cross-task half of the loop lives in domain_prior.py: each
 update() also records the page's contribution into the bound
-DomainPriorStore (best-effort, flushed on shutdown by the system).
+SqliteDomainPrior (best-effort, flushed on shutdown by the system).
 
 update() is deliberately synchronous.  The analyzer's sink calls it
 while fetch tasks are in flight, and everything here is a plain
@@ -31,8 +31,8 @@ import logging
 from collections import Counter, deque
 from typing import Any
 
-from crawlme.feedback.domain_prior import DomainPriorStore
 from crawlme.schemas import AnalyzerFeedback, RankHistorySummary
+from crawlme.storage.contracts import DomainPrior
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class InflightSignals:
     purely in memory (tests).
     """
 
-    def __init__(self, prior_store: DomainPriorStore | None = None) -> None:
+    def __init__(self, prior_store: DomainPrior | None = None) -> None:
         self._prior_store = prior_store
         # Most recent RELEVANT pages for the ranker's "seen so far".
         self._relevant: deque[dict[str, Any]] = deque(maxlen=_MAX_RELEVANT)
