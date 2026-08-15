@@ -246,6 +246,8 @@ def _parse_analysis(
             topics=topics,
             entities=entities,
             domain=page.url.reg_domain,
+            url=page.url.canonical,
+            title=page.title or "",
         ),
         model=model,
         prompt_version=_PROMPT_VERSION,

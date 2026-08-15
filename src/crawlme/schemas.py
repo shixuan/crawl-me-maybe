@@ -139,6 +139,12 @@ class AnalyzerFeedback(BaseModel):
     topics: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     domain: str = ""
+    # Page identity the analyzer already holds at parse time.  The
+    # FeedbackStore needs the readable URL for the ranker's "seen so
+    # far" history and the hub multiplier, and the title for the same
+    # history lines.
+    url: str = ""
+    title: str = ""
 
 
 class AnalysisResult(BaseModel):
@@ -174,6 +180,10 @@ class RankHistorySummary(BaseModel):
     relevant_pages: list[dict[str, Any]] = Field(default_factory=list)
     hub_domains: list[str] = Field(default_factory=list)
     top_topics: list[str] = Field(default_factory=list)
+    # reg_domain -> average relevance across every analyzed page of that
+    # domain, accumulated across tasks by the FeedbackStore (2.5).
+    # RuleRanker's domain-prior factor (F4) consumes this.
+    domain_priors: dict[str, float] = Field(default_factory=dict)
     pages_seen: int = 0
     fetched: int = 0
 

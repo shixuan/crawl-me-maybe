@@ -93,6 +93,10 @@ async def test_analyze_builds_full_result():
     assert fb.topics == ["borrow checking"]
     assert fb.entities == ["rustc"]
     assert fb.domain == "example.com"
+    # Page identity rides along so the FeedbackStore can build the
+    # ranker's "seen so far" history without the Page itself.
+    assert fb.url == "https://example.com/rust"
+    assert fb.title == "Borrow Checker Deep Dive"
 
 
 @pytest.mark.asyncio
