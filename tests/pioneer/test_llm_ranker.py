@@ -9,9 +9,9 @@ from __future__ import annotations
 import pytest
 
 from crawlme.config import Settings
+from crawlme.llm import LLMError, LLMResponse, TokenBudget
 from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
-from crawlme.state.llm import LLMError, LLMResponse, TokenBudget
 
 
 class _StubClient:

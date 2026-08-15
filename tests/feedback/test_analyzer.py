@@ -11,9 +11,9 @@ import asyncio
 import pytest
 
 from crawlme.config import Settings
-from crawlme.digest.analyzer import PageAnalyzer
+from crawlme.feedback.analyzer import PageAnalyzer
+from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
-from crawlme.state.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 
 
 class _StubClient:
@@ -93,7 +93,7 @@ async def test_analyze_builds_full_result():
     assert fb.topics == ["borrow checking"]
     assert fb.entities == ["rustc"]
     assert fb.domain == "example.com"
-    # Page identity rides along so the FeedbackStore can build the
+    # Page identity rides along so the feedback signals can build the
     # ranker's "seen so far" history without the Page itself.
     assert fb.url == "https://example.com/rust"
     assert fb.title == "Borrow Checker Deep Dive"

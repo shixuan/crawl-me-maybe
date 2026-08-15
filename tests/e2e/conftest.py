@@ -20,4 +20,8 @@ def e2e_settings() -> Settings:
         log_format="console",
         ignore_robots=True,
         embedding_provider="",
+        # E2E crawls are network tests for FETCHING, not for LLM
+        # stages: keep the factory-built feedback subsystem inert.
+        llm_api_key="",
+        llm_base_url="",
     )

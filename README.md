@@ -145,7 +145,7 @@ Under the hood, two async loops run side by side: `fetch_pump` downloads pages a
 
 | Version | Theme | Actually means |
 |---------|-------|----------------|
-| v0.2 | Brains | LLMRanker batched re-rank, PageAnalyzer, FeedbackStore, rebalanced weights, Replay |
+| v0.2 | Brains | LLMRanker batched re-rank, PageAnalyzer, Feedback sub-system, rebalanced weights, Replay |
 | v0.3 | Polish | Playwright for JS-heavy pages, Prompt Cache, user feedback |
 
 ---

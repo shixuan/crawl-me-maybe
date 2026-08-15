@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -13,8 +14,7 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.pioneer.ranker.rule import RuleRanker
 from crawlme.scheduler.factory import _build_ranker, create_scheduler
-from crawlme.state.feedback import FeedbackStore
-from crawlme.state.storage import SqliteEmbeddingCache
+from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
 def test_build_ranker_rule_only_when_provider_off(tmp_path: Path):
@@ -141,34 +141,23 @@ def test_build_ranker_without_llm_keeps_v01_defaults(tmp_path: Path):
     assert ranker._rule._threshold == 0.35
 
 
-# -- v0.2 analyzer stage ------------------------------------------------
+# -- v0.2 feedback subsystem --------------------------------------------
 
 
-def test_create_scheduler_wires_analyzer_with_sink(tmp_path: Path):
-    """The analyzer reaches the engine, which binds its persistence sink."""
-    captured: dict = {}
-
-    class _StubAnalyzer:
-        def bind_sink(self, sink):
-            captured["sink"] = sink
-
-        async def analyze(self, page, goal):
-            return None
-
-        async def aclose(self):
-            pass
-
-    analyzer = _StubAnalyzer()
+def test_create_scheduler_wires_feedback_override(tmp_path: Path):
+    """A passed feedback facade reaches the engine, which binds its sink."""
     cfg = Settings(result_dir=tmp_path, embedding_provider="")
-    sched = create_scheduler(cfg, analyzer=analyzer)
-    assert sched._analyzer is analyzer
-    assert "sink" in captured  # bound by the engine at construction
+    feedback = MagicMock()
+    sched = create_scheduler(cfg, feedback=feedback)
+    assert sched._feedback is feedback
+    feedback.bind_sink.assert_called_once()
 
 
-def test_create_scheduler_without_analyzer_leaves_stage_off(tmp_path: Path):
-    cfg = Settings(result_dir=tmp_path, embedding_provider="")
+def test_create_scheduler_feedback_off_builds_nothing(tmp_path: Path):
+    """feedback_enabled off: the engine runs with the subsystem absent."""
+    cfg = Settings(result_dir=tmp_path, embedding_provider="", feedback_enabled=False)
     sched = create_scheduler(cfg)
-    assert sched._analyzer is None
+    assert sched._feedback is None
 
 
 def test_create_scheduler_injects_context(tmp_path: Path, monkeypatch):
@@ -183,15 +172,17 @@ def test_create_scheduler_injects_context(tmp_path: Path, monkeypatch):
     assert sched._ranker._embedding._stats is sched._ctx.stats
 
 
-def test_create_scheduler_wires_feedback_store(tmp_path: Path, monkeypatch):
-    """The factory builds the feedback loop with its prior DB at
-    result_dir/feedback.db, the global file shared across tasks."""
+def test_create_scheduler_builds_feedback_from_settings(tmp_path: Path, monkeypatch):
+    """Enabled + no credentials: the prior store is wired (cross-task
+    reputation still feeds F4), while the analyzer degrades away."""
     import importlib.util
 
+    from crawlme.feedback.system import FeedbackLoop
+
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
-    cfg = Settings(result_dir=tmp_path)
+    cfg = Settings(result_dir=tmp_path, llm_api_key="", llm_base_url="")
     sched = create_scheduler(cfg)
 
-    assert isinstance(sched._feedback, FeedbackStore)
-    assert sched._feedback._prior_store is not None
+    assert isinstance(sched._feedback, FeedbackLoop)
+    assert sched._feedback._analyzer is None
     assert Path(sched._feedback._prior_store._db_path) == tmp_path / "feedback.db"

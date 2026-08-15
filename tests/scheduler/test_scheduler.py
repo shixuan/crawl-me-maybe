@@ -211,14 +211,12 @@ async def test_stop_sets_stopping():
 
 
 @pytest.mark.asyncio
-async def test_aclose_closes_analyzer_and_ranker():
+async def test_aclose_closes_ranker_and_storage():
     """Shutdown must release stage-held resources (drain tasks, caches)."""
-    analyzer = MagicMock(aclose=AsyncMock())
     ranker = MagicMock(aclose=AsyncMock())
     storage = MagicMock(close=AsyncMock())
-    sched = _make_sched(analyzer=analyzer, ranker=ranker, storage=storage)
+    sched = _make_sched(ranker=ranker, storage=storage)
     await sched.aclose()
-    analyzer.aclose.assert_awaited_once()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
 
@@ -237,9 +235,10 @@ async def test_aclose_closes_feedback():
 
 def test_on_analysis_feeds_feedback_store():
     """The analyzer sink is where analyses enter the feedback loop."""
-    from crawlme.state.feedback import FeedbackStore
+    from crawlme.feedback.signals import InflightSignals
+    from crawlme.feedback.system import FeedbackLoop
 
-    feedback = FeedbackStore()
+    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
     sched = _make_sched(feedback=feedback)
     result = AnalysisResult(
         page_id="p1",
@@ -268,9 +267,10 @@ def test_apply_feedback_passes_through_without_store():
 def test_apply_feedback_multiplies_hub_and_domain():
     """Hub pages boost their outlinks; a consistently relevant domain
     boosts all of its candidates.  Both multipliers stack."""
-    from crawlme.state.feedback import FeedbackStore
+    from crawlme.feedback.signals import InflightSignals
+    from crawlme.feedback.system import FeedbackLoop
 
-    feedback = FeedbackStore()
+    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
     feedback.update(
         AnalyzerFeedback(
             classification="AGGREGATOR",
@@ -297,11 +297,12 @@ def test_apply_feedback_multiplies_hub_and_domain():
 async def test_inject_endorsed_pushes_priority_1_items():
     """Endorsed links skip ranking, resolve against their source page,
     and enter the frontier at full priority."""
+    from crawlme.feedback.signals import InflightSignals
+    from crawlme.feedback.system import FeedbackLoop
     from crawlme.pioneer.canonicalizer import Canonicalizer
     from crawlme.pioneer.prefilter import Decision
-    from crawlme.state.feedback import FeedbackStore
 
-    feedback = FeedbackStore()
+    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
     feedback.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x", "/rel")))
     sched = _make_sched(feedback=feedback, canonicalizer=Canonicalizer())
     sched._goal = _goal(max_pages=5)
@@ -324,11 +325,12 @@ async def test_inject_endorsed_pushes_priority_1_items():
 @pytest.mark.asyncio
 async def test_inject_endorsed_respects_prefilter():
     """An endorsement never overrides the prefilter's hard rules."""
+    from crawlme.feedback.signals import InflightSignals
+    from crawlme.feedback.system import FeedbackLoop
     from crawlme.pioneer.canonicalizer import Canonicalizer
     from crawlme.pioneer.prefilter import Decision
-    from crawlme.state.feedback import FeedbackStore
 
-    feedback = FeedbackStore()
+    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
     feedback.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x",)))
     sched = _make_sched(feedback=feedback, canonicalizer=Canonicalizer())
     sched._goal = _goal(max_pages=5)
