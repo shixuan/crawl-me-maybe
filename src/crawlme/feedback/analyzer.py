@@ -33,11 +33,12 @@ logger = logging.getLogger(__name__)
 
 # Response cap: a summary plus five short lists fit comfortably.
 _MAX_TOKENS = 1024
-# Default page-text cap sent to the model.  6000 chars carries the gist
-# of most pages while keeping the per-page call cheap; the knob lives
-# in Settings.analyzer_max_chars so the cost/quality tradeoff can be
-# benchmarked (benchmark/feedback/).
-_MAX_PAGE_CHARS = 6000
+# Default page-text cap sent to the model.  The 10-replicate
+# benchmark (benchmark/feedback/) picked 3000: the 6000-char window
+# misclassified long-form pages, while 3000 hits the intro zone and
+# wins on both precision and recall.  The knob lives in
+# Settings.analyzer_max_chars.
+_MAX_PAGE_CHARS = 3000
 # A page gets at most this many attempts, spaced by a fixed delay.
 _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0

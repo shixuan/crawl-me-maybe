@@ -120,7 +120,7 @@ async def test_page_text_truncated_in_prompt():
     client = _StubClient([_resp(_valid_json())])
     await _analyzer(client).analyze(_page(long_text), _goal())
     prompt = client.calls[0]["prompt"]
-    assert len(prompt) < 7000  # 6000-char cap plus headers
+    assert len(prompt) < 4000  # 3000-char cap plus headers
 
 
 @pytest.mark.asyncio
@@ -318,7 +318,7 @@ def test_from_settings_wires_client_and_budget():
     analyzer = PageAnalyzer.from_settings(cfg, budget=budget)
     assert analyzer is not None
     assert analyzer._client._budget is budget
-    assert analyzer._max_page_chars == 6000  # default knob
+    assert analyzer._max_page_chars == 3000  # default knob
 
 
 def test_from_settings_wires_max_page_chars():

@@ -69,7 +69,7 @@ def main() -> None:
         "--analyzer-max-chars",
         type=int,
         default=None,
-        help="Page text sent to the analyzer per page, in characters (default: 6000)",
+        help="Page text sent to the analyzer per page, in characters (default: 3000)",
     )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")

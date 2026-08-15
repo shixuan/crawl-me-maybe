@@ -39,10 +39,11 @@ class Settings(BaseSettings):
     # --feedback off disables the whole subsystem for a clean baseline.
     feedback_enabled: bool = True
     # Page text sent to the analyzer per page, in characters.  The
-    # dominant analyzer cost driver: halving it roughly halves the
-    # analyzer's input tokens at some quality loss (benchmarked in
-    # benchmark/feedback/).
-    analyzer_max_chars: int = 6000
+    # dominant analyzer cost driver.  Set to 3000 by the 10-replicate
+    # benchmark (benchmark/feedback/): on research-style tasks the
+    # 6000-char window was actively worse than no feedback at all,
+    # while 3000 won both precision and single-run recall.
+    analyzer_max_chars: int = 3000
 
     # -: LLM (v0.2+) ---
     # On by default.  Degrades automatically: without a key and without
