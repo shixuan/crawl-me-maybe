@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # domain priors).  On by default, degrades without credentials;
     # --feedback off disables the whole subsystem for a clean baseline.
     feedback_enabled: bool = True
+    # Page text sent to the analyzer per page, in characters.  The
+    # dominant analyzer cost driver: halving it roughly halves the
+    # analyzer's input tokens at some quality loss (benchmarked in
+    # benchmark/feedback/).
+    analyzer_max_chars: int = 6000
 
     # -: LLM (v0.2+) ---
     # On by default.  Degrades automatically: without a key and without

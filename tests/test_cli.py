@@ -100,6 +100,8 @@ def test_run_flags_override_settings(tmp_path):
         "--ignore-robots",
         "--domain-budget",
         "7",
+        "--analyzer-max-chars",
+        "3000",
         "--log-level",
         "WARNING",
         "--max-pages",
@@ -122,6 +124,7 @@ def test_run_flags_override_settings(tmp_path):
     assert cfg.ignore_robots is True
     assert str(cfg.result_dir) == str(fake_results)
     assert cfg.log_level == "WARNING"
+    assert cfg.analyzer_max_chars == 3000
     # Flags -> CrawlGoal
     assert goal.max_pages == 42
     assert goal.domain_budget == 7

@@ -65,6 +65,12 @@ def main() -> None:
         default=None,
         help="Feedback subsystem (page analyzer, run signals, domain priors); 'off' disables it",
     )
+    run_p.add_argument(
+        "--analyzer-max-chars",
+        type=int,
+        default=None,
+        help="Page text sent to the analyzer per page, in characters (default: 6000)",
+    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(
@@ -130,6 +136,8 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         cfg.embedding_model = args.embedding_model
     if args.feedback == "off":
         cfg.feedback_enabled = False
+    if args.analyzer_max_chars is not None:
+        cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
