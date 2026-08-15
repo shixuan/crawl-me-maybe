@@ -60,10 +60,10 @@ def main() -> None:
     )
     run_p.add_argument("--embedding-model", default=None, help="Model id, overriding the provider default")
     run_p.add_argument(
-        "--feedback",
+        "--analysis",
         choices=["on", "off"],
         default=None,
-        help="Feedback subsystem (page analyzer, run signals, domain priors); 'off' disables it",
+        help="Per-page analysis and the steering it feeds; 'off' disables the whole subsystem",
     )
     run_p.add_argument(
         "--analyzer-max-chars",
@@ -134,8 +134,8 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
     if args.embedding_model is not None:
         cfg.embedding_model = args.embedding_model
-    if args.feedback == "off":
-        cfg.feedback_enabled = False
+    if args.analysis == "off":
+        cfg.analysis_enabled = False
     if args.analyzer_max_chars is not None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.log_level is not None:

@@ -1,6 +1,6 @@
 """Tests for SqliteDomainPrior, the cross-task half of the loop.
 
-Persistence flows through the FeedbackLoop facade the way the engine
+Persistence flows through the SteeringLoop facade the way the engine
 uses it: update() records contributions, load() seeds a fresh run's
 signals, and aclose() flushes.
 """
@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.feedback.signals import InflightSignals
-from crawlme.feedback.system import FeedbackLoop
 from crawlme.schemas import AnalyzerFeedback
+from crawlme.steering.loop import SteeringLoop
+from crawlme.steering.signals import InflightSignals
 from crawlme.storage.sqlite.domain_prior import SqliteDomainPrior
 
 
@@ -28,14 +28,14 @@ def _fb(
 async def test_domain_prior_persists_across_runs(tmp_path):
     db = tmp_path / "feedback.db"
     prior1 = SqliteDomainPrior(db)
-    run1 = FeedbackLoop(analyzer=None, signals=InflightSignals(prior1), prior_store=prior1)
+    run1 = SteeringLoop(analyzer=None, signals=InflightSignals(prior1), prior_store=prior1)
     run1.update(_fb(domain="good.com", classification="RELEVANT", relevance=0.9))
     run1.update(_fb(domain="good.com", classification="RELEVANT", relevance=0.7))
     run1.update(_fb(domain="good.com", classification="IRRELEVANT", relevance=0.2))
     await run1.aclose()
 
     prior2 = SqliteDomainPrior(db)
-    run2 = FeedbackLoop(analyzer=None, signals=InflightSignals(prior2), prior_store=prior2)
+    run2 = SteeringLoop(analyzer=None, signals=InflightSignals(prior2), prior_store=prior2)
     await run2.load()
     assert run2.summary().domain_priors["good.com"] == pytest.approx(0.6)
     await run2.aclose()
@@ -45,12 +45,12 @@ async def test_domain_prior_persists_across_runs(tmp_path):
 async def test_load_seeds_prior_and_run_updates_extend_it(tmp_path):
     db = tmp_path / "feedback.db"
     prior1 = SqliteDomainPrior(db)
-    run1 = FeedbackLoop(analyzer=None, signals=InflightSignals(prior1), prior_store=prior1)
+    run1 = SteeringLoop(analyzer=None, signals=InflightSignals(prior1), prior_store=prior1)
     run1.update(_fb(domain="good.com", classification="RELEVANT", relevance=1.0))
     await run1.aclose()
 
     prior2 = SqliteDomainPrior(db)
-    run2 = FeedbackLoop(analyzer=None, signals=InflightSignals(prior2), prior_store=prior2)
+    run2 = SteeringLoop(analyzer=None, signals=InflightSignals(prior2), prior_store=prior2)
     await run2.load()
     run2.update(_fb(domain="good.com", classification="IRRELEVANT", relevance=0.0))
     assert run2.summary().domain_priors["good.com"] == pytest.approx(0.5)

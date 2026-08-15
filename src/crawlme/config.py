@@ -34,10 +34,12 @@ class Settings(BaseSettings):
     # the box.  "" (--embedding off) = rule-only v0.1 behavior.
     embedding_provider: str = "local"  # local | api | ""
     embedding_model: str = ""  # "" = provider default
-    # The feedback subsystem (page analyzer + run signals + cross-task
-    # domain priors).  On by default, degrades without credentials;
-    # --feedback off disables the whole subsystem for a clean baseline.
-    feedback_enabled: bool = True
+    # The analysis stage (page analyzer + the steering it feeds: run
+    # signals + cross-task domain priors).  On by default, degrades
+    # without credentials; --analysis off disables the whole subsystem
+    # for a clean baseline (steering derives from analysis, so it goes
+    # with it).
+    analysis_enabled: bool = True
     # Page text sent to the analyzer per page, in characters.  The
     # dominant analyzer cost driver.  Set to 3000 by the 10-replicate
     # benchmark (benchmark/feedback/): on research-style tasks the

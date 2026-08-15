@@ -5,9 +5,9 @@ that owns it.  This __init__ re-exports everything so the historical
 flat import surface keeps working unchanged.
 """
 
+from crawlme.schemas.analysis import AnalysisResult, AnalyzerFeedback, Classification
 from crawlme.schemas.core import URL, RawLink, _new_id, _utcnow
 from crawlme.schemas.digest import ExtractionStatus, FetchResult, Page
-from crawlme.schemas.feedback import AnalysisResult, AnalyzerFeedback, Classification
 from crawlme.schemas.goal import CrawlGoal, CrawlTask, TaskState
 from crawlme.schemas.pioneer import (
     Candidate,

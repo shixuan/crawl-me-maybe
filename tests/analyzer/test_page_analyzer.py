@@ -10,8 +10,8 @@ import asyncio
 
 import pytest
 
+from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
-from crawlme.feedback.analyzer import PageAnalyzer
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
 

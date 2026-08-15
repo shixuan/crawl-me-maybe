@@ -1,16 +1,16 @@
-"""Tests for InflightSignals, the run-scoped feedback aggregation."""
+"""Tests for InflightSignals, the run-scoped steering aggregation."""
 
 from __future__ import annotations
 
 import pytest
 
-from crawlme.feedback.signals import (
+from crawlme.schemas import AnalyzerFeedback, RankHistorySummary
+from crawlme.steering.signals import (
     _DOMAIN_BOOST,
     _DOMAIN_PENALTY,
     _HUB_MULTIPLIER,
     InflightSignals,
 )
-from crawlme.schemas import AnalyzerFeedback, RankHistorySummary
 
 
 def _fb(

@@ -1,15 +1,15 @@
 """PageAnalyzer: one LLM call per fetched page, the v0.2 analysis stage.
 
-Lives in the feedback package on purpose: the analyzer is the
-signal-producing half of the feedback loop, and the whole subsystem is
-optional (the factory only wires it when enabled and credentialed).
+The analyzer is its own stage: the judgment it produces (classification,
+relevance, summary) is the product the user consumes, stored in the
+analyses table and revisited by replay and the benchmark judge.  The
+same call also yields the feedback signals (hub quality, endorsed
+links, topics, entities) that the steering half of the feedback loop
+turns into domain priors and priority multipliers, and the scheduler
+later feeds endorsed links back into the candidate buffer.
 
-After a page is fetched and extracted, the analyzer classifies it
-against the goal, summarizes it, and produces feedback signals (hub
-quality, endorsed links, topics, entities) for the stages that follow:
-the feedback subsystem turns them into domain priors and priority
-multipliers, and the scheduler later feeds endorsed links back into
-the candidate buffer.
+The whole feedback subsystem, analyzer included, is optional: the
+factory only wires it when enabled and credentialed.
 
 Failure policy.  A failed analysis never blocks the crawl loop: the
 page is parked on an internal delayed re-analysis queue and retried a

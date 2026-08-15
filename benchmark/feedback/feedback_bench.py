@@ -3,7 +3,7 @@
 Every arm runs the same goal, seeds, and page budget, differing only
 in the feedback configuration:
 
-  A            --feedback off            clean baseline: no analyzer,
+  off          --analysis off            clean baseline: no analyzer,
                                          no signals, no prior load
   C<cap>       --analyzer-max-chars <cap> one arm per text cap, e.g.
                                          C3000 / C4500 / C6000 / C12000
@@ -44,8 +44,8 @@ import sys
 import time
 from pathlib import Path
 
+from crawlme.analyzer.page_analyzer import _SYSTEM as JUDGE_SYSTEM
 from crawlme.config import Settings
-from crawlme.feedback.analyzer import _SYSTEM as JUDGE_SYSTEM
 from crawlme.llm import LLMClient, litellm_loaded, parse_json_response
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -74,8 +74,8 @@ _CHECKPOINTS = (5, 10, 20, 40, 60, 80, 100)
 
 
 def build_arms(caps: list[int]) -> dict[str, tuple[str, list[str]]]:
-    """The arm table: the feedback-off baseline plus one arm per cap."""
-    arms = {"off": ("off (feedback off)", ["--feedback", "off"])}
+    """The arm table: the analysis-off baseline plus one arm per cap."""
+    arms = {"off": ("off (analysis off)", ["--analysis", "off"])}
     for cap in caps:
         arms[f"C{cap}"] = (f"C{cap} (chars {cap})", ["--analyzer-max-chars", str(cap)])
     return arms
@@ -301,7 +301,7 @@ def report(
     tok_med = {k: int(statistics.median(arm_stats(rd / k.lower())["tokens"] for rd in run_dirs)) for k in arms}
     print(f"{'tokens(med)':<17}" + "".join(f"{tok_med[k]:<9}" for k in arms))
 
-    print("\nmedian vs off (feedback off):")
+    print("\nmedian vs off (analysis off):")
     for key in list(arms)[1:]:
         delta = med[key] - med["off"]
         print(f"  {key}: {delta:+.1f}")

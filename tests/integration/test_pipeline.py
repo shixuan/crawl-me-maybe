@@ -252,12 +252,12 @@ async def test_analyzer_sees_every_fetched_page(integration_settings):
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    from crawlme.feedback.signals import InflightSignals
-    from crawlme.feedback.system import FeedbackLoop
+    from crawlme.steering.loop import SteeringLoop
+    from crawlme.steering.signals import InflightSignals
 
     analyzer = _RecordingAnalyzer()
-    feedback = FeedbackLoop(analyzer=analyzer, signals=InflightSignals())
-    sched = create_scheduler(cfg, fetcher=_MockFetcher(), feedback=feedback)
+    steering = SteeringLoop(analyzer=analyzer, signals=InflightSignals())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher(), steering=steering)
     await sched._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
