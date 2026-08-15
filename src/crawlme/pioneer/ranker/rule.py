@@ -235,10 +235,10 @@ def _extract_keywords(prompt: str) -> list[str]:
 
 
 def _build_domain_prior(history: RankHistorySummary) -> dict[str, float]:
-    """Merge the FeedbackStore's per-domain averages with the hub boost.
+    """Merge the feedback subsystem's per-domain averages with the hub boost.
 
     v0.2: history.domain_priors carries real cross-task avg_relevance
-    from the FeedbackStore.  Hub domains overlay a floor of 0.75 as in
+    from the feedback subsystem.  Hub domains overlay a floor of 0.75 as in
     v0.1; unseen domains stay at the neutral 0.5 default in the scorer.
     """
     prior = dict(history.domain_priors)

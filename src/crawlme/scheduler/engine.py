@@ -6,7 +6,7 @@ checkpoints for crash recovery.
 
 v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
-  - FeedbackStore is empty (v0.2)
+  - the feedback subsystem is absent (v0.2)
   - tokens_used is fed externally via note_tokens_used (v0.2)
   - HybridRanker uses RuleRanker only
 
@@ -511,7 +511,7 @@ class CrawlScheduler:
                     return
                 self._storage.save_page(page)
                 # One LLM call per page (v0.2): classification, summary,
-                # and feedback signals for the FeedbackStore.  Failures
+                # and feedback signals for the feedback subsystem.  Failures
                 # park on the analyzer's own retry queue and never block
                 # this loop.
                 if self._feedback is not None:

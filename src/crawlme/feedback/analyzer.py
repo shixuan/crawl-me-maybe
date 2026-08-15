@@ -7,7 +7,7 @@ optional (the factory only wires it when enabled and credentialed).
 After a page is fetched and extracted, the analyzer classifies it
 against the goal, summarizes it, and produces feedback signals (hub
 quality, endorsed links, topics, entities) for the stages that follow:
-the FeedbackStore turns them into domain priors and priority
+the feedback subsystem turns them into domain priors and priority
 multipliers, and the scheduler later feeds endorsed links back into
 the candidate buffer.
 

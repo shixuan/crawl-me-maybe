@@ -153,7 +153,7 @@ def test_rationale_includes_factor_breakdown(scorer):
 
 
 def test_build_domain_prior_merges_statistics_and_hubs():
-    """F4 combines the FeedbackStore's real averages with the hub boost."""
+    """F4 combines the feedback subsystem's real averages with the hub boost."""
     history = RankHistorySummary(
         domain_priors={"a.com": 0.9, "b.com": 0.2},
         hub_domains=["b.com", "hub.com"],
