@@ -9,7 +9,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.schemas import URL, CrawlGoal, CrawlTask, FetchResult, FrontierItem, Page
+from crawlme.schemas import (
+    URL,
+    AnalysisResult,
+    AnalyzerFeedback,
+    Candidate,
+    CrawlGoal,
+    CrawlTask,
+    FetchResult,
+    FrontierItem,
+    Page,
+)
 from crawlme.state.context import CrawlCounters
 
 
@@ -211,6 +221,122 @@ async def test_aclose_closes_analyzer_and_ranker():
     analyzer.aclose.assert_awaited_once()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_feedback():
+    """The feedback store flushes its prior DB; a leaked connection
+    would keep the process alive (the aiosqlite worker-thread hang)."""
+    feedback = MagicMock(aclose=AsyncMock())
+    ranker = MagicMock(aclose=AsyncMock())
+    storage = MagicMock(close=AsyncMock())
+    sched = _make_sched(feedback=feedback, ranker=ranker, storage=storage)
+    await sched.aclose()
+    feedback.aclose.assert_awaited_once()
+
+
+def test_on_analysis_feeds_feedback_store():
+    """The analyzer sink is where analyses enter the feedback loop."""
+    from crawlme.state.feedback import FeedbackStore
+
+    feedback = FeedbackStore()
+    sched = _make_sched(feedback=feedback)
+    result = AnalysisResult(
+        page_id="p1",
+        url_key="k1",
+        feedback=AnalyzerFeedback(
+            classification="RELEVANT",
+            relevance_score=0.9,
+            domain="example.com",
+            url="https://example.com/x",
+            title="X",
+        ),
+    )
+
+    sched._on_analysis(result)
+
+    summary = feedback.summary()
+    assert summary.pages_seen == 1
+    assert summary.domain_priors["example.com"] == 0.9
+
+
+def test_apply_feedback_passes_through_without_store():
+    sched = _make_sched()
+    assert sched._apply_feedback(0.5, None) == 0.5
+
+
+def test_apply_feedback_multiplies_hub_and_domain():
+    """Hub pages boost their outlinks; a consistently relevant domain
+    boosts all of its candidates.  Both multipliers stack."""
+    from crawlme.state.feedback import FeedbackStore
+
+    feedback = FeedbackStore()
+    feedback.update(
+        AnalyzerFeedback(
+            classification="AGGREGATOR",
+            hub_score=0.9,
+            domain="hub.com",
+            url="https://hub.com/front",
+        )
+    )
+    for _ in range(3):
+        feedback.update(AnalyzerFeedback(classification="RELEVANT", relevance_score=0.8, domain="good.com"))
+
+    sched = _make_sched(feedback=feedback)
+    sched._page_contexts["src1"] = {"url": "https://hub.com/front"}
+    candidate = Candidate(
+        url=URL(raw="https://good.com/x", canonical="https://good.com/x", url_key="x", reg_domain="good.com"),
+        source_url_key="src1",
+    )
+
+    # 1.5 (hub) x 1.2 (domain) = 1.8
+    assert sched._apply_feedback(0.5, candidate) == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_inject_endorsed_pushes_priority_1_items():
+    """Endorsed links skip ranking, resolve against their source page,
+    and enter the frontier at full priority."""
+    from crawlme.pioneer.canonicalizer import Canonicalizer
+    from crawlme.pioneer.prefilter import Decision
+    from crawlme.state.feedback import FeedbackStore
+
+    feedback = FeedbackStore()
+    feedback.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x", "/rel")))
+    sched = _make_sched(feedback=feedback, canonicalizer=Canonicalizer())
+    sched._goal = _goal(max_pages=5)
+    sched._page_contexts["src-key"] = {"depth": 2}
+    sched._url_key_of["https://src.com/page"] = "src-key"
+    sched._prefilter.check = MagicMock(return_value=(Decision.ALLOW, ""))
+    sched._frontier.push_batch = AsyncMock()
+
+    await sched._inject_endorsed()
+
+    sched._frontier.push_batch.assert_awaited_once()
+    items = sched._frontier.push_batch.call_args[0][0]
+    assert len(items) == 2
+    assert all(item.priority == 1.0 and item.score_source == "endorsed" for item in items)
+    assert items[0].url.canonical == "https://a.com/x"
+    assert items[1].url.canonical == "https://src.com/rel"  # relative link resolved
+    assert items[0].depth == 3  # source depth 2 + 1
+
+
+@pytest.mark.asyncio
+async def test_inject_endorsed_respects_prefilter():
+    """An endorsement never overrides the prefilter's hard rules."""
+    from crawlme.pioneer.canonicalizer import Canonicalizer
+    from crawlme.pioneer.prefilter import Decision
+    from crawlme.state.feedback import FeedbackStore
+
+    feedback = FeedbackStore()
+    feedback.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x",)))
+    sched = _make_sched(feedback=feedback, canonicalizer=Canonicalizer())
+    sched._goal = _goal(max_pages=5)
+    sched._prefilter.check = MagicMock(return_value=(Decision.DROP, "dedup"))
+
+    await sched._inject_endorsed()
+
+    sched._frontier.push_batch.assert_not_called()
 
 
 @pytest.mark.asyncio

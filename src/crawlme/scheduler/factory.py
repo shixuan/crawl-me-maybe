@@ -28,6 +28,7 @@ from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
+from crawlme.state.feedback import DomainPriorStore, FeedbackStore
 from crawlme.state.storage import SqliteEmbeddingCache, SqliteStorage
 
 
@@ -54,6 +55,10 @@ def create_scheduler(
     # resets it in place when run() starts, so the references handed
     # out here stay valid for the scheduler's lifetime.
     ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
+    # The feedback loop: analyses flow in, history and multipliers flow
+    # out.  The prior store lives in a global file shared across tasks,
+    # so domain reputation accumulates run after run.
+    feedback = FeedbackStore(DomainPriorStore(Path(settings.result_dir) / "feedback.db"))
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
@@ -71,6 +76,7 @@ def create_scheduler(
         "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
         "canonicalizer": Canonicalizer(),
         "analyzer": analyzer,
+        "feedback": feedback,
         "context": ctx,
     }
     kwargs.update(overrides)

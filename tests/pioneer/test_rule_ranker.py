@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.pioneer.ranker.rule import RuleRanker, _jaccard, _path_signal, _words
-from crawlme.schemas import URL, Candidate
+from crawlme.pioneer.ranker.rule import RuleRanker, _build_domain_prior, _jaccard, _path_signal, _words
+from crawlme.schemas import URL, Candidate, RankHistorySummary
 
 
 def _candidate(url_key: str = "k1", raw: str = "https://example.com/page", **kw) -> Candidate:
@@ -150,3 +150,15 @@ def test_rationale_includes_factor_breakdown(scorer):
     assert "rule_score=" in r
     assert "anchor_match=" in r
     assert "depth=" in r
+
+
+def test_build_domain_prior_merges_statistics_and_hubs():
+    """F4 combines the FeedbackStore's real averages with the hub boost."""
+    history = RankHistorySummary(
+        domain_priors={"a.com": 0.9, "b.com": 0.2},
+        hub_domains=["b.com", "hub.com"],
+    )
+    prior = _build_domain_prior(history)
+    assert prior["a.com"] == 0.9  # statistics pass through untouched
+    assert prior["b.com"] == 0.75  # hub floor overrides the low average
+    assert prior["hub.com"] == 0.75  # hub-only domain keeps its boost

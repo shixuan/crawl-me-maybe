@@ -46,6 +46,7 @@ from crawlme.schemas import (
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.events import EventEmitter, EventType
+from crawlme.state.feedback import FeedbackStore
 from crawlme.state.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class CrawlScheduler:
         ranker: Ranker,
         canonicalizer: Canonicalizer,
         analyzer: Analyzer | None = None,
+        feedback: FeedbackStore | None = None,
         context: CrawlContext | None = None,
     ) -> None:
         self._cfg = settings
@@ -94,6 +96,10 @@ class CrawlScheduler:
         self._ranker = ranker
         self._canonicalizer = canonicalizer
         self._analyzer = analyzer
+        # The v0.2 feedback loop: analyses flow in through the sink
+        # hook, history and multipliers flow out to the rankers and the
+        # frontier.  None keeps the loop off (tests, bare engines).
+        self._feedback = feedback
         # The run context: one mutable object holding the stop-condition
         # counters and the report statistics.  The factory injects it;
         # a bare scheduler creates its own so tests stay cheap.
@@ -117,6 +123,9 @@ class CrawlScheduler:
         # Maps url_key -> {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
+        # canonical URL -> url_key, for endorsed links to inherit their
+        # source page's depth.
+        self._url_key_of: dict[str, str] = {}
         self._events: EventEmitter | None = None
 
     #: seed ingestion --------------------------------------------------
@@ -209,6 +218,12 @@ class CrawlScheduler:
         self._storage.save_goal(goal.model_dump(mode="json"))
         self._storage.save_task(task.model_dump(mode="json"))
 
+        if self._feedback is not None:
+            # Cross-task domain reputation: seed the in-memory prior so
+            # the very first ranking of a fresh task already sees past
+            # tasks' learning.
+            await self._feedback.load()
+
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
@@ -247,14 +262,20 @@ class CrawlScheduler:
         """
         if self._analyzer is not None:
             await self._analyzer.aclose()
+        if self._feedback is not None:
+            # Flush this run's domain-prior contributions to the global
+            # feedback DB and release its connection (hang-safe exit).
+            await self._feedback.aclose()
         await self._ranker.aclose()
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
-        """Analyzer sink: persist the result and keep the tally."""
+        """Analyzer sink: persist, tally, and feed the feedback loop."""
         self._storage.save_analysis(result.model_dump(mode="json"))
         by_class = self._ctx.stats.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
+        if self._feedback is not None:
+            self._feedback.update(result.feedback)
 
     def summary(self) -> dict[str, Any]:
         """End-of-run statistics for the CLI's terminal report.
@@ -340,6 +361,7 @@ class CrawlScheduler:
 
     async def _fetch_pump(self) -> None:
         while self._state == "RUNNING":
+            await self._inject_endorsed()
             reasons = check_stop(
                 self._task,  # type: ignore[arg-type]
                 self._frontier,
@@ -406,6 +428,45 @@ class CrawlScheduler:
             asyncio.create_task(self._handle_fetch(item))  # noqa: RUF006
 
         self._state = "STOPPING"
+
+    async def _inject_endorsed(self) -> None:
+        """Push analyzer-endorsed links straight into the frontier.
+
+        The analyzer "would click" these links itself, so they skip the
+        ranking funnel and enter at full priority.  They still pass the
+        prefilter (dedup, scope, robots, depth), so an endorsement can
+        never override the crawler's hard rules.
+        """
+        if self._feedback is None or self._goal is None:
+            return
+        endorsed = self._feedback.take_endorsed()
+        if not endorsed:
+            return
+        ctx = self._frontier.get_prefilter_context(
+            allow_fetch=lambda url: self._robots.allow_fetch(url),
+        )
+        items: list[FrontierItem] = []
+        for link, source_url in endorsed:
+            url = self._canonicalizer.canonicalize(link, source_url)
+            source_key = self._url_key_of.get(source_url, "")
+            source_depth = int(self._page_contexts.get(source_key, {}).get("depth", 0))
+            candidate = Candidate(url=url, depth=source_depth + 1, discovered_at=_utcnow())
+            decision, _ = self._prefilter.check(candidate, self._goal, ctx)
+            if decision.value != "allow":
+                continue
+            items.append(
+                FrontierItem(
+                    url=url,
+                    url_key=url.url_key,
+                    priority=1.0,
+                    score_source="endorsed",
+                    depth=source_depth + 1,
+                    reg_domain=url.reg_domain,
+                )
+            )
+        if items:
+            await self._frontier.push_batch(items)
+            logger.info("endorsed.injected count=%d", len(items))
 
     async def _handle_fetch(self, item: FrontierItem) -> None:
         if self._events:
@@ -488,11 +549,16 @@ class CrawlScheduler:
                     page.extraction_status,
                 )
 
-                # Record page context for ranker (F3 title_match + F7 position).
+                # Record page context for ranker (F3 title_match + F7
+                # position), plus the URL and depth the feedback
+                # multipliers need at ranking time.
                 self._page_contexts[page.url_key] = {
                     "title": page.title or "",
                     "link_count": len(raw_links),
+                    "url": page.url.canonical,
+                    "depth": item.depth,
                 }
+                self._url_key_of[page.url.canonical] = page.url_key
                 ctx = self._frontier.get_prefilter_context(
                     allow_fetch=lambda url: self._robots.allow_fetch(url),
                 )
@@ -559,6 +625,23 @@ class CrawlScheduler:
 
     #: rank loop --------------------------------------------------------
 
+    def _apply_feedback(self, priority: float, candidate: Candidate | None) -> float:
+        """Fold the real-time feedback multipliers into a ranked
+        priority (ranking.md 第 3 层).
+
+        Hub pages boost their own outlinks; domains with a consistent
+        recent record get boosted or penalized.  Without a feedback
+        store the priority passes through untouched.
+        """
+        if self._feedback is None or candidate is None:
+            return priority
+        page = self._page_contexts.get(candidate.source_url_key or "", {})
+        source_url = str(page.get("url", ""))
+        multiplier = self._feedback.hub_multiplier(source_url) * self._feedback.domain_multiplier(
+            candidate.url.reg_domain
+        )
+        return round(priority * multiplier, 4)
+
     async def _rank_pump(self) -> None:
         ranked_total = 0
         while self._state == "RUNNING":
@@ -581,7 +664,12 @@ class CrawlScheduler:
 
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
 
-            history = RankHistorySummary(pages_seen=self._counters.pages_fetched)
+            history = (
+                self._feedback.summary()
+                if self._feedback is not None
+                else RankHistorySummary(pages_seen=self._counters.pages_fetched)
+            )
+            history.fetched = self._counters.pages_fetched
             assert self._goal is not None
             decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
 
@@ -609,7 +697,7 @@ class CrawlScheduler:
                     FrontierItem(
                         url=c.url if c else URL(raw="", canonical="", url_key=d.url_key),
                         url_key=d.url_key,
-                        priority=d.priority,
+                        priority=self._apply_feedback(d.priority, c),
                         score_source=d.ranker,
                         rationale=d.rationale,
                         depth=depth,

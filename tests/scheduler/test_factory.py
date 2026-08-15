@@ -13,6 +13,7 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.pioneer.ranker.rule import RuleRanker
 from crawlme.scheduler.factory import _build_ranker, create_scheduler
+from crawlme.state.feedback import FeedbackStore
 from crawlme.state.storage import SqliteEmbeddingCache
 
 
@@ -180,3 +181,17 @@ def test_create_scheduler_injects_context(tmp_path: Path, monkeypatch):
     sched = create_scheduler(cfg)
     assert sched.context is sched._ctx
     assert sched._ranker._embedding._stats is sched._ctx.stats
+
+
+def test_create_scheduler_wires_feedback_store(tmp_path: Path, monkeypatch):
+    """The factory builds the feedback loop with its prior DB at
+    result_dir/feedback.db, the global file shared across tasks."""
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    cfg = Settings(result_dir=tmp_path)
+    sched = create_scheduler(cfg)
+
+    assert isinstance(sched._feedback, FeedbackStore)
+    assert sched._feedback._prior_store is not None
+    assert Path(sched._feedback._prior_store._db_path) == tmp_path / "feedback.db"
