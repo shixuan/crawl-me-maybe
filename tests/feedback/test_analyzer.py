@@ -120,7 +120,18 @@ async def test_page_text_truncated_in_prompt():
     client = _StubClient([_resp(_valid_json())])
     await _analyzer(client).analyze(_page(long_text), _goal())
     prompt = client.calls[0]["prompt"]
-    assert len(prompt) < 7000  # 6000-char cap plus headers
+    assert len(prompt) < 4000  # 3000-char cap plus headers
+
+
+@pytest.mark.asyncio
+async def test_custom_page_char_cap_is_honored():
+    """The settings knob dials the page-text cap (the benchmark's C arm)."""
+    long_text = "word " * 4000
+    client = _StubClient([_resp(_valid_json())])
+    analyzer = PageAnalyzer(client, retry_delay=0.0, max_page_chars=200)
+    await analyzer.analyze(_page(long_text), _goal())
+    prompt = client.calls[0]["prompt"]
+    assert len(prompt) < 400  # 200-char cap plus headers
 
 
 @pytest.mark.asyncio
@@ -307,3 +318,11 @@ def test_from_settings_wires_client_and_budget():
     analyzer = PageAnalyzer.from_settings(cfg, budget=budget)
     assert analyzer is not None
     assert analyzer._client._budget is budget
+    assert analyzer._max_page_chars == 3000  # default knob
+
+
+def test_from_settings_wires_max_page_chars():
+    cfg = Settings(llm_api_key="sk-test", llm_base_url="", analyzer_max_chars=3000)
+    analyzer = PageAnalyzer.from_settings(cfg)
+    assert analyzer is not None
+    assert analyzer._max_page_chars == 3000

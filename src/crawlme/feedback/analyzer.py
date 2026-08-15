@@ -33,9 +33,12 @@ logger = logging.getLogger(__name__)
 
 # Response cap: a summary plus five short lists fit comfortably.
 _MAX_TOKENS = 1024
-# Page text sent to the model is truncated.  6000 chars carries the
-# gist of most pages while keeping the per-page call cheap.
-_MAX_PAGE_CHARS = 6000
+# Default page-text cap sent to the model.  The 10-replicate
+# benchmark (benchmark/feedback/) picked 3000: the 6000-char window
+# misclassified long-form pages, while 3000 hits the intro zone and
+# wins on both precision and recall.  The knob lives in
+# Settings.analyzer_max_chars.
+_MAX_PAGE_CHARS = 3000
 # A page gets at most this many attempts, spaced by a fixed delay.
 _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0
@@ -95,10 +98,12 @@ class PageAnalyzer:
         *,
         max_attempts: int = _MAX_ATTEMPTS,
         retry_delay: float = _RETRY_DELAY_SEC,
+        max_page_chars: int = _MAX_PAGE_CHARS,
     ) -> None:
         self._client = client
         self._max_attempts = max_attempts
         self._retry_delay = retry_delay
+        self._max_page_chars = max_page_chars
         self._sink: Callable[[AnalysisResult], None] | None = None
         self._pending: asyncio.Queue[tuple[Page, CrawlGoal, int]] = asyncio.Queue()
         self._drain_task: asyncio.Task[None] | None = None
@@ -109,7 +114,9 @@ class PageAnalyzer:
         stages: without credentials there is nothing to call.  *budget*
         is shared across all LLM consumers of the task."""
         client = LLMClient.from_settings_if_configured(settings, budget=budget)
-        return cls(client) if client is not None else None
+        if client is None:
+            return None
+        return cls(client, max_page_chars=settings.analyzer_max_chars)
 
     def bind_sink(self, sink: Callable[[AnalysisResult], None]) -> None:
         """Attach the persistence callback.  Every successful analysis
@@ -157,7 +164,7 @@ class PageAnalyzer:
 
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
-        prompt = _build_prompt(goal, page, text)
+        prompt = _build_prompt(goal, page, text, self._max_page_chars)
         resp = await self._client.chat(prompt, system=_SYSTEM, max_tokens=_MAX_TOKENS, json_mode=True)
         data = parse_json_response(resp.content)
         if data is None:
@@ -195,13 +202,13 @@ def _page_text(page: Page) -> str:
     return (page.plain_text or "").strip() or (page.markdown or "").strip()
 
 
-def _build_prompt(goal: CrawlGoal, page: Page, text: str) -> str:
+def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
     """Assemble the user prompt: goal, page identity, page text."""
     lines = ["## Goal", goal.goal_statement or goal.prompt, "## Page", page.url.canonical]
     if page.title:
         lines.append(f"Title: {page.title}")
     lines.append("")
-    lines.append(text[:_MAX_PAGE_CHARS])
+    lines.append(text[:max_chars])
     return "\n".join(lines)
 
 

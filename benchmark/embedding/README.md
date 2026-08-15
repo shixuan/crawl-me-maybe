@@ -41,12 +41,12 @@ benchmark/run_bench.sh --embedding-model BAAI/bge-m3
 benchmark/run_bench.sh --embedding api --embedding-model text-embedding-3-small
 
 # Labeled metrics on the existing eval set
-python3 benchmark/score_eval.py
+python3 benchmark/embedding/score_eval.py
 
 # Spot-check the labels, fix wrong ones
 python3 benchmark/review_dump.py > /tmp/review.txt   # eyeball it
 # then write a patch and apply:
-#   python3 benchmark/apply_labels.py /path/to/patch.json
+#   python3 benchmark/embedding/apply_labels.py /path/to/patch.json
 ```
 
 The eval set is a living asset: it's tracked in git, corrections are cheap to apply, and `score_eval.py` re-runs in seconds, so every ranking change gets a before/after number.

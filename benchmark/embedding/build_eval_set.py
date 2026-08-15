@@ -1,6 +1,6 @@
 """Build the labeled eval set for E4 from real benchmark crawl data.
 
-Usage: python3 benchmark/build_eval_set.py <rule_run_dir> <local_run_dir>
+Usage: python3 benchmark/embedding/build_eval_set.py <rule_run_dir> <local_run_dir>
 
 Samples candidates from the two runs' candidates tables in stratified
 layers and drafts relevance labels:
@@ -16,7 +16,7 @@ layers and drafts relevance labels:
 Sampling is deterministic (seeded Python-side random): the same run
 dirs always produce the same 300 entries, so label patches stay valid.
 
-Output: benchmark/data/embedding_eval.json.  Labels are DRAFT: apply
+Output: benchmark/embedding/data/embedding_eval.json.  Labels are DRAFT: apply
 human corrections with apply_labels.py.
 """
 
@@ -218,7 +218,7 @@ def main() -> None:
         "created_from": [str(rule_dir), str(local_dir)],
         "goal": {"prompt": GOAL, "candidates": entries},
     }
-    out_path = Path("benchmark/data/embedding_eval.json")
+    out_path = Path("benchmark/embedding/data/embedding_eval.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False))
     print(f"\nwrote {len(entries)} labeled candidates -> {out_path}")

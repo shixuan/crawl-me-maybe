@@ -3,7 +3,7 @@
 One line per candidate: index, layer, current label, anchor text, domain,
 plus the fetched page title/excerpt when available.
 
-Usage: python3 benchmark/review_dump.py > benchmark/data/review_list.txt
+Usage: python3 benchmark/embedding/review_dump.py > benchmark/embedding/data/review_list.txt
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-EVAL = Path("benchmark/data/embedding_eval.json")
+EVAL = Path("benchmark/embedding/data/embedding_eval.json")
 
 
 def main() -> None:
