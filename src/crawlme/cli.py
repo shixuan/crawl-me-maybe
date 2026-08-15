@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.digest.analyzer import PageAnalyzer
+from crawlme.llm import TokenBudget, litellm_loaded
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
@@ -29,7 +29,6 @@ from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
-from crawlme.state.llm import TokenBudget, litellm_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +59,12 @@ def main() -> None:
         help="Semantic ranking provider (default: local; 'off' = rule-only)",
     )
     run_p.add_argument("--embedding-model", default=None, help="Model id, overriding the provider default")
+    run_p.add_argument(
+        "--feedback",
+        choices=["on", "off"],
+        default=None,
+        help="Feedback subsystem (page analyzer, run signals, domain priors); 'off' disables it",
+    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(
@@ -123,6 +128,8 @@ async def _cmd_run(args: argparse.Namespace) -> None:
         cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
     if args.embedding_model is not None:
         cfg.embedding_model = args.embedding_model
+    if args.feedback == "off":
+        cfg.feedback_enabled = False
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
@@ -156,10 +163,9 @@ async def _cmd_run(args: argparse.Namespace) -> None:
     llm_ranker = LLMRanker.from_settings(cfg, budget=budget)
     if llm_ranker is not None:
         logger.info("llm.ranker enabled")
-    analyzer = PageAnalyzer.from_settings(cfg, budget=budget)
-    if analyzer is not None:
-        logger.info("llm.analyzer enabled")
-    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, analyzer=analyzer)
+    # The feedback subsystem (analyzer + signals + priors) is built by
+    # the factory from settings: the CLI just shares the budget.
+    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, budget=budget)
     budget.bind_sink(scheduler.note_tokens_used)
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.

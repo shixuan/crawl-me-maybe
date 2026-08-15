@@ -45,6 +45,11 @@ def integration_settings(tmp_path: Path) -> Settings:
         embedding_model="",
         embedding_api_key="",
         embedding_base_url="",
+        # The factory builds the feedback subsystem from settings:
+        # pin the LLM credentials off so tests never reach the network
+        # regardless of the developer's .env.
+        llm_api_key="",
+        llm_base_url="",
     )
 
 

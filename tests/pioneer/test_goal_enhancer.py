@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import datetime
 
+from crawlme.llm import LLMError, LLMResponse, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.schemas import CrawlGoal
-from crawlme.state.llm import LLMError, LLMResponse, TokenBudgetError
 
 
 class _StubClient:

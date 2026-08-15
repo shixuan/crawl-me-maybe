@@ -10,9 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.digest.analyzer import Analyzer
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import HttpFetcher
+from crawlme.feedback.analyzer import PageAnalyzer
+from crawlme.feedback.domain_prior import DomainPriorStore
+from crawlme.feedback.signals import InflightSignals
+from crawlme.feedback.system import FeedbackLoop, FeedbackSystem
+from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import PriorityFrontier
@@ -24,29 +28,32 @@ from crawlme.pioneer.ranker.embedding import (
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
 )
+from crawlme.pioneer.ranker.embedding_cache import SqliteEmbeddingCache
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
-from crawlme.state.feedback import DomainPriorStore, FeedbackStore
-from crawlme.state.storage import SqliteEmbeddingCache, SqliteStorage
+from crawlme.state.storage import SqliteStorage
 
 
 def create_scheduler(
     settings: Settings,
     goal: CrawlGoal | None = None,
     llm_ranker: Ranker | None = None,
-    analyzer: Analyzer | None = None,
+    feedback: FeedbackSystem | None = None,
+    budget: TokenBudget | None = None,
     **overrides: Any,
 ) -> CrawlScheduler:
     """Create a fully-wired CrawlScheduler.
 
     *settings* holds every knob (env + flag overrides, see config.py);
     *goal* supplies the domain budget.  *llm_ranker* enables the v0.2
-    LLM fine-ranking stage; *analyzer* enables the per-page analysis
-    stage (the engine binds its persistence sink).  None (the default)
-    keeps those stages off, which tests and credential-less runs rely
-    on.  Pass keyword overrides to swap individual components in
+    LLM fine-ranking stage.  *feedback* is the optional feedback
+    subsystem; None (the default) means "build it from settings", so
+    it exists whenever feedback_enabled is on and degrades when no LLM
+    credentials are configured.  Tests pass an explicit stub instead.
+    *budget* is the shared token budget the subsystem's analyzer must
+    respect.  Pass keyword overrides to swap individual components in
     tests: ``create_scheduler(cfg, goal, fetcher=_MockFetcher())``.
     """
     storage = SqliteStorage.create(settings.result_dir)
@@ -55,10 +62,8 @@ def create_scheduler(
     # resets it in place when run() starts, so the references handed
     # out here stay valid for the scheduler's lifetime.
     ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
-    # The feedback loop: analyses flow in, history and multipliers flow
-    # out.  The prior store lives in a global file shared across tasks,
-    # so domain reputation accumulates run after run.
-    feedback = FeedbackStore(DomainPriorStore(Path(settings.result_dir) / "feedback.db"))
+    if feedback is None:
+        feedback = _build_feedback(settings, budget)
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
@@ -75,12 +80,26 @@ def create_scheduler(
         "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
         "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
         "canonicalizer": Canonicalizer(),
-        "analyzer": analyzer,
         "feedback": feedback,
         "context": ctx,
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _build_feedback(settings: Settings, budget: TokenBudget | None = None) -> FeedbackSystem | None:
+    """Wire the feedback subsystem from settings, or return None.
+
+    feedback_enabled off means nothing is built: the engine runs with
+    the whole subsystem absent.  Enabled but without credentials, the
+    analyzer degrades away while the prior store stays, so past tasks'
+    domain reputation still informs the rule ranker's F4 factor.
+    """
+    if not settings.feedback_enabled:
+        return None
+    analyzer = PageAnalyzer.from_settings(settings, budget=budget)
+    prior_store = DomainPriorStore(Path(settings.result_dir) / "feedback.db")
+    return FeedbackLoop(analyzer=analyzer, signals=InflightSignals(prior_store), prior_store=prior_store)
 
 
 _LOCAL_DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

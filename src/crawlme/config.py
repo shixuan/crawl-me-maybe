@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # the box.  "" (--embedding off) = rule-only v0.1 behavior.
     embedding_provider: str = "local"  # local | api | ""
     embedding_model: str = ""  # "" = provider default
+    # The feedback subsystem (page analyzer + run signals + cross-task
+    # domain priors).  On by default, degrades without credentials;
+    # --feedback off disables the whole subsystem for a clean baseline.
+    feedback_enabled: bool = True
 
     # -: LLM (v0.2+) ---
     # On by default.  Degrades automatically: without a key and without

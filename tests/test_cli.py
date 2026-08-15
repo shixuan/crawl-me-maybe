@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.cli import main
-from crawlme.digest.analyzer import PageAnalyzer
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.state.context import CrawlCounters
@@ -30,16 +29,6 @@ def _inert_llm_ranker(monkeypatch):
         return None
 
     monkeypatch.setattr(LLMRanker, "from_settings", classmethod(_inert))
-
-
-@pytest.fixture(autouse=True)
-def _inert_analyzer(monkeypatch):
-    """Same for the page-analysis stage: skip it in CLI tests."""
-
-    def _inert(cls, settings, *, budget=None):
-        return None
-
-    monkeypatch.setattr(PageAnalyzer, "from_settings", classmethod(_inert))
 
 
 def test_run_help(capsys):
@@ -237,31 +226,35 @@ def test_run_wires_llm_ranker_into_factory(monkeypatch):
     assert captured["overrides"]["llm_ranker"] is sentinel
 
 
-def test_run_wires_analyzer_into_factory(monkeypatch):
-    """A configured page analyzer is passed to the scheduler factory."""
+def test_run_feedback_off_flag():
+    """--feedback off disables the whole subsystem via Settings."""
     captured: dict = {}
-    sentinel = object()
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--feedback", "off"]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].feedback_enabled is False
 
-    def _fake_from_settings(cls, settings, *, budget=None):
-        return sentinel
 
-    monkeypatch.setattr(
-        "crawlme.cli.PageAnalyzer", type("_Stub", (), {"from_settings": classmethod(_fake_from_settings)})
-    )
+def test_run_feedback_defaults_on():
+    """Without the flag the subsystem stays enabled (default True)."""
+    captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
         with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
                 pass
-
-    assert captured["overrides"]["analyzer"] is sentinel
+    assert captured["cfg"].feedback_enabled is True
 
 
 def test_run_binds_budget_sink_to_scheduler(monkeypatch):
     """The shared token budget's sink reaches the scheduler, which is
     what makes the BUDGET_TOKENS stop condition see LLM usage."""
-    from crawlme.state.llm import TokenBudget
+    from crawlme.llm import TokenBudget
 
     note = object()
     recorded: list = []

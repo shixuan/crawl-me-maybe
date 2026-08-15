@@ -11,9 +11,9 @@ import asyncio
 import pytest
 
 from crawlme.config import Settings
-from crawlme.digest.analyzer import PageAnalyzer
+from crawlme.feedback.analyzer import PageAnalyzer
+from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
-from crawlme.state.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 
 
 class _StubClient:

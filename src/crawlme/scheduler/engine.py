@@ -22,10 +22,10 @@ import time
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.digest.analyzer import Analyzer
 from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.links import extract_links
+from crawlme.feedback.system import FeedbackSystem
 from crawlme.logging import setup_logging
 from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -46,7 +46,6 @@ from crawlme.schemas import (
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.events import EventEmitter, EventType
-from crawlme.state.feedback import FeedbackStore
 from crawlme.state.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -81,8 +80,7 @@ class CrawlScheduler:
         buffer: Buffer,
         ranker: Ranker,
         canonicalizer: Canonicalizer,
-        analyzer: Analyzer | None = None,
-        feedback: FeedbackStore | None = None,
+        feedback: FeedbackSystem | None = None,
         context: CrawlContext | None = None,
     ) -> None:
         self._cfg = settings
@@ -95,19 +93,19 @@ class CrawlScheduler:
         self._buffer = buffer
         self._ranker = ranker
         self._canonicalizer = canonicalizer
-        self._analyzer = analyzer
-        # The v0.2 feedback loop: analyses flow in through the sink
-        # hook, history and multipliers flow out to the rankers and the
-        # frontier.  None keeps the loop off (tests, bare engines).
+        # The optional feedback subsystem (analyzer + run signals +
+        # cross-task priors), injected whole by the factory.  The
+        # engine only talks to the facade, so None disables the entire
+        # subsystem at once.
         self._feedback = feedback
         # The run context: one mutable object holding the stop-condition
         # counters and the report statistics.  The factory injects it;
         # a bare scheduler creates its own so tests stay cheap.
         self._ctx = context or CrawlContext(counters=CrawlCounters(), stats=RunStats())
-        if analyzer is not None:
+        if feedback is not None:
             # Every successful analysis persists and counts here,
             # including ones that only succeeded on a background retry.
-            analyzer.bind_sink(self._on_analysis)
+            feedback.bind_sink(self._on_analysis)
 
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
         self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
@@ -260,11 +258,10 @@ class CrawlScheduler:
         thread would otherwise keep the interpreter alive after the
         crawl, so it must close before the process exits.
         """
-        if self._analyzer is not None:
-            await self._analyzer.aclose()
         if self._feedback is not None:
-            # Flush this run's domain-prior contributions to the global
-            # feedback DB and release its connection (hang-safe exit).
+            # Close the analyzer's retry queue and flush this run's
+            # domain-prior contributions to the global feedback DB
+            # (hang-safe exit, see the aiosqlite worker-thread lesson).
             await self._feedback.aclose()
         await self._ranker.aclose()
         await self._storage.close()
@@ -517,9 +514,9 @@ class CrawlScheduler:
                 # and feedback signals for the FeedbackStore.  Failures
                 # park on the analyzer's own retry queue and never block
                 # this loop.
-                if self._analyzer is not None:
+                if self._feedback is not None:
                     assert self._goal is not None
-                    await self._analyzer.analyze(page, self._goal)
+                    await self._feedback.analyze(page, self._goal)
                 if self._events:
                     self._events.emit(
                         EventType.FETCH_COMPLETED,
