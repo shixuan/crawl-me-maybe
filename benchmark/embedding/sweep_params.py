@@ -6,7 +6,7 @@ without re-embedding. Each row reports what survives into the top
 keep slots, how much of each layer that is, and the ranking metrics
 of the surviving list.
 
-Usage: python3 benchmark/sweep_params.py
+Usage: python3 benchmark/embedding/sweep_params.py
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Apply human-reviewed label overrides to the eval set.
 
-Usage: python3 benchmark/apply_labels.py <patch_json>
+Usage: python3 benchmark/embedding/apply_labels.py <patch_json>
 
 The patch is a JSON list of [index, relevant] pairs.  After applying,
 entries carry "labeler": "gold-review" and "review" is dropped.
@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-EVAL = Path("benchmark/data/embedding_eval.json")
+EVAL = Path("benchmark/embedding/data/embedding_eval.json")
 
 
 def main() -> None:
