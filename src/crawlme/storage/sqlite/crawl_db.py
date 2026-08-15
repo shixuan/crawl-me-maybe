@@ -106,14 +106,6 @@ CREATE TABLE IF NOT EXISTS analyses (
     analyzed_at     TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS feedback (
-    reg_domain     TEXT PRIMARY KEY,
-    hub_score      REAL DEFAULT 0.0,
-    relevance_agg  TEXT DEFAULT '{}',
-    topics_json    TEXT DEFAULT '[]',
-    updated_at     TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS frontier_snapshots (
     snapshot_id  TEXT PRIMARY KEY,
     task_id      TEXT DEFAULT '',
@@ -426,26 +418,6 @@ class SqliteCrawlDb:
     async def get_analyses_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
-
-    #: feedback -----------------------------------------------------------
-
-    def save_feedback(self, fb_json: dict[str, Any]) -> None:
-        self._enqueue_write(
-            "INSERT OR REPLACE INTO feedback(reg_domain, hub_score, relevance_agg, "
-            "topics_json, updated_at) VALUES(?, ?, ?, ?, ?)",
-            (
-                fb_json["reg_domain"],
-                fb_json.get("hub_score", 0.0),
-                json.dumps(fb_json.get("relevance_agg", {})),
-                json.dumps(fb_json.get("topics", [])),
-                fb_json.get("updated_at", ""),
-            ),
-        )
-
-    async def get_feedback(self, reg_domain: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM feedback WHERE reg_domain = ?", (reg_domain,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
 
     #: frontier_snapshots -------------------------------------------------
 

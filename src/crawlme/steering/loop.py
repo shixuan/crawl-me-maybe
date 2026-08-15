@@ -1,10 +1,10 @@
-"""FeedbackSystem: the facade the scheduler talks to.
+"""SteeringSystem: the facade the scheduler talks to.
 
 The engine never touches the analyzer, the signal aggregation, or the
-prior database directly.  It holds one optional FeedbackSystem and
-calls through it, so the whole feedback subsystem can be enabled,
-disabled, or swapped as a unit.  The factory builds the real one;
-tests and bare engines pass None.
+prior database directly.  It holds one optional SteeringSystem and
+calls through it, so the steering half of the feedback loop can be
+enabled, disabled, or swapped as a unit.  The factory builds the real
+one; tests and bare engines pass None.
 
 The contract (protocol) and the wiring implementation live together,
 mirroring how the Ranker/Fetcher/Storage protocols ship next to their
@@ -17,8 +17,7 @@ import logging
 from collections.abc import Callable
 from typing import Protocol
 
-from crawlme.feedback.analyzer import Analyzer
-from crawlme.feedback.signals import InflightSignals
+from crawlme.analyzer import Analyzer
 from crawlme.schemas import (
     AnalysisResult,
     AnalyzerFeedback,
@@ -26,13 +25,14 @@ from crawlme.schemas import (
     Page,
     RankHistorySummary,
 )
+from crawlme.steering.signals import InflightSignals
 from crawlme.storage.contracts import DomainPrior
 
 logger = logging.getLogger(__name__)
 
 
-class FeedbackSystem(Protocol):
-    """Contract for the optional feedback subsystem (see FeedbackLoop)."""
+class SteeringSystem(Protocol):
+    """Contract for the steering half of the feedback loop (see SteeringLoop)."""
 
     def bind_sink(self, sink: Callable[[AnalysisResult], None]) -> None: ...
 
@@ -53,7 +53,7 @@ class FeedbackSystem(Protocol):
     async def aclose(self) -> None: ...
 
 
-class FeedbackLoop:
+class SteeringLoop:
     """Wired implementation: analyzer + run signals + cross-task prior.
 
     Created by the factory when the feedback subsystem is enabled.  A

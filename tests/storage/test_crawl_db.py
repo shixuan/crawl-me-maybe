@@ -38,7 +38,6 @@ def test_init_creates_all_tables(storage):
         "candidates",
         "rank_decisions",
         "analyses",
-        "feedback",
         "frontier_snapshots",
         "events",
         "errors",
@@ -170,20 +169,6 @@ def test_save_and_get_analyses(storage):
     # The scheduler-facing feedback signals must survive persistence.
     assert '"hub_score": 0.6' in results[0]["feedback_json"]
     assert "https://x.com/y" in results[0]["feedback_json"]
-
-
-def test_save_and_get_feedback(storage):
-    storage.save_feedback(
-        {
-            "reg_domain": "example.com",
-            "hub_score": 0.75,
-            "updated_at": "2026-01-01T00:00:00Z",
-        }
-    )
-    _run(storage._write_queue.join())
-    fb = _run(storage.get_feedback("example.com"))
-    assert fb is not None
-    assert fb["hub_score"] == 0.75
 
 
 def test_save_and_get_snapshot(storage):

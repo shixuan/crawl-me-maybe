@@ -8,7 +8,7 @@ Every arm runs the same goal, seeds, and page budget. Only the feedback configur
 
 | Arm | Config | Question it answers |
 |-----|--------|--------------------|
-| `off` | `--feedback off` | The clean baseline: no analyzer, no signals, no prior load |
+| `off` | `--analysis off` | The clean baseline: no analyzer, no signals, no prior load |
 | `C3000` | default (analyzer text cap 3000 chars) | Current production shape |
 | `C4500` | `--analyzer-max-chars 4500` | Where does quality bend? |
 | `C6000` | `--analyzer-max-chars 6000` | The previous default |

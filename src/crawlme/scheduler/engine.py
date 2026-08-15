@@ -25,7 +25,6 @@ from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.links import extract_links
-from crawlme.feedback.system import FeedbackSystem
 from crawlme.logging import setup_logging
 from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -46,6 +45,7 @@ from crawlme.schemas import (
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.events import EventEmitter, EventType
+from crawlme.steering import SteeringSystem
 from crawlme.storage.contracts import CrawlDb
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ class CrawlScheduler:
         buffer: Buffer,
         ranker: Ranker,
         canonicalizer: Canonicalizer,
-        feedback: FeedbackSystem | None = None,
+        steering: SteeringSystem | None = None,
         context: CrawlContext | None = None,
     ) -> None:
         self._cfg = settings
@@ -93,19 +93,19 @@ class CrawlScheduler:
         self._buffer = buffer
         self._ranker = ranker
         self._canonicalizer = canonicalizer
-        # The optional feedback subsystem (analyzer + run signals +
-        # cross-task priors), injected whole by the factory.  The
-        # engine only talks to the facade, so None disables the entire
-        # subsystem at once.
-        self._feedback = feedback
+        # The optional steering half of the feedback loop (analyzer +
+        # run signals + cross-task priors), injected whole by the
+        # factory.  The engine only talks to the facade, so None
+        # disables the entire subsystem at once.
+        self._steering = steering
         # The run context: one mutable object holding the stop-condition
         # counters and the report statistics.  The factory injects it;
         # a bare scheduler creates its own so tests stay cheap.
         self._ctx = context or CrawlContext(counters=CrawlCounters(), stats=RunStats())
-        if feedback is not None:
+        if steering is not None:
             # Every successful analysis persists and counts here,
             # including ones that only succeeded on a background retry.
-            feedback.bind_sink(self._on_analysis)
+            steering.bind_sink(self._on_analysis)
 
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
         self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
@@ -216,11 +216,11 @@ class CrawlScheduler:
         self._storage.save_goal(goal.model_dump(mode="json"))
         self._storage.save_task(task.model_dump(mode="json"))
 
-        if self._feedback is not None:
+        if self._steering is not None:
             # Cross-task domain reputation: seed the in-memory prior so
             # the very first ranking of a fresh task already sees past
             # tasks' learning.
-            await self._feedback.load()
+            await self._steering.load()
 
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
@@ -258,21 +258,21 @@ class CrawlScheduler:
         thread would otherwise keep the interpreter alive after the
         crawl, so it must close before the process exits.
         """
-        if self._feedback is not None:
+        if self._steering is not None:
             # Close the analyzer's retry queue and flush this run's
             # domain-prior contributions to the global feedback DB
             # (hang-safe exit, see the aiosqlite worker-thread lesson).
-            await self._feedback.aclose()
+            await self._steering.aclose()
         await self._ranker.aclose()
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
-        """Analyzer sink: persist, tally, and feed the feedback loop."""
+        """Analyzer sink: persist, tally, and feed the steering loop."""
         self._storage.save_analysis(result.model_dump(mode="json"))
         by_class = self._ctx.stats.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
-        if self._feedback is not None:
-            self._feedback.update(result.feedback)
+        if self._steering is not None:
+            self._steering.update(result.feedback)
 
     def summary(self) -> dict[str, Any]:
         """End-of-run statistics for the CLI's terminal report.
@@ -434,9 +434,9 @@ class CrawlScheduler:
         prefilter (dedup, scope, robots, depth), so an endorsement can
         never override the crawler's hard rules.
         """
-        if self._feedback is None or self._goal is None:
+        if self._steering is None or self._goal is None:
             return
-        endorsed = self._feedback.take_endorsed()
+        endorsed = self._steering.take_endorsed()
         if not endorsed:
             return
         ctx = self._frontier.get_prefilter_context(
@@ -511,12 +511,12 @@ class CrawlScheduler:
                     return
                 self._storage.save_page(page)
                 # One LLM call per page (v0.2): classification, summary,
-                # and feedback signals for the feedback subsystem.  Failures
+                # and feedback signals for the steering system.  Failures
                 # park on the analyzer's own retry queue and never block
                 # this loop.
-                if self._feedback is not None:
+                if self._steering is not None:
                     assert self._goal is not None
-                    await self._feedback.analyze(page, self._goal)
+                    await self._steering.analyze(page, self._goal)
                 if self._events:
                     self._events.emit(
                         EventType.FETCH_COMPLETED,
@@ -547,7 +547,7 @@ class CrawlScheduler:
                 )
 
                 # Record page context for ranker (F3 title_match + F7
-                # position), plus the URL and depth the feedback
+                # position), plus the URL and depth the steering
                 # multipliers need at ranking time.
                 self._page_contexts[page.url_key] = {
                     "title": page.title or "",
@@ -622,19 +622,19 @@ class CrawlScheduler:
 
     #: rank loop --------------------------------------------------------
 
-    def _apply_feedback(self, priority: float, candidate: Candidate | None) -> float:
-        """Fold the real-time feedback multipliers into a ranked
+    def _apply_steering(self, priority: float, candidate: Candidate | None) -> float:
+        """Fold the real-time steering multipliers into a ranked
         priority (ranking.md 第 3 层).
 
         Hub pages boost their own outlinks; domains with a consistent
-        recent record get boosted or penalized.  Without a feedback
-        store the priority passes through untouched.
+        recent record get boosted or penalized.  Without the steering
+        facade the priority passes through untouched.
         """
-        if self._feedback is None or candidate is None:
+        if self._steering is None or candidate is None:
             return priority
         page = self._page_contexts.get(candidate.source_url_key or "", {})
         source_url = str(page.get("url", ""))
-        multiplier = self._feedback.hub_multiplier(source_url) * self._feedback.domain_multiplier(
+        multiplier = self._steering.hub_multiplier(source_url) * self._steering.domain_multiplier(
             candidate.url.reg_domain
         )
         return round(priority * multiplier, 4)
@@ -662,8 +662,8 @@ class CrawlScheduler:
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
 
             history = (
-                self._feedback.summary()
-                if self._feedback is not None
+                self._steering.summary()
+                if self._steering is not None
                 else RankHistorySummary(pages_seen=self._counters.pages_fetched)
             )
             history.fetched = self._counters.pages_fetched
@@ -694,7 +694,7 @@ class CrawlScheduler:
                     FrontierItem(
                         url=c.url if c else URL(raw="", canonical="", url_key=d.url_key),
                         url_key=d.url_key,
-                        priority=self._apply_feedback(d.priority, c),
+                        priority=self._apply_steering(d.priority, c),
                         score_source=d.ranker,
                         rationale=d.rationale,
                         depth=depth,

@@ -1,4 +1,4 @@
-"""InflightSignals: the run-scoped half of the feedback loop.
+"""InflightSignals: the run-scoped half of the steering system.
 
 One instance per crawl run.  Every analyzed page contributes its
 AnalyzerFeedback through update(), and the store aggregates it into
@@ -15,9 +15,10 @@ the guidance the schedulers and rankers read during the run:
     their source page so the scheduler can canonicalize and inject
     them into the candidate buffer.
 
-The cross-task half of the loop lives in domain_prior.py: each
-update() also records the page's contribution into the bound
-SqliteDomainPrior (best-effort, flushed on shutdown by the system).
+The cross-task half of the loop lives in
+storage/sqlite/domain_prior.py: each update() also records the page's
+contribution into the bound SqliteDomainPrior (best-effort, flushed on
+shutdown by the system).
 
 update() is deliberately synchronous.  The analyzer's sink calls it
 while fetch tasks are in flight, and everything here is a plain

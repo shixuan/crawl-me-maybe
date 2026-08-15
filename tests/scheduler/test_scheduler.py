@@ -222,24 +222,24 @@ async def test_aclose_closes_ranker_and_storage():
 
 
 @pytest.mark.asyncio
-async def test_aclose_closes_feedback():
-    """The feedback store flushes its prior DB; a leaked connection
+async def test_aclose_closes_steering():
+    """The steering facade flushes its prior DB; a leaked connection
     would keep the process alive (the aiosqlite worker-thread hang)."""
-    feedback = MagicMock(aclose=AsyncMock())
+    steering = MagicMock(aclose=AsyncMock())
     ranker = MagicMock(aclose=AsyncMock())
     storage = MagicMock(close=AsyncMock())
-    sched = _make_sched(feedback=feedback, ranker=ranker, storage=storage)
+    sched = _make_sched(steering=steering, ranker=ranker, storage=storage)
     await sched.aclose()
-    feedback.aclose.assert_awaited_once()
+    steering.aclose.assert_awaited_once()
 
 
-def test_on_analysis_feeds_feedback_store():
-    """The analyzer sink is where analyses enter the feedback loop."""
-    from crawlme.feedback.signals import InflightSignals
-    from crawlme.feedback.system import FeedbackLoop
+def test_on_analysis_feeds_steering_loop():
+    """The analyzer sink is where analyses enter the steering loop."""
+    from crawlme.steering.loop import SteeringLoop
+    from crawlme.steering.signals import InflightSignals
 
-    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
-    sched = _make_sched(feedback=feedback)
+    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
+    sched = _make_sched(steering=steering)
     result = AnalysisResult(
         page_id="p1",
         url_key="k1",
@@ -254,24 +254,24 @@ def test_on_analysis_feeds_feedback_store():
 
     sched._on_analysis(result)
 
-    summary = feedback.summary()
+    summary = steering.summary()
     assert summary.pages_seen == 1
     assert summary.domain_priors["example.com"] == 0.9
 
 
-def test_apply_feedback_passes_through_without_store():
+def test_apply_steering_passes_through_without_store():
     sched = _make_sched()
-    assert sched._apply_feedback(0.5, None) == 0.5
+    assert sched._apply_steering(0.5, None) == 0.5
 
 
-def test_apply_feedback_multiplies_hub_and_domain():
+def test_apply_steering_multiplies_hub_and_domain():
     """Hub pages boost their outlinks; a consistently relevant domain
     boosts all of its candidates.  Both multipliers stack."""
-    from crawlme.feedback.signals import InflightSignals
-    from crawlme.feedback.system import FeedbackLoop
+    from crawlme.steering.loop import SteeringLoop
+    from crawlme.steering.signals import InflightSignals
 
-    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
-    feedback.update(
+    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
+    steering.update(
         AnalyzerFeedback(
             classification="AGGREGATOR",
             hub_score=0.9,
@@ -280,9 +280,9 @@ def test_apply_feedback_multiplies_hub_and_domain():
         )
     )
     for _ in range(3):
-        feedback.update(AnalyzerFeedback(classification="RELEVANT", relevance_score=0.8, domain="good.com"))
+        steering.update(AnalyzerFeedback(classification="RELEVANT", relevance_score=0.8, domain="good.com"))
 
-    sched = _make_sched(feedback=feedback)
+    sched = _make_sched(steering=steering)
     sched._page_contexts["src1"] = {"url": "https://hub.com/front"}
     candidate = Candidate(
         url=URL(raw="https://good.com/x", canonical="https://good.com/x", url_key="x", reg_domain="good.com"),
@@ -290,21 +290,21 @@ def test_apply_feedback_multiplies_hub_and_domain():
     )
 
     # 1.5 (hub) x 1.2 (domain) = 1.8
-    assert sched._apply_feedback(0.5, candidate) == pytest.approx(0.9)
+    assert sched._apply_steering(0.5, candidate) == pytest.approx(0.9)
 
 
 @pytest.mark.asyncio
 async def test_inject_endorsed_pushes_priority_1_items():
     """Endorsed links skip ranking, resolve against their source page,
     and enter the frontier at full priority."""
-    from crawlme.feedback.signals import InflightSignals
-    from crawlme.feedback.system import FeedbackLoop
     from crawlme.pioneer.canonicalizer import Canonicalizer
     from crawlme.pioneer.prefilter import Decision
+    from crawlme.steering.loop import SteeringLoop
+    from crawlme.steering.signals import InflightSignals
 
-    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
-    feedback.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x", "/rel")))
-    sched = _make_sched(feedback=feedback, canonicalizer=Canonicalizer())
+    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
+    steering.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x", "/rel")))
+    sched = _make_sched(steering=steering, canonicalizer=Canonicalizer())
     sched._goal = _goal(max_pages=5)
     sched._page_contexts["src-key"] = {"depth": 2}
     sched._url_key_of["https://src.com/page"] = "src-key"
@@ -325,14 +325,14 @@ async def test_inject_endorsed_pushes_priority_1_items():
 @pytest.mark.asyncio
 async def test_inject_endorsed_respects_prefilter():
     """An endorsement never overrides the prefilter's hard rules."""
-    from crawlme.feedback.signals import InflightSignals
-    from crawlme.feedback.system import FeedbackLoop
     from crawlme.pioneer.canonicalizer import Canonicalizer
     from crawlme.pioneer.prefilter import Decision
+    from crawlme.steering.loop import SteeringLoop
+    from crawlme.steering.signals import InflightSignals
 
-    feedback = FeedbackLoop(analyzer=None, signals=InflightSignals())
-    feedback.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x",)))
-    sched = _make_sched(feedback=feedback, canonicalizer=Canonicalizer())
+    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
+    steering.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x",)))
+    sched = _make_sched(steering=steering, canonicalizer=Canonicalizer())
     sched._goal = _goal(max_pages=5)
     sched._prefilter.check = MagicMock(return_value=(Decision.DROP, "dedup"))
 

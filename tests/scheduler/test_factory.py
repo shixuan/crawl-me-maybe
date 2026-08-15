@@ -141,23 +141,23 @@ def test_build_ranker_without_llm_keeps_v01_defaults(tmp_path: Path):
     assert ranker._rule._threshold == 0.35
 
 
-# -- v0.2 feedback subsystem --------------------------------------------
+# -- v0.2 steering subsystem --------------------------------------------
 
 
-def test_create_scheduler_wires_feedback_override(tmp_path: Path):
-    """A passed feedback facade reaches the engine, which binds its sink."""
+def test_create_scheduler_wires_steering_override(tmp_path: Path):
+    """A passed steering facade reaches the engine, which binds its sink."""
     cfg = Settings(result_dir=tmp_path, embedding_provider="")
-    feedback = MagicMock()
-    sched = create_scheduler(cfg, feedback=feedback)
-    assert sched._feedback is feedback
-    feedback.bind_sink.assert_called_once()
+    steering = MagicMock()
+    sched = create_scheduler(cfg, steering=steering)
+    assert sched._steering is steering
+    steering.bind_sink.assert_called_once()
 
 
-def test_create_scheduler_feedback_off_builds_nothing(tmp_path: Path):
-    """feedback_enabled off: the engine runs with the subsystem absent."""
-    cfg = Settings(result_dir=tmp_path, embedding_provider="", feedback_enabled=False)
+def test_create_scheduler_analysis_off_builds_nothing(tmp_path: Path):
+    """analysis_enabled off: the engine runs with the subsystem absent."""
+    cfg = Settings(result_dir=tmp_path, embedding_provider="", analysis_enabled=False)
     sched = create_scheduler(cfg)
-    assert sched._feedback is None
+    assert sched._steering is None
 
 
 def test_create_scheduler_injects_context(tmp_path: Path, monkeypatch):
@@ -172,17 +172,17 @@ def test_create_scheduler_injects_context(tmp_path: Path, monkeypatch):
     assert sched._ranker._embedding._stats is sched._ctx.stats
 
 
-def test_create_scheduler_builds_feedback_from_settings(tmp_path: Path, monkeypatch):
+def test_create_scheduler_builds_steering_from_settings(tmp_path: Path, monkeypatch):
     """Enabled + no credentials: the prior store is wired (cross-task
     reputation still feeds F4), while the analyzer degrades away."""
     import importlib.util
 
-    from crawlme.feedback.system import FeedbackLoop
+    from crawlme.steering.loop import SteeringLoop
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     cfg = Settings(result_dir=tmp_path, llm_api_key="", llm_base_url="")
     sched = create_scheduler(cfg)
 
-    assert isinstance(sched._feedback, FeedbackLoop)
-    assert sched._feedback._analyzer is None
-    assert Path(sched._feedback._prior_store._db_path) == tmp_path / "feedback.db"
+    assert isinstance(sched._steering, SteeringLoop)
+    assert sched._steering._analyzer is None
+    assert Path(sched._steering._prior_store._db_path) == tmp_path / "feedback.db"

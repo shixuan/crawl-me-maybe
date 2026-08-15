@@ -229,20 +229,20 @@ def test_run_wires_llm_ranker_into_factory(monkeypatch):
     assert captured["overrides"]["llm_ranker"] is sentinel
 
 
-def test_run_feedback_off_flag():
-    """--feedback off disables the whole subsystem via Settings."""
+def test_run_analysis_off_flag():
+    """--analysis off disables the whole subsystem via Settings."""
     captured: dict = {}
-    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--feedback", "off"]
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--analysis", "off"]
     with patch("sys.argv", argv):
         with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
                 pass
-    assert captured["cfg"].feedback_enabled is False
+    assert captured["cfg"].analysis_enabled is False
 
 
-def test_run_feedback_defaults_on():
+def test_run_analysis_defaults_on():
     """Without the flag the subsystem stays enabled (default True)."""
     captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
@@ -251,7 +251,7 @@ def test_run_feedback_defaults_on():
                 main()
             except SystemExit:
                 pass
-    assert captured["cfg"].feedback_enabled is True
+    assert captured["cfg"].analysis_enabled is True
 
 
 def test_run_binds_budget_sink_to_scheduler(monkeypatch):

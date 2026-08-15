@@ -1,4 +1,4 @@
-"""Feedback-subsystem models: page analyses and their signals."""
+"""Analysis-stage models: page analyses and their steering payloads."""
 
 from __future__ import annotations
 
