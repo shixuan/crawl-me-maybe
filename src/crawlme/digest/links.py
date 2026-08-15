@@ -15,6 +15,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
+from crawlme.digest.lxml import LXML_LOCK
 from crawlme.schemas import Page, RawLink
 
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -28,45 +29,48 @@ def _extract_from_html(path: str) -> list[RawLink]:
     if not path:
         return []
     html_bytes = Path(path).read_bytes()
-    soup = BeautifulSoup(html_bytes, "lxml")
-    links: list[RawLink] = []
-    # One document-order pass over headings and links.  The fallback
-    # heading for a link with no heading ancestor is the nearest
-    # preceding heading, which the pass tracks in O(1).  The previous
-    # per-link find_previous rescan was quadratic on pages with many
-    # links (a 14k-link page took minutes).
-    last_heading: str | None = None
-    position = 0
+    # The parse and the tree walk both run under the shared lock:
+    # libxml2's global dictionary races across threads (digest/lxml.py).
+    with LXML_LOCK:
+        soup = BeautifulSoup(html_bytes, "lxml")
+        links: list[RawLink] = []
+        # One document-order pass over headings and links.  The fallback
+        # heading for a link with no heading ancestor is the nearest
+        # preceding heading, which the pass tracks in O(1).  The previous
+        # per-link find_previous rescan was quadratic on pages with many
+        # links (a 14k-link page took minutes).
+        last_heading: str | None = None
+        position = 0
 
-    for tag in soup.find_all(["a", *_HEADING_TAGS]):
-        if tag.name in _HEADING_TAGS:
-            text = tag.get_text(strip=True)
-            if text:
-                last_heading = text
-            continue
-        if not tag.has_attr("href"):
-            continue
-        position += 1
-        href = tag.get("href", "")
-        if isinstance(href, list):
-            href = href[0] if href else ""
-        href = str(href).strip()
-        if not href:
-            continue
+        for tag in soup.find_all(["a", *_HEADING_TAGS]):
+            if tag.name in _HEADING_TAGS:
+                text = tag.get_text(strip=True)
+                if text:
+                    last_heading = text
+                continue
+            if not tag.has_attr("href"):
+                continue
+            position += 1
+            href = tag.get("href", "")
+            if isinstance(href, list):
+                href = href[0] if href else ""
+            href = str(href).strip()
+            if not href:
+                continue
 
-        anchor = tag.get_text(strip=True) or None
-        snippet = _extract_snippet(tag)
-        parent_heading = _nearest_heading(tag) or last_heading
+            anchor = tag.get_text(strip=True) or None
+            snippet = _extract_snippet(tag)
+            parent_heading = _nearest_heading(tag) or last_heading
 
-        links.append(
-            RawLink(
-                href=href,
-                anchor=anchor,
-                snippet=snippet,
-                parent_heading=parent_heading,
-                position=position,
+            links.append(
+                RawLink(
+                    href=href,
+                    anchor=anchor,
+                    snippet=snippet,
+                    parent_heading=parent_heading,
+                    position=position,
+                )
             )
-        )
 
     return links
 

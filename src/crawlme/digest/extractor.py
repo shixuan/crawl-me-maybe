@@ -17,6 +17,7 @@ from typing import Protocol
 import trafilatura
 from bs4 import BeautifulSoup
 
+from crawlme.digest.lxml import LXML_LOCK
 from crawlme.schemas import ExtractionStatus, FetchResult, Page
 
 
@@ -32,6 +33,12 @@ def _utcnow() -> datetime.datetime:
 
 class TrafExtractor:
     def extract(self, fetch_result: FetchResult, raw_html_path: str = "") -> Page:
+        # trafilatura parses with libxml2 all the way through, so the
+        # whole body runs under the shared lock (see digest/lxml.py).
+        with LXML_LOCK:
+            return self._extract(fetch_result, raw_html_path)
+
+    def _extract(self, fetch_result: FetchResult, raw_html_path: str = "") -> Page:
         html_bytes = fetch_result.raw
         html_str = _decode(html_bytes)
 
