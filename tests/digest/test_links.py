@@ -108,3 +108,51 @@ def test_anchor_none_when_no_text(tmp_path):
     links = extract_links(_page(tmp_path, html))
     assert len(links) == 1
     assert links[0].anchor is None
+
+
+def test_fallback_heading_tracks_document_order(tmp_path):
+    html = (
+        "<html><body>"
+        '<h2>First</h2><a href="/a">a</a>'
+        '<p><a href="/b">b</a></p>'
+        '<h3>Second</h3><a href="/c">c</a>'
+        "</body></html>"
+    )
+    links = extract_links(_page(tmp_path, html))
+    by_href = {link.href: link.parent_heading for link in links}
+    assert by_href["/a"] == "First"
+    assert by_href["/b"] == "First"
+    assert by_href["/c"] == "Second"
+
+
+def test_links_before_any_heading_have_no_parent_heading(tmp_path):
+    html = '<html><body><a href="/a">a</a><h2>Later</h2><a href="/b">b</a></body></html>'
+    links = extract_links(_page(tmp_path, html))
+    by_href = {link.href: link.parent_heading for link in links}
+    assert by_href["/a"] is None
+    assert by_href["/b"] == "Later"
+
+
+def test_empty_href_still_advances_position(tmp_path):
+    links = extract_links(_page(tmp_path, PAGE_EMPTY_HREF))
+    valid = next(link for link in links if link.href == "/valid")
+    assert valid.position == 2  # the empty-href anchor occupies slot 1
+
+
+def test_many_links_without_headings_stays_fast(tmp_path):
+    """Regression for the quadratic find_previous rescan.
+
+    A page with 10k links and no headings used to take tens of seconds
+    (every link rescanned the document behind it); the single-pass
+    version finishes near instantly.  The generous 10s bound only
+    guards against a reintroduction of the O(n^2) behavior.
+    """
+    import time
+
+    body = "".join(f'<a href="/p{i}">link {i}</a>' for i in range(10_000))
+    page = _page(tmp_path, f"<html><body>{body}</body></html>")
+    start = time.monotonic()
+    links = extract_links(page)
+    elapsed = time.monotonic() - start
+    assert len(links) == 10_000
+    assert elapsed < 10.0, f"link extraction took {elapsed:.1f}s for 10k links"

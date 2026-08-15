@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.schemas import URL, CrawlGoal, CrawlTask, FrontierItem
+from crawlme.schemas import URL, CrawlGoal, CrawlTask, FetchResult, FrontierItem, Page
 from crawlme.state.context import CrawlCounters
 
 
@@ -210,6 +211,49 @@ async def test_aclose_closes_analyzer_and_ranker():
     analyzer.aclose.assert_awaited_once()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
+    """A page whose link extraction hangs must not stall the crawl.
+
+    The page still counts as fetched (it was fetched, extracted, and
+    analyzed); only its link harvest is lost.  Regression for the
+    unbounded extract_links call that could freeze the fetch pump on a
+    pathological page.
+    """
+    done = threading.Event()
+
+    def _slow_links(_page):
+        done.wait(10)  # released by the test so the worker thread exits
+        return []
+
+    sched = _make_sched()
+    sched._goal = _goal(max_pages=5)
+    sched._task = _task()
+    sched._counters = CrawlCounters(max_pages=5, max_tokens=100000, max_duration_sec=3600)
+    sched._cfg.extract_timeout = 0.2
+    sched._fetcher.fetch = AsyncMock(
+        return_value=FetchResult(item_id="i1", url_key="k1", url=_item().url, raw=b"<html></html>")
+    )
+    sched._extractor.extract = MagicMock(
+        return_value=Page(
+            url_key="k1",
+            url=URL(raw="https://example.com", canonical="https://example.com", url_key="k1"),
+            title="slow page",
+        )
+    )
+    monkeypatch.setattr("crawlme.scheduler.engine.extract_links", _slow_links)
+    sched._frontier.record_outcome = AsyncMock()
+
+    try:
+        await sched._handle_fetch(_item())
+    finally:
+        done.set()
+
+    assert sched._counters.pages_fetched == 1
+    args = sched._frontier.record_outcome.call_args[0]
+    assert args[1] == "COMPLETED"
 
 
 def test_summary_reports_run_statistics():

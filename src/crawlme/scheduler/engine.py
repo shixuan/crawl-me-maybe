@@ -470,7 +470,15 @@ class CrawlScheduler:
                     )
 
                 # Extract links -> Candidates -> PreFilter -> Buffer.
-                raw_links = await asyncio.to_thread(extract_links, page)
+                # Bounded like the extraction step: a pathological page
+                # must lose its links, not stall the whole crawl.
+                try:
+                    raw_links = await asyncio.wait_for(
+                        asyncio.to_thread(extract_links, page), timeout=self._cfg.extract_timeout
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+                    raw_links = []
                 self._ctx.stats.links_discovered += len(raw_links)
                 logger.debug(
                     "extracted url_key=%s title=%r links=%d status=%s",
