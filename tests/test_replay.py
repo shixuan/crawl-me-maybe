@@ -269,6 +269,31 @@ async def test_replay_same_prompt_reuses_the_goal_and_skips(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_replay_refuses_goal_id_collision(tmp_path):
+    prompt = "new lens"
+    original = _goal("original prompt")
+    run_dir = tmp_path / "20260101_000001"
+    (run_dir / "db").mkdir(parents=True)
+    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    await db.start()
+    db.save_goal(original.model_dump(mode="json"))
+    # A row already occupies the new prompt's derived id, with different
+    # text (hand-edited data or a hash collision): refuse to touch it.
+    db.save_goal(
+        {
+            "goal_id": CrawlGoal(prompt=prompt).goal_id,
+            "prompt": "different text",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    db.save_task(CrawlTask(task_id="task1", goal_id=original.goal_id).model_dump(mode="json"))
+    await db.close()
+
+    with pytest.raises(ReplayError, match="different prompt"):
+        await run_replay(_cfg(tmp_path), "task1", analyzer=_StubAnalyzer(), prompt=prompt)
+
+
+@pytest.mark.asyncio
 async def test_replay_limit_caps_the_work(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b"), _page("c")])
     analyzer = _StubAnalyzer()

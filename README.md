@@ -77,21 +77,14 @@ Launch a new task.
 | `--log-level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` \| `OFF` | Log verbosity (overrides env `LOG_LEVEL`) |
 | `--result-dir` | path | Where to put results (default: `results`) |
 
-### `crawl pause / resume / stop <task-id>`
+### `crawl inspect <task-id>`
 
-Task state management. (stub: v0.2 — the engine checkpoints on interrupt, but the daemon commands aren't wired yet)
-
-### `crawl status <task-id>`
-
-See how a task is doing. (stub: v0.2)
-
-### `crawl results <task-id>`
-
-Export what we found. (stub: v0.2)
+Look at a task's results: goal, pages, analyses by classification, and the top relevant pages. Read-only, no LLM.
 
 | Flag | Type | What it does |
 |------|------|--------------|
-| `--export` | `json` \| `csv` | Pick your format |
+| `--goal` | string | Which goal's analyses to show (default: the task's original goal; replay goals are listed) |
+| `--export` | `json` \| `csv` | Dump the pages-and-analyses join to stdout instead of the summary |
 
 ### `crawl replay <task-id>`
 

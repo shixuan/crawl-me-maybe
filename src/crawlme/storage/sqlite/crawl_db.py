@@ -441,6 +441,21 @@ class SqliteCrawlDb:
             return bool(rows)
         return any(r["model"] == model for r in rows)
 
+    async def list_goals(self) -> list[dict[str, Any]]:
+        """All goal rows of the run, oldest first (the inspect reader)."""
+        cur = await self._execute_now("SELECT * FROM crawl_goals ORDER BY created_at")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_analyses(self, goal_id: str = "") -> list[dict[str, Any]]:
+        """Analyses of the run, optionally filtered to one goal (inspect)."""
+        if goal_id:
+            cur = await self._execute_now(
+                "SELECT * FROM analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,)
+            )
+        else:
+            cur = await self._execute_now("SELECT * FROM analyses ORDER BY analyzed_at")
+        return [dict(r) for r in await cur.fetchall()]
+
     #: frontier_snapshots -------------------------------------------------
 
     def save_snapshot(self, snapshot_json: dict[str, Any]) -> None:

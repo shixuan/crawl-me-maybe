@@ -2,14 +2,13 @@
 
 Commands:
   crawl run "<prompt>" [--max-pages N] [--seeds URL,...]
-  crawl pause / resume / stop <task-id>
-  crawl status <task-id>
-  crawl results <task-id> [--export json|csv]
+  crawl inspect <task-id> [--goal G] [--export json|csv]
   crawl replay <task-id> [--prompt "..."] [--limit N] [--max-tokens N] [--force]
 
 The command implementations live in this package's sibling modules:
-run.py carries the run path, replay.py carries re-analysis.  This
-module only parses flags and hands them over.
+run.py carries the run path, inspect.py the read-only results view,
+replay.py re-analysis.  This module only parses flags and hands them
+over.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import argparse
 import asyncio
 import sys
 
+from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
 
@@ -68,19 +68,14 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
-    #: pause / resume / stop -------------------------------------------
-    for cmd in ("pause", "resume", "stop"):
-        p = sub.add_parser(cmd, help=f"{cmd.capitalize()} a running task")
-        p.add_argument("task_id", help="Task ID")
-
-    #: status ----------------------------------------------------------
-    status_p = sub.add_parser("status", help="Show task progress")
-    status_p.add_argument("task_id", help="Task ID")
-
-    #: results ---------------------------------------------------------
-    results_p = sub.add_parser("results", help="Export task results")
-    results_p.add_argument("task_id", help="Task ID")
-    results_p.add_argument("--export", choices=["json", "csv"], help="Export format")
+    #: inspect ---------------------------------------------------------
+    inspect_p = sub.add_parser("inspect", help="Inspect a task's results")
+    inspect_p.add_argument("task_id", help="Task ID")
+    inspect_p.add_argument(
+        "--goal",
+        help="Which goal's analyses to show (default: the task's original goal)",
+    )
+    inspect_p.add_argument("--export", choices=["json", "csv"], help="Dump the pages-and-analyses join to stdout")
 
     #: replay ---------------------------------------------------------
     replay_p = sub.add_parser("replay", help="Re-analyze a completed task's pages")
@@ -119,11 +114,7 @@ async def _dispatch(args: argparse.Namespace) -> None:
 
     if cmd == "run":
         await cmd_run(args)
-    elif cmd in ("pause", "resume", "stop"):
-        print(f"{cmd}: task state management requires a running daemon (v0.2)")
-    elif cmd == "status":
-        print(f"status: reading task {args.task_id} (stub: v0.2)")
-    elif cmd == "results":
-        print(f"results: exporting task {args.task_id} (stub: v0.2)")
+    elif cmd == "inspect":
+        await cmd_inspect(args)
     elif cmd == "replay":
         await cmd_replay(args)

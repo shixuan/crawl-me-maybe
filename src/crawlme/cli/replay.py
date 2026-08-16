@@ -147,6 +147,11 @@ async def run_replay(
                     goal.since = enhanced.since
                 storage.save_goal(goal.model_dump(mode="json"))
             else:
+                if existing.get("prompt") != prompt:
+                    # Same id with different text: a hash collision or
+                    # hand-edited data.  save_goal would REPLACE the old
+                    # row, so never judge under a mismatched goal.
+                    raise ReplayError(f"goal id {goal.goal_id} already exists with a different prompt")
                 # Same prompt replayed before: reuse the stored goal
                 # (already enhanced), never pay the enhancer again.
                 goal = _goal_from_row(existing)
