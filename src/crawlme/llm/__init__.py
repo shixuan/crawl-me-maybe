@@ -6,7 +6,7 @@ pioneer layers so none of them owns it.
 """
 
 from crawlme.llm.budget import TokenBudget
-from crawlme.llm.client import LLMClient, LLMResponse, litellm_loaded
+from crawlme.llm.client import LLMClient, LLMResponse, close_litellm_clients, litellm_loaded
 from crawlme.llm.errors import LLMError, TokenBudgetError
 from crawlme.llm.parsing import parse_json_response
 
@@ -16,6 +16,7 @@ __all__ = [
     "LLMResponse",
     "TokenBudget",
     "TokenBudgetError",
+    "close_litellm_clients",
     "litellm_loaded",
     "parse_json_response",
 ]

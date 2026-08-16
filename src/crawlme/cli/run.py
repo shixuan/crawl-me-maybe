@@ -1,0 +1,214 @@
+"""The crawl run command: one end-to-end task from parsed CLI flags.
+
+The cli package's __init__ owns argument parsing and dispatch; this
+module owns the run path — settings layering, wiring (budget, ranker,
+scheduler, goal enhancer), the crawl itself, and the end-of-run
+report.  The sibling command module replay.py does the same for
+re-analysis.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+from typing import Any
+
+from crawlme.config import Settings
+from crawlme.llm import TokenBudget, close_litellm_clients
+from crawlme.logging import setup_logging
+from crawlme.pioneer.goal_enhancer import GoalEnhancer
+from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.pioneer.sources.base import UrlSource
+from crawlme.pioneer.sources.file import FileSource
+from crawlme.pioneer.sources.manual import ManualSource
+from crawlme.pioneer.sources.rss import RssSource
+from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.factory import create_scheduler
+from crawlme.schemas import CrawlGoal, CrawlTask
+
+logger = logging.getLogger(__name__)
+
+
+async def cmd_run(args: argparse.Namespace) -> None:
+    """Run one crawl task from the parsed ``crawl run`` arguments."""
+    cfg = Settings()
+    # Flags override env/defaults (see config.py for the layering).
+    if args.result_dir is not None:
+        cfg.result_dir = Path(args.result_dir)
+    if args.ignore_robots:
+        cfg.ignore_robots = True
+    if args.embedding is not None:
+        # "off" maps to "" (disabled); otherwise pass the provider through.
+        cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
+    if args.embedding_model is not None:
+        cfg.embedding_model = args.embedding_model
+    if args.analysis == "off":
+        cfg.analysis_enabled = False
+    if args.analyzer_max_chars is not None:
+        cfg.analyzer_max_chars = args.analyzer_max_chars
+    if args.log_level is not None:
+        cfg.log_level = args.log_level
+    # Reconfigure with the final settings: main() already configured once
+    # (env defaults), and setup_logging is idempotent, so without force the
+    # --log-level flag would silently never apply.
+    setup_logging(cfg, force=True)
+    goal = CrawlGoal(prompt=args.prompt)
+    if args.draining:
+        if args.max_pages is not None and args.max_pages > 0:
+            print("Error: --draining and --max-pages are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        goal.max_pages = 0
+    elif args.max_pages is not None:
+        goal.max_pages = args.max_pages
+    if args.max_tokens is not None:
+        goal.max_tokens = args.max_tokens
+    if args.max_duration is not None:
+        goal.max_duration_sec = args.max_duration
+    if args.depth_limit is not None:
+        goal.depth_limit = args.depth_limit
+    if args.domain_budget is not None:
+        goal.domain_budget = args.domain_budget
+
+    task = CrawlTask(goal_id=goal.goal_id)
+    # One shared TokenBudget covers every LLM consumer (the ranker and
+    # the Goal Enhancer).  It is created before the scheduler because
+    # the ranker needs it at construction time; the sink that feeds the
+    # BUDGET_TOKENS stop condition is bound right after the scheduler
+    # exists.
+    budget = TokenBudget(limit=goal.max_tokens)
+    llm_ranker = LLMRanker.from_settings(cfg, budget=budget)
+    if llm_ranker is not None:
+        logger.info("llm.ranker enabled")
+    # The analysis subsystem (analyzer + signals + priors) is built by
+    # the factory from settings: the CLI just shares the budget.
+    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, budget=budget)
+    budget.bind_sink(scheduler.note_tokens_used)
+    # The run dir exists now: log to its file from here on, so the
+    # Goal Enhancer's early lines land in the file too.
+    scheduler.attach_log_file()
+
+    # One LLM call per task: enrich statement, keywords, and the time
+    # window.  Inert without credentials, never blocks the crawl.
+    enhanced = await GoalEnhancer.from_settings(cfg, budget=budget).enhance(goal)
+    if enhanced is not None:
+        goal.goal_statement = enhanced.statement
+        goal.keywords = enhanced.keywords
+        goal.since = enhanced.since
+        logger.info(
+            "goal.enhanced statement_len=%d keywords=%d since=%s",
+            len(enhanced.statement),
+            len(enhanced.keywords),
+            enhanced.since.isoformat() if enhanced.since else "none",
+        )
+
+    source = _build_source(args)
+    candidates = await source.discover(goal)
+    allowed_domains: set[str] | None = None
+    if hasattr(source, "allowed_domains"):
+        allowed_domains = source.allowed_domains
+
+    await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
+
+    logger.info(
+        "task=%s prompt=%r pages=%d tokens=%d duration=%ds",
+        task.task_id,
+        args.prompt,
+        goal.max_pages,
+        goal.max_tokens,
+        goal.max_duration_sec,
+    )
+
+    try:
+        await scheduler.run(goal, task)
+    except KeyboardInterrupt:
+        logger.info("interrupted: saving checkpoint")
+        await scheduler.pause()
+        # run() never closed the resources on this path; close them so
+        # the process can exit instead of hanging on leaked threads.
+        await scheduler.aclose()
+    finally:
+        logger.info(
+            "state=%s reason=%s pages=%d tokens=%d",
+            task.state,
+            task.stopping_reason or "none",
+            scheduler._counters.pages_fetched,
+            scheduler._counters.tokens_used,
+        )
+
+    # Tear down litellm's cached clients while the loop is still alive,
+    # so its shutdown noise never prints after the report.
+    await close_litellm_clients()
+    # Printed last on purpose: the cleanup above emits its own teardown
+    # log lines, and the report should be the final word on the
+    # terminal, not buried between shutdown noise.
+    _print_summary(scheduler, task, budget)
+    # The run is over: mute the whole logging tree.  Interpreter
+    # teardown still fires litellm's atexit worker (which creates a
+    # fresh event loop and logs about its empty queue) and asyncio's
+    # loop-close debug records, all of which would otherwise print
+    # after the report at DEBUG level.
+    logging.getLogger().setLevel(logging.CRITICAL)
+
+
+def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:
+    """Print the end-of-run report: the numbers a user cares about.
+
+    The scheduler's summary carries crawl-level tallies (pages,
+    candidates, errors, analyses, stage stats); the budget adds the
+    per-call token breakdown the engine never sees.
+    """
+    summary = scheduler.summary()
+    if not isinstance(summary, dict):
+        return
+    summary["state"] = task.state
+    summary["reason"] = task.stopping_reason or "none"
+    summary["llm_calls"] = budget.calls
+    summary["tokens_in"] = budget.input_tokens
+    summary["tokens_out"] = budget.output_tokens
+    print(_format_summary(summary))
+
+
+def _format_summary(s: dict[str, Any]) -> str:
+    """Render the summary dict as aligned terminal lines."""
+    lines = [f"crawl finished: {s.get('state', '?')} ({s.get('reason', 'none')})"]
+
+    pages = f"{s.get('pages_fetched', 0)} fetched"
+    if s.get("candidates_discovered"):
+        pages += f", {s['candidates_discovered']} links discovered"
+    if s.get("candidates_ranked"):
+        pages += f", {s['candidates_ranked']} ranked"
+    lines.append(f"  pages:      {pages}")
+
+    calls = s.get("llm_calls", 0)
+    tokens = f"{s.get('tokens_used', 0)}"
+    if calls:
+        tokens += f" ({s.get('tokens_in', 0)} in / {s.get('tokens_out', 0)} out), {calls} calls"
+    lines.append(f"  tokens:     {tokens}")
+
+    if s.get("embedding_cache_hits") or s.get("embedding_cache_misses"):
+        lines.append(
+            f"  embeddings: {s.get('embedding_cache_hits', 0)} cache hits, {s.get('embedding_cache_misses', 0)} misses"
+        )
+
+    lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
+
+    analyses = s.get("analyses") or {}
+    if analyses:
+        parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))
+        lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")
+
+    if s.get("duration_sec") is not None:
+        lines.append(f"  duration:   {s['duration_sec']}s")
+    return "\n".join(lines)
+
+
+def _build_source(args: argparse.Namespace) -> UrlSource:
+    """Create a URL source from CLI arguments."""
+    if args.source == "file" and args.source_path:
+        return FileSource(args.source_path)
+    if args.source == "rss" and args.source_path:
+        return RssSource(args.source_path)
+    seeds = [s.strip() for s in (args.seeds or "").split(",") if s.strip()]
+    return ManualSource(seeds)

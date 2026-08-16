@@ -44,7 +44,7 @@ def test_run_prints_prompt(caplog):
     import logging
 
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler") as mock_factory:
+        with patch("crawlme.cli.run.create_scheduler") as mock_factory:
             mock_sched = MagicMock()
             mock_sched.ingest_seeds = AsyncMock()
             mock_sched._counters = CrawlCounters()
@@ -57,7 +57,7 @@ def test_run_prints_prompt(caplog):
             with caplog.at_level(logging.INFO, logger="crawlme.cli"):
                 # _cmd_run force-reconfigures logging, which would wipe the
                 # caplog handler, so stub it out for this test.
-                with patch("crawlme.cli.setup_logging"):
+                with patch("crawlme.cli.run.setup_logging"):
                     try:
                         main()
                     except SystemExit:
@@ -110,7 +110,7 @@ def test_run_flags_override_settings(tmp_path):
         str(fake_results),
     ]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -142,7 +142,7 @@ def test_run_flags_left_off_keep_env_defaults(monkeypatch):
 
     captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -170,9 +170,9 @@ def test_run_applies_enhanced_goal(monkeypatch):
         async def enhance(self, goal):
             return EnhancedGoal(statement="Find ML papers", keywords=["ml", "papers"], since=None)
 
-    monkeypatch.setattr("crawlme.cli.GoalEnhancer", _StubEnhancer)
+    monkeypatch.setattr("crawlme.cli.run.GoalEnhancer", _StubEnhancer)
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -188,7 +188,7 @@ def test_run_embedding_off_flag():
     captured: dict = {}
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--embedding", "off"]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -202,7 +202,7 @@ def test_run_flag_beats_env_twin(monkeypatch):
     captured: dict = {}
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--embedding", "off"]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -218,9 +218,11 @@ def test_run_wires_llm_ranker_into_factory(monkeypatch):
     def _fake_from_settings(cls, settings, *, budget=None):
         return sentinel
 
-    monkeypatch.setattr("crawlme.cli.LLMRanker", type("_Stub", (), {"from_settings": classmethod(_fake_from_settings)}))
+    monkeypatch.setattr(
+        "crawlme.cli.run.LLMRanker", type("_Stub", (), {"from_settings": classmethod(_fake_from_settings)})
+    )
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -234,7 +236,7 @@ def test_run_analysis_off_flag():
     captured: dict = {}
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--analysis", "off"]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -246,7 +248,7 @@ def test_run_analysis_defaults_on():
     """Without the flag the subsystem stays enabled (default True)."""
     captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -272,7 +274,7 @@ def test_run_binds_budget_sink_to_scheduler(monkeypatch):
 
     monkeypatch.setattr(TokenBudget, "bind_sink", lambda self, sink: recorded.append(sink))
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capture):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capture):
             try:
                 main()
             except SystemExit:
@@ -303,7 +305,7 @@ def test_run_prints_end_of_run_summary(capsys):
         return sched
 
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.create_scheduler", side_effect=_capture):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capture):
             try:
                 main()
             except SystemExit:

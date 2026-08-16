@@ -57,6 +57,27 @@ def litellm_loaded() -> bool:
     return _litellm is not None
 
 
+async def close_litellm_clients() -> None:
+    """Tear down litellm's cached async clients while the loop is alive.
+
+    litellm caches aiohttp/httpx clients that are only torn down when
+    the event loop closes, and asyncio then logs a scary SSL error
+    after the task is already finished.  Close them while the loop is
+    still alive, then give the logging worker a beat to drain.  Only
+    relevant when litellm was loaded; best-effort because the cleanup
+    helper is a litellm internal.
+    """
+    if not litellm_loaded():
+        return
+    try:
+        from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients
+
+        await close_litellm_async_clients()  # type: ignore[no-untyped-call]
+    except Exception as e:
+        logger.debug("llm.shutdown cleanup best-effort failed: %s", e)
+    await asyncio.sleep(0.2)
+
+
 def _litellm_module() -> Any:
     """Import litellm once, failing fast with install instructions."""
     global _litellm
