@@ -4,7 +4,7 @@
 >
 > And this is crazy,
 >
-> But here's my resources,
+> But here's my sources,
 >
 > So crawl me, maybe?
 
@@ -135,7 +135,7 @@ Under the hood, two async loops run side by side: `fetch_pump` downloads pages a
 
 **v0.1 is done ✅**: a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter. The whole thing works end to end.
 
-**v0.1.1** adds the EmbeddingRanker for semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
+**v0.1.1 is done ✅** adds the EmbeddingRanker for semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
 
 **v0.2 is in progress ✅**: the LLM core is in — Goal Enhancer, LLMRanker, per-page analysis with the steering loop it feeds (priority multipliers, endorsed links, cross-task domain reputation), analyzer tuning backed by a benchmark harness, and Replay (re-judge a finished run without re-crawling, append-only and idempotent). Left: the time horizon (`--since`), and release polish.
 
@@ -174,6 +174,34 @@ LLM_API_KEY=sk-xxx
 LLM_MODEL=deepseek/deepseek-v4-flash   # optional; default openai/gpt-4o-mini
 LLM_BASE_URL=                          # optional, for OpenAI-compatible endpoints
 ```
+
+---
+
+## What it's actually for
+
+Ask a search-based agent (deep research, and friends) what giveaways are running near you this week and it will hand you a decent list in two minutes. Breadth and convenience are its strengths and this project is not going to beat it at either.
+
+Where it falls down is anything living inside a dense, messy stream — a social feed, a hashtag, an account timeline. That failure is structural rather than a model limitation: those agents reach a source only through what *other people* wrote about it. Search → aggregator page → somebody's repost → extract. Their recall therefore tracks how much a thing got repeated, not what the source actually published.
+
+For deal hunting that relationship runs backwards. A giveaway everyone reposted is a giveaway everyone already showed up for. The one worth having is the single post a small shop put up on Tuesday that expires Saturday and that nobody repeated, which is precisely the one that never surfaces.
+
+So this optimizes for the other side of the trade:
+
+| | Search-based agents | This |
+|---|---|---|
+| A dense stream | samples it | processes it |
+| Source access | second-hand, via what others said | first-hand, the source itself |
+| Verification | none, dates and links arrive as-is | every field traceable to the page it came from |
+| Optimizes for | recall and convenience | **precision** |
+| Across runs | no memory of what it told you | knows, and can tell you what's new |
+
+**Precision over recall, deliberately.** Acting on a result costs a trip across town. A deal you never heard about costs you nothing you had; a deal that expired last week costs you an afternoon. So this is built to say *"not sure, not reporting it"* rather than to fill out a list.
+
+**Every result carries a receipt.** Raw HTML is kept forever, each judgment records the model and prompt version behind it, ranking decisions keep their rationale, and a publication date is only ever taken from what a page *declares*. Never guessed — the extractor turns down a free date from its own parser, because that parser will cheerfully infer `2024-01-01` from a `Copyright 2024` footer.
+
+**Complement, not competitor.** Breadth belongs to the other side, so let it do that part: ask a deep-research agent which shops around here run promotions, hand the resulting account list to this one, and let this one do the reading, filtering, and verifying.
+
+> **Where this is today.** The graph-crawling pipeline is built and working — fetch, extract, rank, analyze, store, all with an audit trail. The feed pipeline the positioning above describes, account timelines and hashtag streams, is v0.3 and not built yet. See [docs/todo.md](docs/todo.md) for the plan and [docs/arch.md](docs/arch.md) for how the two pipelines share one core.
 
 ---
 
