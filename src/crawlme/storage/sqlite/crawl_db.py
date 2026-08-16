@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS pages (
     metadata_json    TEXT DEFAULT '{}',
     text_hash        TEXT DEFAULT '',
     text_len         INTEGER DEFAULT 0,
+    published_at     TEXT DEFAULT '',
     extracted_at     TEXT NOT NULL,
     extraction_status TEXT DEFAULT 'OK'
 );
@@ -303,8 +304,8 @@ class SqliteCrawlDb:
         self._enqueue_write(
             "INSERT OR REPLACE INTO pages(page_id, url_key, url_json, raw_html_path, "
             "title, markdown, plain_text, metadata_json, text_hash, text_len, "
-            "extracted_at, extraction_status) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "published_at, extracted_at, extraction_status) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 page.page_id,
                 page.url_key,
@@ -316,6 +317,7 @@ class SqliteCrawlDb:
                 json.dumps(page.metadata),
                 page.text_hash,
                 page.text_len,
+                page.published_at.isoformat() if page.published_at else "",
                 page.extracted_at.isoformat() if page.extracted_at else "",
                 page.extraction_status,
             ),

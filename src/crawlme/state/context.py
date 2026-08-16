@@ -19,6 +19,7 @@ command, feedback aggregates) become new typed fields here.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import time
 
 from crawlme.schemas import CrawlGoal
@@ -44,6 +45,13 @@ class CrawlCounters:
     in_flight: int = 0
     relevance_window: list[bool] = dataclasses.field(default_factory=list)
     fatal_error: str = ""
+    # Time horizon (2.8).  since=None keeps TIME_HORIZON dormant, which
+    # is every run that does not ask for a window.  stale_streak counts
+    # consecutive pages that stated a publication time older than the
+    # window; pages that state nothing leave it untouched.
+    since: datetime.datetime | None = None
+    stale_streak: int = 0
+    max_stale_streak: int = 5
 
 
 @dataclasses.dataclass
@@ -90,5 +98,6 @@ class CrawlContext:
             relevance_threshold=goal.relevance_threshold,
             started_at=time.monotonic(),
             tokens_used=tokens_used_start,
+            since=goal.since,
         )
         self.stats.reset()

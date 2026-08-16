@@ -241,6 +241,52 @@ async def test_prompt_includes_source_page_title():
     assert "source page: Compiler Blog" in client.calls[0]["prompt"]
 
 
+async def _prompt_with_source(src: dict) -> str:
+    client = _StubClient([_resp(_rankings_json(1))])
+    cands = _candidates(1)
+    cands[0].source_url_key = "src1"
+    await _ranker(client).rank_batch(_goal(), cands, RankHistorySummary(), page_contexts={"src1": src})
+    return str(client.calls[0]["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_prompt_carries_source_page_verdict():
+    """2.9: the source page's judgment rides along with its title."""
+    prompt = await _prompt_with_source(
+        {
+            "title": "Compiler Blog",
+            "classification": "RELEVANT",
+            "relevance": 0.9,
+            "summary": "A deep dive into borrow checking.",
+        }
+    )
+    assert "source page: Compiler Blog [RELEVANT 0.90] — A deep dive into borrow checking." in prompt
+
+
+@pytest.mark.asyncio
+async def test_prompt_omits_verdict_when_page_unanalyzed():
+    """Regression: an unanalyzed source page yields the pre-2.9 line."""
+    prompt = await _prompt_with_source({"title": "Compiler Blog", "link_count": 12})
+    source_line = prompt.split("source page: ")[1].split("\n")[0]
+    assert source_line == "Compiler Blog"
+
+
+@pytest.mark.asyncio
+async def test_prompt_keeps_verdict_without_summary():
+    """A judgment with no summary still contributes the classification."""
+    prompt = await _prompt_with_source({"title": "Nav", "classification": "NAVIGATION", "relevance": 0.0})
+    source_line = prompt.split("source page: ")[1].split("\n")[0]
+    assert source_line == "Nav [NAVIGATION 0.00]"
+
+
+@pytest.mark.asyncio
+async def test_prompt_truncates_source_summary():
+    """Batches carry 30 candidates, so the summary must stay short."""
+    prompt = await _prompt_with_source({"title": "T", "classification": "HUB", "relevance": 0.5, "summary": "x" * 200})
+    assert "x" * 60 + "..." in prompt
+    assert "x" * 61 not in prompt
+
+
 def test_from_settings_auto_off_without_credentials():
     cfg = Settings(llm_api_key="", llm_base_url="")
     assert LLMRanker.from_settings(cfg) is None

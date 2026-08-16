@@ -41,6 +41,7 @@ from crawlme.schemas import (
     CrawlTask,
     FrontierItem,
     FrontierSnapshot,
+    Page,
     RankHistorySummary,
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
@@ -273,6 +274,45 @@ class CrawlScheduler:
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
         if self._steering is not None:
             self._steering.update(result.feedback)
+        # Backfill the judgment into the source page's context so the LLM
+        # ranker can tell a link off a RELEVANT article from a link off a
+        # help page.  Retries land here through the same sink, so a late
+        # success still informs whatever is ranked after it.  Candidates
+        # ranked before it keep the old behavior.
+        self._record_page_context(
+            result.url_key,
+            {
+                "classification": result.classification,
+                "relevance": result.relevance_score,
+                "summary": result.summary or "",
+            },
+        )
+
+    def _note_page_age(self, page: Page) -> None:
+        """Track how many pages in a row fell outside the goal's window.
+
+        Only pages that state a publication time move the streak.  A page
+        that says nothing is not evidence in either direction, so it
+        neither advances nor resets it.
+        """
+        counters = self._counters
+        if counters.since is None or page.published_at is None:
+            return
+        if page.published_at < counters.since:
+            counters.stale_streak += 1
+        else:
+            counters.stale_streak = 0
+
+    def _record_page_context(self, url_key: str, fields: dict[str, Any]) -> None:
+        """Merge per-page context that the ranker reads at rank time.
+
+        Always a merge, never a replace.  The analyzer sink and the
+        link-extraction step both write here and they run in that order,
+        so assigning a fresh dict would drop the page's judgment.
+        """
+        if not url_key:
+            return
+        self._page_contexts.setdefault(url_key, {}).update(fields)
 
     def summary(self) -> dict[str, Any]:
         """End-of-run statistics for the CLI's terminal report.
@@ -510,6 +550,7 @@ class CrawlScheduler:
                     self._counters.pages_fetched = self._counters.pages_fetched + 1
                     return
                 self._storage.save_page(page)
+                self._note_page_age(page)
                 # One LLM call per page (v0.2): classification, summary,
                 # and feedback signals for the steering system.  Failures
                 # park on the analyzer's own retry queue and never block
@@ -549,12 +590,15 @@ class CrawlScheduler:
                 # Record page context for ranker (F3 title_match + F7
                 # position), plus the URL and depth the steering
                 # multipliers need at ranking time.
-                self._page_contexts[page.url_key] = {
-                    "title": page.title or "",
-                    "link_count": len(raw_links),
-                    "url": page.url.canonical,
-                    "depth": item.depth,
-                }
+                self._record_page_context(
+                    page.url_key,
+                    {
+                        "title": page.title or "",
+                        "link_count": len(raw_links),
+                        "url": page.url.canonical,
+                        "depth": item.depth,
+                    },
+                )
                 self._url_key_of[page.url.canonical] = page.url_key
                 ctx = self._frontier.get_prefilter_context(
                     allow_fetch=lambda url: self._robots.allow_fetch(url),

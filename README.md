@@ -68,6 +68,7 @@ Launch a new task.
 | `--max-duration` | int | Time budget, in seconds |
 | `--depth-limit` | int | How deep to go from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop only when the frontier runs dry |
+| `--since` | `"1 week"` \| date | Time window, e.g. `"10 days"` or `2026-08-01`. Stops on `TIME_HORIZON` once content ages out, and assumes the source is ordered newest first |
 | `--embedding` | `local` \| `api` \| `off` | Semantic ranking provider (default: `local`) |
 | `--embedding-model` | string | Model id, overriding the provider default |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds; `off` disables the whole subsystem for a clean baseline |

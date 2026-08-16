@@ -172,9 +172,10 @@ def _build_prompt(
             lines.append(f"  snippet: {_trunc(c.snippet)}")
         if c.parent_heading:
             lines.append(f"  heading: {_trunc(c.parent_heading)}")
-        source_title = pc.get(c.source_url_key or "", {}).get("title", "")
+        src = pc.get(c.source_url_key or "", {})
+        source_title = src.get("title", "")
         if source_title:
-            lines.append(f"  source page: {_trunc(str(source_title))}")
+            lines.append(f"  source page: {_build_source_line(src, str(source_title))}")
         lines.append(f"  depth: {c.depth}")
     return "\n".join(lines)
 
@@ -188,8 +189,32 @@ def _summarize_page(entry: dict[str, Any]) -> str:
     return _trunc(str(entry))
 
 
-def _trunc(text: str) -> str:
-    return text if len(text) <= _MAX_FIELD_CHARS else text[:_MAX_FIELD_CHARS] + "..."
+#: How much of the source page's summary reaches the prompt.  Kept short
+#: on purpose: the verdict carries most of the signal and a full summary
+#: per candidate would bloat a 30-candidate batch for little gain.
+_SUMMARY_CHARS = 60
+
+
+def _build_source_line(src: dict[str, Any], title: str) -> str:
+    """Describe the source page, with the analyzer's verdict when known.
+
+    The verdict is what lets the model tell a link off a RELEVANT article
+    from a link off a help page.  A page that has not been analyzed yet
+    yields the bare title, which is byte-for-byte the pre-2.9 output.
+    """
+    line = _trunc(title)
+    classification = str(src.get("classification", ""))
+    if not classification:
+        return line
+    line += f" [{classification} {float(src.get('relevance', 0.0)):.2f}]"
+    summary = str(src.get("summary", "")).strip()
+    if summary:
+        line += f" — {_trunc(summary, _SUMMARY_CHARS)}"
+    return line
+
+
+def _trunc(text: str, limit: int = _MAX_FIELD_CHARS) -> str:
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _parse_response(content: str) -> dict[str, Any] | None:

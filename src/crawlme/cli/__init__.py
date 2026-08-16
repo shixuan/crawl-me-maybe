@@ -59,6 +59,12 @@ def main() -> None:
         default=None,
         help="Page text sent to the analyzer per page, in characters (default: 3000)",
     )
+    run_p.add_argument(
+        "--since",
+        default=None,
+        help="Time window, e.g. '1 week' or '2026-08-01'. Stops on TIME_HORIZON once "
+        "content ages out; assumes the source is ordered newest first",
+    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(

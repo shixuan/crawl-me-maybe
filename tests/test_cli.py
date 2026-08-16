@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -317,3 +318,35 @@ def test_run_prints_end_of_run_summary(capsys):
     assert "100 links discovered" in out
     assert "2 RELEVANT" in out
     assert "7.5s" in out
+
+
+#: --since parsing (2.8) -------------------------------------------------
+
+
+def test_parse_since_relative_window() -> None:
+    from crawlme.cli.run import _parse_since
+
+    cutoff = _parse_since("1 week")
+    delta = datetime.datetime.now(datetime.timezone.utc) - cutoff
+    assert 6.9 < delta.days + delta.seconds / 86400 < 7.1
+
+
+def test_parse_since_absolute_date_is_utc_aware() -> None:
+    from crawlme.cli.run import _parse_since
+
+    cutoff = _parse_since("2026-08-01")
+    assert cutoff.tzinfo is not None
+    assert (cutoff.year, cutoff.month, cutoff.day) == (2026, 8, 1)
+
+
+def test_parse_since_plural_and_singular_agree() -> None:
+    from crawlme.cli.run import _parse_since
+
+    assert (_parse_since("1 day") - _parse_since("1 days")).total_seconds() < 1
+
+
+def test_parse_since_rejects_garbage() -> None:
+    from crawlme.cli.run import _parse_since
+
+    with pytest.raises(ValueError):
+        _parse_since("whenever")

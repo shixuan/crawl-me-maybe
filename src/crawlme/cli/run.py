@@ -10,6 +10,7 @@ re-analysis.
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import sys
 from pathlib import Path
@@ -29,6 +30,40 @@ from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
 
 logger = logging.getLogger(__name__)
+
+
+#: Relative windows accepted by --since, in days.  Months and years are
+#: the calendar-free approximations a crawl budget can live with.
+_SINCE_UNITS = {
+    "day": 1,
+    "days": 1,
+    "week": 7,
+    "weeks": 7,
+    "month": 30,
+    "months": 30,
+    "year": 365,
+    "years": 365,
+}
+
+
+def _parse_since(text: str) -> datetime.datetime:
+    """Read --since as either a relative window or an absolute date.
+
+    Returns an aware UTC cutoff so it compares directly against the
+    publication times the extractor pulls off pages.
+    """
+    raw = text.strip().lower()
+    parts = raw.split()
+    if len(parts) == 2 and parts[0].isdigit() and parts[1] in _SINCE_UNITS:
+        days = int(parts[0]) * _SINCE_UNITS[parts[1]]
+        return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    try:
+        parsed = datetime.datetime.fromisoformat(raw)
+    except ValueError:
+        raise ValueError(f"cannot read --since {text!r}, use '1 week' or '2026-08-01'") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
 
 
 async def cmd_run(args: argparse.Namespace) -> None:
@@ -70,6 +105,12 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.depth_limit = args.depth_limit
     if args.domain_budget is not None:
         goal.domain_budget = args.domain_budget
+    if args.since is not None:
+        try:
+            goal.since = _parse_since(args.since)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     task = CrawlTask(goal_id=goal.goal_id)
     # One shared TokenBudget covers every LLM consumer (the ranker and
@@ -95,7 +136,11 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if enhanced is not None:
         goal.goal_statement = enhanced.statement
         goal.keywords = enhanced.keywords
-        goal.since = enhanced.since
+        # An explicit --since outranks the window the model inferred.
+        # The flag is the user stating the window; the model is guessing
+        # it from prose.
+        if args.since is None:
+            goal.since = enhanced.since
         logger.info(
             "goal.enhanced statement_len=%d keywords=%d since=%s",
             len(enhanced.statement),

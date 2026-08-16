@@ -307,6 +307,7 @@ def _page_from_row(row: dict[str, Any]) -> Page:
         metadata=json.loads(row.get("metadata_json") or "{}"),
         text_hash=row.get("text_hash", ""),
         text_len=row.get("text_len", 0),
+        published_at=_parse_optional_ts(row.get("published_at")),
         extracted_at=_parse_ts(row.get("extracted_at")),
         extraction_status=row.get("extraction_status", "OK"),
     )
@@ -316,3 +317,19 @@ def _parse_ts(value: Any) -> datetime.datetime:
     if isinstance(value, str) and value:
         return datetime.datetime.fromisoformat(value)
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _parse_optional_ts(value: Any) -> datetime.datetime | None:
+    """Nullable timestamps, where absent must stay absent.
+
+    Unlike _parse_ts there is no sensible stand-in.  A page that never
+    stated when it was published must not come back from the database
+    claiming it was published now, and runs recorded before the column
+    existed simply have nothing here.
+    """
+    if isinstance(value, str) and value:
+        try:
+            return datetime.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None

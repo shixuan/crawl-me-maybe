@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import time
 
 import pytest
@@ -33,6 +34,10 @@ def _buffer() -> InMemoryBuffer:
 
 def _counters(**kw) -> CrawlCounters:
     return CrawlCounters(**kw)
+
+
+def _codes(reasons) -> list[str]:
+    return [r.code for r in reasons]
 
 
 # -- budget --------------------------------------------------------------
@@ -165,6 +170,33 @@ def test_diminishing_returns_still_finding():
 
 
 # -- user requested ------------------------------------------------------
+
+
+def _since_counters(**kw: object) -> CrawlCounters:
+    base = {"since": datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)}
+    base.update(kw)
+    return CrawlCounters(**base)  # type: ignore[arg-type]
+
+
+def test_time_horizon_dormant_without_since():
+    """Every run that does not ask for a window must be unaffected."""
+    c = CrawlCounters(stale_streak=99)
+    assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), _buffer(), c))
+
+
+def test_time_horizon_fires_on_streak():
+    c = _since_counters(stale_streak=5)
+    assert "TIME_HORIZON" in _codes(check_stop(_task(), _frontier(), _buffer(), c))
+
+
+def test_time_horizon_holds_below_streak():
+    c = _since_counters(stale_streak=4)
+    assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), _buffer(), c))
+
+
+def test_time_horizon_disabled_by_zero_threshold():
+    c = _since_counters(stale_streak=50, max_stale_streak=0)
+    assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), _buffer(), c))
 
 
 def test_user_requested():

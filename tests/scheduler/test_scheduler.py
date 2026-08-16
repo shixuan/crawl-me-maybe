@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -257,6 +258,83 @@ def test_on_analysis_feeds_steering_loop():
     summary = steering.summary()
     assert summary.pages_seen == 1
     assert summary.domain_priors["example.com"] == 0.9
+
+
+def test_on_analysis_backfills_page_context():
+    """2.9: the ranker reads the source page's verdict from here."""
+    sched = _make_sched()
+    sched._page_contexts["k1"] = {"title": "Existing", "link_count": 7}
+    result = AnalysisResult(
+        page_id="p1",
+        url_key="k1",
+        classification="RELEVANT",
+        relevance_score=0.87,
+        summary="Borrow checker deep dive.",
+    )
+
+    sched._on_analysis(result)
+
+    ctx = sched._page_contexts["k1"]
+    assert ctx["classification"] == "RELEVANT"
+    assert ctx["relevance"] == 0.87
+    assert ctx["summary"] == "Borrow checker deep dive."
+    assert ctx["title"] == "Existing"
+    assert ctx["link_count"] == 7
+
+
+def test_page_context_write_preserves_earlier_verdict():
+    """analyze runs before link extraction, so the later write must merge."""
+    sched = _make_sched()
+    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", classification="HUB", relevance_score=0.4))
+
+    sched._record_page_context("k1", {"title": "T", "link_count": 3})
+
+    ctx = sched._page_contexts["k1"]
+    assert ctx["classification"] == "HUB"
+    assert ctx["title"] == "T"
+
+
+def _page_published(when: datetime.datetime | None) -> Page:
+    url = URL(raw="https://x.com/a", canonical="https://x.com/a", url_key="k1")
+    return Page(url_key="k1", url=url, published_at=when)
+
+
+def test_stale_streak_ignores_pages_without_since():
+    sched = _make_sched()
+    sched._counters.since = None
+    sched._note_page_age(_page_published(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)))
+    assert sched._counters.stale_streak == 0
+
+
+def test_stale_streak_advances_on_old_pages():
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
+    for _ in range(3):
+        sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
+    assert sched._counters.stale_streak == 3
+
+
+def test_stale_streak_resets_on_fresh_page():
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
+    sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
+    sched._note_page_age(_page_published(datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)))
+    assert sched._counters.stale_streak == 0
+
+
+def test_stale_streak_untouched_by_undated_page():
+    """Silence is not evidence, so it neither advances nor resets."""
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
+    sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
+    sched._note_page_age(_page_published(None))
+    assert sched._counters.stale_streak == 1
+
+
+def test_page_context_ignores_empty_url_key():
+    sched = _make_sched()
+    sched._record_page_context("", {"title": "T"})
+    assert "" not in sched._page_contexts
 
 
 def test_apply_steering_passes_through_without_store():

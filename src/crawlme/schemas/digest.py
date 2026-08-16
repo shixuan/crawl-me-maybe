@@ -39,5 +39,10 @@ class Page(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
     text_hash: str = ""
     text_len: int = 0
+    # Publication time as claimed by the page itself (meta tags, JSON-LD,
+    # <time>).  Best effort: None means the page did not say, which is
+    # different from "published long ago" and is treated as unknown by
+    # the TIME_HORIZON stop condition.
+    published_at: datetime.datetime | None = None
     extracted_at: datetime.datetime = Field(default_factory=_utcnow)
     extraction_status: ExtractionStatus = "OK"
