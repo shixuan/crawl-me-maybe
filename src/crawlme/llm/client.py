@@ -186,7 +186,13 @@ class LLMClient:
                         content=content,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
-                        model=str(getattr(resp, "model", "") or self._model),
+                        # The configured model wins over the reported one:
+                        # it is the knob the caller controls, and the
+                        # identity replay's idempotency check matches on.
+                        # Providers may report an alias for it (e.g.
+                        # deepseek-v4-flash for deepseek/deepseek-chat),
+                        # which would break replay-of-replay skipping.
+                        model=str(self._model or getattr(resp, "model", "")),
                     )
                 except LLMError:
                     raise

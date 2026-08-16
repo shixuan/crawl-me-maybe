@@ -20,6 +20,19 @@ from crawlme.schemas import (
 )
 
 
+def test_crawlgoal_id_is_content_derived():
+    """A goal is named by its prompt: same text, same id."""
+    a = CrawlGoal(prompt="find rust posts")
+    b = CrawlGoal(prompt="find rust posts")
+    c = CrawlGoal(prompt="find go posts")
+    assert a.goal_id == b.goal_id
+    assert a.goal_id != c.goal_id
+    assert len(a.goal_id) == 12
+    # An explicitly passed id still wins.
+    d = CrawlGoal(prompt="find rust posts", goal_id="g1")
+    assert d.goal_id == "g1"
+
+
 def make_url() -> URL:
     return URL(
         raw="https://example.com/page?a=1",

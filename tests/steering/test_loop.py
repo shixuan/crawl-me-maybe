@@ -23,6 +23,9 @@ class _StubAnalyzer:
     async def analyze(self, page, goal):
         return "result"
 
+    async def drain_pending(self) -> None:
+        pass
+
     async def aclose(self) -> None:
         self.closed = True
 

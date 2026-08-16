@@ -293,6 +293,35 @@ async def test_aclose_cancels_parked_retries():
 
 
 @pytest.mark.asyncio
+async def test_drain_pending_waits_for_retry_success():
+    client = _StubClient([LLMError("provider down"), _resp(_valid_json())])
+    analyzer = _analyzer(client)
+    published: list = []
+    analyzer.bind_sink(published.append)
+
+    assert await analyzer.analyze(_page(), _goal()) is None
+    await analyzer.drain_pending()
+
+    assert len(published) == 1
+    assert analyzer._parked_count == 0
+
+
+@pytest.mark.asyncio
+async def test_drain_pending_returns_after_giveup():
+    client = _StubClient([LLMError("down"), LLMError("down")])
+    analyzer = PageAnalyzer(client, retry_delay=0.0, max_attempts=2)
+    published: list = []
+    analyzer.bind_sink(published.append)
+
+    assert await analyzer.analyze(_page(), _goal()) is None
+    await analyzer.drain_pending()
+
+    assert len(client.calls) == 2  # one retry, then giveup
+    assert published == []
+    assert analyzer._parked_count == 0
+
+
+@pytest.mark.asyncio
 async def test_sink_receives_first_try_results():
     client = _StubClient([_resp(_valid_json())])
     analyzer = _analyzer(client)

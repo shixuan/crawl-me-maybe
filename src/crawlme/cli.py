@@ -5,7 +5,7 @@ Commands:
   crawl pause / resume / stop <task-id>
   crawl status <task-id>
   crawl results <task-id> [--export json|csv]
-  crawl replay <task-id> [--prompt "..."]
+  crawl replay <task-id> [--prompt "..."] [--limit N] [--max-tokens N] [--force]
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
+from crawlme.replay import ReplayError, ReplayReport, run_replay
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CrawlGoal, CrawlTask
@@ -94,10 +95,29 @@ def main() -> None:
     results_p.add_argument("task_id", help="Task ID")
     results_p.add_argument("--export", choices=["json", "csv"], help="Export format")
 
-    #: replay (v0.2 stub) ----------------------------------------------
-    replay_p = sub.add_parser("replay", help="Re-analyze a completed task (v0.2)")
+    #: replay ---------------------------------------------------------
+    replay_p = sub.add_parser("replay", help="Re-analyze a completed task's pages")
     replay_p.add_argument("task_id", help="Task ID")
-    replay_p.add_argument("--prompt", help="New analysis prompt")
+    replay_p.add_argument("--prompt", help="New goal statement; analyses are stored under a new goal row")
+    replay_p.add_argument("--limit", type=int, help="Re-analyze at most N pages (default: all)")
+    replay_p.add_argument("--max-tokens", type=int, help="Token budget for this replay (default: unlimited)")
+    replay_p.add_argument(
+        "--analyzer-max-chars",
+        type=int,
+        default=None,
+        help="Page text sent to the analyzer per page, in characters (default: 3000)",
+    )
+    replay_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-analyze pages that already have an identical analysis",
+    )
+    replay_p.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF"],
+        default=None,
+        help="Log verbosity (overrides env LOG_LEVEL)",
+    )
 
     args = parser.parse_args()
     if args.command is None:
@@ -119,7 +139,72 @@ async def _dispatch(args: argparse.Namespace) -> None:
     elif cmd == "results":
         print(f"results: exporting task {args.task_id} (stub: v0.2)")
     elif cmd == "replay":
-        print(f"replay: re-analyzing task {args.task_id} (stub: v0.2)")
+        await _cmd_replay(args)
+
+
+async def _cmd_replay(args: argparse.Namespace) -> None:
+    cfg = Settings()
+    # Flags override env/defaults (same layering as run, see config.py).
+    if args.analyzer_max_chars is not None:
+        cfg.analyzer_max_chars = args.analyzer_max_chars
+    if args.log_level is not None:
+        cfg.log_level = args.log_level
+    # Replay is the first (and only) logger configuration on this path.
+    setup_logging(cfg)
+    try:
+        report = await run_replay(
+            cfg,
+            args.task_id,
+            prompt=args.prompt,
+            limit=args.limit,
+            max_tokens=args.max_tokens,
+            force=args.force,
+        )
+    except ReplayError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    # Same teardown as run: close litellm's cached async clients while
+    # the loop is alive, then let the logging worker drain, so nothing
+    # prints after the report.
+    if litellm_loaded():
+        try:
+            from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients
+
+            await close_litellm_async_clients()  # type: ignore[no-untyped-call]
+        except Exception as e:
+            logger.debug("llm.shutdown cleanup best-effort failed: %s", e)
+        await asyncio.sleep(0.2)
+    _print_replay_summary(report)
+    logging.getLogger().setLevel(logging.CRITICAL)
+
+
+def _print_replay_summary(r: ReplayReport) -> None:
+    """Render the replay report as aligned terminal lines."""
+    goal = r.goal_id
+    if r.new_goal:
+        goal += " (new prompt)"
+    lines = [f"replay finished: {r.task_id}"]
+    lines.append(f"  run:        {r.run_dir} (state={r.state})")
+    lines.append(f"  goal:       {goal}")
+    lines.append(f"  pages:      {r.pages_total} in run")
+    parts = [f"{r.analyzed} first-try"]
+    if r.retried_ok:
+        parts.append(f"{r.retried_ok} retried")
+    lines.append(f"  analyses:   {r.published} written ({', '.join(parts)})")
+    if r.skipped or r.empty:
+        skip_parts = []
+        if r.skipped:
+            skip_parts.append(f"{r.skipped} identical")
+        if r.empty:
+            skip_parts.append(f"{r.empty} empty text")
+        lines.append(f"  skipped:    {', '.join(skip_parts)}")
+    if r.failed:
+        lines.append(f"  failed:     {r.failed}")
+    tokens = f"{r.tokens_used}"
+    if r.llm_calls:
+        tokens += f" ({r.tokens_in} in / {r.tokens_out} out), {r.llm_calls} calls"
+    lines.append(f"  tokens:     {tokens}")
+    print("\n".join(lines))
 
 
 async def _cmd_run(args: argparse.Namespace) -> None:

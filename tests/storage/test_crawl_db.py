@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 
 import pytest
 
@@ -119,6 +120,21 @@ def test_get_pages_by_url_key(storage):
     assert len(pages) == 3
 
 
+def test_list_pages_returns_all_in_fetch_order(storage):
+    for i in (2, 0, 1):
+        storage.save_page(
+            Page(
+                page_id=f"p{i}",
+                url_key=f"k{i}",
+                url=_url(f"k{i}"),
+                extracted_at=datetime.datetime(2026, 1, 1, 0, 0, i),
+            )
+        )
+    _run(storage._write_queue.join())
+    pages = _run(storage.list_pages())
+    assert [p["page_id"] for p in pages] == ["p0", "p1", "p2"]
+
+
 def test_save_raw_html(storage):
     path = storage.save_raw_html("abc", "f1", b"<html>hello</html>")
     assert path.endswith(".html")
@@ -169,6 +185,27 @@ def test_save_and_get_analyses(storage):
     # The scheduler-facing feedback signals must survive persistence.
     assert '"hub_score": 0.6' in results[0]["feedback_json"]
     assert "https://x.com/y" in results[0]["feedback_json"]
+
+
+def test_has_analysis_matches_identity(storage):
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "goal_id": "g1",
+            "prompt_version": "v1",
+            "model": "m1",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+
+    assert _run(storage.has_analysis("abc", "g1", "v1"))  # "" matches any model
+    assert _run(storage.has_analysis("abc", "g1", "v1", "m1"))
+    assert not _run(storage.has_analysis("abc", "g1", "v1", "m2"))
+    assert not _run(storage.has_analysis("abc", "g1", "v2"))
+    assert not _run(storage.has_analysis("abc", "g2", "v1"))
+    assert not _run(storage.has_analysis("other", "g1", "v1"))
 
 
 def test_save_and_get_snapshot(storage):

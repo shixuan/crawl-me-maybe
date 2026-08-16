@@ -86,7 +86,9 @@ async def test_chat_returns_content_usage_and_model(provider, no_sleep):
     assert r.content == "hello"
     assert r.input_tokens == 10
     assert r.output_tokens == 5
-    assert r.model == "stub-model"
+    # The configured model is the recorded identity; the reported name
+    # is only a fallback when nothing is configured.
+    assert r.model == "openai/gpt-4o-mini"
     sent = provider.kwargs[0]
     assert sent["messages"] == [
         {"role": "system", "content": "be brief"},
@@ -96,6 +98,21 @@ async def test_chat_returns_content_usage_and_model(provider, no_sleep):
     assert sent["model"] == "openai/gpt-4o-mini"
     assert "response_format" not in sent
     assert no_sleep == []
+
+
+async def test_model_prefers_configured_over_reported(provider, no_sleep):
+    # Providers may answer under an alias for the configured model
+    # (deepseek/deepseek-chat -> deepseek-v4-flash); the configured
+    # string is the stable identity replay's check matches on.
+    client = LLMClient("deepseek/deepseek-chat")
+    r = await client.chat("hi")
+    assert r.model == "deepseek/deepseek-chat"
+
+
+async def test_model_falls_back_to_reported_when_unconfigured(provider, no_sleep):
+    client = LLMClient("")
+    r = await client.chat("hi")
+    assert r.model == "stub-model"
 
 
 async def test_json_mode_passes_response_format(provider):

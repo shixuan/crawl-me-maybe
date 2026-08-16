@@ -79,6 +79,8 @@ class Analyzer(Protocol):
 
     async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None: ...
 
+    async def drain_pending(self) -> None: ...
+
     async def aclose(self) -> None: ...
 
 
@@ -107,6 +109,10 @@ class PageAnalyzer:
         self._sink: Callable[[AnalysisResult], None] | None = None
         self._pending: asyncio.Queue[tuple[Page, CrawlGoal, int]] = asyncio.Queue()
         self._drain_task: asyncio.Task[None] | None = None
+        # Parked pages not yet settled: items in the queue plus the one
+        # the drain task currently holds between retries.  drain_pending()
+        # waits on it.
+        self._parked_count = 0
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> PageAnalyzer | None:
@@ -149,6 +155,23 @@ class PageAnalyzer:
                 pass
             self._drain_task = None
 
+    async def drain_pending(self) -> None:
+        """Wait until every parked page is settled (success or giveup).
+
+        The crawl loop never needs this: parked pages retry in the
+        background and the crawl moves on.  Batch consumers like replay
+        must wait, otherwise aclose() would cancel the drain and drop
+        pages mid-retry.
+        """
+        while self._parked_count > 0:
+            if self._drain_task is None or self._drain_task.done():
+                # The drain died on an unexpected error; nothing will
+                # settle these pages.  Stop waiting instead of hanging.
+                logger.warning("analysis.drain_dead pending_dropped=%d", self._parked_count)
+                self._parked_count = 0
+                break
+            await asyncio.sleep(0.5)
+
     async def _drain(self) -> None:
         """Background retries: wait the delay, try again, repeat."""
         while True:
@@ -157,9 +180,11 @@ class PageAnalyzer:
             try:
                 result = await self._analyze_once(page, goal)
             except LLMError as e:
-                self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e)
+                self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
                 continue
             self._publish(result)
+            # Settled: this parked page is done either way now.
+            self._parked_count -= 1
             logger.info("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
 
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
@@ -186,14 +211,24 @@ class PageAnalyzer:
         if self._sink is not None:
             self._sink(result)
 
-    def _requeue_or_giveup(self, page: Page, goal: CrawlGoal, *, attempts: int, error: LLMError) -> None:
+    def _requeue_or_giveup(
+        self, page: Page, goal: CrawlGoal, *, attempts: int, error: LLMError, parked: bool = False
+    ) -> None:
         # An exhausted token budget never recovers within this task, so
         # don't park pages behind it.
         if isinstance(error, TokenBudgetError) or attempts >= self._max_attempts:
+            if parked:
+                # The drain held this page between retries; it is now
+                # settled, so release the count drain_pending() waits on.
+                self._parked_count -= 1
             logger.warning("analysis.giveup url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
             return
         logger.warning("analysis.requeue url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
         self._pending.put_nowait((page, goal, attempts))
+        # A fresh parking counts once; a re-parking from the drain was
+        # already counted (the drain holds the count while it retries).
+        if not parked:
+            self._parked_count += 1
         if self._drain_task is None:
             self._drain_task = asyncio.create_task(self._drain())
 

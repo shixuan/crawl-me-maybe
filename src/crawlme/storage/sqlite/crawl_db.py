@@ -330,6 +330,11 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM pages WHERE url_key = ? ORDER BY extracted_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
+    async def list_pages(self) -> list[dict[str, Any]]:
+        """All pages of the run, in fetch order (the replay reader)."""
+        cur = await self._execute_now("SELECT * FROM pages ORDER BY extracted_at, page_id")
+        return [dict(r) for r in await cur.fetchall()]
+
     #: candidates ---------------------------------------------------------
 
     def save_candidate(self, candidate: Candidate) -> None:
@@ -418,6 +423,23 @@ class SqliteCrawlDb:
     async def get_analyses_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
+
+    async def has_analysis(self, url_key: str, goal_id: str, prompt_version: str, model: str = "") -> bool:
+        """Whether an analysis with this identity already exists.
+
+        The identity is (url_key, goal_id, prompt_version, model); the
+        model is only known after an LLM call, so callers that run the
+        provider default (no model configured) pass "" to match any
+        model instead.
+        """
+        cur = await self._execute_now(
+            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ?",
+            (url_key, goal_id, prompt_version),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if model == "":
+            return bool(rows)
+        return any(r["model"] == model for r in rows)
 
     #: frontier_snapshots -------------------------------------------------
 

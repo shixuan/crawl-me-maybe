@@ -5,13 +5,13 @@ from __future__ import annotations
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from crawlme.schemas.core import _new_id, _utcnow
+from crawlme.schemas.core import _content_id, _new_id, _utcnow
 
 
 class CrawlGoal(BaseModel):
-    goal_id: str = Field(default_factory=_new_id)
+    goal_id: str = ""
     prompt: str
     goal_statement: str = ""
     # LLM-curated keywords from the Goal Enhancer (2.0).  Empty means
@@ -32,6 +32,18 @@ class CrawlGoal(BaseModel):
     domain_budget: int = 50
     extraction_spec: dict[str, Any] | None = None
     created_at: datetime.datetime = Field(default_factory=_utcnow)
+
+    @model_validator(mode="after")
+    def _derive_goal_id(self) -> CrawlGoal:
+        """A goal is named by its prompt: same text, same goal id.
+
+        Same-prompt replay idempotency and the cross-run goal
+        embedding cache both rely on this determinism.  An explicitly
+        passed goal_id still wins.
+        """
+        if not self.goal_id:
+            self.goal_id = _content_id(self.prompt)
+        return self
 
 
 TaskState = Literal["CREATED", "RUNNING", "PAUSED", "STOPPING", "COMPLETED", "FAILED"]
