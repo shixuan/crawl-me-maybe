@@ -450,9 +450,7 @@ class SqliteCrawlDb:
     async def list_analyses(self, goal_id: str = "") -> list[dict[str, Any]]:
         """Analyses of the run, optionally filtered to one goal (inspect)."""
         if goal_id:
-            cur = await self._execute_now(
-                "SELECT * FROM analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,)
-            )
+            cur = await self._execute_now("SELECT * FROM analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,))
         else:
             cur = await self._execute_now("SELECT * FROM analyses ORDER BY analyzed_at")
         return [dict(r) for r in await cur.fetchall()]
