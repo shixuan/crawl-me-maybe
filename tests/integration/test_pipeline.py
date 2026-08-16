@@ -114,7 +114,7 @@ async def test_fetch_extract_links_pipeline(integration_settings):
         assert page["title"] == "Memory Safety Guide"
         assert page["extraction_status"] in ("OK", "DEGRADED")
 
-        row = await db.execute("SELECT COUNT(*) FROM candidates WHERE status='BUFFERED'")
+        row = await db.execute("SELECT COUNT(*) FROM links WHERE status='BUFFERED'")
         (buffered,) = await row.fetchone()
         # Should allow: beta (anchors match), delta (anchors match).  Not gamma, epsilon, pdf, js, wikidata.
         assert buffered >= 2, f"Expected >= 2 BUFFERED candidates, got {buffered}"
@@ -134,13 +134,13 @@ async def test_prefilter_drops_junk(integration_settings):
 
     async with aiosqlite.connect(sched._storage.db_path) as db:
         db.row_factory = aiosqlite.Row
-        row = await db.execute("SELECT COUNT(*) FROM candidates")
+        row = await db.execute("SELECT COUNT(*) FROM links")
         (total,) = await row.fetchone()
         # 7 links on the page; junk ones (pdf, js, wikidata) are not persisted.
         # Only BUFFERED candidates are saved, so the total stays below 7.
         assert 1 <= total <= 7, f"Expected 1-7 candidates, got {total}"
 
-        row = await db.execute("SELECT DISTINCT status FROM candidates")
+        row = await db.execute("SELECT DISTINCT status FROM links")
         statuses = {r[0] for r in await row.fetchall()}
         assert statuses == {"BUFFERED"}, f"Only BUFFERED should be persisted, got {statuses}"
 

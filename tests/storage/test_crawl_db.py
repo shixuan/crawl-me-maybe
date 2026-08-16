@@ -36,7 +36,7 @@ def test_init_creates_all_tables(storage):
         "crawl_goals",
         "crawl_tasks",
         "pages",
-        "candidates",
+        "links",
         "rank_decisions",
         "analyses",
         "frontier_snapshots",
@@ -142,10 +142,10 @@ def test_save_raw_html(storage):
         assert "hello" in f.read()
 
 
-def test_save_and_get_candidate(storage):
-    storage.save_candidate(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
+def test_save_and_get_link(storage):
+    storage.save_link(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
     _run(storage._write_queue.join())
-    c = _run(storage.get_candidate("c1"))
+    c = _run(storage.get_link("c1"))
     assert c is not None
     assert c["depth"] == 2
 

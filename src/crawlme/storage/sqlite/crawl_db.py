@@ -63,8 +63,8 @@ CREATE TABLE IF NOT EXISTS pages (
     extraction_status TEXT DEFAULT 'OK'
 );
 
-CREATE TABLE IF NOT EXISTS candidates (
-    candidate_id    TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS links (
+    link_id         TEXT PRIMARY KEY,
     url_key         TEXT NOT NULL,
     url_json        TEXT NOT NULL,
     anchor          TEXT,
@@ -335,11 +335,12 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM pages ORDER BY extracted_at, page_id")
         return [dict(r) for r in await cur.fetchall()]
 
-    #: candidates ---------------------------------------------------------
+    #: links --------------------------------------------------------------
 
-    def save_candidate(self, candidate: Candidate) -> None:
+    def save_link(self, candidate: Candidate) -> None:
+        """Persist one discovered link (the pre-fetch business card)."""
         self._enqueue_write(
-            "INSERT OR REPLACE INTO candidates(candidate_id, url_key, url_json, "
+            "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
             "source_url_key, depth, status, discovered_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -359,8 +360,8 @@ class SqliteCrawlDb:
             ),
         )
 
-    async def get_candidate(self, candidate_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,))
+    async def get_link(self, link_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM links WHERE link_id = ?", (link_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 

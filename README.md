@@ -109,23 +109,24 @@ Think of it as a funnel. Each layer filters harder and costs more:
   │
   ▼  Layer 0: Pre-filter (pure rules, zero LLM cost)
   ├─  Dedup, robots.txt, file extensions, login pages, depth limit,
-  │   domain budget. Fast and cheap.  ~200 → 10–30 candidates
+  │   domain budget. Fast and cheap.  ~200 → 10–30 links
   ▼  Layer 1: RuleRanker (7-factor heuristic, still zero LLM)
   ├─  Anchor text + snippet + title + domain prior + depth + URL path
   │   + position.  With an LLM stage on it pre-filters at a relaxed
   │   0.25; with embedding on it stops dropping and only orders.
   ▼  Layer 1.5: EmbeddingRanker (semantic similarity) ✅ v0.1.1
-  ├─  Goal + candidate texts embedded, ranked by cosine similarity.
-  │   Top 60 survive. Catches synonyms rule scoring misses.
+  ├─  Goal + link texts (anchor, snippet, heading) embedded, ranked by
+  │   cosine similarity. Top 60 survive. Catches synonyms rule
+  │   scoring misses.
   ▼  Layer 2: LLMRanker (batched inference) ✅ v0.2
-  ├─  One batched call (≤30 candidates) fine-ranks the survivors;
+  ├─  One batched call (≤30 links) fine-ranks the survivors;
   │   larger batches chunk automatically. Fails open to the earlier
   │   stages' scores.
 ```
 
 Alongside the funnel, every fetched page gets one analyzer call: classification (RELEVANT / HUB / AGGREGATOR / IRRELEVANT / NAVIGATION), a summary, relevance and hub scores, and endorsed links. Those judgments are the product you read in the `analyses` table, and they steer the crawl in flight: hub/domain priority multipliers, endorsed links injected into the frontier, and cross-task domain reputation persisted to `results/feedback.db`. `--analysis off` turns the whole subsystem off for a clean baseline.
 
-Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores candidates and pushes them into the frontier. They don't wait on each other; they just coordinate through the Frontier and Buffer when they need to.
+Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores links and pushes them into the frontier. They don't wait on each other; they just coordinate through the Frontier and Buffer when they need to.
 
 ---
 

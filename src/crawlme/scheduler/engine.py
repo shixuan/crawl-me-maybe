@@ -578,7 +578,7 @@ class CrawlScheduler:
                         c.status = "BUFFERED"
                         await self._buffer.add([c])
                         n_allowed += 1
-                        self._storage.save_candidate(c)
+                        self._storage.save_link(c)
                     else:
                         c.status = "FILTERED_OUT"
                         n_filtered += 1
