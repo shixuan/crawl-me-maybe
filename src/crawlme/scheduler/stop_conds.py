@@ -13,7 +13,8 @@ from dataclasses import dataclass
 
 from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.schemas import CrawlCounters, CrawlTask
+from crawlme.schemas import CrawlTask
+from crawlme.state.context import CrawlCounters
 
 
 @dataclass
@@ -58,6 +59,35 @@ def _budget_time(
 ) -> StopReason | None:
     if c.max_duration_sec > 0 and c.started_at > 0 and (time.monotonic() - c.started_at) >= c.max_duration_sec:
         return StopReason("BUDGET_TIME", f"ran {c.max_duration_sec}s")
+    return None
+
+
+def _time_horizon(
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
+) -> StopReason | None:
+    """Stop once the content has aged out of the goal's window.
+
+    Dormant unless the goal carries a `since`, so every run that does not
+    ask for a window behaves exactly as before.
+
+    The premise is reverse-chronological traversal: the first run of
+    pages older than the window means everything after it is older too.
+    That holds for feeds, listing pages, and archives.  It does not hold
+    for graph traversal, where page times arrive unordered, so passing
+    `--since` is the user asserting the source is ordered.  When feed
+    traversal lands (3.3) this check moves into the feed's own loop and
+    leaves the global list.  See refactor.md R3.
+    """
+    if c.since is None or c.max_stale_streak <= 0:
+        return None
+    if c.stale_streak >= c.max_stale_streak:
+        return StopReason(
+            "TIME_HORIZON",
+            f"{c.stale_streak} pages in a row older than {c.since.date().isoformat()}",
+        )
     return None
 
 
@@ -124,6 +154,7 @@ _CHECKS: list[_CheckFunc] = [
     _budget_pages,
     _budget_tokens,
     _budget_time,
+    _time_horizon,
     _fatal,
     _user_requested,
     _goal_satisfied,

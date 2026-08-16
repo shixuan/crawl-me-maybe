@@ -9,6 +9,8 @@ Contract (duck-typed, no inheritance required):
      audit trail.
   3. Non-dropped decisions are returned sorted by priority descending
      (convention, not enforced).
+  4. aclose() releases stage-owned resources (connections, model
+     clients); implementations without resources may no-op.
 
 Sub-rankers ignore parameters they don't use.  HybridRanker chains
 multiple Ranker implementations into a funnel (see hybrid.py).
@@ -37,3 +39,5 @@ class Ranker(Protocol):
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None = None,
     ) -> list[RankDecision]: ...
+
+    async def aclose(self) -> None: ...

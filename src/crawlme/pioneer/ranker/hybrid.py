@@ -71,7 +71,8 @@ class HybridRanker:
         dropped by an earlier stage never reach later ones.
 
         A failing embedding stage falls back to the rule stage's
-        decisions: a dead embedding API never blocks the pipeline.
+        decisions; a failing LLM stage keeps the earlier stages' scores.
+        A dead provider never blocks the pipeline.
         """
         decisions = await self._rule.rank_batch(goal, candidates, history, page_contexts)
         survivors = _survive(candidates, decisions)
@@ -91,10 +92,28 @@ class HybridRanker:
                 survivors = _survive(survivors, emb)
 
         if self._llm is not None:
-            llm = await self._llm.rank_batch(goal, survivors, history, page_contexts)
-            decisions = _merge(decisions, llm)
+            try:
+                llm = await self._llm.rank_batch(goal, survivors, history, page_contexts)
+            except Exception:
+                logger.warning(
+                    "rank.llm_failed candidates=%d: keeping earlier-stage scores",
+                    len(survivors),
+                    exc_info=True,
+                )
+                llm = None
+            if llm is not None:
+                decisions = _merge(decisions, llm)
 
         return decisions
+
+    async def aclose(self) -> None:
+        """Release stage-held resources (the embedding vector cache).
+
+        The rule stage holds nothing, so only the later stages close.
+        """
+        for stage in (self._embedding, self._llm):
+            if stage is not None:
+                await stage.aclose()
 
 
 def _survive(candidates: list[Candidate], decisions: list[RankDecision]) -> list[Candidate]:

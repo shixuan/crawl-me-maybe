@@ -114,7 +114,7 @@ async def test_fetch_extract_links_pipeline(integration_settings):
         assert page["title"] == "Memory Safety Guide"
         assert page["extraction_status"] in ("OK", "DEGRADED")
 
-        row = await db.execute("SELECT COUNT(*) FROM candidates WHERE status='BUFFERED'")
+        row = await db.execute("SELECT COUNT(*) FROM links WHERE status='BUFFERED'")
         (buffered,) = await row.fetchone()
         # Should allow: beta (anchors match), delta (anchors match).  Not gamma, epsilon, pdf, js, wikidata.
         assert buffered >= 2, f"Expected >= 2 BUFFERED candidates, got {buffered}"
@@ -134,13 +134,13 @@ async def test_prefilter_drops_junk(integration_settings):
 
     async with aiosqlite.connect(sched._storage.db_path) as db:
         db.row_factory = aiosqlite.Row
-        row = await db.execute("SELECT COUNT(*) FROM candidates")
+        row = await db.execute("SELECT COUNT(*) FROM links")
         (total,) = await row.fetchone()
         # 7 links on the page; junk ones (pdf, js, wikidata) are not persisted.
         # Only BUFFERED candidates are saved, so the total stays below 7.
         assert 1 <= total <= 7, f"Expected 1-7 candidates, got {total}"
 
-        row = await db.execute("SELECT DISTINCT status FROM candidates")
+        row = await db.execute("SELECT DISTINCT status FROM links")
         statuses = {r[0] for r in await row.fetchall()}
         assert statuses == {"BUFFERED"}, f"Only BUFFERED should be persisted, got {statuses}"
 
@@ -226,3 +226,41 @@ async def test_rank_decisions_persisted(integration_settings):
         row = await db.execute("SELECT COUNT(*) FROM rank_decisions WHERE dropped = 0")
         (kept,) = await row.fetchone()
         assert kept >= 1, f"Expected >= 1 kept decision, got {kept}"
+
+
+class _RecordingAnalyzer:
+    """Stub analyzer: records pages it saw, produces no results."""
+
+    def __init__(self) -> None:
+        self.pages: list[str] = []
+
+    def bind_sink(self, sink) -> None:
+        pass
+
+    async def analyze(self, page, goal):
+        self.pages.append(page.url_key)
+        return None
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_analyzer_sees_every_fetched_page(integration_settings):
+    """The v0.2 analysis stage runs after each page extraction."""
+    cfg = integration_settings
+    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
+    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+
+    from crawlme.steering.loop import SteeringLoop
+    from crawlme.steering.signals import InflightSignals
+
+    analyzer = _RecordingAnalyzer()
+    steering = SteeringLoop(analyzer=analyzer, signals=InflightSignals())
+    sched = create_scheduler(cfg, fetcher=_MockFetcher(), steering=steering)
+    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+
+    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+
+    seed_key = Canonicalizer().canonicalize(_SEED_URL, _SEED_URL).url_key
+    assert analyzer.pages == [seed_key]

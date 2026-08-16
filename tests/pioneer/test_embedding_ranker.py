@@ -17,6 +17,7 @@ from crawlme.pioneer.ranker.embedding import (
     _truncate,
 )
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
+from crawlme.state.context import RunStats
 
 
 def _candidate(url_key: str = "k1", raw: str = "https://example.com/page", **kw) -> Candidate:
@@ -63,6 +64,7 @@ class _DictCache:
     def __init__(self) -> None:
         self._store: dict[str, list[float]] = {}
         self.puts: list[list[tuple[str, list[float]]]] = []
+        self.closed = False
 
     async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]:
         return {h: self._store[h] for h in content_hashes if h in self._store}
@@ -71,6 +73,9 @@ class _DictCache:
         self.puts.append(list(entries))
         for h, v in entries:
             self._store[h] = v
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class _FailingEmbedder:
@@ -165,6 +170,18 @@ async def test_empty_batch_no_embed_calls():
     decisions = await ranker.rank_batch(_goal(), [], _history())
     assert decisions == []
     assert embedder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_goal_embedding_combines_statement_with_prompt():
+    """The original prompt stays in the embedded text: the enhanced
+    statement supplements it, never replaces it."""
+    goal = _goal("find ml papers")
+    goal.goal_statement = "I am looking for machine learning research papers"
+    embedder = _StubEmbedder({})
+    ranker = EmbeddingRanker(embedder, keep=10)
+    await ranker.rank_batch(goal, [_candidate("k1", anchor="x", snippet=None, parent_heading=None)], _history())
+    assert embedder.calls[0] == ["I am looking for machine learning research papers find ml papers"]
 
 
 @pytest.mark.asyncio
@@ -515,3 +532,40 @@ async def test_embedder_no_retry_on_permanent_4xx():
     with pytest.raises(httpx.HTTPStatusError):
         await embedder.embed(["x"])
     assert state["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_cache():
+    """aclose releases the vector cache, whose real implementation
+    owns an aiosqlite connection with a worker thread."""
+    cache = _DictCache()
+    ranker = EmbeddingRanker(_StubEmbedder({}), cache=cache)
+    await ranker.aclose()
+    assert cache.closed
+
+
+@pytest.mark.asyncio
+async def test_aclose_without_cache_is_noop():
+    ranker = EmbeddingRanker(_StubEmbedder({}))
+    await ranker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stats_record_cache_hits_and_misses():
+    """Cache activity lands in the shared RunStats the factory injects."""
+    embedder = _StubEmbedder({"a": [1.0, 0.0, 0.0]})
+    stats = RunStats()
+    cache = _DictCache()
+    ranker = EmbeddingRanker(embedder, keep=10, cache=cache, stats=stats)
+    goal = _goal()
+    cand = _candidate("k1", anchor="a", snippet=None, parent_heading=None)
+
+    await ranker.rank_batch(goal, [cand], _history())
+    misses_after_first = stats.embedding_cache_misses
+    assert misses_after_first >= 2  # goal + candidate
+
+    await ranker.rank_batch(goal, [cand], _history())
+    # The candidate hits the persistent cache; the goal comes from the
+    # in-memory per-task cache, so it never reaches the cache layer.
+    assert stats.embedding_cache_hits == 1
+    assert stats.embedding_cache_misses == misses_after_first

@@ -50,7 +50,7 @@ run_variant() {
         echo "error: no results dir found under results/" >&2
         exit 1
     fi
-    python3 benchmark/summarize.py "${run_dir%/}" "$variant" >/dev/null
+    python3 benchmark/embedding/summarize.py "${run_dir%/}" "$variant" >/dev/null
     echo "$run_dir"
 }
 

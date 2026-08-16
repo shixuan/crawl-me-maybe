@@ -1,11 +1,17 @@
+"""SqliteCrawlDb: one crawl run's state in one SQLite file.
+
+Created per run under results/<timestamp>/db/crawl.db by
+SqliteCrawlDb.create().  Implements the CrawlDb contract from
+storage/contracts.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import datetime
 import json
-from array import array
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
@@ -17,9 +23,11 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     goal_id    TEXT PRIMARY KEY,
     prompt     TEXT NOT NULL,
     goal_statement TEXT DEFAULT '',
+    keywords   TEXT DEFAULT '[]',
+    since      TEXT,
     embedding  TEXT,
     max_pages  INTEGER DEFAULT 500,
-    max_tokens INTEGER DEFAULT 2000000,
+    max_tokens INTEGER DEFAULT 500000,
     max_duration_sec INTEGER DEFAULT 3600,
     min_relevant_hits INTEGER DEFAULT 3,
     relevance_threshold REAL DEFAULT 0.7,
@@ -40,21 +48,6 @@ CREATE TABLE IF NOT EXISTS crawl_tasks (
     checkpoint_ref TEXT
 );
 
-CREATE TABLE IF NOT EXISTS urls (
-    url_key    TEXT PRIMARY KEY,
-    raw        TEXT NOT NULL,
-    canonical  TEXT NOT NULL,
-    scheme     TEXT DEFAULT '',
-    host       TEXT DEFAULT '',
-    path       TEXT DEFAULT '',
-    query      TEXT DEFAULT '',
-    domain     TEXT DEFAULT '',
-    reg_domain TEXT DEFAULT '',
-    first_seen TEXT NOT NULL,
-    last_seen  TEXT NOT NULL,
-    status     TEXT DEFAULT 'NEW'
-);
-
 CREATE TABLE IF NOT EXISTS pages (
     page_id          TEXT PRIMARY KEY,
     url_key          TEXT NOT NULL,
@@ -66,12 +59,13 @@ CREATE TABLE IF NOT EXISTS pages (
     metadata_json    TEXT DEFAULT '{}',
     text_hash        TEXT DEFAULT '',
     text_len         INTEGER DEFAULT 0,
+    published_at     TEXT DEFAULT '',
     extracted_at     TEXT NOT NULL,
     extraction_status TEXT DEFAULT 'OK'
 );
 
-CREATE TABLE IF NOT EXISTS candidates (
-    candidate_id    TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS links (
+    link_id         TEXT PRIMARY KEY,
     url_key         TEXT NOT NULL,
     url_json        TEXT NOT NULL,
     anchor          TEXT,
@@ -113,14 +107,6 @@ CREATE TABLE IF NOT EXISTS analyses (
     analyzed_at     TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS feedback (
-    reg_domain     TEXT PRIMARY KEY,
-    hub_score      REAL DEFAULT 0.0,
-    relevance_agg  TEXT DEFAULT '{}',
-    topics_json    TEXT DEFAULT '[]',
-    updated_at     TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS frontier_snapshots (
     snapshot_id  TEXT PRIMARY KEY,
     task_id      TEXT DEFAULT '',
@@ -154,38 +140,12 @@ CREATE TABLE IF NOT EXISTS robots_cache (
     ttl        INTEGER DEFAULT 86400
 );
 
-CREATE TABLE IF NOT EXISTS embeddings (
-    content_hash TEXT PRIMARY KEY,
-    model        TEXT DEFAULT '',
-    dims         INTEGER DEFAULT 0,
-    vector       BLOB,
-    created_at   TEXT NOT NULL
-);
 """
 
 
-class Storage(Protocol):
-    """Contract for persistent state: SQLite today, Postgres tomorrow."""
+class SqliteCrawlDb:
+    """CrawlDb backed by one SQLite file per run."""
 
-    @property
-    def db_path(self) -> str: ...
-
-    async def start(self) -> None: ...
-    async def close(self) -> None: ...
-
-    def raw_html_path(self, url_key: str, fetch_id: str) -> str: ...
-    def save_raw_html(self, url_key: str, fetch_id: str, content: bytes) -> str: ...
-
-    def save_page(self, page: Page) -> None: ...
-    def save_candidate(self, candidate: Candidate) -> None: ...
-    def save_rank_decision(self, rd: RankDecision) -> None: ...
-    def save_snapshot(self, snapshot_json: dict[str, Any]) -> None: ...
-    def save_event(self, event_json: dict[str, Any]) -> None: ...
-
-    async def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None: ...
-
-
-class SqliteStorage:
     def __init__(self, db_path: str, raw_dir: str):
         self._db_path = db_path
         self._raw_dir = Path(raw_dir)
@@ -194,12 +154,11 @@ class SqliteStorage:
         self._conn: aiosqlite.Connection | None = None
 
     @classmethod
-    def create(cls, base_dir: str | Path) -> SqliteStorage:
+    def create(cls, base_dir: str | Path) -> SqliteCrawlDb:
         """Create a Storage with a timestamped subdirectory under *base_dir*.
 
         Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``
         """
-        import datetime
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = Path(base_dir) / ts
@@ -219,14 +178,22 @@ class SqliteStorage:
         if self._conn is not None:
             return
         self._conn = await aiosqlite.connect(self._db_path)
-        # Log to a file inside the run directory (setup_logging runs first).
-        from crawlme.logging import to_file
-
-        to_file(str(Path(self._db_path).parent.parent / "log"))
+        # Library users may skip the early attach: cover them here.
+        self.attach_log_file()
         await self._conn.executescript(DDL)
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
         self._writer_task = asyncio.create_task(self._write_loop())
+
+    def attach_log_file(self) -> None:
+        """Write logs to the run dir's log file (idempotent per path).
+
+        The CLI calls this right after the run dir exists, so pre-run
+        logs (the Goal Enhancer) land in the file too.
+        """
+        from crawlme.logging import to_file
+
+        to_file(str(Path(self._db_path).parent.parent / "log"))
 
     async def close(self) -> None:
         if self._writer_task:
@@ -240,6 +207,7 @@ class SqliteStorage:
             # Final commit: flushes any writes since the last batch commit.
             await self._conn.commit()
             await self._conn.close()
+            self._conn = None
 
     async def _write_loop(self) -> None:
         batch = 0
@@ -278,17 +246,19 @@ class SqliteStorage:
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, embedding, "
-            "max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
+            "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
+            "embedding, max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
                 goal_json.get("goal_statement", ""),
+                json.dumps(goal_json.get("keywords", [])),
+                goal_json.get("since"),
                 json.dumps(goal_json.get("embedding")),
                 goal_json.get("max_pages", 500),
-                goal_json.get("max_tokens", 2_000_000),
+                goal_json.get("max_tokens", 500_000),
                 goal_json.get("max_duration_sec", 3600),
                 goal_json.get("min_relevant_hits", 3),
                 goal_json.get("relevance_threshold", 0.7),
@@ -328,42 +298,14 @@ class SqliteStorage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    #: urls ---------------------------------------------------------------
-
-    def save_url(self, url_json: dict[str, Any]) -> None:
-        self._enqueue_write(
-            "INSERT OR REPLACE INTO urls(url_key, raw, canonical, scheme, host, "
-            "path, query, domain, reg_domain, first_seen, last_seen, status) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                url_json["url_key"],
-                url_json["raw"],
-                url_json["canonical"],
-                url_json.get("scheme", ""),
-                url_json.get("host", ""),
-                url_json.get("path", ""),
-                url_json.get("query", ""),
-                url_json.get("domain", ""),
-                url_json.get("reg_domain", ""),
-                url_json.get("first_seen", url_json.get("last_seen", "")),
-                url_json.get("last_seen", ""),
-                url_json.get("status", "NEW"),
-            ),
-        )
-
-    async def get_url(self, url_key: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM urls WHERE url_key = ?", (url_key,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-
     #: pages --------------------------------------------------------------
 
     def save_page(self, page: Page) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO pages(page_id, url_key, url_json, raw_html_path, "
             "title, markdown, plain_text, metadata_json, text_hash, text_len, "
-            "extracted_at, extraction_status) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "published_at, extracted_at, extraction_status) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 page.page_id,
                 page.url_key,
@@ -375,6 +317,7 @@ class SqliteStorage:
                 json.dumps(page.metadata),
                 page.text_hash,
                 page.text_len,
+                page.published_at.isoformat() if page.published_at else "",
                 page.extracted_at.isoformat() if page.extracted_at else "",
                 page.extraction_status,
             ),
@@ -389,11 +332,17 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM pages WHERE url_key = ? ORDER BY extracted_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    #: candidates ---------------------------------------------------------
+    async def list_pages(self) -> list[dict[str, Any]]:
+        """All pages of the run, in fetch order (the replay reader)."""
+        cur = await self._execute_now("SELECT * FROM pages ORDER BY extracted_at, page_id")
+        return [dict(r) for r in await cur.fetchall()]
 
-    def save_candidate(self, candidate: Candidate) -> None:
+    #: links --------------------------------------------------------------
+
+    def save_link(self, candidate: Candidate) -> None:
+        """Persist one discovered link (the pre-fetch business card)."""
         self._enqueue_write(
-            "INSERT OR REPLACE INTO candidates(candidate_id, url_key, url_json, "
+            "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
             "source_url_key, depth, status, discovered_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -413,8 +362,8 @@ class SqliteStorage:
             ),
         )
 
-    async def get_candidate(self, candidate_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,))
+    async def get_link(self, link_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM links WHERE link_id = ?", (link_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
@@ -464,7 +413,9 @@ class SqliteStorage:
                 analysis_json.get("summary"),
                 json.dumps(analysis_json.get("structured_data", {})),
                 json.dumps(analysis_json.get("tags", [])),
-                json.dumps(analysis_json.get("feedback_json", {})),
+                # The schema field is "feedback"; a plain model dump
+                # carries it under that key (never "feedback_json").
+                json.dumps(analysis_json.get("feedback", {})),
                 analysis_json.get("model", ""),
                 analysis_json.get("prompt_version", ""),
                 analysis_json.get("tokens_used", 0),
@@ -476,25 +427,35 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    #: feedback -----------------------------------------------------------
+    async def has_analysis(self, url_key: str, goal_id: str, prompt_version: str, model: str = "") -> bool:
+        """Whether an analysis with this identity already exists.
 
-    def save_feedback(self, fb_json: dict[str, Any]) -> None:
-        self._enqueue_write(
-            "INSERT OR REPLACE INTO feedback(reg_domain, hub_score, relevance_agg, "
-            "topics_json, updated_at) VALUES(?, ?, ?, ?, ?)",
-            (
-                fb_json["reg_domain"],
-                fb_json.get("hub_score", 0.0),
-                json.dumps(fb_json.get("relevance_agg", {})),
-                json.dumps(fb_json.get("topics", [])),
-                fb_json.get("updated_at", ""),
-            ),
+        The identity is (url_key, goal_id, prompt_version, model); the
+        model is only known after an LLM call, so callers that run the
+        provider default (no model configured) pass "" to match any
+        model instead.
+        """
+        cur = await self._execute_now(
+            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ?",
+            (url_key, goal_id, prompt_version),
         )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if model == "":
+            return bool(rows)
+        return any(r["model"] == model for r in rows)
 
-    async def get_feedback(self, reg_domain: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM feedback WHERE reg_domain = ?", (reg_domain,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
+    async def list_goals(self) -> list[dict[str, Any]]:
+        """All goal rows of the run, oldest first (the inspect reader)."""
+        cur = await self._execute_now("SELECT * FROM crawl_goals ORDER BY created_at")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def list_analyses(self, goal_id: str = "") -> list[dict[str, Any]]:
+        """Analyses of the run, optionally filtered to one goal (inspect)."""
+        if goal_id:
+            cur = await self._execute_now("SELECT * FROM analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,))
+        else:
+            cur = await self._execute_now("SELECT * FROM analyses ORDER BY analyzed_at")
+        return [dict(r) for r in await cur.fetchall()]
 
     #: frontier_snapshots -------------------------------------------------
 
@@ -577,82 +538,3 @@ class SqliteStorage:
         cur = await self._execute_now("SELECT * FROM robots_cache WHERE domain = ?", (domain,))
         row = await cur.fetchone()
         return dict(row) if row else None
-
-
-_EMBEDDINGS_DDL = """
-CREATE TABLE IF NOT EXISTS embeddings (
-    content_hash TEXT PRIMARY KEY,
-    model        TEXT DEFAULT '',
-    dims         INTEGER DEFAULT 0,
-    vector       BLOB,
-    created_at   TEXT NOT NULL
-);
-"""
-
-
-class SqliteEmbeddingCache:
-    """EmbeddingCache backed by a global SQLite file shared across tasks.
-
-    Unlike SqliteStorage (one timestamped DB per crawl run), this cache
-    lives at a fixed path (typically ``results/embedding_cache.db``),
-    so vectors persist across runs and tasks.  It owns its own
-    aiosqlite connection, opened lazily on first use, and commits after
-    every put: an ungraceful process exit loses nothing.  Callers that
-    manage a long-lived process should call ``close()`` when done.
-    """
-
-    def __init__(self, db_path: str | Path) -> None:
-        self._db_path = str(db_path)
-        self._conn: aiosqlite.Connection | None = None
-        self._lock = asyncio.Lock()
-
-    async def _ensure_conn(self) -> aiosqlite.Connection:
-        if self._conn is None:
-            self._conn = await aiosqlite.connect(self._db_path)
-            await self._conn.executescript(_EMBEDDINGS_DDL)
-            await self._conn.commit()
-        return self._conn
-
-    async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]:
-        if not content_hashes:
-            return {}
-        conn = await self._ensure_conn()
-        async with self._lock:
-            placeholders = ",".join("?" * len(content_hashes))
-            cur = await conn.execute(
-                f"SELECT content_hash, vector FROM embeddings WHERE content_hash IN ({placeholders})",  # noqa: S608
-                tuple(content_hashes),
-            )
-            rows = await cur.fetchall()
-        out: dict[str, list[float]] = {}
-        for row in rows:
-            if row[1] is None:
-                continue
-            arr = array("f")
-            arr.frombytes(row[1])
-            out[row[0]] = arr.tolist()
-        return out
-
-    async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None:
-        if not entries:
-            return
-        conn = await self._ensure_conn()
-        async with self._lock:
-            for content_hash, vector in entries:
-                await conn.execute(
-                    "INSERT OR REPLACE INTO embeddings(content_hash, model, dims, vector, created_at) "
-                    "VALUES(?, ?, ?, ?, ?)",
-                    (
-                        content_hash,
-                        model,
-                        len(vector),
-                        array("f", vector).tobytes(),
-                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    ),
-                )
-            await conn.commit()
-
-    async def close(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None

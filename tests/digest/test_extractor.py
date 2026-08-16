@@ -61,3 +61,57 @@ def test_produces_content_on_valid_html(extractor, tmp_path):
     page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
     assert page.text_len > 0
     assert page.markdown or page.plain_text
+
+
+#: published_at (2.8) ----------------------------------------------------
+
+
+def _html_with(head_extra: str = "", body_extra: str = "") -> bytes:
+    return (
+        "<!DOCTYPE html><html><head><title>T</title>"
+        f"{head_extra}</head><body><article><h1>H</h1>"
+        f"<p>Body text long enough to extract.</p>{body_extra}</article></body></html>"
+    ).encode()
+
+
+def test_published_at_from_article_meta(extractor: TrafExtractor) -> None:
+    html = _html_with('<meta property="article:published_time" content="2026-08-01T10:30:00Z">')
+    page = extractor.extract(_result(html))
+    assert page.published_at is not None
+    assert page.published_at.year == 2026
+    assert page.published_at.month == 8
+    assert page.published_at.day == 1
+
+
+def test_published_at_from_json_ld(extractor: TrafExtractor) -> None:
+    html = _html_with(
+        '<script type="application/ld+json">{"@type":"Article","datePublished":"2026-07-15T08:00:00+00:00"}</script>'
+    )
+    page = extractor.extract(_result(html))
+    assert page.published_at is not None
+    assert page.published_at.month == 7
+
+
+def test_published_at_from_time_element(extractor: TrafExtractor) -> None:
+    html = _html_with(body_extra='<time datetime="2026-06-02">June 2</time>')
+    page = extractor.extract(_result(html))
+    assert page.published_at is not None
+    assert page.published_at.month == 6
+
+
+def test_published_at_none_when_page_is_silent(extractor: TrafExtractor) -> None:
+    """Unknown must stay unknown; guessing would poison TIME_HORIZON."""
+    assert extractor.extract(_result()).published_at is None
+
+
+def test_published_at_rejects_absurd_dates(extractor: TrafExtractor) -> None:
+    """Template artifacts like a year-1 date must not become a real time."""
+    html = _html_with('<meta name="date" content="0001-01-01T00:00:00Z">')
+    assert extractor.extract(_result(html)).published_at is None
+
+
+def test_published_at_naive_value_is_treated_as_utc(extractor: TrafExtractor) -> None:
+    html = _html_with('<meta name="date" content="2026-05-04 12:00:00">')
+    page = extractor.extract(_result(html))
+    assert page.published_at is not None
+    assert page.published_at.tzinfo is not None

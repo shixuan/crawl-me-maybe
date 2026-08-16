@@ -34,9 +34,24 @@ class Settings(BaseSettings):
     # the box.  "" (--embedding off) = rule-only v0.1 behavior.
     embedding_provider: str = "local"  # local | api | ""
     embedding_model: str = ""  # "" = provider default
+    # The analysis stage (page analyzer + the steering it feeds: run
+    # signals + cross-task domain priors).  On by default, degrades
+    # without credentials; --analysis off disables the whole subsystem
+    # for a clean baseline (steering derives from analysis, so it goes
+    # with it).
+    analysis_enabled: bool = True
+    # Page text sent to the analyzer per page, in characters.  The
+    # dominant analyzer cost driver.  Set to 3000 by the 10-replicate
+    # benchmark (benchmark/feedback/): on research-style tasks the
+    # 6000-char window was actively worse than no feedback at all,
+    # while 3000 won both precision and single-run recall.
+    analyzer_max_chars: int = 3000
 
     # -: LLM (v0.2+) ---
-    llm_model: str = "openai/gpt-4o-mini"
+    # On by default.  Degrades automatically: without a key and without
+    # a base url the LLM stages are skipped at wiring time, and runtime
+    # failures fall back to rule scoring.
+    llm_model: str = ""  # "" = provider default (openai/gpt-4o-mini)
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2

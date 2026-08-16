@@ -42,7 +42,7 @@ async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
       - Crawl completes without fatal errors
       - Pages are fetched and extracted
       - Candidates flow through prefilter → buffer → ranker → frontier
-      - Storage has pages, candidates, rank_decisions
+      - Storage has pages, links, rank_decisions
       - Stop reason includes BUDGET_PAGES
     """
     cfg = e2e_settings
@@ -116,14 +116,14 @@ async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
         assert page_count >= 1, "No pages saved to storage"
 
         # Candidates generated.
-        row = await db.execute("SELECT COUNT(*) FROM candidates")
+        row = await db.execute("SELECT COUNT(*) FROM links")
         (cand_count,) = await row.fetchone()
         print(f"Candidates in DB: {cand_count}")
         # Wikipedia pages have many links; even a single page should yield some.
         assert cand_count >= 1, "No candidates generated"
 
         # Candidates by status.
-        row = await db.execute("SELECT status, COUNT(*) FROM candidates GROUP BY status")
+        row = await db.execute("SELECT status, COUNT(*) FROM links GROUP BY status")
         statuses = await row.fetchall()
         print(f"Candidate statuses: {statuses}")
 
@@ -284,11 +284,11 @@ async def test_wiki_rust_draining_multi_seed(e2e_settings):
         print(f"Pages in DB: {page_count}")
         assert page_count >= len(_DRAINING_SEEDS), f"Expected >= {len(_DRAINING_SEEDS)} pages, got {page_count}"
 
-        row = await db.execute("SELECT COUNT(*) FROM candidates")
+        row = await db.execute("SELECT COUNT(*) FROM links")
         (cand_count,) = await row.fetchone()
         print(f"Candidates in DB: {cand_count}")
 
-        row = await db.execute("SELECT status, COUNT(*) FROM candidates GROUP BY status")
+        row = await db.execute("SELECT status, COUNT(*) FROM links GROUP BY status")
         statuses = await row.fetchall()
         print(f"Candidate statuses: {statuses}")
 
@@ -297,7 +297,7 @@ async def test_wiki_rust_draining_multi_seed(e2e_settings):
         print(f"Rank decisions: {rd_count}")
 
         # Depth check: no page beyond depth limit.
-        row = await db.execute("SELECT MAX(depth) FROM candidates")
+        row = await db.execute("SELECT MAX(depth) FROM links")
         (max_depth,) = await row.fetchone()
         print(f"Max candidate depth: {max_depth}")
         if max_depth is not None:

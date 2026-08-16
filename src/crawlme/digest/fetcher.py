@@ -120,7 +120,7 @@ class HttpFetcher:
                     delay = min(2**attempt, 60)
                     logger.warning(
                         "fetch.retry url=%s attempt=%d/%d delay=%.1fs error=total timeout %.0fs",
-                        item.url.raw,
+                        item.url.canonical,
                         attempt,
                         self._max_retries,
                         delay,
@@ -133,7 +133,7 @@ class HttpFetcher:
                     delay = min(2**attempt, 60)
                     logger.warning(
                         "fetch.retry url=%s attempt=%d/%d delay=%.1fs error=%s",
-                        item.url.raw,
+                        item.url.canonical,
                         attempt,
                         self._max_retries,
                         delay,
@@ -151,10 +151,10 @@ class HttpFetcher:
             follow_redirects=False,
             headers={"User-Agent": random.choice(self._uas)},  # noqa: S311
         ) as client:
-            response = await client.get(item.url.raw)
+            response = await client.get(item.url.canonical)
 
             redirects: list[URL] = []
-            final_url_str = item.url.raw
+            final_url_str = item.url.canonical
             final_url_obj = item.url
             seen: set[str] = {final_url_str}
 
@@ -184,18 +184,18 @@ class HttpFetcher:
 
             # 5xx: transient server error: retry.
             if response.status_code >= 500:
-                logger.warning("fetch.5xx url=%s status=%d", item.url.raw, response.status_code)
+                logger.warning("fetch.5xx url=%s status=%d", item.url.canonical, response.status_code)
                 raise _TransientError(f"Server error {response.status_code}")
 
             # 4xx (non-429): permanent: do not retry.
             if 400 <= response.status_code < 500:
-                logger.warning("fetch.4xx url=%s status=%d", item.url.raw, response.status_code)
+                logger.warning("fetch.4xx url=%s status=%d", item.url.canonical, response.status_code)
                 raise FetchError(f"Permanent HTTP error: {response.status_code}")
 
             elapsed_ms = int((time.monotonic() - started) * 1000)
             logger.debug(
                 "fetch.ok url=%s status=%d bytes=%d duration=%dms",
-                item.url.raw,
+                item.url.canonical,
                 response.status_code,
                 len(response.content),
                 elapsed_ms,

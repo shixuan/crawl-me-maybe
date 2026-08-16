@@ -168,3 +168,22 @@ async def test_too_many_redirects(fetcher, httpx_mock: HTTPXMock):
 
     with pytest.raises(FetchError, match="redirects"):
         await fetcher.fetch(_item())
+
+
+@pytest.mark.asyncio
+async def test_fetches_canonical_url_for_relative_href(fetcher, httpx_mock: HTTPXMock):
+    """A site-relative href (raw) must be requested through its resolved
+    canonical URL.  Fetching raw directly is what produced a wall of
+    UnsupportedProtocol errors on HN-style relative links."""
+    item = FrontierItem(
+        url=URL(
+            raw="from?site=blog.google",
+            canonical="https://news.ycombinator.com/from?site=blog.google",
+            url_key="k-rel",
+            reg_domain="news.ycombinator.com",
+        ),
+        url_key="k-rel",
+    )
+    httpx_mock.add_response(url="https://news.ycombinator.com/from?site=blog.google", content=b"ok")
+    result = await fetcher.fetch(item)
+    assert result.status_code == 200

@@ -40,6 +40,8 @@ from typing import Any, Protocol
 import httpx
 
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
+from crawlme.state.context import RunStats
+from crawlme.storage.contracts import EmbeddingCache
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +78,6 @@ class Embedder(Protocol):
     def model_name(self) -> str: ...
 
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
-
-
-class EmbeddingCache(Protocol):
-    """Contract for persistent vector storage."""
-
-    async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]: ...
-
-    async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None: ...
 
 
 class FastEmbedEmbedder:
@@ -261,10 +255,18 @@ class EmbeddingRanker:
     new tasks) skip the provider entirely.
     """
 
-    def __init__(self, embedder: Embedder, keep: int = 60, cache: EmbeddingCache | None = None) -> None:
+    def __init__(
+        self,
+        embedder: Embedder,
+        keep: int = 60,
+        cache: EmbeddingCache | None = None,
+        stats: RunStats | None = None,
+    ) -> None:
         self._embedder = embedder
         self._keep = keep
         self._cache = cache
+        # Cache tallies land in the shared run stats when provided.
+        self._stats = stats
         self._goal_cache: dict[str, list[float]] = {}
         # Vector dimensionality learned from the first provider response;
         # used to reject cache entries from an incompatible vector space.
@@ -307,6 +309,15 @@ class EmbeddingRanker:
             )
         return decisions
 
+    async def aclose(self) -> None:
+        """Close the persistent vector cache when present.
+
+        The cache owns an aiosqlite connection whose worker thread
+        would otherwise keep the interpreter alive at exit.
+        """
+        if self._cache is not None:
+            await self._cache.close()
+
     async def _goal_embedding(self, goal: CrawlGoal) -> list[float]:
         """Embed the goal once per task; in-memory cache by goal_id.
 
@@ -317,7 +328,9 @@ class EmbeddingRanker:
         cached = self._goal_cache.get(goal.goal_id)
         if cached is not None:
             return cached
-        text = goal.goal_statement or goal.prompt
+        # The original prompt always stays in the embedded text: the
+        # statement supplements it, it never replaces it.
+        text = f"{goal.goal_statement} {goal.prompt}" if goal.goal_statement else goal.prompt
         emb = (await self._embed_texts([_truncate(text)]))[0]
         self._goal_cache[goal.goal_id] = emb
         return emb
@@ -340,6 +353,9 @@ class EmbeddingRanker:
                     del cached[h]
 
         miss = [(i, t) for i, t in enumerate(texts) if hashes[i] not in cached]
+        if self._stats is not None:
+            self._stats.embedding_cache_hits += len(texts) - len(miss)
+            self._stats.embedding_cache_misses += len(miss)
         new_by_hash: dict[str, list[float]] = {}
         if miss:
             new_vecs = await self._embedder.embed([t for _, t in miss])
@@ -359,7 +375,7 @@ def _text_for(c: Candidate, page_contexts: dict[str, dict[str, Any]] | None) -> 
     if page_contexts:
         parts.append(page_contexts.get(c.source_url_key or "", {}).get("title", ""))
     text = " ".join(p for p in parts if p).strip()
-    return _truncate(text) if text else c.url.raw[:_MAX_EMBED_CHARS]
+    return _truncate(text) if text else c.url.canonical[:_MAX_EMBED_CHARS]
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

@@ -4,8 +4,8 @@ Uses the REAL RuleRanker and EmbeddingRanker (not reimplemented logic),
 so the numbers measure exactly what the crawler does.
 
 Usage:
-  python3 benchmark/score_eval.py
-  python3 benchmark/score_eval.py --embedding api --embedding-model text-embedding-3-small
+  python3 benchmark/embedding/score_eval.py
+  python3 benchmark/embedding/score_eval.py --embedding api --embedding-model text-embedding-3-small
 
 Metrics (binary relevance):
   NDCG@k    ranking quality, discounted by position
@@ -39,7 +39,7 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
 
-EVAL_PATH = Path("benchmark/data/embedding_eval.json")
+EVAL_PATH = Path("benchmark/embedding/data/embedding_eval.json")
 
 
 def _to_candidate(idx: int, e: dict[str, object]) -> Candidate:

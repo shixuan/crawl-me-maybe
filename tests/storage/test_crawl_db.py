@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 
 import pytest
 
 from crawlme.schemas import URL, Candidate, Page, RankDecision
-from crawlme.state.storage import SqliteEmbeddingCache, SqliteStorage
+from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 
 def _url(url_key: str = "abc") -> URL:
@@ -23,7 +24,7 @@ def storage(tmp_path):
     db = tmp_path / "test.db"
     raw = tmp_path / "raw"
     raw.mkdir()
-    s = SqliteStorage(str(db), str(raw))
+    s = SqliteCrawlDb(str(db), str(raw))
     loop.run_until_complete(s.start())
     yield s
     loop.run_until_complete(s.close())
@@ -34,17 +35,14 @@ def test_init_creates_all_tables(storage):
     tables = [
         "crawl_goals",
         "crawl_tasks",
-        "urls",
         "pages",
-        "candidates",
+        "links",
         "rank_decisions",
         "analyses",
-        "feedback",
         "frontier_snapshots",
         "events",
         "errors",
         "robots_cache",
-        "embeddings",
     ]
     for t in tables:
         cur = _run(storage._execute_now("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)))
@@ -68,6 +66,26 @@ def test_save_and_get_goal(storage):
     assert g["max_pages"] == 10
 
 
+def test_save_goal_roundtrips_enhanced_fields(storage):
+    """The Goal Enhancer's keywords and since survive persistence."""
+    storage.save_goal(
+        {
+            "goal_id": "g2",
+            "prompt": "最近半年的LLM推理框架进展",
+            "goal_statement": "Find recent progress on LLM inference frameworks / 找最近LLM推理框架进展",
+            "keywords": ["llm", "inference", "vllm"],
+            "since": "2026-02-13T00:00:00+00:00",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    g = _run(storage.get_goal("g2"))
+    assert g is not None
+    assert g["goal_statement"].startswith("Find recent progress")
+    assert '"vllm"' in g["keywords"]
+    assert g["since"] == "2026-02-13T00:00:00+00:00"
+
+
 def test_save_and_get_task(storage):
     storage.save_task(
         {
@@ -82,24 +100,6 @@ def test_save_and_get_task(storage):
     t = _run(storage.get_task("t1"))
     assert t is not None
     assert t["state"] == "RUNNING"
-
-
-def test_save_and_get_url(storage):
-    storage.save_url(
-        {
-            "url_key": "abc",
-            "raw": "https://x.com",
-            "canonical": "https://x.com",
-            "domain": "x.com",
-            "reg_domain": "x.com",
-            "first_seen": "2026-01-01T00:00:00Z",
-            "last_seen": "2026-01-01T00:00:00Z",
-        }
-    )
-    _run(storage._write_queue.join())
-    u = _run(storage.get_url("abc"))
-    assert u is not None
-    assert u["raw"] == "https://x.com"
 
 
 def test_save_and_get_page(storage):
@@ -120,6 +120,21 @@ def test_get_pages_by_url_key(storage):
     assert len(pages) == 3
 
 
+def test_list_pages_returns_all_in_fetch_order(storage):
+    for i in (2, 0, 1):
+        storage.save_page(
+            Page(
+                page_id=f"p{i}",
+                url_key=f"k{i}",
+                url=_url(f"k{i}"),
+                extracted_at=datetime.datetime(2026, 1, 1, 0, 0, i),
+            )
+        )
+    _run(storage._write_queue.join())
+    pages = _run(storage.list_pages())
+    assert [p["page_id"] for p in pages] == ["p0", "p1", "p2"]
+
+
 def test_save_raw_html(storage):
     path = storage.save_raw_html("abc", "f1", b"<html>hello</html>")
     assert path.endswith(".html")
@@ -127,10 +142,10 @@ def test_save_raw_html(storage):
         assert "hello" in f.read()
 
 
-def test_save_and_get_candidate(storage):
-    storage.save_candidate(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
+def test_save_and_get_link(storage):
+    storage.save_link(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
     _run(storage._write_queue.join())
-    c = _run(storage.get_candidate("c1"))
+    c = _run(storage.get_link("c1"))
     assert c is not None
     assert c["depth"] == 2
 
@@ -159,6 +174,7 @@ def test_save_and_get_analyses(storage):
             "page_id": "p1",
             "url_key": "abc",
             "classification": "RELEVANT",
+            "feedback": {"classification": "RELEVANT", "hub_score": 0.6, "endorsed_links": ["https://x.com/y"]},
             "analyzed_at": "2026-01-01T00:00:00Z",
         }
     )
@@ -166,20 +182,30 @@ def test_save_and_get_analyses(storage):
     results = _run(storage.get_analyses_by_url_key("abc"))
     assert len(results) == 1
     assert results[0]["classification"] == "RELEVANT"
+    # The scheduler-facing feedback signals must survive persistence.
+    assert '"hub_score": 0.6' in results[0]["feedback_json"]
+    assert "https://x.com/y" in results[0]["feedback_json"]
 
 
-def test_save_and_get_feedback(storage):
-    storage.save_feedback(
+def test_has_analysis_matches_identity(storage):
+    storage.save_analysis(
         {
-            "reg_domain": "example.com",
-            "hub_score": 0.75,
-            "updated_at": "2026-01-01T00:00:00Z",
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "goal_id": "g1",
+            "prompt_version": "v1",
+            "model": "m1",
+            "analyzed_at": "2026-01-01T00:00:00Z",
         }
     )
     _run(storage._write_queue.join())
-    fb = _run(storage.get_feedback("example.com"))
-    assert fb is not None
-    assert fb["hub_score"] == 0.75
+
+    assert _run(storage.has_analysis("abc", "g1", "v1"))  # "" matches any model
+    assert _run(storage.has_analysis("abc", "g1", "v1", "m1"))
+    assert not _run(storage.has_analysis("abc", "g1", "v1", "m2"))
+    assert not _run(storage.has_analysis("abc", "g1", "v2"))
+    assert not _run(storage.has_analysis("abc", "g2", "v1"))
+    assert not _run(storage.has_analysis("other", "g1", "v1"))
 
 
 def test_save_and_get_snapshot(storage):
@@ -256,68 +282,4 @@ def test_save_and_get_robots(storage):
 
 def test_get_nonexistent(storage):
     assert _run(storage.get_goal("noexist")) is None
-    assert _run(storage.get_url("noexist")) is None
     assert _run(storage.get_page("noexist")) is None
-
-
-@pytest.fixture
-def embedding_cache(tmp_path):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    cache = SqliteEmbeddingCache(tmp_path / "embedding_cache.db")
-    yield cache
-    loop.run_until_complete(cache.close())
-    loop.close()
-
-
-def test_embedding_roundtrip(embedding_cache):
-    """Vector survives the float32 BLOB roundtrip."""
-    vec = [0.1, 0.2, 0.3, -0.4]
-    _run(embedding_cache.put_vectors([("h1", vec)], "local/model-x"))
-
-    got = _run(embedding_cache.get_vectors(["h1"]))
-    assert "h1" in got
-    assert len(got["h1"]) == 4
-    assert got["h1"] == pytest.approx(vec, abs=1e-6)
-
-
-def test_embedding_missing_hashes(embedding_cache):
-    got = _run(embedding_cache.get_vectors(["nope1", "nope2"]))
-    assert got == {}
-
-
-def test_embedding_empty_list(embedding_cache):
-    assert _run(embedding_cache.get_vectors([])) == {}
-    assert _run(embedding_cache.put_vectors([], "local/a")) is None
-
-
-def test_embedding_last_write_wins_on_same_hash(embedding_cache):
-    """Same content hash key: later write overwrites.  Model scoping is
-    the caller's job (hash includes the model name)."""
-    _run(embedding_cache.put_vectors([("h-same", [1.0, 0.0])], "local/a"))
-    _run(embedding_cache.put_vectors([("h-same", [0.0, 1.0])], "local/b"))
-    got = _run(embedding_cache.get_vectors(["h-same"]))
-    assert got["h-same"] == pytest.approx([0.0, 1.0])
-
-
-def test_embedding_multiple_vectors(embedding_cache):
-    _run(embedding_cache.put_vectors([("h1", [1.0]), ("h2", [2.0]), ("h3", [3.0])], "local/a"))
-    got = _run(embedding_cache.get_vectors(["h1", "h3", "missing"]))
-    assert set(got.keys()) == {"h1", "h3"}
-    assert got["h1"] == pytest.approx([1.0])
-
-
-def test_embedding_persists_across_reopen(tmp_path):
-    """The whole point: cache data survives connection close and reopen."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    path = tmp_path / "embedding_cache.db"
-    cache1 = SqliteEmbeddingCache(path)
-    loop.run_until_complete(cache1.put_vectors([("h1", [7.0])], "local/a"))
-    loop.run_until_complete(cache1.close())
-
-    cache2 = SqliteEmbeddingCache(path)
-    got = loop.run_until_complete(cache2.get_vectors(["h1"]))
-    loop.run_until_complete(cache2.close())
-    loop.close()
-    assert got["h1"] == pytest.approx([7.0])
