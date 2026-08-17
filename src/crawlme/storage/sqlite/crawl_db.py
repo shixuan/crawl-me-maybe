@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     max_pages  INTEGER DEFAULT 500,
     max_tokens INTEGER DEFAULT 500000,
     max_duration_sec INTEGER DEFAULT 3600,
-    min_relevant_hits INTEGER DEFAULT 3,
     relevance_threshold REAL DEFAULT 0.7,
     depth_limit INTEGER DEFAULT 5,
     domain_budget INTEGER DEFAULT 50,
@@ -247,9 +246,9 @@ class SqliteCrawlDb:
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
-            "embedding, max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
+            "embedding, max_pages, max_tokens, max_duration_sec, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
@@ -260,7 +259,6 @@ class SqliteCrawlDb:
                 goal_json.get("max_pages", 500),
                 goal_json.get("max_tokens", 500_000),
                 goal_json.get("max_duration_sec", 3600),
-                goal_json.get("min_relevant_hits", 3),
                 goal_json.get("relevance_threshold", 0.7),
                 goal_json.get("depth_limit", 5),
                 goal_json.get("domain_budget", 50),

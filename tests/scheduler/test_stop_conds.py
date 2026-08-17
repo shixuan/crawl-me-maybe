@@ -33,7 +33,11 @@ def _buffer() -> InMemoryBuffer:
 
 
 def _counters(**kw) -> CrawlCounters:
-    return CrawlCounters(**kw)
+    window = kw.pop("relevance_window", None)
+    c = CrawlCounters(**kw)
+    if window is not None:
+        c.relevance_window.extend(window)
+    return c
 
 
 def _codes(reasons) -> list[str]:
@@ -122,29 +126,6 @@ async def test_frontier_not_drained_with_buffered():
     await buf.add([_candidate()])
     reasons = check_stop(_task(), _frontier(size=0), buf, _counters(in_flight=0))
     assert not any(r.code == "FRONTIER_DRAINED" for r in reasons)
-
-
-# -- goal satisfied ------------------------------------------------------
-
-
-def test_goal_satisfied():
-    reasons = check_stop(
-        _task(),
-        _frontier(),
-        _buffer(),
-        _counters(relevance_window=[True] * 5, min_relevant_hits=3),
-    )
-    assert any(r.code == "GOAL_SATISFIED" for r in reasons)
-
-
-def test_goal_satisfied_not_enough_hits():
-    reasons = check_stop(
-        _task(),
-        _frontier(),
-        _buffer(),
-        _counters(relevance_window=[True, True, False], min_relevant_hits=3),
-    )
-    assert not any(r.code == "GOAL_SATISFIED" for r in reasons)
 
 
 # -- diminishing returns -------------------------------------------------
@@ -246,7 +227,6 @@ def test_no_reasons_when_everything_fine():
             max_duration_sec=3600,
             started_at=time.monotonic(),
             in_flight=2,
-            min_relevant_hits=3,
             relevance_window=[True, False],
         ),
     )
@@ -259,3 +239,17 @@ def _candidate():
     return Candidate(
         url=URL(raw="https://x.com", canonical="https://x.com", url_key="k1"),
     )
+
+
+def test_relevance_window_only_keeps_the_recent_slice():
+    """A run longer than the window must not accumulate forever."""
+    c = CrawlCounters()
+    for _ in range(100):
+        c.relevance_window.append(False)
+    assert len(c.relevance_window) == 20
+
+
+def test_diminishing_returns_forgets_an_old_dry_spell():
+    """Twenty misses then twenty hits is a healthy crawl, not a dead one."""
+    c = _counters(relevance_window=[False] * 20 + [True] * 20)
+    assert not any(r.code == "DIMINISHING_RETURNS" for r in check_stop(_task(), _frontier(), _buffer(), c))

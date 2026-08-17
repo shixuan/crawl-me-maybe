@@ -26,7 +26,6 @@ class CrawlGoal(BaseModel):
     # the full 500k costs cents on the default model.
     max_tokens: int = 500_000
     max_duration_sec: int = 3600
-    min_relevant_hits: int = 3
     relevance_threshold: float = 0.7
     depth_limit: int = 5
     domain_budget: int = 50

@@ -1,8 +1,12 @@
-"""Stop conditions: 8 independent checks, each returning StopReason or None.
+"""Stop conditions: independent checks, each returning StopReason or None.
 
 check_stop() runs them all each iteration and returns every triggered reason.
 The scheduler decides whether to pause (USER_REQUESTED) or terminate (everything
 else).
+
+Every check in _CHECKS must be reachable.  A check whose input is never
+written is worse than no check, because the capability looks present in
+the docs while nothing can trigger it.
 """
 
 from __future__ import annotations
@@ -14,7 +18,11 @@ from dataclasses import dataclass
 from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.schemas import CrawlTask
-from crawlme.state.context import CrawlCounters
+from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
+
+#: Fewer than this many relevant pages in a full window means the crawl
+#: has stopped finding anything worth the budget.
+_MIN_RELEVANT_IN_WINDOW = 2
 
 
 @dataclass
@@ -102,18 +110,6 @@ def _frontier_drained(
     return None
 
 
-def _goal_satisfied(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    _buffer: Buffer,
-    c: CrawlCounters,
-) -> StopReason | None:
-    hits = c.relevance_window.count(True)  # best-effort from window
-    if c.min_relevant_hits > 0 and hits >= c.min_relevant_hits:
-        return StopReason("GOAL_SATISFIED", f"{hits} relevant pages in recent window")
-    return None
-
-
 def _diminishing_returns(
     _task: CrawlTask,
     _frontier: Frontier,
@@ -121,7 +117,7 @@ def _diminishing_returns(
     c: CrawlCounters,
 ) -> StopReason | None:
     window = c.relevance_window
-    if len(window) >= 20 and sum(window) < 2:
+    if len(window) >= RELEVANCE_WINDOW and sum(window) < _MIN_RELEVANT_IN_WINDOW:
         return StopReason("DIMINISHING_RETURNS", f"only {sum(window)} relevant in last {len(window)}")
     return None
 
@@ -157,7 +153,6 @@ _CHECKS: list[_CheckFunc] = [
     _time_horizon,
     _fatal,
     _user_requested,
-    _goal_satisfied,
     _diminishing_returns,
     _frontier_drained,
 ]

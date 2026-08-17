@@ -83,7 +83,6 @@ async def test_stops_when_frontier_empty():
         max_pages=5,
         max_tokens=100000,
         max_duration_sec=3600,
-        min_relevant_hits=3,
         relevance_threshold=0.7,
     )
 
@@ -108,7 +107,6 @@ async def test_stops_on_budget_pages():
         pages_fetched=10,  # Already at budget.
         max_tokens=100000,
         max_duration_sec=3600,
-        min_relevant_hits=3,
         relevance_threshold=0.7,
     )
 
@@ -483,3 +481,24 @@ def test_summary_reports_run_statistics():
     assert summary["analyses"] == {"RELEVANT": 3, "IRRELEVANT": 1}
     assert summary["embedding_cache_hits"] == 4
     assert summary["embedding_cache_misses"] == 9
+
+
+def test_on_analysis_feeds_the_relevance_window():
+    """The analyzer sink is the only writer DIMINISHING_RETURNS can have."""
+    sched = _make_sched()
+    sched._counters.relevance_threshold = 0.7
+
+    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+    sched._on_analysis(AnalysisResult(page_id="p2", url_key="k2", relevance_score=0.2))
+
+    assert list(sched._counters.relevance_window) == [True, False]
+
+
+def test_relevance_window_uses_the_goal_threshold():
+    """relevance_threshold stops being dead config here."""
+    sched = _make_sched()
+    sched._counters.relevance_threshold = 0.95
+
+    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+
+    assert list(sched._counters.relevance_window) == [False]
