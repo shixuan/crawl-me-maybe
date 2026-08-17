@@ -115,3 +115,52 @@ def test_published_at_naive_value_is_treated_as_utc(extractor: TrafExtractor) ->
     page = extractor.extract(_result(html))
     assert page.published_at is not None
     assert page.published_at.tzinfo is not None
+
+
+#: boilerplate removal ---------------------------------------------------
+
+
+_NAV_HTML = b"""<!DOCTYPE html><html><head><title>Real Title</title></head><body>
+<nav><a href="/">Jump to content</a><a href="/menu">Main menu</a><a href="/side">move to sidebar</a></nav>
+<article><h1>Real Title</h1>
+<p>The actual article body that a reader came here for, long enough to survive extraction.</p>
+<p>A second paragraph so the extractor is confident this is the main content.</p></article>
+<footer>Privacy policy</footer></body></html>"""
+
+
+def test_extraction_status_is_ok_for_a_normal_page(extractor: TrafExtractor) -> None:
+    """Regression: an invalid output_format made every page DEGRADED.
+
+    trafilatura calls the plain-text format "txt"; "text" raises, which
+    aborted the whole primary path and silently pushed every single page
+    onto the BeautifulSoup fallback.
+    """
+    assert extractor.extract(_result(_NAV_HTML)).extraction_status == "OK"
+
+
+def test_plain_text_drops_navigation_boilerplate(extractor: TrafExtractor) -> None:
+    """plain_text feeds the analyzer, so boilerplate here costs tokens
+    and dilutes every judgement made from it."""
+    text = extractor.extract(_result(_NAV_HTML)).plain_text or ""
+    assert "actual article body" in text
+    assert "move to sidebar" not in text
+    assert "Main menu" not in text
+
+
+def test_title_comes_from_the_declared_title_tag(extractor: TrafExtractor) -> None:
+    """Regression: the primary path never set a title.
+
+    It called .find() on trafilatura's XML *string*, so str.find returned
+    an int, .text raised, and a bare except swallowed it. Titles only ever
+    worked because the invalid output_format forced the BeautifulSoup
+    fallback to run. page.title feeds the ranker's title-match factor and
+    the LLM ranker's source-page line, so it silently degraded both.
+    """
+    page = extractor.extract(_result(_NAV_HTML))
+    assert page.title == "Real Title"
+    assert page.extraction_status == "OK"
+
+
+def test_title_falls_back_to_the_url_when_undeclared(extractor: TrafExtractor) -> None:
+    page = extractor.extract(_result(b"<html><body><p>No title here at all, just prose.</p></body></html>"))
+    assert page.title == "https://example.com/page"
