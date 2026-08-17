@@ -265,6 +265,7 @@ class CrawlScheduler:
             # (hang-safe exit, see the aiosqlite worker-thread lesson).
             await self._steering.aclose()
         await self._ranker.aclose()
+        await self._fetcher.aclose()
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:

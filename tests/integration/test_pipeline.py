@@ -58,6 +58,9 @@ class _MockFetcher:
             "https://example.com/delta": _PAGE_DELTA_HTML,
         }
 
+    async def aclose(self) -> None:
+        return None
+
     async def fetch(self, item: FrontierItem) -> FetchResult:
         raw_url = item.url.raw
         html = self._pages.get(raw_url, b"<html><body>Not Found</body></html>")
