@@ -187,3 +187,48 @@ async def test_fetches_canonical_url_for_relative_href(fetcher, httpx_mock: HTTP
     httpx_mock.add_response(url="https://news.ycombinator.com/from?site=blog.google", content=b"ok")
     result = await fetcher.fetch(item)
     assert result.status_code == 200
+
+
+#: client lifecycle ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_client_is_reused_across_fetches(fetcher, httpx_mock: HTTPXMock):
+    """One client per run, so the connection pool actually gets used."""
+    httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
+    await fetcher.fetch(_item())
+    first = fetcher._get_client()
+    await fetcher.fetch(_item())
+    assert fetcher._get_client() is first
+    await fetcher.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aclose_is_idempotent(fetcher, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(url="https://example.com/page", content=b"a")
+    await fetcher.fetch(_item())
+    await fetcher.aclose()
+    await fetcher.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_rebuilt_after_aclose(fetcher, httpx_mock: HTTPXMock):
+    """A closed client must not be handed out again."""
+    httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
+    await fetcher.fetch(_item())
+    first = fetcher._get_client()
+    await fetcher.aclose()
+    await fetcher.fetch(_item())
+    assert fetcher._get_client() is not first
+    await fetcher.aclose()
+
+
+@pytest.mark.asyncio
+async def test_user_agent_rotates_per_request(httpx_mock: HTTPXMock):
+    """UA moved onto the request when the client started outliving fetches."""
+    f = HttpFetcher(user_agents=["UA-one"], max_retries=1)
+    httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
+    await f.fetch(_item())
+    await f.fetch(_item())
+    assert all(r.headers["User-Agent"] == "UA-one" for r in httpx_mock.get_requests())
+    await f.aclose()

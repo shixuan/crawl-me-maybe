@@ -162,3 +162,68 @@ def test_build_domain_prior_merges_statistics_and_hubs():
     assert prior["a.com"] == 0.9  # statistics pass through untouched
     assert prior["b.com"] == 0.75  # hub floor overrides the low average
     assert prior["hub.com"] == 0.75  # hub-only domain keeps its boost
+
+
+#: factor set is swappable (G1) ------------------------------------------
+
+
+def test_custom_factor_set_replaces_the_default():
+    """A different kind of source brings its own factors, same machinery."""
+    from crawlme.pioneer.ranker.rule import Factor, RuleRanker, ScoreContext
+
+    calls: list[str] = []
+
+    def _always(value: float):
+        def _f(c, ctx: ScoreContext) -> float:
+            calls.append(c.candidate_id)
+            return value
+
+        return _f
+
+    scorer = RuleRanker(
+        threshold=0.0,
+        factors=(Factor("only_signal", 1.0, _always(0.75)),),
+    )
+    d = scorer.score_batch([_candidate()])[0]
+    assert d.priority == pytest.approx(0.75)
+    assert "only_signal=0.750" in d.rationale
+    # None of the default factor names survive.
+    assert "anchor_match" not in d.rationale
+    assert calls == [d.candidate_id]
+
+
+def test_weights_are_normalized_for_any_factor_set():
+    """Weights need not sum to 1; the score stays in [0, 1]."""
+    from crawlme.pioneer.ranker.rule import Factor, RuleRanker
+
+    scorer = RuleRanker(
+        threshold=0.0,
+        factors=(
+            Factor("a", 3.0, lambda c, ctx: 1.0),
+            Factor("b", 1.0, lambda c, ctx: 0.0),
+        ),
+    )
+    assert scorer.score_batch([_candidate()])[0].priority == pytest.approx(0.75)
+
+
+def test_empty_factor_set_scores_zero():
+    from crawlme.pioneer.ranker.rule import RuleRanker
+
+    d = RuleRanker(threshold=0.0, factors=()).score_batch([_candidate()])[0]
+    assert d.priority == 0.0
+
+
+def test_default_factor_set_is_the_graph_one():
+    from crawlme.pioneer.ranker.rule import GRAPH_FACTORS, RuleRanker
+
+    assert RuleRanker()._factors is GRAPH_FACTORS
+    assert [f.name for f in GRAPH_FACTORS] == [
+        "anchor_match",
+        "snippet_match",
+        "title_match",
+        "domain_prior",
+        "depth",
+        "path_signal",
+        "position",
+    ]
+    assert sum(f.weight for f in GRAPH_FACTORS) == pytest.approx(1.0)

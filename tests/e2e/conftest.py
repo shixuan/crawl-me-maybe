@@ -1,6 +1,19 @@
-"""Shared fixtures for e2e tests (real network, real storage)."""
+"""Shared fixtures for e2e tests (real network, real storage).
+
+Everything in this directory is assumed to hit the network, and is marked
+`e2e` automatically so CI's `-m "not e2e"` filter excludes it.
+
+The auto-marking is the point. An opt-in marker fails silently: a new
+network test that forgets `pytestmark` just starts running on every push
+and turns CI flaky for reasons that have nothing to do with the commit.
+Marking by location inverts that, so forgetting is the safe direction.
+
+Hermetic tests that want to run in CI belong in tests/smoke/.
+"""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -25,3 +38,18 @@ def e2e_settings() -> Settings:
         llm_api_key="",
         llm_base_url="",
     )
+
+
+_HERE = Path(__file__).parent
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark everything collected from this directory as `e2e`.
+
+    The path check is not optional: pytest hands this hook the whole
+    session's items no matter which conftest defines it, so an unfiltered
+    loop marks the entire suite and CI silently runs nothing.
+    """
+    for item in items:
+        if _HERE in Path(str(item.fspath)).parents:
+            item.add_marker(pytest.mark.e2e)

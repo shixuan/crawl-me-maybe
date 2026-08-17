@@ -39,6 +39,7 @@ from crawlme.schemas import (
     Candidate,
     CrawlGoal,
     CrawlTask,
+    FetchResult,
     FrontierItem,
     FrontierSnapshot,
     Page,
@@ -265,6 +266,7 @@ class CrawlScheduler:
             # (hang-safe exit, see the aiosqlite worker-thread lesson).
             await self._steering.aclose()
         await self._ranker.aclose()
+        await self._fetcher.aclose()
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
@@ -287,6 +289,10 @@ class CrawlScheduler:
                 "summary": result.summary or "",
             },
         )
+        # The only place a page is ever judged, so the only place the
+        # relevance window can be fed.  DIMINISHING_RETURNS reads it to
+        # decide whether the crawl has stopped finding anything.
+        self._counters.relevance_window.append(result.relevance_score >= self._counters.relevance_threshold)
 
     def _note_page_age(self, page: Page) -> None:
         """Track how many pages in a row fell outside the goal's window.
@@ -505,164 +511,183 @@ class CrawlScheduler:
             await self._frontier.push_batch(items)
             logger.info("endorsed.injected count=%d", len(items))
 
+    async def _fetch_and_extract(self, item: FrontierItem) -> tuple[FetchResult, Page] | None:
+        """Download and parse one page while holding a fetch slot.
+
+        The slot covers the network request and the parse it feeds,
+        and nothing else.  Returns None when the item is finished with,
+        either because it failed or because extraction timed out.
+        """
+        async with self._fetch_sem:
+            try:
+                result = await self._fetcher.fetch(item)
+                domain = item.url.reg_domain or _extract_domain(item.url.canonical)
+                self._robots.record_response(domain, result.status_code)
+            except Exception as e:
+                logger.warning("fetch.failed url_key=%s domain=%s depth=%d", item.url_key, item.reg_domain, item.depth)
+                if self._events:
+                    self._events.emit(EventType.FETCH_FAILED, {"url_key": item.url_key, "depth": item.depth})
+                self._storage.save_error(
+                    {
+                        "task_id": self._task.task_id if self._task else "",
+                        "url_key": item.url_key,
+                        "stage": "fetch",
+                        "error_type": type(e).__name__,
+                        "attempt": item.attempts,
+                        "created_at": _utcnow().isoformat(),
+                    }
+                )
+                self._ctx.stats.fetch_errors += 1
+                await self._frontier.record_outcome(item, "FAILED")
+                return None
+
+            # Extract content: offload to thread pool with a timeout.
+            raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
+            logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+            await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
+            try:
+                page = await asyncio.wait_for(
+                    asyncio.to_thread(self._extractor.extract, result, raw_path),
+                    timeout=self._cfg.extract_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+                await self._frontier.record_outcome(item, "SKIPPED")
+                self._counters.pages_fetched = self._counters.pages_fetched + 1
+                return None
+            self._storage.save_page(page)
+            self._note_page_age(page)
+            return result, page
+
     async def _handle_fetch(self, item: FrontierItem) -> None:
         if self._events:
             self._events.emit(EventType.FETCH_STARTED, {"url_key": item.url_key, "depth": item.depth})
-        async with self._fetch_sem:
+        try:
+            fetched = await self._fetch_and_extract(item)
+            if fetched is None:
+                return
+            result, page = fetched
+
+            # One LLM call per page: classification, summary, and the
+            # feedback signals the steering system reads.  Failures park
+            # on the analyzer's own retry queue and never block this loop.
+            #
+            # Deliberately outside the fetch slot.  Waiting on an LLM
+            # while holding one made fetch_concurrency and llm_concurrency
+            # nested rather than independent, so the inner limit throttled
+            # the outer one and HTTP fetching stalled behind analysis.
+            #
+            # It stays ahead of link extraction, though: the ranker reads
+            # this page's verdict out of the page context when it scores
+            # the links found below (2.9).
+            if self._steering is not None:
+                assert self._goal is not None
+                await self._steering.analyze(page, self._goal)
+            if self._events:
+                self._events.emit(
+                    EventType.FETCH_COMPLETED,
+                    {"url_key": item.url_key, "status": result.status_code, "size": len(result.raw)},
+                )
+                self._events.emit(
+                    EventType.PAGE_EXTRACTED,
+                    {"url_key": page.url_key, "title": page.title, "status": page.extraction_status},
+                )
+
+            # Extract links -> Candidates -> PreFilter -> Buffer.
+            # Bounded like the extraction step: a pathological page
+            # must lose its links, not stall the whole crawl.
             try:
-                raw_path = ""
-                try:
-                    result = await self._fetcher.fetch(item)
-                    domain = item.url.reg_domain or _extract_domain(item.url.canonical)
-                    self._robots.record_response(domain, result.status_code)
-                except Exception as e:
-                    logger.warning(
-                        "fetch.failed url_key=%s domain=%s depth=%d", item.url_key, item.reg_domain, item.depth
-                    )
-                    if self._events:
-                        self._events.emit(EventType.FETCH_FAILED, {"url_key": item.url_key, "depth": item.depth})
-                    self._storage.save_error(
-                        {
-                            "task_id": self._task.task_id if self._task else "",
-                            "url_key": item.url_key,
-                            "stage": "fetch",
-                            "error_type": type(e).__name__,
-                            "attempt": item.attempts,
-                            "created_at": _utcnow().isoformat(),
-                        }
-                    )
-                    self._ctx.stats.fetch_errors += 1
-                    await self._frontier.record_outcome(item, "FAILED")
-                    return
+                raw_links = await asyncio.wait_for(
+                    asyncio.to_thread(extract_links, page), timeout=self._cfg.extract_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+                raw_links = []
+            self._ctx.stats.links_discovered += len(raw_links)
+            logger.debug(
+                "extracted url_key=%s title=%r links=%d status=%s",
+                page.url_key,
+                page.title,
+                len(raw_links),
+                page.extraction_status,
+            )
 
-                # Extract content: offload to thread pool with a timeout.
-                raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
-                logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
-                try:
-                    page = await asyncio.wait_for(
-                        asyncio.to_thread(self._extractor.extract, result, raw_path),
-                        timeout=self._cfg.extract_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                    await self._frontier.record_outcome(item, "SKIPPED")
-                    self._counters.pages_fetched = self._counters.pages_fetched + 1
-                    return
-                self._storage.save_page(page)
-                self._note_page_age(page)
-                # One LLM call per page (v0.2): classification, summary,
-                # and feedback signals for the steering system.  Failures
-                # park on the analyzer's own retry queue and never block
-                # this loop.
-                if self._steering is not None:
-                    assert self._goal is not None
-                    await self._steering.analyze(page, self._goal)
-                if self._events:
-                    self._events.emit(
-                        EventType.FETCH_COMPLETED,
-                        {"url_key": item.url_key, "status": result.status_code, "size": len(result.raw)},
-                    )
-                    self._events.emit(
-                        EventType.PAGE_EXTRACTED,
-                        {"url_key": page.url_key, "title": page.title, "status": page.extraction_status},
-                    )
-
-                # Extract links -> Candidates -> PreFilter -> Buffer.
-                # Bounded like the extraction step: a pathological page
-                # must lose its links, not stall the whole crawl.
-                try:
-                    raw_links = await asyncio.wait_for(
-                        asyncio.to_thread(extract_links, page), timeout=self._cfg.extract_timeout
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                    raw_links = []
-                self._ctx.stats.links_discovered += len(raw_links)
-                logger.debug(
-                    "extracted url_key=%s title=%r links=%d status=%s",
-                    page.url_key,
-                    page.title,
-                    len(raw_links),
-                    page.extraction_status,
+            # Record page context for ranker (F3 title_match + F7
+            # position), plus the URL and depth the steering
+            # multipliers need at ranking time.
+            self._record_page_context(
+                page.url_key,
+                {
+                    "title": page.title or "",
+                    "link_count": len(raw_links),
+                    "url": page.url.canonical,
+                    "depth": item.depth,
+                },
+            )
+            self._url_key_of[page.url.canonical] = page.url_key
+            ctx = self._frontier.get_prefilter_context(
+                allow_fetch=lambda url: self._robots.allow_fetch(url),
+            )
+            n_allowed = 0
+            n_filtered = 0
+            for rl in raw_links:
+                url = self._canonicalizer.canonicalize(rl.href, page.url.canonical)
+                c = Candidate(
+                    url=url,
+                    anchor=rl.anchor,
+                    snippet=rl.snippet,
+                    parent_heading=rl.parent_heading,
+                    position=rl.position,
+                    source_url_key=page.url_key,
+                    depth=item.depth + 1,
+                    discovered_at=_utcnow(),
+                )
+                decision, _ = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
+                if decision.value == "allow":
+                    c.status = "BUFFERED"
+                    await self._buffer.add([c])
+                    n_allowed += 1
+                    self._storage.save_link(c)
+                else:
+                    c.status = "FILTERED_OUT"
+                    n_filtered += 1
+                # Progress pulse: large pages take a while to persist.
+                total = n_allowed + n_filtered
+                if total % 500 == 0:
+                    logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(raw_links))
+            logger.debug(
+                "prefilter url_key=%s total=%d allowed=%d filtered=%d",
+                page.url_key,
+                len(raw_links),
+                n_allowed,
+                n_filtered,
+            )
+            if self._events and n_allowed > 0:
+                self._events.emit(
+                    EventType.URL_DISCOVERED,
+                    {"source_url_key": page.url_key, "count": n_allowed, "filtered": n_filtered},
                 )
 
-                # Record page context for ranker (F3 title_match + F7
-                # position), plus the URL and depth the steering
-                # multipliers need at ranking time.
-                self._record_page_context(
-                    page.url_key,
-                    {
-                        "title": page.title or "",
-                        "link_count": len(raw_links),
-                        "url": page.url.canonical,
-                        "depth": item.depth,
-                    },
-                )
-                self._url_key_of[page.url.canonical] = page.url_key
-                ctx = self._frontier.get_prefilter_context(
-                    allow_fetch=lambda url: self._robots.allow_fetch(url),
-                )
-                n_allowed = 0
-                n_filtered = 0
-                for rl in raw_links:
-                    url = self._canonicalizer.canonicalize(rl.href, page.url.canonical)
-                    c = Candidate(
-                        url=url,
-                        anchor=rl.anchor,
-                        snippet=rl.snippet,
-                        parent_heading=rl.parent_heading,
-                        position=rl.position,
-                        source_url_key=page.url_key,
-                        depth=item.depth + 1,
-                        discovered_at=_utcnow(),
-                    )
-                    decision, _ = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
-                    if decision.value == "allow":
-                        c.status = "BUFFERED"
-                        await self._buffer.add([c])
-                        n_allowed += 1
-                        self._storage.save_link(c)
-                    else:
-                        c.status = "FILTERED_OUT"
-                        n_filtered += 1
-                    # Progress pulse: large pages take a while to persist.
-                    total = n_allowed + n_filtered
-                    if total % 500 == 0:
-                        logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(raw_links))
-                logger.debug(
-                    "prefilter url_key=%s total=%d allowed=%d filtered=%d",
-                    page.url_key,
-                    len(raw_links),
-                    n_allowed,
-                    n_filtered,
-                )
-                if self._events and n_allowed > 0:
-                    self._events.emit(
-                        EventType.URL_DISCOVERED,
-                        {"source_url_key": page.url_key, "count": n_allowed, "filtered": n_filtered},
-                    )
+            await self._frontier.record_outcome(item, "COMPLETED")
 
-                await self._frontier.record_outcome(item, "COMPLETED")
+            self._counters.pages_fetched = self._counters.pages_fetched + 1
+            n = self._counters.pages_fetched
+            logger.info(
+                "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
+                n,
+                page.url_key,
+                page.title,
+                len(raw_links),
+                n_allowed,
+                (time.monotonic() - self._counters.started_at),
+            )
 
-                self._counters.pages_fetched = self._counters.pages_fetched + 1
-                n = self._counters.pages_fetched
-                logger.info(
-                    "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
-                    n,
-                    page.url_key,
-                    page.title,
-                    len(raw_links),
-                    n_allowed,
-                    (time.monotonic() - self._counters.started_at),
-                )
+            # Periodic checkpoint.
+            if self._counters.pages_fetched % _CHECKPOINT_INTERVAL == 0:
+                await self._checkpoint()
 
-                # Periodic checkpoint.
-                if self._counters.pages_fetched % _CHECKPOINT_INTERVAL == 0:
-                    await self._checkpoint()
-
-            finally:
-                self._counters.in_flight = max(0, self._counters.in_flight - 1)
+        finally:
+            self._counters.in_flight = max(0, self._counters.in_flight - 1)
 
     #: rank loop --------------------------------------------------------
 

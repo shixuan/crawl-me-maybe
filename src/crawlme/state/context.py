@@ -18,11 +18,15 @@ command, feedback aggregates) become new typed fields here.
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import datetime
 import time
 
 from crawlme.schemas import CrawlGoal
+
+#: How many recent analyzed pages the relevance window keeps.
+RELEVANCE_WINDOW = 20
 
 
 @dataclasses.dataclass
@@ -37,13 +41,17 @@ class CrawlCounters:
     max_pages: int = 0
     max_tokens: int = 0
     max_duration_sec: int = 0
-    min_relevant_hits: int = 3
     relevance_threshold: float = 0.7
     pages_fetched: int = 0
     tokens_used: int = 0
     started_at: float = 0.0
     in_flight: int = 0
-    relevance_window: list[bool] = dataclasses.field(default_factory=list)
+    # Sliding window over the most recent analyzed pages, one bool each.
+    # A deque with maxlen keeps "recent" true by construction, which is
+    # what the DIMINISHING_RETURNS check assumes.
+    relevance_window: collections.deque[bool] = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
+    )
     fatal_error: str = ""
     # Time horizon (2.8).  since=None keeps TIME_HORIZON dormant, which
     # is every run that does not ask for a window.  stale_streak counts
@@ -94,7 +102,6 @@ class CrawlContext:
             max_pages=goal.max_pages,
             max_tokens=goal.max_tokens,
             max_duration_sec=goal.max_duration_sec,
-            min_relevant_hits=goal.min_relevant_hits,
             relevance_threshold=goal.relevance_threshold,
             started_at=time.monotonic(),
             tokens_used=tokens_used_start,

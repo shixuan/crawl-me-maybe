@@ -43,7 +43,7 @@ class TrafExtractor:
         html_bytes = fetch_result.raw
         html_str = _decode(html_bytes)
 
-        title = None
+        title, published_at = _extract_head_meta(html_str)
         markdown = None
         plain_text = None
         metadata: dict[str, str] = {}
@@ -70,7 +70,7 @@ class TrafExtractor:
                 )
                 plain_text = trafilatura.extract(
                     html_str,
-                    output_format="text",
+                    output_format="txt",
                     include_tables=True,
                     include_images=False,
                     include_links=False,
@@ -96,15 +96,6 @@ class TrafExtractor:
             except Exception:
                 status = "FAILED"
 
-        # title from metadata if not found yet.
-        if title is None and doc is not None:
-            try:
-                meta_title = doc.find(".//head//title")
-                if meta_title is not None and meta_title.text:  # type: ignore[attr-defined]
-                    title = meta_title.text.strip()  # type: ignore[attr-defined]
-            except Exception:  # noqa: S110
-                pass
-
         if title is None:
             title = fetch_result.url.canonical
 
@@ -122,7 +113,7 @@ class TrafExtractor:
             metadata=metadata,
             text_hash=text_hash,
             text_len=text_len,
-            published_at=_extract_published_at(html_str),
+            published_at=published_at,
             extracted_at=_utcnow(),
             extraction_status=status,
         )
@@ -145,7 +136,24 @@ _DATE_META = (
 _DATE_FORMATS = ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d %B %Y", "%B %d, %Y")
 
 
-def _extract_published_at(html_str: str) -> datetime.datetime | None:
+def _extract_head_meta(html_str: str) -> tuple[str | None, datetime.datetime | None]:
+    """Declared title and publication time, from one parse of the document.
+
+    Both come from what the page states about itself rather than from its
+    body, and both are wanted on every page, so they share a parse.  That
+    parse is serialized behind the global libxml2 lock, so paying for it
+    twice would be paying twice for the same bytes.
+    """
+    try:
+        soup = BeautifulSoup(html_str, "lxml")
+    except Exception:
+        return None, None
+    title_tag = soup.find("title")
+    title = (title_tag.get_text(strip=True) or None) if title_tag else None
+    return title, _published_at_from(soup)
+
+
+def _published_at_from(soup: BeautifulSoup) -> datetime.datetime | None:
     """Publication time from meta tags, JSON-LD, or a <time> element.
 
     Only sources where the page *declares* its date are trusted.  Plenty
@@ -158,11 +166,6 @@ def _extract_published_at(html_str: str) -> datetime.datetime | None:
     TIME_HORIZON on a footer.  The extra parse is worth the correctness,
     and trafilatura already parses this document three times anyway.
     """
-    try:
-        soup = BeautifulSoup(html_str, "lxml")
-    except Exception:
-        return None
-
     for attr, value in _DATE_META:
         tag = soup.find("meta", attrs={attr: value})
         if tag is not None:

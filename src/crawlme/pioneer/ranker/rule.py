@@ -1,10 +1,18 @@
-"""RuleRanker: 7-factor heuristic scoring, zero LLM cost.
+"""RuleRanker: weighted heuristic scoring, zero LLM cost.
 
 v0.1's only ranker.  Computes a weighted-average score in [0, 1] per
 candidate and applies a hard threshold: candidates below it are marked
 dropped, survivors are returned sorted by priority descending.
 
 Formula:  score = sum(weight_i * factor_i) / sum(weight_i)
+
+The formula is source-independent but the factors are not, so the set is
+a constructor argument.  GRAPH_FACTORS below is the link-graph set and
+stays the default; a feed of posts carries its text directly and has no
+anchor, no URL path, and no position within a page, so it will bring its
+own set against this same machinery.  See docs/refactor.md G1.
+
+GRAPH_FACTORS:
 
   1. Anchor text match       (w=0.30) : Jaccard(anchor words, goal keywords)
   2. Surrounding text match  (w=0.15) : Jaccard(snippet words, goal keywords)
@@ -23,9 +31,11 @@ See docs/ranking.md for the funnel design and factor weight rationale.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import math
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -76,6 +86,103 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+#: factors -----------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ScoreContext:
+    """Everything a factor may read besides the candidate itself.
+
+    Grouping it keeps factor signatures uniform, which is what lets the
+    factor set be swapped wholesale for a different kind of source.
+    """
+
+    goal_keywords: list[str] = dataclasses.field(default_factory=list)
+    source_page_title: str = ""
+    page_link_count: int = 0
+    domain_prior: dict[str, float] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class Factor:
+    """One weighted signal.
+
+    The mechanism (weighted average, normalization, breakdown for the
+    rationale) is source-independent; only which factors are in the set
+    is not.  A feed of posts carries its text directly and has no anchor,
+    no path, and no position within a page, so it wants a different set
+    against the same machinery.  See docs/refactor.md G1.
+    """
+
+    name: str
+    weight: float
+    score: Callable[[Candidate, ScoreContext], float]
+
+
+def _anchor_match(c: Candidate, ctx: ScoreContext) -> float:
+    if not ctx.goal_keywords:
+        return 0.5
+    return _jaccard(_words(c.anchor or ""), ctx.goal_keywords, c.anchor or "")
+
+
+def _snippet_match(c: Candidate, ctx: ScoreContext) -> float:
+    if not ctx.goal_keywords:
+        return 0.5
+    return _jaccard(_words(c.snippet or ""), ctx.goal_keywords, c.snippet or "")
+
+
+def _title_match(c: Candidate, ctx: ScoreContext) -> float:
+    if not ctx.goal_keywords:
+        return 0.5
+    return _jaccard(_words(ctx.source_page_title), ctx.goal_keywords, ctx.source_page_title)
+
+
+def _domain_prior_factor(c: Candidate, ctx: ScoreContext) -> float:
+    return ctx.domain_prior.get(c.url.reg_domain, 0.5)
+
+
+def _depth_penalty(c: Candidate, _ctx: ScoreContext) -> float:
+    return 1.0 / math.sqrt(c.depth + 1)
+
+
+def _path_signal_factor(c: Candidate, _ctx: ScoreContext) -> float:
+    return _path_signal(c.url.raw)
+
+
+def _position_signal(c: Candidate, ctx: ScoreContext) -> float:
+    if ctx.page_link_count > 0:
+        return 1.0 - (c.position / ctx.page_link_count)
+    return 0.5
+
+
+#: The graph-traversal factor set.  Order is preserved in the rationale
+#: breakdown, so appending is safe but reordering changes stored output.
+GRAPH_FACTORS: tuple[Factor, ...] = (
+    Factor("anchor_match", 0.30, _anchor_match),
+    Factor("snippet_match", 0.15, _snippet_match),
+    Factor("title_match", 0.15, _title_match),
+    Factor("domain_prior", 0.15, _domain_prior_factor),
+    Factor("depth", 0.10, _depth_penalty),
+    Factor("path_signal", 0.10, _path_signal_factor),
+    Factor("position", 0.05, _position_signal),
+)
+
+
+def _score_one(
+    c: Candidate,
+    ctx: ScoreContext,
+    factors: tuple[Factor, ...] = GRAPH_FACTORS,
+) -> tuple[float, dict[str, float]]:
+    total_weight = sum(f.weight for f in factors)
+    if total_weight <= 0:
+        return 0.0, {}
+    # The breakdown is rounded for readability, the score is not, so a
+    # rounding artifact never moves a candidate across the threshold.
+    raw = {f.name: f.score(c, ctx) for f in factors}
+    numerator = sum(f.weight * raw[f.name] for f in factors)
+    return numerator / total_weight, {name: round(v, 4) for name, v in raw.items()}
+
+
 class RuleRanker:
     """Heuristic scoring with a hard threshold.
 
@@ -83,8 +190,9 @@ class RuleRanker:
     maker).  v0.2: 0.25 (relaxed: later stages can correct its mistakes).
     """
 
-    def __init__(self, threshold: float = 0.35) -> None:
+    def __init__(self, threshold: float = 0.35, factors: tuple[Factor, ...] = GRAPH_FACTORS) -> None:
         self._threshold = threshold
+        self._factors = factors
 
     async def rank_batch(
         self,
@@ -149,12 +257,16 @@ class RuleRanker:
 
         Public so factor-level behavior is directly testable.
         """
-        gk = goal_keywords or []
-        dp = domain_prior or {}
+        ctx = ScoreContext(
+            goal_keywords=goal_keywords or [],
+            source_page_title=source_page_title,
+            page_link_count=page_link_count,
+            domain_prior=domain_prior or {},
+        )
         decisions: list[RankDecision] = []
 
         for c in candidates:
-            priority, factors = _score_one(c, gk, source_page_title, page_link_count, dp)
+            priority, factors = _score_one(c, ctx, self._factors)
             decisions.append(
                 RankDecision(
                     candidate_id=c.candidate_id,
@@ -167,61 +279,6 @@ class RuleRanker:
                 )
             )
         return decisions
-
-
-#: factors -----------------------------------------------------------
-
-_F1_W, _F2_W, _F3_W = 0.30, 0.15, 0.15
-_F4_W, _F5_W, _F6_W, _F7_W = 0.15, 0.10, 0.10, 0.05
-_TOTAL_W = _F1_W + _F2_W + _F3_W + _F4_W + _F5_W + _F6_W + _F7_W
-
-
-def _score_one(
-    c: Candidate,
-    goal_keywords: list[str],
-    source_page_title: str,
-    page_link_count: int,
-    domain_prior: dict[str, float],
-) -> tuple[float, dict[str, float]]:
-    gk = goal_keywords
-
-    # 1. Anchor text match
-    f1 = _jaccard(_words(c.anchor or ""), gk, c.anchor or "") if gk else 0.5
-
-    # 2. Surrounding text match (snippet)
-    f2 = _jaccard(_words(c.snippet or ""), gk, c.snippet or "") if gk else 0.5
-
-    # 3. Source page title match
-    f3 = _jaccard(_words(source_page_title), gk, source_page_title) if gk else 0.5
-
-    # 4. Domain prior
-    f4 = domain_prior.get(c.url.reg_domain, 0.5)
-
-    # 5. Path depth penalty
-    f5 = 1.0 / math.sqrt(c.depth + 1)
-
-    # 6. URL path signal
-    f6 = _path_signal(c.url.raw)
-
-    # 7. Position signal
-    if page_link_count > 0:
-        f7 = 1.0 - (c.position / page_link_count)
-    else:
-        f7 = 0.5
-
-    factors = {
-        "anchor_match": round(f1, 4),
-        "snippet_match": round(f2, 4),
-        "title_match": round(f3, 4),
-        "domain_prior": round(f4, 4),
-        "depth": round(f5, 4),
-        "path_signal": round(f6, 4),
-        "position": round(f7, 4),
-    }
-
-    numerator = _F1_W * f1 + _F2_W * f2 + _F3_W * f3 + _F4_W * f4 + _F5_W * f5 + _F6_W * f6 + _F7_W * f7
-    score = numerator / _TOTAL_W
-    return score, factors
 
 
 def _format_rationale(score: float, factors: dict[str, float]) -> str:
