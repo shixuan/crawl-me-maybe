@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from crawlme.pioneer.prefilter import Decision, PreFilter, PreFilterContext
@@ -125,3 +127,36 @@ class TestDomainBudget:
     def test_allow_under_budget(self, pf):
         ctx = _ctx(domain_counters={"example.com": 30})
         _allow(pf, _candidate(), ctx)
+
+
+#: time window -----------------------------------------------------------
+
+
+def _dated(posted_at: str | None) -> Candidate:
+    signals = {"posted_at": posted_at} if posted_at is not None else {}
+    return Candidate(
+        url=URL(raw="https://www.instagram.com/a/p/X/", canonical="https://www.instagram.com/a/p/X/", url_key="x"),
+        depth=1,
+        signals=signals,
+    )
+
+
+def test_a_candidate_the_listing_dated_before_the_window_is_dropped():
+    """The saving that makes a funnel worth having on a feed."""
+    goal = CrawlGoal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
+    decision, rule = PreFilter().check(_dated("2026-07-20T00:00:00+00:00"), goal, PreFilterContext())
+    assert (decision, rule) == (Decision.DROP, "stale")
+
+
+@pytest.mark.parametrize("posted_at", [None, "", "not a date"])
+def test_a_candidate_with_no_stated_date_is_kept(posted_at):
+    """Unknown is not old. Platforms omit the date often enough to matter."""
+    goal = CrawlGoal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
+    assert PreFilter().check(_dated(posted_at), goal, PreFilterContext())[0] is Decision.ALLOW
+
+
+def test_the_window_is_off_when_the_goal_sets_none():
+    assert (
+        PreFilter().check(_dated("2020-01-01T00:00:00+00:00"), CrawlGoal(prompt="test"), PreFilterContext())[0]
+        is Decision.ALLOW
+    )

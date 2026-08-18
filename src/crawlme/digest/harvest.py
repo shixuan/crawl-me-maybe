@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import datetime
 import logging
+from dataclasses import replace
 from typing import Protocol
 
 from crawlme.digest.feed import instagram
-from crawlme.digest.feed.base import FeedItem
 from crawlme.digest.links import extract_links
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.schemas import Candidate, Page
@@ -89,14 +89,11 @@ class InstagramHarvester:
 
         account = _account_of(page.url.canonical)
         listing = instagram.parse_listing(html, account)
+        own = {i.permalink for i in listing.own}
         out: list[Candidate] = []
-        for permalink in listing.all:
-            item = FeedItem(
-                permalink=permalink,
-                platform=instagram.PLATFORM,
-                signals={"tagged_only": permalink not in listing.own},
-            )
-            out.append(item.to_candidate(source_url_key=page.url_key, depth=depth + 1))
+        for item in listing.all:
+            marked = replace(item, signals={**item.signals, "tagged_only": item.permalink not in own})
+            out.append(marked.to_candidate(source_url_key=page.url_key, depth=depth + 1))
         return out
 
 

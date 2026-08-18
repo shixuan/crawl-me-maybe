@@ -80,19 +80,24 @@ class FeedItem:
 
 @dataclass(frozen=True)
 class Listing:
-    """What a profile or hashtag page yields: permalinks, split by owner.
+    """What a profile or hashtag page yields, split by owner.
 
     A listing mixes the account's own posts with posts that merely
     mention it, and the latter can outnumber the former. Both are worth
     having, but conflating them lets one monitored account's results bleed
     into another's.
+
+    Items rather than bare permalinks, because a listing carries a weak
+    signal worth keeping: who posted, roughly when, and a generated
+    description. That is exactly what decides whether a post is worth
+    spending a request on.
     """
 
-    own: list[str] = field(default_factory=list)
-    others: list[str] = field(default_factory=list)
+    own: list[FeedItem] = field(default_factory=list)
+    others: list[FeedItem] = field(default_factory=list)
 
     @property
-    def all(self) -> list[str]:
+    def all(self) -> list[FeedItem]:
         return [*self.own, *self.others]
 
 

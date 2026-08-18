@@ -33,6 +33,17 @@ _LOGIN = ("loginform", "/accounts/login")
 #: The grid renders profile-scoped permalinks while the address bar shows
 #: the bare form. Matching only one reports zero posts on a full page.
 _PERMALINK = re.compile(r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/([A-Za-z0-9_-]+)/?)"')
+
+#: A grid entry is an anchor wrapping an img whose alt Instagram
+#: generates: `Photo shared by NAME on August 13, 2026 tagging @x. May be
+#: an image of tea and text.` It names the author, the day and roughly
+#: what is pictured, but never what the post says. Window-bounded so a
+#: missing alt cannot swallow the next entry's.
+_GRID_ENTRY = re.compile(
+    r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/[A-Za-z0-9_-]+/?)"(?:(?!href=").){0,600}?alt="([^"]*)"',
+    re.S,
+)
+_ALT_AUTHOR_DATE = re.compile(r"(?:shared by|Photo by)\s+(.+?)\s+on\s+([A-Z][a-z]+ \d{1,2}, \d{4})")
 _SHORTCODE = re.compile(r"/(?:p|reel)/([A-Za-z0-9_-]+)")
 
 _CAPTION_JSON = re.compile(r'"caption"\s*:\s*\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"')
@@ -55,14 +66,46 @@ def problem(html: str) -> PageProblem | None:
 
 
 def parse_listing(html: str, account: str) -> Listing:
-    """Split a grid's permalinks into the account's own and everyone else's."""
+    """Read a grid into items, split by who posted them.
+
+    The generated alt text is kept as the item's text. It is weak, but it
+    is what a listing has, and filtering on it is what stops the crawl
+    paying one request per post to find out the same thing.
+    """
     handle = account.strip("/").lower()
-    own: list[str] = []
-    others: list[str] = []
-    for href, _code in dict.fromkeys(_PERMALINK.findall(html)):
+    alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
+    own: list[FeedItem] = []
+    others: list[FeedItem] = []
+    for href, code in dict.fromkeys(_PERMALINK.findall(html)):
         owner = href.strip("/").split("/")[0].lower()
-        (own if owner == handle else others).append(_absolute(href))
+        alt = alts.get(href, "")
+        author, posted = _from_alt(alt)
+        item = FeedItem(
+            permalink=_absolute(href),
+            platform=PLATFORM,
+            item_id=code,
+            author=author or owner,
+            text=alt,
+            published_at=posted,
+        )
+        (own if owner == handle else others).append(item)
     return Listing(own=own, others=others)
+
+
+def _from_alt(alt: str) -> tuple[str, datetime.datetime | None]:
+    """Author and day, as the grid states them.
+
+    Day precision only: the grid never gives a time. Good enough to decide
+    whether a post is inside a week-wide window, which is all this is for.
+    """
+    m = _ALT_AUTHOR_DATE.search(alt)
+    if not m:
+        return "", None
+    try:
+        day = datetime.datetime.strptime(m.group(2), "%B %d, %Y")
+    except ValueError:
+        return m.group(1).strip(), None
+    return m.group(1).strip(), day.replace(tzinfo=datetime.timezone.utc)
 
 
 def parse_item(html: str, url: str = "") -> FeedItem | None:

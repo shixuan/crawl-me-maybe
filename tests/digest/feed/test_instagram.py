@@ -59,12 +59,12 @@ def test_listing_separates_own_posts_from_tagged_ones():
     lst = ig.parse_listing(_PROFILE, "mollytea_canada")
     assert len(lst.own) == 3, "reels are the account's posts too"
     assert len(lst.others) == 2
-    assert all("mollytea_canada" not in u for u in lst.others)
-    assert all(u.startswith("https://www.instagram.com/") for u in lst.all)
+    assert all("mollytea_canada" not in i.permalink for i in lst.others)
+    assert all(i.permalink.startswith("https://www.instagram.com/") for i in lst.all)
 
 
 def test_listing_ignores_links_that_are_not_posts():
-    assert not any(u.endswith("/mollytea_canada/") for u in ig.parse_listing(_PROFILE, "mollytea_canada").all)
+    assert not any(i.permalink.endswith("/mollytea_canada/") for i in ig.parse_listing(_PROFILE, "mollytea_canada").all)
 
 
 def test_item_prefers_the_full_caption_over_the_truncated_meta():
