@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import time
 
@@ -17,14 +18,22 @@ def _task(state: str = "RUNNING") -> CrawlTask:
 
 
 def _frontier(size: int = 0) -> PriorityFrontier:
+    """Populate through the public API rather than the heap internals.
+
+    Reaching into _heap/_items coupled these tests to one ordering
+    implementation, which is exactly what the WorkSource seam removes.
+    """
     f = PriorityFrontier()
-    for i in range(size):
-        f._items[f"k{i}"] = FrontierItem(
+    items = [
+        FrontierItem(
             url=URL(raw=f"https://x.com/{i}", canonical=f"https://x.com/{i}", url_key=f"k{i}"),
             url_key=f"k{i}",
             priority=0.5,
         )
-        f._heap.append((-0.5, i, f"k{i}"))
+        for i in range(size)
+    ]
+    if items:
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(f.push_batch(items))
     return f
 
 
