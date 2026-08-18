@@ -12,7 +12,7 @@ from typing import Any
 from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
-from crawlme.digest.fetcher import HttpFetcher
+from crawlme.digest.fetcher import Fetcher, HttpFetcher
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -68,12 +68,7 @@ def create_scheduler(
         "settings": settings,
         "storage": storage,
         "frontier": PriorityFrontier(domain_budget=goal.domain_budget if goal else 50),
-        "fetcher": HttpFetcher(
-            user_agents=list(settings.user_agents),
-            connect_timeout=settings.fetch_timeout_connect,
-            read_timeout=settings.fetch_timeout_read,
-            max_retries=settings.fetch_max_retries,
-        ),
+        "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
@@ -85,6 +80,29 @@ def create_scheduler(
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _build_fetcher(settings: Settings) -> Fetcher:
+    """Plain HTTP unless the run asks for a browser.
+
+    Playwright is imported inside the browser branch so an http run never
+    pays for the optional dependency, and so a missing install fails at
+    the point that wanted it.
+    """
+    if settings.fetcher == "browser":
+        from crawlme.digest.playwright_fetcher import PlaywrightFetcher
+
+        return PlaywrightFetcher(
+            storage_state=settings.browser_storage_state or None,
+            user_agents=list(settings.user_agents),
+            timeout=settings.fetch_timeout_read,
+        )
+    return HttpFetcher(
+        user_agents=list(settings.user_agents),
+        connect_timeout=settings.fetch_timeout_connect,
+        read_timeout=settings.fetch_timeout_read,
+        max_retries=settings.fetch_max_retries,
+    )
 
 
 def _build_steering(settings: Settings, budget: TokenBudget | None = None) -> SteeringSystem | None:

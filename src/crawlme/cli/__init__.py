@@ -65,6 +65,17 @@ def main() -> None:
         help="Time window, e.g. '1 week' or '2026-08-01'. Stops on TIME_HORIZON once "
         "content ages out; assumes the source is ordered newest first",
     )
+    run_p.add_argument(
+        "--fetcher",
+        choices=["http", "browser"],
+        default=None,
+        help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
+    )
+    run_p.add_argument(
+        "--cookies",
+        default=None,
+        help="Path to a Playwright storage_state JSON, for crawling as a logged-in session",
+    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(

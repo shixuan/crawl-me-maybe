@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     fetch_timeout_connect: float = 10.0
     fetch_timeout_read: float = 30.0
     fetch_max_retries: int = 3
+    # "http" is plain httpx; "browser" renders with Playwright, which is
+    # what a JS-built timeline or a login-walled platform needs.
+    fetcher: str = "http"
+    # Path to a storage_state JSON the user exports themselves.  Empty
+    # means an anonymous browser.  Secrets stay out of flags: this is a
+    # path, and the file itself never enters the repo.
+    browser_storage_state: str = ""
     user_agents: list[str] = [
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]

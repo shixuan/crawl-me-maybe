@@ -49,7 +49,7 @@ jobs:
       - run: pip install pytest pytest-asyncio pytest-httpx pytest-cov
       # tests/smoke is its own job below, so a broken build is visible
       # on the run summary instead of buried in this job's log.
-      - run: pytest --cov=src/crawlme --cov-fail-under=70 -m "not e2e" --ignore=tests/smoke
+      - run: pytest --cov=src/crawlme --cov-fail-under=70 -m "not e2e and not browser" --ignore=tests/smoke
 
   # Does the assembled system still run at all: a hermetic crawl over a
   # site the test process serves to itself, no network and no LLM spend.

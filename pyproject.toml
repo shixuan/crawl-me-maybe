@@ -16,6 +16,9 @@ dependencies = [
     "litellm>=1.40",
 ]
 
+[project.optional-dependencies]
+browser = ["playwright>=1.40"]
+
 [project.scripts]
 crawl = "crawlme.cli:main"
 
@@ -48,4 +51,5 @@ testpaths = ["tests"]
 markers = [
     "e2e: end-to-end tests that hit real websites (skip in CI)",
     "integration: pipeline tests with mocked network",
+    "browser: needs a real chromium install (skip in CI)",
 ]

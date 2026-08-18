@@ -83,6 +83,13 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.analysis_enabled = False
     if args.analyzer_max_chars is not None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
+    if args.fetcher is not None:
+        cfg.fetcher = args.fetcher
+    if args.cookies is not None:
+        # A session implies a browser: asking for cookies and getting
+        # plain httpx would silently crawl the logged-out site.
+        cfg.browser_storage_state = args.cookies
+        cfg.fetcher = "browser"
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
