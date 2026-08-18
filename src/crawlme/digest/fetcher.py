@@ -79,9 +79,16 @@ class FetchError(Exception):
 
 
 class Fetcher(Protocol):
-    """Contract for HTTP fetch workers."""
+    """Contract for HTTP fetch workers.
+
+    aclose() releases whatever the implementation holds open between
+    fetches.  A connection pool can be rebuilt cheaply, but a browser
+    pool cannot, so the contract has to allow one.
+    """
 
     async def fetch(self, item: FrontierItem) -> FetchResult: ...
+
+    async def aclose(self) -> None: ...
 
 
 class HttpFetcher:
@@ -102,6 +109,26 @@ class HttpFetcher:
         # seconds resets the read timer forever and hangs the fetch.
         # Default: connect + read + 10s of slack.
         self._total_timeout = total_timeout if total_timeout is not None else connect_timeout + read_timeout + 10.0
+        # One client for the whole run, built on first use because it
+        # binds to the running event loop.  A client per fetch threw the
+        # connection pool away every time and paid a fresh TCP and TLS
+        # handshake per request, which hurts most on the same-domain
+        # runs the domain budget encourages.
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._connect_timeout, read=self._read_timeout),
+                follow_redirects=False,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared client.  Safe to call more than once."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
         last_err: BaseException | None = None
@@ -146,75 +173,75 @@ class HttpFetcher:
         raise FetchError(f"Fetch failed after {self._max_retries} attempts") from last_err
 
     async def _do_fetch(self, item: FrontierItem, attempt: int, started: float) -> FetchResult:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(self._connect_timeout, read=self._read_timeout),
-            follow_redirects=False,
-            headers={"User-Agent": random.choice(self._uas)},  # noqa: S311
-        ) as client:
-            response = await client.get(item.url.canonical)
+        client = self._get_client()
+        # The UA rides on the request rather than the client, because the
+        # client outlives a single fetch now and rotation has to stay
+        # per-request.
+        headers = {"User-Agent": random.choice(self._uas)}  # noqa: S311
+        response = await client.get(item.url.canonical, headers=headers)
 
-            redirects: list[URL] = []
-            final_url_str = item.url.canonical
-            final_url_obj = item.url
-            seen: set[str] = {final_url_str}
+        redirects: list[URL] = []
+        final_url_str = item.url.canonical
+        final_url_obj = item.url
+        seen: set[str] = {final_url_str}
 
-            while response.status_code in (301, 302, 303, 307, 308):
-                if len(redirects) >= _MAX_REDIRECTS:
-                    raise FetchError(f"too many redirects (>{_MAX_REDIRECTS})")
-                location = response.headers.get("Location", "")
-                if not location:
-                    break
-                final_url_str = urljoin(final_url_str, location)
-                if final_url_str in seen:
-                    raise FetchError(f"redirect loop detected at {final_url_str}")
-                seen.add(final_url_str)
-                final_url_obj = URL(raw=final_url_str, canonical=final_url_str, url_key=final_url_str)
-                redirects.append(final_url_obj)
-                response = await client.get(final_url_str)
+        while response.status_code in (301, 302, 303, 307, 308):
+            if len(redirects) >= _MAX_REDIRECTS:
+                raise FetchError(f"too many redirects (>{_MAX_REDIRECTS})")
+            location = response.headers.get("Location", "")
+            if not location:
+                break
+            final_url_str = urljoin(final_url_str, location)
+            if final_url_str in seen:
+                raise FetchError(f"redirect loop detected at {final_url_str}")
+            seen.add(final_url_str)
+            final_url_obj = URL(raw=final_url_str, canonical=final_url_str, url_key=final_url_str)
+            redirects.append(final_url_obj)
+            response = await client.get(final_url_str, headers=headers)
 
-            # 429: rate-limited: wait Retry-After seconds, then retry.
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "5")
-                try:
-                    delay = int(retry_after)
-                except ValueError:
-                    delay = 5
-                await asyncio.sleep(delay)
-                raise _TransientError("429 Too Many Requests")
+        # 429: rate-limited: wait Retry-After seconds, then retry.
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "5")
+            try:
+                delay = int(retry_after)
+            except ValueError:
+                delay = 5
+            await asyncio.sleep(delay)
+            raise _TransientError("429 Too Many Requests")
 
-            # 5xx: transient server error: retry.
-            if response.status_code >= 500:
-                logger.warning("fetch.5xx url=%s status=%d", item.url.canonical, response.status_code)
-                raise _TransientError(f"Server error {response.status_code}")
+        # 5xx: transient server error: retry.
+        if response.status_code >= 500:
+            logger.warning("fetch.5xx url=%s status=%d", item.url.canonical, response.status_code)
+            raise _TransientError(f"Server error {response.status_code}")
 
-            # 4xx (non-429): permanent: do not retry.
-            if 400 <= response.status_code < 500:
-                logger.warning("fetch.4xx url=%s status=%d", item.url.canonical, response.status_code)
-                raise FetchError(f"Permanent HTTP error: {response.status_code}")
+        # 4xx (non-429): permanent: do not retry.
+        if 400 <= response.status_code < 500:
+            logger.warning("fetch.4xx url=%s status=%d", item.url.canonical, response.status_code)
+            raise FetchError(f"Permanent HTTP error: {response.status_code}")
 
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            logger.debug(
-                "fetch.ok url=%s status=%d bytes=%d duration=%dms",
-                item.url.canonical,
-                response.status_code,
-                len(response.content),
-                elapsed_ms,
-            )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.debug(
+            "fetch.ok url=%s status=%d bytes=%d duration=%dms",
+            item.url.canonical,
+            response.status_code,
+            len(response.content),
+            elapsed_ms,
+        )
 
-            return FetchResult(
-                item_id=item.item_id,
-                url_key=item.url_key,
-                url=item.url,
-                status_code=response.status_code,
-                final_url=final_url_obj,
-                redirects=redirects,
-                headers=dict(response.headers),
-                content_type=response.headers.get("Content-Type", ""),
-                raw=response.content,
-                fetch_duration_ms=elapsed_ms,
-                fetched_at=_utcnow(),
-                fetch_attempt=attempt,
-            )
+        return FetchResult(
+            item_id=item.item_id,
+            url_key=item.url_key,
+            url=item.url,
+            status_code=response.status_code,
+            final_url=final_url_obj,
+            redirects=redirects,
+            headers=dict(response.headers),
+            content_type=response.headers.get("Content-Type", ""),
+            raw=response.content,
+            fetch_duration_ms=elapsed_ms,
+            fetched_at=_utcnow(),
+            fetch_attempt=attempt,
+        )
 
 
 class _TransientError(Exception):

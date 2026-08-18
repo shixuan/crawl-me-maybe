@@ -22,6 +22,17 @@ class Candidate(BaseModel):
     source_page_id: str | None = None
     source_url_key: str | None = None
     depth: int = 0
+    # The text this candidate carries on its own, whatever the source
+    # calls it: empty for a link (its business card lives in anchor and
+    # snippet), the caption for a feed post.  The ranking funnel reads
+    # this and nothing else, which is what lets it judge content instead
+    # of proxies once a source can supply it.
+    text: str = ""
+    # Source-specific signals the funnel's factor set and the analyzer
+    # pick from: hashtags, account, posted_at, and whatever the next
+    # platform brings.  A bag rather than columns, so adding a source
+    # never means changing this schema.
+    signals: dict[str, Any] = Field(default_factory=dict[str, Any])
     status: CandidateStatus = "INGESTED"
     discovered_at: datetime.datetime = Field(default_factory=_utcnow)
 

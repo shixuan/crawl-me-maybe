@@ -371,7 +371,9 @@ class EmbeddingRanker:
 
 def _text_for(c: Candidate, page_contexts: dict[str, dict[str, Any]] | None) -> str:
     """Compose the candidate text to embed: link context + source title."""
-    parts = [c.anchor, c.snippet, c.parent_heading]
+    # c.text first: when a source supplies the candidate's own text
+    # (a feed post's caption) it beats every proxy after it.
+    parts = [c.text or None, c.anchor, c.snippet, c.parent_heading]
     if page_contexts:
         parts.append(page_contexts.get(c.source_url_key or "", {}).get("title", ""))
     text = " ".join(p for p in parts if p).strip()

@@ -259,3 +259,17 @@ class TestFrontierSnapshot:
         assert len(fs.visited) == 2
         assert fs.budgets["example.com"] == 5
         assert fs.counters["fetched"] == 42
+
+
+def test_candidate_carries_its_own_text_and_signals():
+    """A feed post brings a caption; a link brings neither."""
+    from crawlme.schemas import URL, Candidate
+
+    url = URL(raw="https://x.com/p", canonical="https://x.com/p", url_key="k1")
+    link = Candidate(url=url, anchor="click here")
+    assert link.text == ""
+    assert link.signals == {}
+
+    post = Candidate(url=url, text="free tea today", signals={"account": "molly", "hashtags": ["tea"]})
+    assert post.text == "free tea today"
+    assert post.signals["account"] == "molly"

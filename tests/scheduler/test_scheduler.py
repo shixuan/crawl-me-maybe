@@ -51,7 +51,7 @@ def _make_sched(**overrides) -> CrawlScheduler:
         "settings": Settings(),
         "storage": MagicMock(),
         "frontier": MagicMock(),
-        "fetcher": MagicMock(),
+        "fetcher": MagicMock(aclose=AsyncMock()),
         "extractor": MagicMock(),
         "robots": MagicMock(),
         "prefilter": MagicMock(),
@@ -83,7 +83,6 @@ async def test_stops_when_frontier_empty():
         max_pages=5,
         max_tokens=100000,
         max_duration_sec=3600,
-        min_relevant_hits=3,
         relevance_threshold=0.7,
     )
 
@@ -108,7 +107,6 @@ async def test_stops_on_budget_pages():
         pages_fetched=10,  # Already at budget.
         max_tokens=100000,
         max_duration_sec=3600,
-        min_relevant_hits=3,
         relevance_threshold=0.7,
     )
 
@@ -483,3 +481,72 @@ def test_summary_reports_run_statistics():
     assert summary["analyses"] == {"RELEVANT": 3, "IRRELEVANT": 1}
     assert summary["embedding_cache_hits"] == 4
     assert summary["embedding_cache_misses"] == 9
+
+
+def test_on_analysis_feeds_the_relevance_window():
+    """The analyzer sink is the only writer DIMINISHING_RETURNS can have."""
+    sched = _make_sched()
+    sched._counters.relevance_threshold = 0.7
+
+    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+    sched._on_analysis(AnalysisResult(page_id="p2", url_key="k2", relevance_score=0.2))
+
+    assert list(sched._counters.relevance_window) == [True, False]
+
+
+def test_relevance_window_uses_the_goal_threshold():
+    """relevance_threshold stops being dead config here."""
+    sched = _make_sched()
+    sched._counters.relevance_threshold = 0.95
+
+    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+
+    assert list(sched._counters.relevance_window) == [False]
+
+
+@pytest.mark.asyncio
+async def test_analysis_runs_outside_the_fetch_slot(monkeypatch):
+    """Waiting on the LLM must not occupy fetch concurrency.
+
+    Regression: analyze used to run inside the fetch semaphore, which made
+    fetch_concurrency and llm_concurrency nested instead of independent.
+    """
+    from crawlme.config import Settings
+
+    monkeypatch.setattr("crawlme.scheduler.engine.extract_links", lambda page: [])
+
+    sched = _make_sched(settings=Settings(fetch_concurrency=1))
+    sched._goal = _goal()
+    sched._task = _task()
+
+    url = URL(raw="https://x.com/a", canonical="https://x.com/a", url_key="k1")
+    page = Page(url_key="k1", url=url)
+    result = MagicMock(item_id="i1", status_code=200, raw=b"x")
+
+    held: dict[str, bool] = {}
+
+    async def _analyze(_page, _goal_arg):
+        held["locked"] = sched._fetch_sem.locked()
+
+    sched._steering = MagicMock(analyze=AsyncMock(side_effect=_analyze))
+    sched._fetch_and_extract = AsyncMock(return_value=(result, page))
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    await sched._handle_fetch(_item())
+
+    assert held["locked"] is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_slot_is_released_before_returning():
+    """The slot covers the request and its parse, nothing longer."""
+    from crawlme.config import Settings
+
+    sched = _make_sched(settings=Settings(fetch_concurrency=1))
+    sched._fetcher.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+    sched._frontier.record_outcome = AsyncMock()
+
+    assert await sched._fetch_and_extract(_item()) is None
+    assert not sched._fetch_sem.locked()

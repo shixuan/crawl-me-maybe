@@ -8,9 +8,7 @@
 >
 > So crawl me, maybe?
 
-A goal-driven crawler. You tell what you are looking for, and it figures out where to go, what to skip, and when to stop. All on its own, within a budget.
-
-Traditional crawlers try to grab everything. This one tries to grab *the right things*. Big difference.
+A goal-driven crawler. You say what you are looking for; it decides where to go, what to skip, and when to stop, inside a budget.
 
 ---
 
@@ -18,201 +16,128 @@ Traditional crawlers try to grab everything. This one tries to grab *the right t
 
 ```bash
 pip install -e .
-```
 
-That's it, nothing else to configure. Then point it at something:
-
-```bash
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
   --max-pages 200
 ```
 
-It starts from the seeds, discovers links, filters out the noise, scores what's left, and only follows paths that actually look relevant. Stops when the budget runs out or the goal is satisfied, whichever comes first.
+Semantic ranking is on by default. The first run downloads a local embedding model (~220MB) once.
 
-Semantic ranking is on by default (local embedding model). The first run downloads the model weights (~220MB) to a local cache, one time only.
-
-The LLM stages (goal enhancement, per-page analysis, LLM re-ranking) turn on automatically when `LLM_API_KEY` (or a custom `LLM_BASE_URL`) is set in `.env` — see [Configuration](#configuration). Without credentials they degrade away and the crawl still runs.
-
-A few more ways to launch:
+The LLM stages turn on when `LLM_API_KEY` or `LLM_BASE_URL` is set. Without credentials they degrade away and the crawl still runs.
 
 ```bash
-# Pull seeds from an RSS feed
-crawl run "C++ backend job postings" \
-  --source rss --source-path "https://hnrss.org/newest" \
-  --max-pages 100
+# seeds from an RSS feed
+crawl run "C++ backend job postings" --source rss --source-path "https://hnrss.org/newest"
 
-# Dump a list of URLs in a file
-crawl run "release notes for an open-source project" \
-  --source file --source-path ./urls.txt
+# seeds from a file
+crawl run "release notes" --source file --source-path ./urls.txt
 
-# Keep going until there's nothing left worth crawling
-crawl run "all press coverage of an event" --seeds "..." --draining
+# ignore --max-pages, stop when the frontier runs dry
+crawl run "all press coverage" --seeds "..." --draining
 ```
 
 ---
 
-## CLI reference
+## CLI
 
 ### `crawl run "<prompt>"`
-
-Launch a new task.
 
 | Flag | Type | What it does |
 |------|------|--------------|
 | `--seeds` | string | Comma-separated seed URLs |
 | `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
-| `--source-path` | path | File path or RSS feed URL for seeds |
-| `--max-pages` | int | Page budget: 0 means no limit |
-| `--max-tokens` | int | LLM token budget: the task stops when exhausted (default: 500000) |
-| `--max-duration` | int | Time budget, in seconds |
-| `--depth-limit` | int | How deep to go from seeds (default: 5) |
-| `--draining` | flag | Ignore `--max-pages`, stop only when the frontier runs dry |
-| `--since` | `"1 week"` \| date | Time window, e.g. `"10 days"` or `2026-08-01`. Stops on `TIME_HORIZON` once content ages out, and assumes the source is ordered newest first |
-| `--embedding` | `local` \| `api` \| `off` | Semantic ranking provider (default: `local`) |
-| `--embedding-model` | string | Model id, overriding the provider default |
-| `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds; `off` disables the whole subsystem for a clean baseline |
-| `--analyzer-max-chars` | int | Page text sent to the analyzer per page (default: 3000, benchmark-picked) |
-| `--ignore-robots` | flag | Bypass robots.txt checks |
+| `--source-path` | path | File path or RSS feed URL |
+| `--max-pages` | int | Page budget; 0 means no limit |
+| `--max-tokens` | int | LLM token budget (default: 500000) |
+| `--max-duration` | int | Time budget, seconds |
+| `--depth-limit` | int | Max depth from seeds (default: 5) |
+| `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
+| `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
+| `--embedding` | `local` \| `api` \| `off` | Semantic ranking (default: `local`) |
+| `--embedding-model` | string | Overrides the provider default |
+| `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
+| `--analyzer-max-chars` | int | Page text per analyzer call (default: 3000) |
+| `--ignore-robots` | flag | Bypass robots.txt |
 | `--domain-budget` | int | Max pages per domain |
-| `--log-level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` \| `OFF` | Log verbosity (overrides env `LOG_LEVEL`) |
-| `--result-dir` | path | Where to put results (default: `results`) |
+| `--log-level` | `DEBUG` … `OFF` | Overrides env `LOG_LEVEL` |
+| `--result-dir` | path | Where results go (default: `results`) |
 
 ### `crawl inspect <task-id>`
 
-Look at a task's results: goal, pages, analyses by classification, and the top relevant pages. Read-only, no LLM.
+Read-only summary of a finished task: goal, pages, analyses by classification, top relevant pages.
 
 | Flag | Type | What it does |
 |------|------|--------------|
-| `--goal` | string | Which goal's analyses to show (default: the task's original goal; replay goals are listed) |
-| `--export` | `json` \| `csv` | Dump the pages-and-analyses join to stdout instead of the summary |
+| `--goal` | string | Which goal's analyses to show |
+| `--export` | `json` \| `csv` | Dump the pages-and-analyses join to stdout |
 
 ### `crawl replay <task-id>`
 
-Re-analyze an already-crawled task's pages. No re-fetching: the pages table is the frozen corpus, and replay only appends new rows to the analyses table. Replaying the same prompt is a no-op; `--force` re-runs it.
+Re-analyze a finished task's pages. No re-fetching: pages are a frozen corpus, and replay only appends to `analyses`. Replaying the same prompt is a no-op.
 
 | Flag | Type | What it does |
 |------|------|--------------|
-| `--prompt` | string | New goal statement; analyses are stored under a new goal row (same prompt text reuses that goal) |
-| `--limit` | int | Re-analyze at most N pages (default: all) |
-| `--max-tokens` | int | Token budget for this replay (default: unlimited) |
-| `--analyzer-max-chars` | int | Page text cap sent to the analyzer per page |
+| `--prompt` | string | New goal; analyses land under a new goal row |
+| `--limit` | int | Re-analyze at most N pages |
+| `--max-tokens` | int | Token budget for this replay |
+| `--analyzer-max-chars` | int | Page text per analyzer call |
 | `--force` | flag | Re-analyze pages that already have an identical analysis |
 
 ---
 
 ## How it works
 
-Think of it as a funnel. Each layer filters harder and costs more:
+A funnel. Each layer costs more and keeps fewer:
 
 ```
 ~200 links per page
   │
-  ▼  Layer 0: Pre-filter (pure rules, zero LLM cost)
-  ├─  Dedup, robots.txt, file extensions, login pages, depth limit,
-  │   domain budget. Fast and cheap.  ~200 → 10–30 links
-  ▼  Layer 1: RuleRanker (7-factor heuristic, still zero LLM)
-  ├─  Anchor text + snippet + title + domain prior + depth + URL path
-  │   + position.  With an LLM stage on it pre-filters at a relaxed
-  │   0.25; with embedding on it stops dropping and only orders.
-  ▼  Layer 1.5: EmbeddingRanker (semantic similarity) ✅ v0.1.1
-  ├─  Goal + link texts (anchor, snippet, heading) embedded, ranked by
-  │   cosine similarity. Top 60 survive. Catches synonyms rule
-  │   scoring misses.
-  ▼  Layer 2: LLMRanker (batched inference) ✅ v0.2
-  ├─  One batched call (≤30 links) fine-ranks the survivors;
-  │   larger batches chunk automatically. Fails open to the earlier
-  │   stages' scores.
+  ▼  Pre-filter          pure rules, zero LLM      → 10-30 links
+  ▼  RuleRanker          weighted heuristics       → ordered
+  ▼  EmbeddingRanker     cosine on a local model   → top 60
+  ▼  LLMRanker           one batched call per 30   → final priority
 ```
 
-Alongside the funnel, every fetched page gets one analyzer call: classification (RELEVANT / HUB / AGGREGATOR / IRRELEVANT / NAVIGATION), a summary, relevance and hub scores, and endorsed links. Those judgments are the product you read in the `analyses` table, and they steer the crawl in flight: hub/domain priority multipliers, endorsed links injected into the frontier, and cross-task domain reputation persisted to `results/feedback.db`. `--analysis off` turns the whole subsystem off for a clean baseline.
+Every fetched page also gets one analyzer call: classification, summary, relevance and hub scores, endorsed links. Those judgments land in `analyses` and steer the crawl in flight through priority multipliers, endorsed links, and cross-task domain reputation.
 
-Under the hood, two async loops run side by side: `fetch_pump` downloads pages and discovers links; `rank_pump` scores links and pushes them into the frontier. They don't wait on each other; they just coordinate through the Frontier and Buffer when they need to.
+Two async loops run side by side. `fetch_pump` downloads and discovers links; `rank_pump` scores them and pushes them into the frontier. They coordinate only through the Frontier and the Buffer.
 
----
-
-## Current status
-
-**v0.1 is done ✅**: a full pipeline at zero LLM cost. Canonicalizer, PreFilter, Frontier, HttpFetcher, Extractor, LinkExtractor, RobotsPolicy, RuleRanker, HybridRanker, CrawlScheduler, stop conditions, checkpoints, event emitter. The whole thing works end to end.
-
-**v0.1.1 is done ✅** adds the EmbeddingRanker for semantic ranking at near-zero cost. It's on by default (local ONNX model); `--embedding off` for rule-only v0.1 behavior.
-
-**v0.2 is in progress ✅**: the LLM core is in — Goal Enhancer, LLMRanker, per-page analysis with the steering loop it feeds (priority multipliers, endorsed links, cross-task domain reputation), analyzer tuning backed by a benchmark harness, and Replay (re-judge a finished run without re-crawling, append-only and idempotent). Left: the time horizon (`--since`), and release polish.
-
-### What's next
-
-| Version | Theme | Actually means |
-|---------|-------|----------------|
-| v0.2 | Brains | Time horizon (`--since`) and release polish |
-| v0.3 | Polish | Playwright for JS-heavy pages, Prompt Cache, feed traversal |
+Every stage's decision is recorded: which rule dropped a link, what each ranker scored it, which model and prompt version produced a judgment. Raw HTML is kept, so a better prompt can re-judge a finished run without re-crawling.
 
 ---
 
 ## Configuration
 
-Two entry points, one rule of thumb:
-
-- **`crawl run --help` flags**: per-run choices and things you experiment with (budgets, robots, embedding provider, log verbosity)
-- **`.env` / env vars**: set once and forget (secrets, timeouts, deep-tuning knobs). See [`.env.example`](.env.example) for the full annotated list. Every knob has a default, so `.env` is entirely optional.
-
-Want the API embedding provider instead of the default local model? The key lives in `.env`, the choice is per run:
+Flags are per-run choices. `.env` is for things you set once — secrets, timeouts, deep-tuning knobs. Everything has a default, so `.env` is optional. See [`.env.example`](.env.example).
 
 ```bash
-# .env (once)
-EMBEDDING_API_KEY=jina_xxx
-EMBEDDING_BASE_URL=https://api.jina.ai/v1
-
-# per run
-crawl run "..." --embedding api --embedding-model jina-embeddings-v3
-```
-
-Same pattern for the LLM stages: credentials live in `.env`, the LLM stages turn on automatically and never block a run when they fail:
-
-```bash
-# .env (once)
+# .env
 LLM_API_KEY=sk-xxx
-LLM_MODEL=deepseek/deepseek-v4-flash   # optional; default openai/gpt-4o-mini
-LLM_BASE_URL=                          # optional, for OpenAI-compatible endpoints
+LLM_MODEL=deepseek/deepseek-v4-flash   # default: openai/gpt-4o-mini
+LLM_BASE_URL=                          # for OpenAI-compatible endpoints
+EMBEDDING_API_KEY=jina_xxx             # only for --embedding api
+EMBEDDING_BASE_URL=https://api.jina.ai/v1
 ```
 
 ---
 
-## What it's actually for
+## Status
 
-Ask a search-based agent (deep research, and friends) what giveaways are running near you this week and it will hand you a decent list in two minutes. Breadth and convenience are its strengths and this project is not going to beat it at either.
-
-Where it falls down is anything living inside a dense, messy stream — a social feed, a hashtag, an account timeline. That failure is structural rather than a model limitation: those agents reach a source only through what *other people* wrote about it. Search → aggregator page → somebody's repost → extract. Their recall therefore tracks how much a thing got repeated, not what the source actually published.
-
-For deal hunting that relationship runs backwards. A giveaway everyone reposted is a giveaway everyone already showed up for. The one worth having is the single post a small shop put up on Tuesday that expires Saturday and that nobody repeated, which is precisely the one that never surfaces.
-
-So this optimizes for the other side of the trade:
-
-| | Search-based agents | This |
-|---|---|---|
-| A dense stream | samples it | processes it |
-| Source access | second-hand, via what others said | first-hand, the source itself |
-| Verification | none, dates and links arrive as-is | every field traceable to the page it came from |
-| Optimizes for | recall and convenience | **precision** |
-| Across runs | no memory of what it told you | knows, and can tell you what's new |
-
-**Precision over recall, deliberately.** Acting on a result costs a trip across town. A deal you never heard about costs you nothing you had; a deal that expired last week costs you an afternoon. So this is built to say *"not sure, not reporting it"* rather than to fill out a list.
-
-**Every result carries a receipt.** Raw HTML is kept forever, each judgment records the model and prompt version behind it, ranking decisions keep their rationale, and a publication date is only ever taken from what a page *declares*. Never guessed — the extractor turns down a free date from its own parser, because that parser will cheerfully infer `2024-01-01` from a `Copyright 2024` footer.
-
-**Complement, not competitor.** Breadth belongs to the other side, so let it do that part: ask a deep-research agent which shops around here run promotions, hand the resulting account list to this one, and let this one do the reading, filtering, and verifying.
-
-> **Where this is today.** The graph-crawling pipeline is built and working — fetch, extract, rank, analyze, store, all with an audit trail. The feed pipeline the positioning above describes, account timelines and hashtag streams, is v0.3 and not built yet. See [docs/todo.md](docs/todo.md) for the plan and [docs/arch.md](docs/arch.md) for how the two pipelines share one core.
+| Version | State | What it adds |
+|---------|-------|--------------|
+| v0.1 | ✅ | Full pipeline at zero LLM cost |
+| v0.1.1 | ✅ | EmbeddingRanker, semantic ranking on a local model |
+| v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis and steering, replay, inspect, time horizon |
+| v0.3 | planned | Playwright with login state, feed traversal, weekly digests |
 
 ---
 
 ## Design principles
 
-Nothing groundbreaking, but we stick to them:
-
-- **Each module does one thing.** Fetch downloads. Extractor extracts. Ranker ranks. They don't call each other. CrawlScheduler wires everything together.
-- **Engine depends on interfaces, not implementations.** `factory.py` is the only place that imports concrete classes. Everything else talks to Protocols.
-- **Swap components by implementing a Protocol.** Want a different ranker? Write one, drop it in. Nothing else changes.
-- **Crash-safe.** Checkpoints save Frontier state. Restore and keep going.
-- **The corpus is frozen, judgments are append-only.** Replay re-judges a finished run without re-crawling; old analyses are never overwritten, and replaying the same prompt is a no-op.
-- **Cheap stages first.** Rules, then embeddings, then LLM — and every LLM stage degrades away without credentials instead of blocking a run.
-
+- **Each module does one thing.** Fetch downloads, Extractor extracts, Ranker ranks. They never call each other; CrawlScheduler wires them.
+- **The engine depends on Protocols.** `factory.py` is the only place that imports concrete classes.
+- **Cheap stages first.** Rules, then embeddings, then LLM. Every LLM stage degrades away without credentials instead of blocking a run.
+- **The corpus is frozen, judgments are append-only.** Old analyses are never overwritten.
+- **Nothing is guessed.** A publication date comes from what a page declares or is left empty.
+- **Crash-safe.** Checkpoints save frontier state; restore and keep going.

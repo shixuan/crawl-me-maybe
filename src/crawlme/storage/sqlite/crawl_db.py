@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     max_pages  INTEGER DEFAULT 500,
     max_tokens INTEGER DEFAULT 500000,
     max_duration_sec INTEGER DEFAULT 3600,
-    min_relevant_hits INTEGER DEFAULT 3,
     relevance_threshold REAL DEFAULT 0.7,
     depth_limit INTEGER DEFAULT 5,
     domain_budget INTEGER DEFAULT 50,
@@ -75,6 +74,8 @@ CREATE TABLE IF NOT EXISTS links (
     source_page_id  TEXT,
     source_url_key  TEXT,
     depth           INTEGER DEFAULT 0,
+    text            TEXT DEFAULT '',
+    signals_json    TEXT DEFAULT '{}',
     status          TEXT DEFAULT 'INGESTED',
     discovered_at   TEXT NOT NULL
 );
@@ -247,9 +248,9 @@ class SqliteCrawlDb:
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
-            "embedding, max_pages, max_tokens, max_duration_sec, min_relevant_hits, "
+            "embedding, max_pages, max_tokens, max_duration_sec, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
@@ -260,7 +261,6 @@ class SqliteCrawlDb:
                 goal_json.get("max_pages", 500),
                 goal_json.get("max_tokens", 500_000),
                 goal_json.get("max_duration_sec", 3600),
-                goal_json.get("min_relevant_hits", 3),
                 goal_json.get("relevance_threshold", 0.7),
                 goal_json.get("depth_limit", 5),
                 goal_json.get("domain_budget", 50),
@@ -344,8 +344,8 @@ class SqliteCrawlDb:
         self._enqueue_write(
             "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
-            "source_url_key, depth, status, discovered_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_url_key, depth, text, signals_json, status, discovered_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 candidate.candidate_id,
                 candidate.url.url_key,
@@ -357,6 +357,8 @@ class SqliteCrawlDb:
                 candidate.source_page_id,
                 candidate.source_url_key,
                 candidate.depth,
+                candidate.text,
+                json.dumps(candidate.signals),
                 candidate.status,
                 candidate.discovered_at.isoformat() if candidate.discovered_at else "",
             ),

@@ -47,4 +47,27 @@ jobs:
           restore-keys: pip-${{ matrix.python-version }}-
       - run: pip install -e .
       - run: pip install pytest pytest-asyncio pytest-httpx pytest-cov
-      - run: pytest --cov=src/crawlme --cov-fail-under=70 -m "not e2e"
+      # tests/smoke is its own job below, so a broken build is visible
+      # on the run summary instead of buried in this job's log.
+      - run: pytest --cov=src/crawlme --cov-fail-under=70 -m "not e2e" --ignore=tests/smoke
+
+  # Does the assembled system still run at all: a hermetic crawl over a
+  # site the test process serves to itself, no network and no LLM spend.
+  # One Python version is enough, it checks wiring rather than
+  # version compatibility.
+  smoke:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-3.12-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-3.12-
+      - run: pip install -e .
+      - run: pip install pytest pytest-asyncio
+      - run: pytest tests/smoke -v
