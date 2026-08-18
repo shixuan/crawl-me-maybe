@@ -7,6 +7,7 @@ interface, so the client is faked with a scripted responder.
 from __future__ import annotations
 
 import datetime
+import logging
 
 import pytest
 
@@ -186,12 +187,21 @@ async def test_field_names_are_normalized_and_capped():
     assert len(enhanced.extraction_spec["fields"]) == 8
 
 
-async def test_the_spec_gets_room_in_the_token_budget():
-    """A truncated response loses keywords and since too, not just the spec.
+async def test_empty_content_is_reported_as_its_own_failure(caplog):
+    """A reasoning model can spend the whole ceiling before writing JSON.
 
-    _parse returns None on truncated JSON, and the whole enhancement is
-    then discarded in favour of the raw prompt, silently.
+    It reads as "unparseable" unless it is named, and the cure is a
+    bigger ceiling rather than a better parser, so the log has to tell
+    the two apart.
     """
+    enhancer = GoalEnhancer(_StubClient([LLMResponse(content="", input_tokens=300, output_tokens=4096, model="stub")]))
+    with caplog.at_level(logging.WARNING):
+        assert await enhancer.enhance(_goal()) is None
+    assert "empty content" in caplog.text
+    assert "unparseable" not in caplog.text
+
+
+async def test_reasoning_gets_room_before_the_json():
     client = _StubClient([_resp(_valid_json())])
     await GoalEnhancer(client).enhance(_goal())
-    assert client.calls[0]["max_tokens"] >= 1024
+    assert client.calls[0]["max_tokens"] >= 4096

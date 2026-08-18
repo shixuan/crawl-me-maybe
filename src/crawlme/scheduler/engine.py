@@ -452,7 +452,13 @@ class CrawlScheduler:
                 global_budget=self._counters.max_pages,
             )
             if item is None:
-                if self._buffer.is_empty and self._counters.ranking_in_flight == 0:
+                if self._counters.ranking_in_flight > 0:
+                    # A rank call holds the only candidates there are.
+                    # The rank pump is inside it, so it is neither asleep
+                    # nor able to act on a wake: waiting is the whole job.
+                    await asyncio.sleep(_POP_SLEEP)
+                    continue
+                if self._buffer.is_empty:
                     if self._counters.in_flight == 0:
                         logger.info(
                             "fetch_pump.exhausted frontier=%d buffer=%d",

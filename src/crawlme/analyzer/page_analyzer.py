@@ -41,7 +41,10 @@ from crawlme.schemas import (
 logger = logging.getLogger(__name__)
 
 # Response cap: a summary plus five short lists fit comfortably.
-_MAX_TOKENS = 1024
+# Reasoning models spend this before writing any JSON, and asking for
+# extracted fields makes them think harder.  Only generated tokens are
+# billed, so the headroom is free until it is needed.
+_MAX_TOKENS = 4096
 # Default page-text cap sent to the model.  The 10-replicate
 # benchmark (benchmark/feedback/) picked 3000: the 6000-char window
 # misclassified long-form pages, while 3000 hits the intro zone and

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -551,3 +552,30 @@ async def test_fetch_slot_is_released_before_returning():
 
     assert await sched._fetch_and_extract(_item()) is None
     assert not sched._fetch_sem.locked()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pump_waits_quietly_while_a_batch_is_being_ranked(caplog):
+    """The rank pump is inside a rank call: it cannot act on a wake.
+
+    Waking it every tick produced a line of log per tick for the whole
+    length of the call, saying the buffer had items when it was empty.
+    """
+    sched = _make_sched()
+    sched._state = "RUNNING"
+    sched._goal = _goal()
+    sched._task = _task()
+    sched._counters = CrawlCounters(ranking_in_flight=11)
+
+    sched._frontier.pop_next = AsyncMock(return_value=None)
+    sched._frontier.size = 0
+    sched._buffer.is_empty = True
+    wake = AsyncMock()
+    sched._buffer.wake = wake
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(sched._fetch_pump(), timeout=0.3)
+
+    wake.assert_not_called()
+    assert "waking_rank" not in caplog.text
