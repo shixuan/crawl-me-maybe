@@ -137,6 +137,24 @@ async def test_frontier_not_drained_with_buffered():
     assert not any(r.code == "FRONTIER_DRAINED" for r in reasons)
 
 
+def test_frontier_not_drained_while_a_batch_is_being_ranked():
+    """A batch inside a rank call is in no container the check can see.
+
+    It has left the buffer and has not reached the frontier, and a rank
+    call is a network round trip, so the window is seconds wide. A real
+    run ended here reporting COMPLETED after fetching one page: the feed
+    had handed its whole yield to one rank batch, so the frontier was
+    legitimately empty for the whole call.
+    """
+    reasons = check_stop(
+        _task(),
+        _frontier(size=0),
+        _buffer(),
+        _counters(in_flight=0, ranking_in_flight=11),
+    )
+    assert not any(r.code == "FRONTIER_DRAINED" for r in reasons)
+
+
 # -- diminishing returns -------------------------------------------------
 
 

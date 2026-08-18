@@ -46,6 +46,11 @@ class CrawlCounters:
     tokens_used: int = 0
     started_at: float = 0.0
     in_flight: int = 0
+    # Candidates that have left the buffer and not yet reached the
+    # frontier, i.e. sitting inside a rank call.  They belong to nothing
+    # the drain check can see, so without this they read as gone; see
+    # _frontier_drained.
+    ranking_in_flight: int = 0
     # Sliding window over the most recent analyzed pages, one bool each.
     # A deque with maxlen keeps "recent" true by construction, which is
     # what the DIMINISHING_RETURNS check assumes.

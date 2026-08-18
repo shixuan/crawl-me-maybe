@@ -114,7 +114,7 @@ def _frontier_drained(
     buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
-    if frontier.size == 0 and buffer.is_empty and c.in_flight == 0:
+    if frontier.size == 0 and buffer.is_empty and c.in_flight == 0 and c.ranking_in_flight == 0:
         return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
     return None
 

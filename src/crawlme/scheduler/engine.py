@@ -452,7 +452,7 @@ class CrawlScheduler:
                 global_budget=self._counters.max_pages,
             )
             if item is None:
-                if self._buffer.is_empty:
+                if self._buffer.is_empty and self._counters.ranking_in_flight == 0:
                     if self._counters.in_flight == 0:
                         logger.info(
                             "fetch_pump.exhausted frontier=%d buffer=%d",
@@ -727,54 +727,62 @@ class CrawlScheduler:
 
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
 
-            history = (
-                self._steering.summary()
-                if self._steering is not None
-                else RankHistorySummary(pages_seen=self._counters.pages_fetched)
-            )
-            history.fetched = self._counters.pages_fetched
-            assert self._goal is not None
-            decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
+            # Held from the moment the batch leaves the buffer until it
+            # lands in the frontier.  A rank call is a network round trip
+            # and the batch is invisible for its whole duration.
+            self._counters.ranking_in_flight += len(batch)
+            try:
+                await self._rank_and_enqueue(batch)
+            finally:
+                self._counters.ranking_in_flight -= len(batch)
+                ranked_total += len(batch)
+                self._ctx.stats.candidates_ranked = ranked_total
 
-            n_dropped = sum(1 for d in decisions if d.dropped)
-            n_kept = len(decisions) - n_dropped
-            ranked_total += len(batch)
-            self._ctx.stats.candidates_ranked = ranked_total
-            logger.info(
-                "rank.batch candidates=%d kept=%d dropped=%d ranked_total=%d",
-                len(batch),
-                n_kept,
-                n_dropped,
-                ranked_total,
-            )
+    async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
+        """Score one drained batch and push what survives to the frontier."""
+        history = (
+            self._steering.summary()
+            if self._steering is not None
+            else RankHistorySummary(pages_seen=self._counters.pages_fetched)
+        )
+        history.fetched = self._counters.pages_fetched
+        assert self._goal is not None
+        decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
 
-            items: list[FrontierItem] = []
-            for d in decisions:
-                self._storage.save_rank_decision(d)
-                if d.dropped:
-                    continue
-                c = _find_candidate(batch, d.candidate_id)
-                depth = c.depth if c else 0
-                reg_domain = c.url.reg_domain if c else ""
-                items.append(
-                    FrontierItem(
-                        url=c.url if c else URL(raw="", canonical="", url_key=d.url_key),
-                        url_key=d.url_key,
-                        priority=self._apply_steering(d.priority, c),
-                        score_source=d.ranker,
-                        rationale=d.rationale,
-                        depth=depth,
-                        reg_domain=reg_domain,
-                    )
+        n_dropped = sum(1 for d in decisions if d.dropped)
+        n_kept = len(decisions) - n_dropped
+        logger.info(
+            "rank.batch candidates=%d kept=%d dropped=%d",
+            len(batch),
+            n_kept,
+            n_dropped,
+        )
+
+        items: list[FrontierItem] = []
+        for d in decisions:
+            self._storage.save_rank_decision(d)
+            if d.dropped:
+                continue
+            c = _find_candidate(batch, d.candidate_id)
+            depth = c.depth if c else 0
+            reg_domain = c.url.reg_domain if c else ""
+            items.append(
+                FrontierItem(
+                    url=c.url if c else URL(raw="", canonical="", url_key=d.url_key),
+                    url_key=d.url_key,
+                    priority=self._apply_steering(d.priority, c),
+                    score_source=d.ranker,
+                    rationale=d.rationale,
+                    depth=depth,
+                    reg_domain=reg_domain,
                 )
-            await self._frontier.push_batch(items)
-            if self._events and items:
-                self._events.emit(
-                    EventType.CANDIDATE_ENQUEUED,
-                    {"count": len(items), "dropped": n_dropped},
-                )
-
-            # In v0.1, tokens_used is always 0 (no LLM calls).
+            )
+        await self._frontier.push_batch(items)
+        if self._events and items:
+            self._events.emit(
+                EventType.CANDIDATE_ENQUEUED,
+                {"count": len(items), "dropped": n_dropped},
+            )
 
     #: checkpoint -------------------------------------------------------
 
