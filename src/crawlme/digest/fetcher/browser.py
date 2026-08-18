@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from crawlme.digest.fetcher import _DEFAULT_UA, FetchError
+from crawlme.digest.fetcher.base import DEFAULT_UA, FetchError, with_retries
 from crawlme.schemas import URL, FetchResult, FrontierItem
 
 if TYPE_CHECKING:
@@ -64,12 +64,14 @@ class PlaywrightFetcher:
         storage_state: str | None = None,
         user_agents: list[str] | None = None,
         timeout: float = 30.0,
+        max_retries: int = 3,
         wait_until: WaitUntil = "networkidle",
         headless: bool = True,
     ) -> None:
         self._storage_state = storage_state
-        self._uas = user_agents if user_agents else [_DEFAULT_UA]
+        self._uas = user_agents if user_agents else [DEFAULT_UA]
         self._timeout_ms = int(timeout * 1000)
+        self._max_retries = max_retries
         self._wait_until = wait_until
         self._headless = headless
         self._pw: Playwright | None = None
@@ -133,6 +135,14 @@ class PlaywrightFetcher:
     #: fetch ------------------------------------------------------------
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
+        return await with_retries(
+            lambda _n: self._attempt(item),
+            max_retries=self._max_retries,
+            is_transient=_is_transient,
+            label=f"url={item.url.canonical}",
+        )
+
+    async def _attempt(self, item: FrontierItem) -> FetchResult:
         started = time.monotonic()
         context = await self._ensure_context()
         async with self._lock:
@@ -141,8 +151,6 @@ class PlaywrightFetcher:
                 response = await page.goto(item.url.canonical, wait_until=self._wait_until)
                 html = await page.content()
                 final_url_str = page.url
-            except Exception as e:
-                raise FetchError(f"browser fetch failed: {e}") from e
             finally:
                 await page.close()
 
@@ -197,3 +205,14 @@ def _load_storage_state(path: str) -> dict[str, Any]:
     if not isinstance(state, dict) or not (state.get("cookies") or state.get("origins")):
         raise FetchError(f"storage state file has no cookies or origins: {path}")
     return state
+
+
+def _is_transient(err: BaseException) -> bool:
+    """A navigation that timed out or was interrupted is worth retrying.
+
+    Rendering fails transiently more often than an HTTP GET does, so the
+    browser needs this at least as much as httpx: a slow page, a resource
+    that never settles, a renderer that died mid-navigation.
+    """
+    name = type(err).__name__
+    return "Timeout" in name or "TargetClosed" in name or isinstance(err, asyncio.TimeoutError)

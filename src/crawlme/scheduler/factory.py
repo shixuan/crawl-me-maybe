@@ -90,7 +90,7 @@ def _build_fetcher(settings: Settings) -> Fetcher:
     the point that wanted it.
     """
     if settings.fetcher == "browser":
-        from crawlme.digest.playwright_fetcher import PlaywrightFetcher
+        from crawlme.digest.fetcher import PlaywrightFetcher
 
         return PlaywrightFetcher(
             storage_state=settings.browser_storage_state or None,

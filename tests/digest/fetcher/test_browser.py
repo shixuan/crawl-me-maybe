@@ -8,6 +8,7 @@ commit under test.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,8 +17,8 @@ from pathlib import Path
 import pytest
 
 from crawlme.config import Settings
-from crawlme.digest.fetcher import FetchError, HttpFetcher
-from crawlme.digest.playwright_fetcher import PlaywrightFetcher, _load_storage_state
+from crawlme.digest.fetcher import FetchError, HttpFetcher, PlaywrightFetcher
+from crawlme.digest.fetcher.browser import _load_storage_state
 from crawlme.scheduler.factory import _build_fetcher
 from crawlme.schemas import URL, FrontierItem
 
@@ -135,3 +136,44 @@ async def test_renders_javascript_and_reuses_the_browser(js_site: str) -> None:
     finally:
         await fetcher.aclose()
         await fetcher.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_transient_navigation_failure_is_retried(monkeypatch):
+    """Regression: the browser fetcher had no retry at all.
+
+    Rendering fails transiently more often than an HTTP GET does, so the
+    fetcher that needed retries most was the one without them.
+    """
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda _d: real_sleep(0))
+    fetcher = PlaywrightFetcher(max_retries=3)
+    calls = []
+
+    class _NavigationTimeoutError(Exception):
+        """Named for the classifier, which matches on "Timeout"."""
+
+    async def flaky(item):
+        calls.append(len(calls) + 1)
+        if len(calls) < 3:
+            raise _NavigationTimeoutError("navigation timed out")
+        return "ok"
+
+    monkeypatch.setattr(fetcher, "_attempt", flaky)
+    assert await fetcher.fetch(_item("https://x.com/a")) == "ok"
+    assert calls == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_browser_error_is_not_retried(monkeypatch):
+    fetcher = PlaywrightFetcher(max_retries=3)
+    calls = []
+
+    async def gone(item):
+        calls.append(1)
+        raise FetchError("Permanent HTTP error: 404")
+
+    monkeypatch.setattr(fetcher, "_attempt", gone)
+    with pytest.raises(FetchError):
+        await fetcher.fetch(_item("https://x.com/a"))
+    assert calls == [1], "a 404 does not become a 200 by asking again"

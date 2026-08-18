@@ -26,7 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from crawlme.digest.playwright_fetcher import PlaywrightFetcher
+from crawlme.digest.fetcher import PlaywrightFetcher
 from crawlme.schemas import URL, FrontierItem
 
 #: Signals that we got something other than the content we asked for.

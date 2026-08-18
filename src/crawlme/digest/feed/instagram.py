@@ -21,7 +21,7 @@ import html as html_module
 import json
 import re
 
-from crawlme.digest.feed import FeedItem, Listing, PageProblem
+from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
 
 PLATFORM = "instagram"
 

@@ -15,8 +15,8 @@ import glob
 
 import pytest
 
-from crawlme.digest.adapters import instagram as ig
 from crawlme.digest.feed import PageProblem
+from crawlme.digest.feed import instagram as ig
 
 _PROFILE = """<html><body>
 <a href="/mollytea_canada/p/AAA111/"><img alt="Photo shared by MollyTeaCanada on August 13, 2026"></a>
