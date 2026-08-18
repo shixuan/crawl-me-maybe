@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     feedback_json   TEXT DEFAULT '{}',
     model           TEXT DEFAULT '',
     prompt_version  TEXT DEFAULT '',
+    spec_version    TEXT DEFAULT '',
     tokens_used     INTEGER DEFAULT 0,
     analyzed_at     TEXT NOT NULL
 );
@@ -404,8 +405,8 @@ class SqliteCrawlDb:
         self._enqueue_write(
             "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
             "classification, relevance_score, summary, structured_data, extracted_json, "
-            "tags_json, feedback_json, model, prompt_version, tokens_used, analyzed_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tags_json, feedback_json, model, prompt_version, spec_version, tokens_used, "
+            "analyzed_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_json["analysis_id"],
                 analysis_json.get("page_id", ""),
@@ -422,6 +423,7 @@ class SqliteCrawlDb:
                 json.dumps(analysis_json.get("feedback", {})),
                 analysis_json.get("model", ""),
                 analysis_json.get("prompt_version", ""),
+                analysis_json.get("spec_version", ""),
                 analysis_json.get("tokens_used", 0),
                 analysis_json.get("analyzed_at", ""),
             ),
@@ -431,17 +433,26 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    async def has_analysis(self, url_key: str, goal_id: str, prompt_version: str, model: str = "") -> bool:
+    async def has_analysis(
+        self,
+        url_key: str,
+        goal_id: str,
+        prompt_version: str,
+        model: str = "",
+        spec_version: str = "",
+    ) -> bool:
         """Whether an analysis with this identity already exists.
 
-        The identity is (url_key, goal_id, prompt_version, model); the
-        model is only known after an LLM call, so callers that run the
-        provider default (no model configured) pass "" to match any
-        model instead.
+        The identity is (url_key, goal_id, prompt_version, spec_version,
+        model); the model is only known after an LLM call, so callers
+        that run the provider default (no model configured) pass "" to
+        match any model instead.  spec_version is "" for a goal that asks
+        for no fields, which matches every analysis written before there
+        were any.
         """
         cur = await self._execute_now(
-            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ?",
-            (url_key, goal_id, prompt_version),
+            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ? AND spec_version = ?",
+            (url_key, goal_id, prompt_version, spec_version),
         )
         rows = [dict(r) for r in await cur.fetchall()]
         if model == "":

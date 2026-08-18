@@ -8,7 +8,7 @@ flat import surface keeps working unchanged.
 from crawlme.schemas.analysis import AnalysisResult, AnalyzerFeedback, Classification, ExtractedField
 from crawlme.schemas.core import URL, RawLink, _content_id, _new_id, _utcnow
 from crawlme.schemas.digest import ExtractionStatus, FetchResult, Page
-from crawlme.schemas.goal import CrawlGoal, CrawlTask, TaskState, spec_fields
+from crawlme.schemas.goal import CrawlGoal, CrawlTask, TaskState, spec_fields, spec_version
 from crawlme.schemas.pioneer import (
     Candidate,
     CandidateStatus,
@@ -43,4 +43,5 @@ __all__ = [
     "_new_id",
     "_utcnow",
     "spec_fields",
+    "spec_version",
 ]

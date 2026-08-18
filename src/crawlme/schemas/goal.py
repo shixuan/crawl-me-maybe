@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -74,3 +76,22 @@ def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:
     if not isinstance(fields, dict):
         return {}
     return {str(k): str(v) for k, v in fields.items() if isinstance(k, str)}
+
+
+def spec_version(spec: dict[str, Any] | None) -> str:
+    """A short name for one extraction spec, or "" when there is none.
+
+    This belongs to the analysis, not to the goal.  `goal_id` is
+    sha256(prompt) so that the same prompt is the same goal, which is
+    what replay idempotency and the goal embedding cache are built on;
+    folding a model-inferred spec into it would make the same prompt
+    become a new goal every time the model worded its fields
+    differently.  What actually changed is how a page was read, which is
+    the same kind of fact as the prompt version and the model, so it is
+    recorded alongside them.
+    """
+    fields = spec_fields(spec)
+    if not fields:
+        return ""
+    canonical = json.dumps(fields, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]

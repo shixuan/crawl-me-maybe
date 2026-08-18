@@ -36,7 +36,7 @@ from crawlme.config import Settings
 from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
+from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page, spec_version
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 logger = logging.getLogger(__name__)
@@ -181,7 +181,11 @@ async def run_replay(
                     empty += 1
                     continue
                 if not force and await storage.has_analysis(
-                    page.url_key, goal.goal_id, _PROMPT_VERSION, settings.llm_model
+                    page.url_key,
+                    goal.goal_id,
+                    _PROMPT_VERSION,
+                    settings.llm_model,
+                    spec_version(goal.extraction_spec),
                 ):
                     skipped += 1
                     continue

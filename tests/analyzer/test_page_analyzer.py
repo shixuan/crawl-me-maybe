@@ -440,3 +440,45 @@ async def test_a_goal_with_a_spec_lists_its_fields_in_the_prompt():
     assert "## Extract" in prompt
     assert "- offer: what is given away" in prompt
     assert "evidence" in client.calls[0]["system"]
+
+
+async def test_the_spec_is_part_of_what_makes_an_analysis_the_same():
+    """A different field list is a different reading of the page.
+
+    It does not belong in goal_id: that is sha256(prompt), which is what
+    replay idempotency and the goal embedding cache rest on, and a
+    model-inferred spec would make the same prompt keep becoming a new
+    goal.  It is recorded next to prompt_version and model instead.
+    """
+    client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
+    analyzer = _analyzer(client)
+    first = await analyzer.analyze(_page(_OFFER_PAGE), _spec_goal())
+
+    other = _spec_goal()
+    other.extraction_spec = {"fields": {"offer": "what is given away"}}
+    second = await analyzer.analyze(_page(_OFFER_PAGE), other)
+
+    assert first is not None and second is not None
+    assert first.goal_id == second.goal_id, "same prompt is still the same goal"
+    assert first.spec_version != second.spec_version
+    assert first.spec_version and second.spec_version
+
+
+async def test_a_goal_with_no_spec_has_no_spec_version():
+    """So it matches every analysis written before specs existed."""
+    client = _StubClient([_resp(_valid_json())])
+    result = await _analyzer(client).analyze(_page(), _goal())
+    assert result is not None
+    assert result.spec_version == ""
+
+
+async def test_wording_a_field_differently_is_a_different_spec():
+    """The description steers the extraction, so it counts as identity."""
+    client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
+    analyzer = _analyzer(client)
+    a = await analyzer.analyze(_page(_OFFER_PAGE), _spec_goal())
+    reworded = _spec_goal()
+    reworded.extraction_spec = {"fields": {"offer": "the giveaway", "deadline": "when it ends"}}
+    b = await analyzer.analyze(_page(_OFFER_PAGE), reworded)
+    assert a is not None and b is not None
+    assert a.spec_version != b.spec_version

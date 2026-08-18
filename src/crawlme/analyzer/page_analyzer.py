@@ -35,6 +35,7 @@ from crawlme.schemas import (
     ExtractedField,
     Page,
     spec_fields,
+    spec_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -347,6 +348,7 @@ def _parse_analysis(
         summary=summary,
         structured_data=data,
         extracted=_parse_extracted(data, page, goal),
+        spec_version=spec_version(goal.extraction_spec),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,

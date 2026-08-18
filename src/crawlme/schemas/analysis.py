@@ -62,5 +62,8 @@ class AnalysisResult(BaseModel):
     feedback: AnalyzerFeedback = Field(default_factory=AnalyzerFeedback)
     model: str = ""
     prompt_version: str = ""
+    # Which field list produced `extracted`.  Part of what makes one
+    # analysis the same as another, next to prompt_version and model.
+    spec_version: str = ""
     tokens_used: int = 0
     analyzed_at: datetime.datetime = Field(default_factory=_utcnow)
