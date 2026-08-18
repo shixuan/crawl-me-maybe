@@ -175,6 +175,7 @@ class CrawlScheduler:
             await self._frontier.push_batch(items)
         if self._events and n_ingested > 0:
             self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
+        self._counters.seed_count += n_ingested
         logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
         return n_ingested
 

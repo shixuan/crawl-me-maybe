@@ -60,6 +60,10 @@ class CrawlCounters:
     since: datetime.datetime | None = None
     stale_streak: int = 0
     max_stale_streak: int = 5
+    # How many entry points this run was given.  TIME_HORIZON reads it to
+    # decide whether "consecutive stale pages" means anything; see the
+    # check's own docstring for why anything but 1 leaves it dormant.
+    seed_count: int = 0
 
 
 @dataclasses.dataclass

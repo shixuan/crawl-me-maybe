@@ -163,7 +163,7 @@ def test_diminishing_returns_still_finding():
 
 
 def _since_counters(**kw: object) -> CrawlCounters:
-    base = {"since": datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)}
+    base = {"since": datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc), "seed_count": 1}
     base.update(kw)
     return CrawlCounters(**base)  # type: ignore[arg-type]
 
@@ -186,6 +186,22 @@ def test_time_horizon_holds_below_streak():
 
 def test_time_horizon_disabled_by_zero_threshold():
     c = _since_counters(stale_streak=50, max_stale_streak=0)
+    assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), _buffer(), c))
+
+
+def test_time_horizon_dormant_when_a_run_has_several_entry_points():
+    """Thirty shops interleave thirty traversals, so a streak spans accounts.
+
+    One quiet shop's back catalogue must not end the run before an active
+    shop is ever reached.
+    """
+    c = _since_counters(stale_streak=99, seed_count=30)
+    assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), _buffer(), c))
+
+
+def test_time_horizon_dormant_when_the_entry_points_are_unknown():
+    """Dormant is the safe direction: overspending beats missing results."""
+    c = _since_counters(stale_streak=99, seed_count=0)
     assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), _buffer(), c))
 
 

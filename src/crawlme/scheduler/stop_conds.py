@@ -83,13 +83,22 @@ def _time_horizon(
 
     The premise is reverse-chronological traversal: the first run of
     pages older than the window means everything after it is older too.
-    That holds for feeds, listing pages, and archives.  It does not hold
-    for graph traversal, where page times arrive unordered, so passing
-    `--since` is the user asserting the source is ordered.  When feed
-    traversal lands (3.3) this check moves into the feed's own loop and
-    leaves the global list.  See refactor.md R3.
+    That holds within one feed, listing page, or archive, and passing
+    `--since` is the user asserting their source reads that way.
+
+    It stops holding the moment a run has more than one entry point.
+    Monitoring thirty shops interleaves thirty traversals, so "pages in a
+    row" spans accounts that have nothing to do with each other: one
+    quiet shop's back catalogue would end the run before an active shop's
+    posts were ever reached.  Losing those results is far worse than
+    spending the budget, so the streak arms only where it can be read at
+    face value, and anything else leaves it dormant.
+
+    Dropping stale candidates one at a time is the part that still works
+    everywhere; PreFilter's `stale_check` does it whenever a listing
+    stated the date.  See refactor.md R3.
     """
-    if c.since is None or c.max_stale_streak <= 0:
+    if c.since is None or c.max_stale_streak <= 0 or c.seed_count != 1:
         return None
     if c.stale_streak >= c.max_stale_streak:
         return StopReason(

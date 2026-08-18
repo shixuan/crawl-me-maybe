@@ -62,8 +62,8 @@ def main() -> None:
     run_p.add_argument(
         "--since",
         default=None,
-        help="Time window, e.g. '1 week' or '2026-08-01'. Stops on TIME_HORIZON once "
-        "content ages out; assumes the source is ordered newest first",
+        help="Time window, e.g. '1 week' or '2026-08-01'. Skips candidates already "
+        "dated outside it; with a single seed, also stops once content ages out",
     )
     run_p.add_argument(
         "--fetcher",
