@@ -76,6 +76,13 @@ class InstagramHarvester:
     results bleed into another's.
     """
 
+    def __init__(self, canonicalizer: Canonicalizer) -> None:
+        # Same normalization every other source gets.  A permalink taken
+        # at face value would carry the raw URL as its url_key while the
+        # rest of the crawl keys on a fingerprint, so the same post
+        # reached from a link and from a listing would not dedup.
+        self._canonicalizer = canonicalizer
+
     def harvest(self, page: Page, depth: int) -> list[Candidate]:
         html = _html_of(page)
         problem = instagram.problem(html)
@@ -93,7 +100,9 @@ class InstagramHarvester:
         out: list[Candidate] = []
         for item in listing.all:
             marked = replace(item, signals={**item.signals, "tagged_only": item.permalink not in own})
-            out.append(marked.to_candidate(source_url_key=page.url_key, depth=depth + 1))
+            candidate = marked.to_candidate(source_url_key=page.url_key, depth=depth + 1)
+            candidate.url = self._canonicalizer.canonicalize(candidate.url.raw, page.url.canonical)
+            out.append(candidate)
         return out
 
 

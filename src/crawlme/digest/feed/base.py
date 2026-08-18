@@ -63,6 +63,9 @@ class FeedItem:
             extra["account"] = self.author
         if self.published_at:
             extra["posted_at"] = self.published_at.isoformat()
+        # The permalink as stated. A harvester canonicalizes it before
+        # the candidate goes anywhere, which is what gives it the same
+        # url_key shape as the rest of the crawl.
         return Candidate(
             url=URL(
                 raw=self.permalink,

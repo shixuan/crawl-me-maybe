@@ -45,9 +45,10 @@ _SYSTEM = (
     "YYYY-MM-DD when the goal mentions a time window such as 'recent' or 'last "
     "week', otherwise null), and extraction_spec. "
     "extraction_spec names the fields worth pulling out of every matching page, as "
-    '{"fields": {"<snake_case_name>": "<what it holds>"}}. Only produce it when the '
-    'goal names things to collect ("with the merchant, the offer and the deadline"); '
-    "a goal that just asks to find pages about a subject gets null. At most 8 fields. "
+    '{"fields": {"<snake_case_name>": "<what it holds>"}}. Produce it only when the '
+    "goal asks for particular pieces of information out of each page; a goal that asks "
+    "to find pages on a subject gets null. Take the fields from the goal's own wording "
+    "and stay in its own domain. At most 8 fields. "
     "Keep every constraint of the original prompt: never narrow the goal."
 )
 

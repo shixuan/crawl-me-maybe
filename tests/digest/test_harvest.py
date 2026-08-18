@@ -72,16 +72,17 @@ def test_links_carry_their_business_card(tmp_path: Path) -> None:
 
 def test_a_listing_yields_its_post_permalinks(tmp_path: Path) -> None:
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = InstagramHarvester().harvest(page, depth=0)
+    out = InstagramHarvester(Canonicalizer()).harvest(page, depth=0)
     assert len(out) == 3
     assert all(c.signals["platform"] == "instagram" for c in out)
     assert all(c.url.reg_domain == "instagram.com" for c in out)
+    assert all(len(c.url.url_key) == 16 for c in out), "same key shape as every other source"
 
 
 def test_a_listing_marks_posts_that_only_tagged_the_account(tmp_path: Path) -> None:
     """Kept, but distinguishable: a reviewer's post is not the shop's."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = InstagramHarvester().harvest(page, depth=0)
+    out = InstagramHarvester(Canonicalizer()).harvest(page, depth=0)
     tagged = {c.url.canonical: c.signals["tagged_only"] for c in out}
     assert tagged["https://www.instagram.com/mollytea_canada/p/AAA111/"] is False
     assert tagged["https://www.instagram.com/hellofoodbaby_/p/CCC333/"] is True
@@ -90,18 +91,18 @@ def test_a_listing_marks_posts_that_only_tagged_the_account(tmp_path: Path) -> N
 def test_a_post_yields_nothing(tmp_path: Path) -> None:
     """A post is a leaf: its caption is the product, not a pointer on."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
-    assert InstagramHarvester().harvest(page, depth=0) == []
+    assert InstagramHarvester(Canonicalizer()).harvest(page, depth=0) == []
 
 
 def test_a_page_that_is_not_content_yields_nothing(tmp_path: Path) -> None:
     """A renamed account must not read as an account with a quiet week."""
     page = _page(tmp_path, b"<html>Sorry, this page isn't available</html>", "https://www.instagram.com/gone/")
-    assert InstagramHarvester().harvest(page, depth=0) == []
+    assert InstagramHarvester(Canonicalizer()).harvest(page, depth=0) == []
 
 
 def test_a_page_with_no_stored_html_yields_nothing(tmp_path: Path) -> None:
     page = Page(url_key="k", url=URL(raw="https://x/", canonical="https://x/", url_key="k"))
-    assert InstagramHarvester().harvest(page, depth=0) == []
+    assert InstagramHarvester(Canonicalizer()).harvest(page, depth=0) == []
 
 
 #: wiring ----------------------------------------------------------------

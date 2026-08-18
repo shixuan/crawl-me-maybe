@@ -88,7 +88,7 @@ def create_scheduler(
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
     """What a page yields depends on the kind of source it came from."""
     if settings.source_kind == "instagram":
-        return InstagramHarvester()
+        return InstagramHarvester(canonicalizer)
     return LinkHarvester(canonicalizer)
 
 
