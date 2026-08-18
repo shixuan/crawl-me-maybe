@@ -28,7 +28,6 @@ from crawlme.schemas import CrawlGoal
 logger = logging.getLogger(__name__)
 
 _MAX_KEYWORDS = 12
-_MAX_OUT = 4096
 _MAX_SPEC_FIELDS = 8
 _MAX_SPEC_DESC = 200
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -83,13 +82,7 @@ class GoalEnhancer:
         if self._client is None:
             return None
         try:
-            # Reasoning models spend this budget before they write a
-            # character of JSON, and asking for the spec makes them think
-            # harder.  At 1024 the whole budget went to reasoning and the
-            # content came back empty, which costs keywords and since as
-            # well as the spec.  The ceiling is not a cost: only tokens
-            # actually generated are billed.
-            resp = await self._client.chat(goal.prompt, system=_SYSTEM, max_tokens=_MAX_OUT, json_mode=True)
+            resp = await self._client.chat(goal.prompt, system=_SYSTEM, json_mode=True)
         except LLMError as e:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
             return None
@@ -98,11 +91,10 @@ class GoalEnhancer:
             # which on a reasoning model means it used the whole budget
             # thinking.  Saying so is the difference between a one-look
             # diagnosis and a hunt.
-            logger.warning(
-                "goal.enhance empty content (out=%d, ceiling=%d), using raw prompt",
-                resp.output_tokens,
-                _MAX_OUT,
-            )
+            # On a reasoning model an empty reply means the thinking
+            # used the whole ceiling.  Saying so is the difference
+            # between a one-look diagnosis and a hunt through the parser.
+            logger.warning("goal.enhance empty content (out=%d), using raw prompt", resp.output_tokens)
             return None
         parsed = self._parse(resp.content)
         if parsed is None:

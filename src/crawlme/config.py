@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2
+    # Ceiling on one response, and on a reasoning model the thinking is
+    # spent out of it before any answer is written.  Too low and the
+    # reply comes back empty or half-finished, which reads like a broken
+    # parser rather than a budget.  A ceiling is not a cost: only tokens
+    # actually generated are billed, so headroom is free until used.
+    llm_max_output_tokens: int = 8192
 
     # -: Embedding ---
     # Credentials for the api provider (--embedding api).  Keys are

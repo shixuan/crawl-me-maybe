@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 30
 # Response cap: 30 rankings with short rationales fit comfortably, and
 # the headroom tolerates verbose models without truncation.
-_MAX_TOKENS = 4096
 # Link texts are truncated so the prompt size stays roughly
 # proportional to the batch size; the URL is what mostly matters.
 _MAX_FIELD_CHARS = 160
@@ -119,19 +118,31 @@ class LLMRanker:
         page_contexts: dict[str, dict[str, Any]] | None,
     ) -> list[RankDecision]:
         prompt = _build_prompt(goal, chunk, history, page_contexts)
-        resp = await self._client.chat(prompt, system=_SYSTEM, max_tokens=_MAX_TOKENS, json_mode=True)
+        resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
         data = _parse_response(resp.content)
         if data is None:
-            logger.warning(
-                "llm.rank unparseable json for %d candidates, retrying once with a stricter instruction",
-                len(chunk),
-            )
-            resp = await self._client.chat(
-                prompt + _REPAIR_SUFFIX,
-                system=_SYSTEM,
-                max_tokens=_MAX_TOKENS,
-                json_mode=True,
-            )
+            # A reply that used the whole ceiling was cut off mid-JSON,
+            # and no amount of stricter wording buys the room to finish
+            # it.  Asking again the same way just spends the ceiling
+            # twice, which is what a run on a reasoning model did before
+            # falling back to embedding-only scores.
+            if resp.truncated:
+                logger.warning(
+                    "llm.rank hit the output ceiling for %d candidates, retrying with more room",
+                    len(chunk),
+                )
+                resp = await self._client.chat(
+                    prompt,
+                    system=_SYSTEM,
+                    max_tokens=resp.output_tokens * 2,
+                    json_mode=True,
+                )
+            else:
+                logger.warning(
+                    "llm.rank unparseable json for %d candidates, retrying once with a stricter instruction",
+                    len(chunk),
+                )
+                resp = await self._client.chat(prompt + _REPAIR_SUFFIX, system=_SYSTEM, json_mode=True)
             data = _parse_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {len(chunk)} candidates after repair retry")

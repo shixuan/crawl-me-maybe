@@ -41,10 +41,6 @@ from crawlme.schemas import (
 logger = logging.getLogger(__name__)
 
 # Response cap: a summary plus five short lists fit comfortably.
-# Reasoning models spend this before writing any JSON, and asking for
-# extracted fields makes them think harder.  Only generated tokens are
-# billed, so the headroom is free until it is needed.
-_MAX_TOKENS = 4096
 # Default page-text cap sent to the model.  The 10-replicate
 # benchmark (benchmark/feedback/) picked 3000: the 6000-char window
 # misclassified long-form pages, while 3000 hits the intro zone and
@@ -212,7 +208,7 @@ class PageAnalyzer:
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
         prompt = _build_prompt(goal, page, text, self._max_page_chars)
-        resp = await self._client.chat(prompt, system=_system_for(goal), max_tokens=_MAX_TOKENS, json_mode=True)
+        resp = await self._client.chat(prompt, system=_system_for(goal), json_mode=True)
         data = parse_json_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {page.url_key}")

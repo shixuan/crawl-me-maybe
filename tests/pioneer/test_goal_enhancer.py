@@ -21,7 +21,7 @@ class _StubClient:
         self._script = list(script)
         self.calls: list[dict] = []
 
-    async def chat(self, prompt: str, *, system: str = "", max_tokens: int = 512, json_mode: bool = False):
+    async def chat(self, prompt: str, *, system: str = "", max_tokens: int | None = None, json_mode: bool = False):
         self.calls.append({"prompt": prompt, "system": system, "json_mode": json_mode, "max_tokens": max_tokens})
         item = self._script.pop(0)
         if isinstance(item, BaseException):
@@ -201,7 +201,8 @@ async def test_empty_content_is_reported_as_its_own_failure(caplog):
     assert "unparseable" not in caplog.text
 
 
-async def test_reasoning_gets_room_before_the_json():
+async def test_the_ceiling_belongs_to_the_client():
+    """One knob for every stage: the right value follows from the model."""
     client = _StubClient([_resp(_valid_json())])
     await GoalEnhancer(client).enhance(_goal())
-    assert client.calls[0]["max_tokens"] >= 4096
+    assert client.calls[0]["max_tokens"] is None

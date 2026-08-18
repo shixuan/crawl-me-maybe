@@ -19,7 +19,7 @@ class _StubClient:
         self._script = list(script)
         self.calls: list[dict] = []
 
-    async def chat(self, prompt: str, *, system: str = "", max_tokens: int = 512, json_mode: bool = False):
+    async def chat(self, prompt: str, *, system: str = "", max_tokens: int | None = None, json_mode: bool = False):
         self.calls.append({"prompt": prompt, "system": system, "max_tokens": max_tokens, "json_mode": json_mode})
         item = self._script.pop(0)
         if isinstance(item, BaseException):
@@ -208,7 +208,7 @@ async def test_prompt_carries_goal_candidates_and_json_mode():
     await _ranker(client).rank_batch(goal, _candidates(2), RankHistorySummary())
     call = client.calls[0]
     assert call["json_mode"] is True
-    assert call["max_tokens"] == 4096
+    assert call["max_tokens"] is None, "the client owns the ceiling, not each call site"
     assert "## Goal" in call["prompt"]
     assert goal.prompt in call["prompt"]
     assert "c0:" in call["prompt"] and "c1:" in call["prompt"]
@@ -299,3 +299,30 @@ def test_from_settings_wires_client_and_budget():
     assert ranker is not None
     assert ranker._client._budget is budget
     assert ranker._client._model  # provider default when llm_model is unset
+
+
+async def test_a_truncated_rank_reply_is_retried_with_more_room():
+    """Stricter wording cannot buy the room to finish the JSON.
+
+    A run on a reasoning model spent the ceiling twice on the same
+    prompt and fell back to embedding-only scores; the second attempt
+    has to be bigger, not sterner.
+    """
+    cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
+    client = _StubClient([cut_off, _resp(_rankings_json(2))])
+    await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+
+    retry = client.calls[1]
+    assert retry["max_tokens"] == 8192, "twice what the cut-off reply managed"
+    assert retry["prompt"] == client.calls[0]["prompt"], "the wording was never the problem"
+
+
+async def test_unparseable_but_complete_still_gets_the_stricter_wording():
+    """A short reply that is simply malformed is a wording problem."""
+    malformed = LLMResponse(content="not json", input_tokens=100, output_tokens=20, model="stub", truncated=False)
+    client = _StubClient([malformed, _resp(_rankings_json(2))])
+    await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+
+    retry = client.calls[1]
+    assert retry["max_tokens"] is None
+    assert retry["prompt"] != client.calls[0]["prompt"]
