@@ -72,7 +72,9 @@ def main() -> None:
         help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
     )
     run_p.add_argument(
-        "--cookies",
+        "--session",
+        "--cookies",  # the name this shipped under
+        dest="session",
         default=None,
         help="Path to a Playwright storage_state JSON, for crawling as a logged-in session",
     )
