@@ -24,7 +24,7 @@ from typing import Any
 from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
-from crawlme.digest.links import extract_links
+from crawlme.digest.harvest import Harvester, LinkHarvester
 from crawlme.logging import setup_logging
 from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -82,6 +82,7 @@ class CrawlScheduler:
         buffer: Buffer,
         ranker: Ranker,
         canonicalizer: Canonicalizer,
+        harvester: Harvester | None = None,
         steering: SteeringSystem | None = None,
         context: CrawlContext | None = None,
     ) -> None:
@@ -95,6 +96,11 @@ class CrawlScheduler:
         self._buffer = buffer
         self._ranker = ranker
         self._canonicalizer = canonicalizer
+        # What a page yields depends on the kind of source it came
+        # from: a link graph offers its links, a feed listing offers
+        # post permalinks. Defaults to links so a bare scheduler
+        # behaves as it always did.
+        self._harvester: Harvester = harvester or LinkHarvester(canonicalizer)
         # The optional steering half of the feedback loop (analyzer +
         # run signals + cross-task priors), injected whole by the
         # factory.  The engine only talks to the facade, so None
@@ -597,18 +603,19 @@ class CrawlScheduler:
             # Bounded like the extraction step: a pathological page
             # must lose its links, not stall the whole crawl.
             try:
-                raw_links = await asyncio.wait_for(
-                    asyncio.to_thread(extract_links, page), timeout=self._cfg.extract_timeout
+                candidates = await asyncio.wait_for(
+                    asyncio.to_thread(self._harvester.harvest, page, item.depth),
+                    timeout=self._cfg.extract_timeout,
                 )
             except asyncio.TimeoutError:
                 logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                raw_links = []
-            self._ctx.stats.links_discovered += len(raw_links)
+                candidates = []
+            self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
                 page.url_key,
                 page.title,
-                len(raw_links),
+                len(candidates),
                 page.extraction_status,
             )
 
@@ -619,7 +626,7 @@ class CrawlScheduler:
                 page.url_key,
                 {
                     "title": page.title or "",
-                    "link_count": len(raw_links),
+                    "link_count": len(candidates),
                     "url": page.url.canonical,
                     "depth": item.depth,
                 },
@@ -630,18 +637,7 @@ class CrawlScheduler:
             )
             n_allowed = 0
             n_filtered = 0
-            for rl in raw_links:
-                url = self._canonicalizer.canonicalize(rl.href, page.url.canonical)
-                c = Candidate(
-                    url=url,
-                    anchor=rl.anchor,
-                    snippet=rl.snippet,
-                    parent_heading=rl.parent_heading,
-                    position=rl.position,
-                    source_url_key=page.url_key,
-                    depth=item.depth + 1,
-                    discovered_at=_utcnow(),
-                )
+            for c in candidates:
                 decision, _ = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
                 if decision.value == "allow":
                     c.status = "BUFFERED"
@@ -654,11 +650,11 @@ class CrawlScheduler:
                 # Progress pulse: large pages take a while to persist.
                 total = n_allowed + n_filtered
                 if total % 500 == 0:
-                    logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(raw_links))
+                    logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(candidates))
             logger.debug(
                 "prefilter url_key=%s total=%d allowed=%d filtered=%d",
                 page.url_key,
-                len(raw_links),
+                len(candidates),
                 n_allowed,
                 n_filtered,
             )
@@ -677,7 +673,7 @@ class CrawlScheduler:
                 n,
                 page.url_key,
                 page.title,
-                len(raw_links),
+                len(candidates),
                 n_allowed,
                 (time.monotonic() - self._counters.started_at),
             )

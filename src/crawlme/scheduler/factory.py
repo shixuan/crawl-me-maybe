@@ -13,6 +13,7 @@ from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
+from crawlme.digest.harvest import Harvester, InstagramHarvester, LinkHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -62,6 +63,7 @@ def create_scheduler(
     # resets it in place when run() starts, so the references handed
     # out here stay valid for the scheduler's lifetime.
     ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
+    canonicalizer = Canonicalizer()
     if steering is None:
         steering = _build_steering(settings, budget)
     kwargs: dict[str, Any] = {
@@ -74,12 +76,20 @@ def create_scheduler(
         "prefilter": PreFilter(),
         "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
         "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
-        "canonicalizer": Canonicalizer(),
+        "canonicalizer": canonicalizer,
+        "harvester": _build_harvester(settings, canonicalizer),
         "steering": steering,
         "context": ctx,
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
+    """What a page yields depends on the kind of source it came from."""
+    if settings.source_kind == "instagram":
+        return InstagramHarvester()
+    return LinkHarvester(canonicalizer)
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:

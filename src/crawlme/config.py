@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # means an anonymous browser.  Secrets stay out of flags: this is a
     # path, and the file itself never enters the repo.
     browser_storage_state: str = ""
+    # What a fetched page yields: "links" walks a graph,
+    # "instagram" reads a feed listing into post permalinks.
+    source_kind: str = "links"
     user_agents: list[str] = [
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]

@@ -428,7 +428,7 @@ async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
     """
     done = threading.Event()
 
-    def _slow_links(_page):
+    def _slow_links(_page, _depth):
         done.wait(10)  # released by the test so the worker thread exits
         return []
 
@@ -447,7 +447,9 @@ async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
             title="slow page",
         )
     )
-    monkeypatch.setattr("crawlme.scheduler.engine.extract_links", _slow_links)
+    # The harvester is injected now, so a pathological page is
+    # simulated by a slow harvest rather than a patched import.
+    sched._harvester = MagicMock(harvest=_slow_links)
     sched._frontier.record_outcome = AsyncMock()
 
     try:
@@ -513,9 +515,8 @@ async def test_analysis_runs_outside_the_fetch_slot(monkeypatch):
     """
     from crawlme.config import Settings
 
-    monkeypatch.setattr("crawlme.scheduler.engine.extract_links", lambda page: [])
-
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
+    sched._harvester = MagicMock(harvest=lambda page, depth: [])
     sched._goal = _goal()
     sched._task = _task()
 
