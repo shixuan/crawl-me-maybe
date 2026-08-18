@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -579,3 +579,30 @@ async def test_fetch_pump_waits_quietly_while_a_batch_is_being_ranked(caplog):
 
     wake.assert_not_called()
     assert "waking_rank" not in caplog.text
+
+
+#: endorsed links ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("link", "expected"),
+    [
+        ("https://example.com/deals", "https://example.com/deals"),
+        ("http://example.com/x", "http://example.com/x"),
+        ("/promotions", "/promotions"),
+        ("www.mollyteaca.com", "https://www.mollyteaca.com"),
+        ("WWW.Example.COM", "https://WWW.Example.COM"),
+    ],
+)
+def test_an_endorsed_link_that_is_a_link_survives(link, expected):
+    assert _endorsed_href(link) == expected
+
+
+@pytest.mark.parametrize("link", ["mollyteaca.com", "click here", "", "   ", "see our site"])
+def test_an_endorsement_that_is_not_a_link_is_dropped(link):
+    """Resolving it against the page would fabricate a URL.
+
+    Instagram answers 200 for any path, so the fabricated page looked
+    like a successful fetch and cost an analysis and a page of budget.
+    """
+    assert _endorsed_href(link) is None

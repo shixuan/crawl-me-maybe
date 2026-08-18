@@ -61,6 +61,32 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _endorsed_href(link: str) -> str | None:
+    """Normalize one analyzer-endorsed link, or reject it.
+
+    Endorsements are copied out of page text by a model, so unlike a
+    harvested href they are not guaranteed to be links at all.  A bare
+    host resolved against the page it was found on becomes a path on the
+    wrong site: a run endorsed "www.mollyteaca.com" from an Instagram
+    profile and fetched instagram.com/mollytea_canada/www.mollyteaca.com,
+    which Instagram answered 200 for, as it does for any path.  A page
+    that does not exist then cost a fetch, an analysis, and a slot in the
+    page budget.
+
+    A leading "www." is the one bare host worth rescuing rather than
+    dropping: no relative path starts that way.  Anything else has to
+    look like a link already.
+    """
+    href = link.strip()
+    if not href:
+        return None
+    if href.startswith(("http://", "https://", "/")):
+        return href
+    if href.lower().startswith("www."):
+        return f"https://{href}"
+    return None
+
+
 class CrawlScheduler:
     """Orchestrator that wires all v0.1 modules together.
 
@@ -503,7 +529,11 @@ class CrawlScheduler:
         )
         items: list[FrontierItem] = []
         for link, source_url in endorsed:
-            url = self._canonicalizer.canonicalize(link, source_url)
+            usable = _endorsed_href(link)
+            if usable is None:
+                logger.debug("endorsed.unusable link=%r source=%s", link[:80], source_url)
+                continue
+            url = self._canonicalizer.canonicalize(usable, source_url)
             source_key = self._url_key_of.get(source_url, "")
             source_depth = int(self._page_contexts.get(source_key, {}).get("depth", 0))
             candidate = Candidate(url=url, depth=source_depth + 1, discovered_at=_utcnow())
