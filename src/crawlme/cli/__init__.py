@@ -72,6 +72,13 @@ def main() -> None:
         help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
     )
     run_p.add_argument(
+        "--feed",
+        choices=["instagram"],
+        default=None,
+        help="Read the source as a platform feed: a listing yields post permalinks "
+        "instead of the links on the page (default: crawl the link graph)",
+    )
+    run_p.add_argument(
         "--session",
         "--cookies",  # the name this shipped under
         dest="session",

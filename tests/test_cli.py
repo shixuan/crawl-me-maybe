@@ -211,6 +211,52 @@ def test_run_flag_beats_env_twin(monkeypatch):
     assert captured["cfg"].embedding_provider == ""
 
 
+def test_run_feed_flag_picks_the_harvester(tmp_path):
+    """--feed decides what a page yields, so it has to reach Settings.
+
+    It changes the result of crawling the same URL, which is why it is a
+    flag and not an env-only knob: a run that read a profile as a link
+    graph would quietly return navigation links.
+    """
+    captured: dict = {}
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://instagram.com/x/", "--feed", "instagram"]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].source_kind == "instagram"
+
+
+def test_run_without_feed_flag_walks_the_link_graph():
+    captured: dict = {}
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com"]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].source_kind == "links"
+
+
+def test_run_session_flag_implies_a_browser(tmp_path):
+    """Asking to crawl as someone and getting plain httpx would crawl
+    the logged-out site and report it as the site."""
+    captured: dict = {}
+    state = str(tmp_path / "state.json")
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--session", state]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].browser_storage_state == state
+    assert captured["cfg"].fetcher == "browser"
+
+
 def test_run_wires_llm_ranker_into_factory(monkeypatch):
     """A configured LLM ranker is passed to the scheduler factory."""
     captured: dict = {}

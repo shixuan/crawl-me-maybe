@@ -85,6 +85,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
+    if args.feed is not None:
+        cfg.source_kind = args.feed
     if args.session is not None:
         # A session implies a browser: asking to crawl as someone and
         # getting plain httpx would silently crawl the logged-out site.
