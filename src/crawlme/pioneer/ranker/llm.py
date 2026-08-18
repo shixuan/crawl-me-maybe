@@ -166,6 +166,8 @@ def _build_prompt(
     pc = page_contexts or {}
     for c in candidates:
         lines.append(f"{c.candidate_id}: {_trunc(c.url.canonical)}")
+        if c.text:
+            lines.append(f"  text: {_trunc(c.text)}")
         if c.anchor:
             lines.append(f"  anchor: {_trunc(c.anchor)}")
         if c.snippet:

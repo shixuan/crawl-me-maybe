@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS links (
     source_page_id  TEXT,
     source_url_key  TEXT,
     depth           INTEGER DEFAULT 0,
+    text            TEXT DEFAULT '',
+    signals_json    TEXT DEFAULT '{}',
     status          TEXT DEFAULT 'INGESTED',
     discovered_at   TEXT NOT NULL
 );
@@ -342,8 +344,8 @@ class SqliteCrawlDb:
         self._enqueue_write(
             "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
-            "source_url_key, depth, status, discovered_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_url_key, depth, text, signals_json, status, discovered_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 candidate.candidate_id,
                 candidate.url.url_key,
@@ -355,6 +357,8 @@ class SqliteCrawlDb:
                 candidate.source_page_id,
                 candidate.source_url_key,
                 candidate.depth,
+                candidate.text,
+                json.dumps(candidate.signals),
                 candidate.status,
                 candidate.discovered_at.isoformat() if candidate.discovered_at else "",
             ),

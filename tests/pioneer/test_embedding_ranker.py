@@ -569,3 +569,13 @@ async def test_stats_record_cache_hits_and_misses():
     # in-memory per-task cache, so it never reaches the cache layer.
     assert stats.embedding_cache_hits == 1
     assert stats.embedding_cache_misses == misses_after_first
+
+
+def test_embedded_text_prefers_the_candidates_own_text():
+    """A caption beats the proxies that stand in for one when absent."""
+    from crawlme.pioneer.ranker.embedding import _text_for
+    from crawlme.schemas import URL, Candidate
+
+    url = URL(raw="https://x.com/p", canonical="https://x.com/p", url_key="k1")
+    assert _text_for(Candidate(url=url, anchor="click here"), None) == "click here"
+    assert "free tea today" in _text_for(Candidate(url=url, text="free tea today", anchor="click here"), None)
