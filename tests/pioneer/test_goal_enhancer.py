@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime
 
+import pytest
+
 from crawlme.llm import LLMError, LLMResponse, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.schemas import CrawlGoal
@@ -19,7 +21,7 @@ class _StubClient:
         self.calls: list[dict] = []
 
     async def chat(self, prompt: str, *, system: str = "", max_tokens: int = 512, json_mode: bool = False):
-        self.calls.append({"prompt": prompt, "system": system, "json_mode": json_mode})
+        self.calls.append({"prompt": prompt, "system": system, "json_mode": json_mode, "max_tokens": max_tokens})
         item = self._script.pop(0)
         if isinstance(item, BaseException):
             raise item
@@ -127,3 +129,69 @@ async def test_since_rejects_future_and_ancient_dates():
         enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal())
         assert enhanced is not None
         assert enhanced.since is None
+
+
+#: extraction spec --------------------------------------------------------
+
+
+def _spec_json(fields: str) -> str:
+    return (
+        '{"goal_statement": "Find giveaways", "keywords": ["giveaway"], '
+        '"since": null, "extraction_spec": {"fields": ' + fields + "}}"
+    )
+
+
+async def test_a_goal_that_names_fields_gets_a_spec():
+    enhancer = GoalEnhancer(_StubClient([_resp(_spec_json('{"merchant": "who runs it", "deadline": "when it ends"}'))]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert enhanced.extraction_spec == {"fields": {"merchant": "who runs it", "deadline": "when it ends"}}
+
+
+async def test_a_goal_that_only_asks_to_find_pages_gets_no_spec():
+    """Extracting from a goal that named nothing to collect is waste."""
+    enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert enhanced.extraction_spec is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        '{"Merchant Name": "spaces and caps"}',
+        '{"9lives": "leading digit"}',
+        '{"merchant-name": "hyphen"}',
+        '{"merchant": 5}',
+        "[]",
+    ],
+)
+async def test_field_names_that_are_not_plain_identifiers_are_dropped(fields):
+    """A field name becomes a key the whole downstream depends on.
+
+    Anything the model invents that is not a snake_case name is dropped
+    rather than carried into the analyzer's prompt and into results.
+    """
+    enhancer = GoalEnhancer(_StubClient([_resp(_spec_json(fields))]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert enhanced.extraction_spec is None
+
+
+async def test_field_names_are_normalized_and_capped():
+    many = ", ".join(f'"f{i}": "d{i}"' for i in range(12))
+    enhancer = GoalEnhancer(_StubClient([_resp(_spec_json("{" + many + "}"))]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert len(enhanced.extraction_spec["fields"]) == 8
+
+
+async def test_the_spec_gets_room_in_the_token_budget():
+    """A truncated response loses keywords and since too, not just the spec.
+
+    _parse returns None on truncated JSON, and the whole enhancement is
+    then discarded in favour of the raw prompt, silently.
+    """
+    client = _StubClient([_resp(_valid_json())])
+    await GoalEnhancer(client).enhance(_goal())
+    assert client.calls[0]["max_tokens"] >= 1024

@@ -57,3 +57,20 @@ class CrawlTask(BaseModel):
     end_at: datetime.datetime | None = None
     stopping_reason: str | None = None
     checkpoint_ref: str | None = None
+
+
+def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:
+    """The fields a goal declares, as name -> what it holds.
+
+    One reader for the whole codebase.  Everything that builds a prompt,
+    logs a run, or reads a stored result asks here what the fields are,
+    so a spec that grows a key never has to be understood twice.  An
+    empty result means the goal asks to find pages rather than to
+    collect anything out of them.
+    """
+    if not isinstance(spec, dict):
+        return {}
+    fields = spec.get("fields")
+    if not isinstance(fields, dict):
+        return {}
+    return {str(k): str(v) for k, v in fields.items() if isinstance(k, str)}

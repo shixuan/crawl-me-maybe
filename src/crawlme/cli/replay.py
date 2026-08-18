@@ -145,6 +145,7 @@ async def run_replay(
                     goal.goal_statement = enhanced.statement
                     goal.keywords = enhanced.keywords
                     goal.since = enhanced.since
+                    goal.extraction_spec = enhanced.extraction_spec
                 storage.save_goal(goal.model_dump(mode="json"))
             else:
                 if existing.get("prompt") != prompt:

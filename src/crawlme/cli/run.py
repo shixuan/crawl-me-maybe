@@ -27,7 +27,7 @@ from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask
+from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +150,13 @@ async def cmd_run(args: argparse.Namespace) -> None:
         # it from prose.
         if args.since is None:
             goal.since = enhanced.since
+        goal.extraction_spec = enhanced.extraction_spec
         logger.info(
-            "goal.enhanced statement_len=%d keywords=%d since=%s",
+            "goal.enhanced statement_len=%d keywords=%d since=%s fields=%s",
             len(enhanced.statement),
             len(enhanced.keywords),
             enhanced.since.isoformat() if enhanced.since else "none",
+            ",".join(spec_fields(enhanced.extraction_spec)) or "none",
         )
 
     source = _build_source(args)
