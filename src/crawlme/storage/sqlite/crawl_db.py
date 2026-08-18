@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     relevance_score REAL DEFAULT 0.0,
     summary         TEXT,
     structured_data TEXT DEFAULT '{}',
+    extracted_json  TEXT DEFAULT '{}',
     tags_json       TEXT DEFAULT '[]',
     feedback_json   TEXT DEFAULT '{}',
     model           TEXT DEFAULT '',
@@ -402,9 +403,9 @@ class SqliteCrawlDb:
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
-            "classification, relevance_score, summary, structured_data, tags_json, "
-            "feedback_json, model, prompt_version, tokens_used, analyzed_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "classification, relevance_score, summary, structured_data, extracted_json, "
+            "tags_json, feedback_json, model, prompt_version, tokens_used, analyzed_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_json["analysis_id"],
                 analysis_json.get("page_id", ""),
@@ -414,6 +415,7 @@ class SqliteCrawlDb:
                 analysis_json.get("relevance_score", 0.0),
                 analysis_json.get("summary"),
                 json.dumps(analysis_json.get("structured_data", {})),
+                json.dumps(analysis_json.get("extracted", {})),
                 json.dumps(analysis_json.get("tags", [])),
                 # The schema field is "feedback"; a plain model dump
                 # carries it under that key (never "feedback_json").

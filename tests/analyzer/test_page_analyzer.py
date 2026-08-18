@@ -355,3 +355,88 @@ def test_from_settings_wires_max_page_chars():
     analyzer = PageAnalyzer.from_settings(cfg)
     assert analyzer is not None
     assert analyzer._max_page_chars == 3000
+
+
+#: extraction ------------------------------------------------------------
+
+_OFFER_PAGE = "Free sago topping for members at Union Square, until August 31 2026. Come by."
+
+
+def _spec_goal() -> CrawlGoal:
+    goal = _goal()
+    goal.extraction_spec = {"fields": {"offer": "what is given away", "deadline": "when it ends"}}
+    return goal
+
+
+def _extract_json(body: str) -> str:
+    return _valid_json()[:-1] + ', "extracted": ' + body + "}"
+
+
+async def test_declared_fields_are_extracted_with_their_evidence():
+    client = _StubClient(
+        [
+            _resp(
+                _extract_json(
+                    '{"offer": {"value": "free sago topping", "evidence": "Free sago topping for members"}, '
+                    '"deadline": {"value": "2026-08-31", "evidence": "until August 31 2026"}}'
+                )
+            )
+        ]
+    )
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert result.extracted["offer"].value == "free sago topping"
+    assert result.extracted["deadline"].evidence == "until August 31 2026"
+
+
+async def test_a_field_whose_evidence_is_not_in_the_page_is_dropped():
+    """The check is what separates acting on a result from trusting it."""
+    client = _StubClient(
+        [_resp(_extract_json('{"deadline": {"value": "2026-09-30", "evidence": "offer ends Sept 30"}}'))]
+    )
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert result.extracted == {}
+
+
+async def test_a_field_the_page_does_not_state_is_simply_absent():
+    """Omission is the correct answer, and must not become a guess."""
+    client = _StubClient(
+        [_resp(_extract_json('{"offer": {"value": "free sago topping", "evidence": "Free sago topping for members"}}'))]
+    )
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert set(result.extracted) == {"offer"}
+
+
+async def test_fields_outside_the_spec_are_ignored():
+    client = _StubClient([_resp(_extract_json('{"phone": {"value": "555", "evidence": "Come by"}}'))])
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert result.extracted == {}
+
+
+async def test_evidence_matching_ignores_whitespace_and_case():
+    client = _StubClient([_resp(_extract_json('{"offer": {"value": "sago", "evidence": "FREE SAGO   TOPPING"}}'))])
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert "offer" in result.extracted
+
+
+async def test_a_goal_with_no_spec_asks_for_nothing_extra():
+    """Every link-graph crawl: same prompt, same envelope as before."""
+    client = _StubClient([_resp(_valid_json())])
+    result = await _analyzer(client).analyze(_page(), _goal())
+    assert result is not None
+    assert result.extracted == {}
+    assert "## Extract" not in client.calls[0]["prompt"]
+    assert "evidence" not in client.calls[0]["system"]
+
+
+async def test_a_goal_with_a_spec_lists_its_fields_in_the_prompt():
+    client = _StubClient([_resp(_valid_json())])
+    await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    prompt = client.calls[0]["prompt"]
+    assert "## Extract" in prompt
+    assert "- offer: what is given away" in prompt
+    assert "evidence" in client.calls[0]["system"]

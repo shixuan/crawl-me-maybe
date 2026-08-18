@@ -27,7 +27,15 @@ from typing import Any, Protocol, cast
 
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError, parse_json_response
-from crawlme.schemas import AnalysisResult, AnalyzerFeedback, Classification, CrawlGoal, Page
+from crawlme.schemas import (
+    AnalysisResult,
+    AnalyzerFeedback,
+    Classification,
+    CrawlGoal,
+    ExtractedField,
+    Page,
+    spec_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +52,7 @@ _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0
 # Bump when the prompt changes in a way that changes outputs, so
 # stored analyses stay comparable across versions.
-_PROMPT_VERSION = "v2.4"
+_PROMPT_VERSION = "v2.5"
 
 _MAX_TAGS = 8
 _MAX_TOPICS = 10
@@ -69,6 +77,16 @@ _SYSTEM = (
     "subjects the page is about. entities are named things (projects, people, companies) "
     "that matter. endorsed_links are up to 5 URLs from the page text that you would "
     "click yourself."
+)
+
+
+_EXTRACT_SYSTEM = (
+    ' Also fill "extracted": {"<field>": {"value": "...", "evidence": "..."}} for the '
+    "fields listed under ## Extract. evidence must be copied verbatim from the page "
+    "text and must contain the value. Omit any field the page does not state: a field "
+    "you leave out is read as unknown, and that is the correct answer whenever the page "
+    "does not say. Never infer a value from what is likely, and never use the goal's "
+    "own wording as evidence."
 )
 
 
@@ -190,7 +208,7 @@ class PageAnalyzer:
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
         prompt = _build_prompt(goal, page, text, self._max_page_chars)
-        resp = await self._client.chat(prompt, system=_SYSTEM, max_tokens=_MAX_TOKENS, json_mode=True)
+        resp = await self._client.chat(prompt, system=_system_for(goal), max_tokens=_MAX_TOKENS, json_mode=True)
         data = parse_json_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {page.url_key}")
@@ -237,14 +255,59 @@ def _page_text(page: Page) -> str:
     return (page.plain_text or "").strip() or (page.markdown or "").strip()
 
 
+def _system_for(goal: CrawlGoal) -> str:
+    """The contract, widened when the goal declares fields to collect."""
+    return _SYSTEM + _EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _SYSTEM
+
+
 def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
-    """Assemble the user prompt: goal, page identity, page text."""
-    lines = ["## Goal", goal.goal_statement or goal.prompt, "## Page", page.url.canonical]
+    """Assemble the user prompt: goal, fields to collect, page, text."""
+    lines = ["## Goal", goal.goal_statement or goal.prompt]
+    fields = spec_fields(goal.extraction_spec)
+    if fields:
+        lines.append("## Extract")
+        lines.extend(f"- {name}: {desc}" for name, desc in fields.items())
+    lines.extend(["## Page", page.url.canonical])
     if page.title:
         lines.append(f"Title: {page.title}")
     lines.append("")
     lines.append(text[:max_chars])
     return "\n".join(lines)
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, ExtractedField]:
+    """Keep the declared fields whose evidence is really in the page.
+
+    The check is what makes a result something to act on rather than
+    something to trust.  A model that paraphrases the page, or quotes the
+    goal back, produces evidence that is not there, and the field is
+    dropped instead of stored.
+    """
+    fields = spec_fields(goal.extraction_spec)
+    if not fields:
+        return {}
+    raw = data.get("extracted")
+    if not isinstance(raw, dict):
+        return {}
+    haystack = _normalize(page.plain_text or "")
+    out: dict[str, ExtractedField] = {}
+    for name in fields:
+        entry = raw.get(name)
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get("value", "")).strip()
+        evidence = str(entry.get("evidence", "")).strip()
+        if not value or not evidence:
+            continue
+        if _normalize(evidence) not in haystack:
+            logger.info("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
+            continue
+        out[name] = ExtractedField(value=value, evidence=evidence)
+    return out
 
 
 def _parse_analysis(
@@ -283,6 +346,7 @@ def _parse_analysis(
         relevance_score=relevance,
         summary=summary,
         structured_data=data,
+        extracted=_parse_extracted(data, page, goal),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
