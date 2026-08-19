@@ -245,6 +245,16 @@ class SqliteCrawlDb:
         path.write_bytes(content)
         return str(path)
 
+    def payload_path(self, url_key: str, fetch_id: str, index: int) -> str:
+        return str(self._raw_dir / url_key / f"{fetch_id}.payload.{index}")
+
+    def save_payload(self, url_key: str, fetch_id: str, index: int, content: bytes) -> str:
+        """Store one kept sub-response beside the page that fetched it."""
+        path = Path(self.payload_path(url_key, fetch_id, index))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return str(path)
+
     #: crawl_goals --------------------------------------------------------
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:

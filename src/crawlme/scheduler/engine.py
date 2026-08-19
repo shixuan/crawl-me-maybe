@@ -598,9 +598,25 @@ class CrawlScheduler:
                 await self._frontier.record_outcome(item, "SKIPPED")
                 self._counters.pages_fetched = self._counters.pages_fetched + 1
                 return None
+            page.payload_paths = await asyncio.to_thread(self._save_payloads, item.url_key, result)
             self._storage.save_page(page)
             self._note_page_age(page)
             return result, page
+
+    def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
+        """Store what the page fetched for itself, beside the page.
+
+        Same treatment the raw HTML gets: the frozen copy is what a
+        harvester reads back, so a parser can be changed and rerun
+        against exactly what arrived.
+        """
+        paths: list[str] = []
+        for i, payload in enumerate(result.payloads):
+            try:
+                paths.append(self._storage.save_payload(url_key, result.item_id, i, payload.body))
+            except OSError:
+                logger.warning("fetch.payload_unsaved url_key=%s index=%d", url_key, i, exc_info=True)
+        return paths
 
     async def _handle_fetch(self, item: FrontierItem) -> None:
         if self._events:

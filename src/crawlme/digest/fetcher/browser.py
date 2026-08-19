@@ -26,11 +26,12 @@ import json
 import logging
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from crawlme.digest.fetcher.base import DEFAULT_UA, FetchError, with_retries
-from crawlme.schemas import URL, FetchResult, FrontierItem
+from crawlme.schemas import URL, FetchResult, FrontierItem, Payload
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Playwright
@@ -67,6 +68,8 @@ class PlaywrightFetcher:
         max_retries: int = 3,
         wait_until: WaitUntil = "networkidle",
         headless: bool = True,
+        keep_payload: Callable[[str, str], bool] | None = None,
+        max_payload_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         self._storage_state = storage_state
         self._uas = user_agents if user_agents else [DEFAULT_UA]
@@ -74,6 +77,12 @@ class PlaywrightFetcher:
         self._max_retries = max_retries
         self._wait_until = wait_until
         self._headless = headless
+        # What a page fetches for itself is dropped unless something asks
+        # for it, so a crawl that has no use for it pays nothing at all.
+        # The fetcher cannot know which response matters; whoever does
+        # passes the predicate in.
+        self._keep_payload = keep_payload
+        self._max_payload_bytes = max_payload_bytes
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -145,9 +154,15 @@ class PlaywrightFetcher:
     async def _attempt(self, item: FrontierItem) -> FetchResult:
         started = time.monotonic()
         context = await self._ensure_context()
+        payloads: list[Payload] = []
         async with self._lock:
             page = await context.new_page()
             try:
+                if self._keep_payload is not None:
+                    # Attached before navigating: a listener added after
+                    # would miss the requests that fill the first screen,
+                    # which are exactly the ones carrying the content.
+                    page.on("response", lambda resp: self._collect(resp, payloads))
                 response = await page.goto(item.url.canonical, wait_until=self._wait_until)
                 html = await page.content()
                 final_url_str = page.url
@@ -165,6 +180,13 @@ class PlaywrightFetcher:
             final_url = URL(raw=final_url_str, canonical=final_url_str, url_key=final_url_str)
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        if payloads:
+            logger.debug(
+                "browser.payloads url=%s kept=%d bytes=%d",
+                item.url.canonical,
+                len(payloads),
+                sum(len(p.body) for p in payloads),
+            )
         logger.debug(
             "browser.ok url=%s status=%d bytes=%d duration=%dms",
             item.url.canonical,
@@ -183,9 +205,44 @@ class PlaywrightFetcher:
             headers=headers,
             content_type=headers.get("content-type", "text/html"),
             raw=html.encode("utf-8", "replace"),
+            payloads=payloads,
             fetch_duration_ms=elapsed_ms,
             fetch_attempt=1,
         )
+
+    def _collect(self, response: Any, into: list[Payload]) -> None:
+        """Keep one response the page asked for, if anyone wants it.
+
+        Fire-and-forget: the listener is sync, reading a body is not, and
+        a body can be gone by the time it is asked for. A payload that
+        does not arrive is a weaker crawl, never a failed one, so every
+        failure here is swallowed after a debug line.
+        """
+        keep = self._keep_payload
+        if keep is None:
+            return
+        ctype = ""
+        try:
+            ctype = (response.headers or {}).get("content-type", "")
+            if not keep(response.url, ctype):
+                return
+        except Exception:
+            return
+        asyncio.ensure_future(self._read_body(response, ctype, into))  # noqa: RUF006
+
+    async def _read_body(self, response: Any, ctype: str, into: list[Payload]) -> None:
+        total = sum(len(p.body) for p in into)
+        if total >= self._max_payload_bytes:
+            return
+        try:
+            body = await response.body()
+        except Exception:
+            logger.debug("browser.payload_gone url=%s", getattr(response, "url", "?"))
+            return
+        if total + len(body) > self._max_payload_bytes:
+            logger.info("browser.payload_capped url=%s bytes=%d", response.url, total)
+            return
+        into.append(Payload(url=response.url, content_type=ctype, body=body))
 
 
 def _load_storage_state(path: str) -> dict[str, Any]:

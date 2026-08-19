@@ -10,6 +10,23 @@ from pydantic import BaseModel, Field
 from crawlme.schemas.core import URL, _new_id, _utcnow
 
 
+class Payload(BaseModel):
+    """One response the page fetched for itself, kept rather than dropped.
+
+    A rendered DOM is what a reader sees, which on a feed listing is
+    thumbnails: no post text at all. The text exists — the page asked an
+    API for it and used it to build the grid — and keeping that answer
+    costs no extra request, only the choice not to throw it away.
+
+    Empty for every fetcher that cannot observe sub-requests, and for
+    every run that did not ask to keep any.
+    """
+
+    url: str = ""
+    content_type: str = ""
+    body: bytes = b""
+
+
 class FetchResult(BaseModel):
     item_id: str
     url_key: str
@@ -20,6 +37,7 @@ class FetchResult(BaseModel):
     headers: dict[str, Any] = Field(default_factory=dict[str, Any])
     content_type: str | None = None
     raw: bytes = b""
+    payloads: list[Payload] = Field(default_factory=list["Payload"])
     fetch_duration_ms: int = 0
     fetched_at: datetime.datetime = Field(default_factory=_utcnow)
     fetch_attempt: int = 1
@@ -33,6 +51,8 @@ class Page(BaseModel):
     url_key: str
     url: URL
     raw_html_path: str = ""
+    # Where the kept sub-responses landed, in the order they arrived.
+    payload_paths: list[str] = Field(default_factory=list)
     title: str | None = None
     markdown: str | None = None
     plain_text: str | None = None
