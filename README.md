@@ -28,10 +28,11 @@ The LLM stages turn on when `LLM_API_KEY` or `LLM_BASE_URL` is set. Without cred
 
 ```bash
 # seeds from an RSS feed
-crawl run "C++ backend job postings" --source rss --source-path "https://hnrss.org/newest"
+crawl run "C++ backend job postings" --seeds-rss "https://hnrss.org/newest"
 
-# seeds from a file
-crawl run "release notes" --source file --source-path ./urls.txt
+# seeds from a JSON file: ["https://a", "https://b"], or
+# {"seeds": [...], "allowed_domains": [...]}
+crawl run "release notes" --seeds-file ./seeds.json
 
 # ignore --max-pages, stop when the frontier runs dry
 crawl run "all press coverage" --seeds "..." --draining
@@ -46,8 +47,8 @@ crawl run "all press coverage" --seeds "..." --draining
 | Flag | Type | What it does |
 |------|------|--------------|
 | `--seeds` | string | Comma-separated seed URLs |
-| `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
-| `--source-path` | path | File path or RSS feed URL |
+| `--seeds-file` | path | JSON file of seed URLs |
+| `--seeds-rss` | url | RSS or Atom feed to take seeds from |
 | `--max-pages` | int | Page budget; 0 means no limit |
 | `--max-tokens` | int | LLM token budget (default: 500000) |
 | `--max-duration` | int | Time budget, seconds |

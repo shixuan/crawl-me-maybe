@@ -37,9 +37,19 @@ def main() -> None:
     run_p.add_argument("--max-duration", type=int, help="Time limit in seconds")
     run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
     run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
-    run_p.add_argument("--seeds", help="Comma-separated seed URLs")
-    run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
-    run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
+    # Where the entry points come from.  One flag per kind, each carrying
+    # its own argument, so "I want a file" cannot be said without saying
+    # which file -- the older --source/--source-path pair could, and a
+    # missing path silently became an empty manual list.
+    seeds = run_p.add_mutually_exclusive_group()
+    seeds.add_argument("--seeds", help="Comma-separated seed URLs")
+    seeds.add_argument("--seeds-file", help="JSON file of seed URLs: a list, or {seeds: [...], allowed_domains: [...]}")
+    seeds.add_argument("--seeds-rss", help="RSS or Atom feed URL to take seeds from")
+    # The spelling this shipped under.  --source-path is required when
+    # --source names anything but manual; run.py says so rather than
+    # falling back to an empty crawl.
+    seeds.add_argument("--source", choices=["manual", "file", "rss"], default=None, help=argparse.SUPPRESS)
+    run_p.add_argument("--source-path", help=argparse.SUPPRESS)
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
         "--embedding",

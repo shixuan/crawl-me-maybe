@@ -121,6 +121,14 @@ async def cmd_run(args: argparse.Namespace) -> None:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
 
+    # Before the run directory exists and before the enhancer spends a
+    # call: bad arguments should cost nothing.
+    try:
+        source = _build_source(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     task = CrawlTask(goal_id=goal.goal_id)
     # One shared TokenBudget covers every LLM consumer (the ranker and
     # the Goal Enhancer).  It is created before the scheduler because
@@ -159,7 +167,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
             ",".join(spec_fields(enhanced.extraction_spec)) or "none",
         )
 
-    source = _build_source(args)
     candidates = await source.discover(goal)
     allowed_domains: set[str] | None = None
     if hasattr(source, "allowed_domains"):
@@ -261,10 +268,20 @@ def _format_summary(s: dict[str, Any]) -> str:
 
 
 def _build_source(args: argparse.Namespace) -> UrlSource:
-    """Create a URL source from CLI arguments."""
-    if args.source == "file" and args.source_path:
-        return FileSource(args.source_path)
-    if args.source == "rss" and args.source_path:
-        return RssSource(args.source_path)
+    """Create a URL source from CLI arguments.
+
+    Raises ValueError rather than falling back when the arguments do not
+    name a source: the older pair let "--source file" without a path
+    become an empty manual list, so a typo produced a run that started,
+    found nothing, and reported COMPLETED.
+    """
+    if args.seeds_file:
+        return FileSource(args.seeds_file)
+    if args.seeds_rss:
+        return RssSource(args.seeds_rss)
+    if args.source in {"file", "rss"}:
+        if not args.source_path:
+            raise ValueError(f"--source {args.source} needs --source-path (or use --seeds-{args.source})")
+        return FileSource(args.source_path) if args.source == "file" else RssSource(args.source_path)
     seeds = [s.strip() for s in (args.seeds or "").split(",") if s.strip()]
     return ManualSource(seeds)

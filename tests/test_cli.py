@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.cli import main
+from crawlme.cli.run import _build_source
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.state.context import CrawlCounters
@@ -396,3 +397,52 @@ def test_parse_since_rejects_garbage() -> None:
 
     with pytest.raises(ValueError):
         _parse_since("whenever")
+
+
+#: where the entry points come from ---------------------------------------
+
+
+def _source_for(argv_tail: list[str], tmp_path):
+    captured: dict = {}
+    argv = ["crawl", "run", "test prompt", "--result-dir", str(tmp_path), *argv_tail]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            with patch("crawlme.cli.run._build_source", side_effect=_build_source) as spy:
+                try:
+                    main()
+                except SystemExit as exc:
+                    return exc.code, spy
+    return 0, spy
+
+
+def test_seeds_file_needs_no_mode_flag(tmp_path):
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text('["https://example.com/a"]')
+    code, _ = _source_for(["--seeds-file", str(seeds)], tmp_path)
+    assert code in (0, None)
+
+
+def test_asking_for_a_file_without_naming_one_is_an_error(tmp_path, capsys):
+    """The older pair let this become an empty manual list.
+
+    A typo then produced a run that started, found nothing, and reported
+    COMPLETED — the same shape of silent success as a missing session.
+    """
+    code, _ = _source_for(["--source", "file"], tmp_path)
+    assert code == 1
+    assert "--source-path" in capsys.readouterr().err
+
+
+def test_the_old_spelling_still_works(tmp_path):
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text('["https://example.com/a"]')
+    code, _ = _source_for(["--source", "file", "--source-path", str(seeds)], tmp_path)
+    assert code in (0, None)
+
+
+def test_two_kinds_of_seed_at_once_is_refused(tmp_path):
+    """argparse rejects it, so the ambiguity never reaches the code."""
+    with patch("sys.argv", ["crawl", "run", "p", "--seeds", "a", "--seeds-file", "b"]):
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 2
