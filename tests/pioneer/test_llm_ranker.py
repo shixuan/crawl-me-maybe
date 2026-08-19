@@ -53,6 +53,16 @@ def _candidates(n: int) -> list[Candidate]:
     ]
 
 
+def _candidate(cid: str, **kw) -> Candidate:
+    url = f"https://example.com/{cid}"
+    return Candidate(
+        candidate_id=cid,
+        url=URL(raw=url, canonical=url, url_key=cid, reg_domain="example.com"),
+        depth=1,
+        **kw,
+    )
+
+
 def _rankings_json(n: int, *, drop: list[str] | None = None, priority: float = 0.8) -> str:
     rankings = ", ".join(f'{{"id": "c{i}", "priority": {priority}, "rationale": "because {i}"}}' for i in range(n))
     drops = ", ".join(f'"{d}"' for d in (drop or []))
@@ -395,3 +405,43 @@ async def test_a_demoted_rejection_keeps_both_the_tag_and_the_reason():
     decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(1), RankHistorySummary())
     assert decisions[0].rationale == "llm_drop_demoted: weaker than the rest"
     assert decisions[0].dropped is False
+
+
+#: whole candidates, split batches -----------------------------------------
+
+
+async def test_a_candidate_is_never_shown_in_part():
+    """The line that matters is often the last one.
+
+    A run rejected three real offers because the giveaway sat past
+    character 160 of a 489-character post; the model's stated reason was
+    that the post contained no giveaway, which was true of what it was
+    shown. No cap fixes that, since some post always ends with the point.
+    """
+    tail = "x" * 900 + " FREE incense chamber with any $15 purchase"
+    client = _StubClient([_resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), [_candidate("c0", text=tail)], RankHistorySummary())
+    assert "FREE incense chamber" in client.calls[0]["prompt"]
+
+
+async def test_a_batch_splits_by_how_much_text_it_carries():
+    """One long post takes room from its batch, not from its own text."""
+    client = _StubClient([_resp(_rankings_json(1)), _resp(_rankings_json(1)), _resp(_rankings_json(1))])
+    long_ones = [_candidate(f"c{i}", text="y" * 7000) for i in range(3)]
+    await _ranker(client).rank_batch(_goal(), long_ones, RankHistorySummary())
+    assert len(client.calls) == 3, "three posts too long to share a call"
+
+
+async def test_a_short_batch_still_travels_in_one_call():
+    client = _StubClient([_resp(_rankings_json(4))])
+    shorts = [_candidate(f"c{i}", text="free tea today") for i in range(4)]
+    await _ranker(client).rank_batch(_goal(), shorts, RankHistorySummary())
+    assert len(client.calls) == 1
+
+
+async def test_a_link_keeps_its_short_proxies_capped():
+    """An anchor is a few words by nature; nothing is lost by capping it."""
+    client = _StubClient([_resp(_rankings_json(1))])
+    c = _candidate("c0", anchor="z" * 500)
+    await _ranker(client).rank_batch(_goal(), [c], RankHistorySummary())
+    assert "z" * 500 not in client.calls[0]["prompt"]

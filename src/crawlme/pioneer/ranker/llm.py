@@ -39,6 +39,11 @@ _BATCH_SIZE = 30
 # Link texts are truncated so the prompt size stays roughly
 # proportional to the batch size; the URL is what mostly matters.
 _MAX_FIELD_CHARS = 160
+# Room for a batch's texts.  Sixty real posts came to 40k characters in
+# total, so this holds a normal batch whole and splits an unusual one
+# into more calls rather than into fragments.  Each extra call repeats
+# only the system prompt, which is a rounding error next to the text.
+_MAX_BATCH_CHARS = 12_000
 # Priority for candidates the model did not mention at all: kept with a
 # neutral score (fail-open, see module docstring).
 _NEUTRAL_PRIORITY = 0.5
@@ -105,14 +110,41 @@ class LLMRanker:
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None = None,
     ) -> list[RankDecision]:
-        """Rank all candidates in chunks of _batch_size, one LLM call per chunk."""
+        """Rank every candidate, one LLM call per chunk."""
         if not candidates:
             return []
         decisions: list[RankDecision] = []
-        for start in range(0, len(candidates), self._batch_size):
-            chunk = candidates[start : start + self._batch_size]
+        for chunk in self._chunks(candidates):
             decisions.extend(await self._rank_chunk(goal, chunk, history, page_contexts))
         return decisions
+
+    def _chunks(self, candidates: list[Candidate]) -> list[list[Candidate]]:
+        """Split into calls by count and by how much text they carry.
+
+        A candidate is never split across the boundary, and never shown
+        in part: whatever it says, the model sees all of it or waits for
+        the next call.  Truncating each candidate instead is what a
+        char cap does, and it fails the same way at every size -- a post
+        whose one relevant line sits past the cut is rejected for not
+        containing what was cut off.  It cost a run three real results
+        at 160 characters, and would have cost fewer but not none at 800.
+
+        Chunking by text is what makes that affordable: one long post
+        takes room from its batch rather than from its own content.
+        """
+        out: list[list[Candidate]] = []
+        chunk: list[Candidate] = []
+        chars = 0
+        for c in candidates:
+            size = len(c.text)
+            if chunk and (len(chunk) >= self._batch_size or chars + size > _MAX_BATCH_CHARS):
+                out.append(chunk)
+                chunk, chars = [], 0
+            chunk.append(c)
+            chars += size
+        if chunk:
+            out.append(chunk)
+        return out
 
     async def aclose(self) -> None:
         """The client pools nothing between calls; provider cleanup is
@@ -188,7 +220,10 @@ def _build_prompt(
     for c in candidates:
         lines.append(f"{c.candidate_id}: {_trunc(c.url.canonical)}")
         if c.text:
-            lines.append(f"  text: {_trunc(c.text)}")
+            # Whole, not truncated: this is what the candidate says, and
+            # the batch is sized so it fits.  The cap below still guards
+            # the proxies a link carries, which are short by nature.
+            lines.append(f"  text: {c.text}")
         if c.anchor:
             lines.append(f"  anchor: {_trunc(c.anchor)}")
         if c.snippet:
