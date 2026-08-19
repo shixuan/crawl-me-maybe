@@ -12,8 +12,9 @@ from typing import Any
 from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
+from crawlme.digest.feed import FEEDS
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
-from crawlme.digest.harvest import Harvester, InstagramHarvester, LinkHarvester
+from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -87,8 +88,9 @@ def create_scheduler(
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
     """What a page yields depends on the kind of source it came from."""
-    if settings.source_kind == "instagram":
-        return InstagramHarvester(canonicalizer)
+    adapter = FEEDS.get(settings.source_kind)
+    if adapter is not None:
+        return FeedHarvester(adapter, canonicalizer)
     return LinkHarvester(canonicalizer)
 
 

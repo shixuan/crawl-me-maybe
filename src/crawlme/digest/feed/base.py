@@ -8,11 +8,13 @@ This module holds the half that must not be rewritten per platform,
 because rewriting it is how two adapters start disagreeing about what a
 post is. Adapters produce FeedItem; the pipeline only ever sees Candidate.
 
-Deliberately no FeedAdapter protocol yet. There is one adapter, so any
-carving into methods would be a guess; the shape of the *data* is the
-definition of a feed, but the shape of the *interface* is an
-implementation detail that should wait for the second platform. See
-docs/refactor.md G5.
+The FeedAdapter protocol below was deliberately absent while nothing
+asked questions of an adapter. What changed is not that a second
+platform arrived, but that harvesting needs to ask one ("is this page
+yours?"), and answering it inside a per-platform harvester would mean
+rewriting the whole collection flow per platform. The protocol carves
+only what is called today; the second platform will have opinions, and
+that is when to listen to them. See docs/refactor.md G5.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from __future__ import annotations
 import datetime
 import enum
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from crawlme.schemas import URL, Candidate
 
@@ -113,3 +115,36 @@ def _domain_of(url: str) -> str:
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+class FeedAdapter(Protocol):
+    """One platform's answer to "what is on this page?".
+
+    Everything platform-shaped lives behind this: which host the platform
+    serves, how it says a page is gone, and how its markup carries a
+    listing or a single item. Everything platform-neutral — deciding a
+    page is not ours, turning items into candidates, marking who posted
+    what — stays in the harvester, written once.
+    """
+
+    #: Platform name, stamped onto every candidate's signals.
+    PLATFORM: str
+    #: Registrable domain the platform serves, used to tell its own pages
+    #: from anything a crawl wandered onto.
+    DOMAIN: str
+
+    def problem(self, html: str) -> PageProblem | None:
+        """Why this page holds no content, or None if it does."""
+        ...
+
+    def parse_listing(self, html: str, url: str) -> Listing:
+        """Read a listing page into items, split by who posted them.
+
+        Takes the page URL, not an account: reading one out of the other
+        is as platform-shaped as the markup.
+        """
+        ...
+
+    def parse_item(self, html: str, url: str) -> FeedItem | None:
+        """Read a single-item page, or None if this is not one."""
+        ...

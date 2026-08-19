@@ -24,6 +24,7 @@ import re
 from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
 
 PLATFORM = "instagram"
+DOMAIN = "instagram.com"
 
 #: A wrong handle renders a full, healthy-looking page rather than a 404.
 _UNAVAILABLE = ("sorry, this page", "isn't available", "page not found")
@@ -65,14 +66,19 @@ def problem(html: str) -> PageProblem | None:
     return None
 
 
-def parse_listing(html: str, account: str) -> Listing:
+def parse_listing(html: str, url: str) -> Listing:
     """Read a grid into items, split by who posted them.
+
+    Whose grid this is comes out of the URL here rather than being handed
+    in, because reading an account out of a URL is as platform-shaped as
+    the markup is: the reserved segments that are not accounts are
+    Instagram's own list.
 
     The generated alt text is kept as the item's text. It is weak, but it
     is what a listing has, and filtering on it is what stops the crawl
     paying one request per post to find out the same thing.
     """
-    handle = account.strip("/").lower()
+    handle = _account_from_url(url).strip("/").lower()
     alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
     own: list[FeedItem] = []
     others: list[FeedItem] = []
@@ -192,6 +198,6 @@ def _absolute(href: str) -> str:
 
 
 def _account_from_url(url: str) -> str:
-    m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)/", url)
+    m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)/?", url)
     handle = m.group(1) if m else ""
     return "" if handle in {"p", "reel", "explore"} else handle

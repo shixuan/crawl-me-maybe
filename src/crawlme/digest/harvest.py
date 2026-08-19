@@ -22,7 +22,7 @@ import logging
 from dataclasses import replace
 from typing import Protocol
 
-from crawlme.digest.feed import instagram
+from crawlme.digest.feed.base import FeedAdapter
 from crawlme.digest.links import extract_links
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.schemas import Candidate, Page
@@ -61,41 +61,55 @@ class LinkHarvester:
         return out
 
 
-class InstagramHarvester:
-    """A listing yields post permalinks; a post yields nothing.
+class FeedHarvester:
+    """A listing yields item permalinks; an item yields nothing.
 
-    The asymmetry is the point. A profile grid is cheap and weak: it
-    carries permalinks and Instagram's generated alt text, but not what
-    any post says. A post page is expensive and strong, and it is a leaf
-    because its caption is the thing being looked for, not a pointer to
-    it.
+    The asymmetry is the point, and it holds on every platform. A listing
+    is cheap and weak: it carries permalinks and whatever the platform
+    generates as alt text, but not what any item says. An item page is
+    expensive and strong, and it is a leaf because its text is the thing
+    being looked for, not a pointer to it.
 
-    Posts that merely tagged the account are kept but marked, because a
-    reviewer writing about a shop is often more specific than the shop
-    is, while conflating the two would let one monitored account's
-    results bleed into another's.
+    Items that merely tagged the account are kept but marked, because
+    someone writing about a shop is often more specific than the shop is,
+    while conflating the two would let one monitored account's results
+    bleed into another's.
+
+    Everything platform-shaped is asked of the adapter, so adding a
+    platform is a new adapter and a line in the factory's registry, not
+    another copy of this flow.
     """
 
-    def __init__(self, canonicalizer: Canonicalizer) -> None:
+    def __init__(self, adapter: FeedAdapter, canonicalizer: Canonicalizer) -> None:
+        self._adapter = adapter
         # Same normalization every other source gets.  A permalink taken
         # at face value would carry the raw URL as its url_key while the
-        # rest of the crawl keys on a fingerprint, so the same post
+        # rest of the crawl keys on a fingerprint, so the same item
         # reached from a link and from a listing would not dedup.
         self._canonicalizer = canonicalizer
 
     def harvest(self, page: Page, depth: int) -> list[Candidate]:
+        if page.url.reg_domain != self._adapter.DOMAIN:
+            # A crawl can wander off the platform: an analyzer endorses a
+            # shop's own site, and that page arrives here. It is a leaf by
+            # policy rather than by luck — the adapter's patterns would
+            # mostly fail to match, but a site that happens to use the
+            # platform's path shape would otherwise yield candidates
+            # pointing at the wrong host entirely.
+            logger.debug("harvest.off_platform url=%s platform=%s", page.url.canonical, self._adapter.PLATFORM)
+            return []
+
         html = _html_of(page)
-        problem = instagram.problem(html)
+        problem = self._adapter.problem(html)
         if problem is not None:
             # Not an empty page: a page that is not content at all. Saying
             # so is what stops a renamed account reading as a quiet one.
             logger.warning("harvest.not_content url=%s problem=%s", page.url.canonical, problem.value)
             return []
-        if instagram.parse_item(html, page.url.canonical) is not None:
+        if self._adapter.parse_item(html, page.url.canonical) is not None:
             return []
 
-        account = _account_of(page.url.canonical)
-        listing = instagram.parse_listing(html, account)
+        listing = self._adapter.parse_listing(html, page.url.canonical)
         own = {i.permalink for i in listing.own}
         out: list[Candidate] = []
         for item in listing.all:
@@ -121,14 +135,6 @@ def _html_of(page: Page) -> str:
     except OSError:
         logger.warning("harvest.raw_unreadable path=%s", page.raw_html_path)
         return ""
-
-
-def _account_of(url: str) -> str:
-    import re
-
-    m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)/?", url)
-    handle = m.group(1) if m else ""
-    return "" if handle in {"p", "reel", "explore"} else handle
 
 
 def _utcnow() -> datetime.datetime:

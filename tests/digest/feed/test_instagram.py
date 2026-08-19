@@ -56,7 +56,7 @@ def test_a_healthy_post_reports_no_problem():
 
 
 def test_listing_separates_own_posts_from_tagged_ones():
-    lst = ig.parse_listing(_PROFILE, "mollytea_canada")
+    lst = ig.parse_listing(_PROFILE, "https://www.instagram.com/mollytea_canada/")
     assert len(lst.own) == 3, "reels are the account's posts too"
     assert len(lst.others) == 2
     assert all("mollytea_canada" not in i.permalink for i in lst.others)
@@ -64,7 +64,10 @@ def test_listing_separates_own_posts_from_tagged_ones():
 
 
 def test_listing_ignores_links_that_are_not_posts():
-    assert not any(i.permalink.endswith("/mollytea_canada/") for i in ig.parse_listing(_PROFILE, "mollytea_canada").all)
+    assert not any(
+        i.permalink.endswith("/mollytea_canada/")
+        for i in ig.parse_listing(_PROFILE, "https://www.instagram.com/mollytea_canada/").all
+    )
 
 
 def test_item_prefers_the_full_caption_over_the_truncated_meta():
