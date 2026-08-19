@@ -148,15 +148,9 @@ def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[
     strictly ordered source; a monitoring run over many accounts must not
     stop because one quiet account's posts came up first.
     """
-    if goal.since is None:
+    if goal.since is None or c.posted_at is None:
         return None
-    raw = c.signals.get("posted_at")
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        posted = datetime.datetime.fromisoformat(raw)
-    except ValueError:
-        return None
+    posted = c.posted_at
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=datetime.timezone.utc)
     if posted < goal.since:

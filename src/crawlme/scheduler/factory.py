@@ -27,6 +27,7 @@ from crawlme.pioneer.ranker.embedding import (
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
 )
+from crawlme.pioneer.ranker.rule import FEED_FACTORS, GRAPH_FACTORS
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
@@ -188,7 +189,10 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
             max_batch=settings.embedding_batch_size,
         )
     return HybridRanker(
-        rule=RuleRanker(threshold=0.0),
+        # A feed post has no anchor, no path shape and no position in a
+        # page, and every post shares one domain: the graph set would
+        # score five of its seven factors on constants.
+        rule=RuleRanker(threshold=0.0, factors=FEED_FACTORS if settings.source_kind in FEEDS else GRAPH_FACTORS),
         embedding=EmbeddingRanker(
             embedder,
             keep=settings.embedding_keep,

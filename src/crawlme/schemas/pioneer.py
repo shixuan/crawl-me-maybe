@@ -28,10 +28,17 @@ class Candidate(BaseModel):
     # this and nothing else, which is what lets it judge content instead
     # of proxies once a source can supply it.
     text: str = ""
+    # When the source says this was published, if it says so at all.
+    # Typed rather than left in the bag because the funnel scores on it
+    # and the time window filters on it, and a key read by name would
+    # fail silently on a typo: the score would simply be the default and
+    # nothing would say why.  Every feed has a publication time; a link
+    # has none, so None is the ordinary case.
+    posted_at: datetime.datetime | None = None
     # Source-specific signals the funnel's factor set and the analyzer
-    # pick from: hashtags, account, posted_at, and whatever the next
-    # platform brings.  A bag rather than columns, so adding a source
-    # never means changing this schema.
+    # pick from: hashtags, account, and whatever the next platform
+    # brings.  A bag rather than columns, so adding a source never means
+    # changing this schema.
     signals: dict[str, Any] = Field(default_factory=dict[str, Any])
     status: CandidateStatus = "INGESTED"
     discovered_at: datetime.datetime = Field(default_factory=_utcnow)

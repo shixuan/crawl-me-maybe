@@ -27,7 +27,10 @@ def test_caption_lands_in_text_and_the_rest_in_signals():
     assert c.signals["account"] == "mollytea_canada"
     assert c.signals["item_id"] == "AAA111"
     assert c.signals["likes"] == 103
-    assert c.signals["posted_at"].startswith("2026-08-13")
+    # Typed rather than in the bag: the funnel scores on it and the time
+    # window filters on it, so a key read by name would fail silently.
+    assert c.posted_at is not None and c.posted_at.date().isoformat() == "2026-08-13"
+    assert "posted_at" not in c.signals
 
 
 def test_domain_comes_from_the_permalink():
