@@ -52,12 +52,16 @@ def main() -> None:
     run_p.add_argument("--source-path", help=argparse.SUPPRESS)
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
-        "--embedding",
-        choices=["local", "api", "off"],
-        default=None,
-        help="Semantic ranking provider (default: local; 'off' = rule-only)",
+        "--no-embedding",
+        action="store_true",
+        help="Skip semantic ranking for this run: rules only, no model loaded",
     )
-    run_p.add_argument("--embedding-model", default=None, help="Model id, overriding the provider default")
+    # Which backend serves embeddings, and which model it runs, follow
+    # from the machine and the account rather than from the run, so they
+    # live in EMBEDDING_PROVIDER and EMBEDDING_MODEL.  Kept as the
+    # spelling this shipped under.
+    run_p.add_argument("--embedding", choices=["local", "api", "off"], default=None, help=argparse.SUPPRESS)
+    run_p.add_argument("--embedding-model", default=None, help=argparse.SUPPRESS)
     run_p.add_argument(
         "--analysis",
         choices=["on", "off"],

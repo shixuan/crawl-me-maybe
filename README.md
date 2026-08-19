@@ -55,8 +55,10 @@ crawl run "all press coverage" --seeds "..." --draining
 | `--depth-limit` | int | Max depth from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
-| `--embedding` | `local` \| `api` \| `off` | Semantic ranking (default: `local`) |
-| `--embedding-model` | string | Overrides the provider default |
+| `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
+| `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
+| `--feed` | `instagram` | Read the source as a platform feed |
+| `--session` | path | Playwright storage_state, to crawl as a logged-in session |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
 | `--analyzer-max-chars` | int | Page text per analyzer call (default: 3000) |
 | `--ignore-robots` | flag | Bypass robots.txt |
@@ -110,14 +112,16 @@ Every stage's decision is recorded: which rule dropped a link, what each ranker 
 
 ## Configuration
 
-Flags are per-run choices. `.env` is for things you set once — secrets, timeouts, deep-tuning knobs. Everything has a default, so `.env` is optional. See [`.env.example`](.env.example).
+Flags say what this run is doing; `.env` says what this machine and account can do — credentials, endpoints, which model, how much memory to spend. Everything has a default, so `.env` is optional. See [`.env.example`](.env.example).
 
 ```bash
 # .env
 LLM_API_KEY=sk-xxx
 LLM_MODEL=deepseek/deepseek-v4-flash   # default: openai/gpt-4o-mini
 LLM_BASE_URL=                          # for OpenAI-compatible endpoints
-EMBEDDING_API_KEY=jina_xxx             # only for --embedding api
+EMBEDDING_PROVIDER=local               # local | api
+EMBEDDING_MODEL=                       # empty = the provider's default
+EMBEDDING_API_KEY=jina_xxx             # only for the api provider
 EMBEDDING_BASE_URL=https://api.jina.ai/v1
 ```
 

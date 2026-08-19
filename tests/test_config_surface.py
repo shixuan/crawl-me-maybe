@@ -46,8 +46,25 @@ def test_every_documented_knob_is_read_somewhere(name: str) -> None:
     assert re.search(rf"\.{re.escape(name)}\b", src), f"{name.upper()} is documented but nothing reads it"
 
 
+def _visible_flags() -> set[str]:
+    """Flag names that --help actually shows.
+
+    A flag kept only so an older command line still runs is hidden with
+    argparse.SUPPRESS and is not part of the documented surface, so it
+    does not compete with an env line for the same knob.
+    """
+    text = (_SRC / "cli" / "__init__.py").read_text(encoding="utf-8")
+    out: set[str] = set()
+    for chunk in text.split("add_argument(")[1:]:
+        body = chunk.split("add_argument(")[0]
+        if "argparse.SUPPRESS" in body:
+            continue
+        out.update(re.findall(r'"--([a-z][a-z-]*)"', body))
+    return out
+
+
 def test_a_setting_is_documented_in_one_place_only() -> None:
     """A flag and an env line for the same knob leave the reader guessing."""
-    flags = set(re.findall(r'"--([a-z][a-z-]*)"', (_SRC / "cli" / "__init__.py").read_text(encoding="utf-8")))
+    flags = _visible_flags()
     both = {n for n in _documented() if n.replace("_", "-") in flags} - _LOG_LEVEL_IS_A_DOCUMENTED_EXCEPTION
     assert not both, f"documented as both a flag and an env var: {sorted(both)}"

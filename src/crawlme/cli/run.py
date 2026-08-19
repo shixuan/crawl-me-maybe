@@ -76,8 +76,10 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.ignore_robots = True
     if args.recall:
         cfg.recall = True
-    if args.embedding is not None:
-        # "off" maps to "" (disabled); otherwise pass the provider through.
+    if args.no_embedding:
+        # "" is the disabled provider: rule-only ranking, no model loaded.
+        cfg.embedding_provider = ""
+    elif args.embedding is not None:
         cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
     if args.embedding_model is not None:
         cfg.embedding_model = args.embedding_model

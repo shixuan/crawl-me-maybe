@@ -471,3 +471,28 @@ def test_recall_is_off_unless_asked(tmp_path):
             except SystemExit:
                 pass
     assert captured["cfg"].recall is False
+
+
+def test_no_embedding_skips_the_stage_for_one_run(tmp_path):
+    """Which backend and which model are setup; whether to run it is not."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--no-embedding", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].embedding_provider == ""
+
+
+def test_the_old_embedding_spelling_still_works(tmp_path):
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--embedding", "off", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].embedding_provider == ""
