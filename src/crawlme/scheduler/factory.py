@@ -104,10 +104,15 @@ def _build_fetcher(settings: Settings) -> Fetcher:
     if settings.fetcher == "browser":
         from crawlme.digest.fetcher import PlaywrightFetcher
 
+        # A feed adapter is the only thing that knows which of a page's
+        # own requests carries the posts.  Without one, nothing is kept
+        # and the browser behaves exactly as it did before.
+        adapter = FEEDS.get(settings.source_kind)
         return PlaywrightFetcher(
             storage_state=settings.browser_storage_state or None,
             user_agents=list(settings.user_agents),
             timeout=settings.fetch_timeout_read,
+            keep_payload=adapter.keeps_payload if adapter is not None else None,
         )
     return HttpFetcher(
         user_agents=list(settings.user_agents),

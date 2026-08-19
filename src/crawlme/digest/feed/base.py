@@ -24,7 +24,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from crawlme.schemas import URL, Candidate
+from crawlme.schemas import URL, Candidate, Payload
 
 
 class PageProblem(str, enum.Enum):
@@ -137,11 +137,27 @@ class FeedAdapter(Protocol):
         """Why this page holds no content, or None if it does."""
         ...
 
-    def parse_listing(self, html: str, url: str) -> Listing:
+    def keeps_payload(self, url: str, content_type: str) -> bool:
+        """Whether a response the page fetched is worth keeping.
+
+        Answered per platform because only the platform knows which of
+        its own requests carries the posts. Answering False to everything
+        is valid and costs nothing: a platform whose text is already in
+        the document has no use for this.
+        """
+        ...
+
+    def parse_listing(self, html: str, url: str, payloads: list[Payload]) -> Listing:
         """Read a listing page into items, split by who posted them.
 
         Takes the page URL, not an account: reading one out of the other
         is as platform-shaped as the markup.
+
+        `payloads` is what the page fetched for itself, and is empty
+        whenever nothing kept it -- a plain HTTP fetch, or a run that did
+        not ask. An adapter must still return its best answer from the
+        markup alone in that case, so richer text is an upgrade and never
+        a requirement.
         """
         ...
 

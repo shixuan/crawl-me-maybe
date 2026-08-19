@@ -20,12 +20,13 @@ from __future__ import annotations
 import datetime
 import logging
 from dataclasses import replace
+from pathlib import Path
 from typing import Protocol
 
 from crawlme.digest.feed.base import FeedAdapter
 from crawlme.digest.links import extract_links
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.schemas import Candidate, Page
+from crawlme.schemas import Candidate, Page, Payload
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ class FeedHarvester:
         if self._adapter.parse_item(html, page.url.canonical) is not None:
             return []
 
-        listing = self._adapter.parse_listing(html, page.url.canonical)
+        listing = self._adapter.parse_listing(html, page.url.canonical, _payloads_of(page))
         own = {i.permalink for i in listing.own}
         out: list[Candidate] = []
         for item in listing.all:
@@ -129,12 +130,26 @@ def _html_of(page: Page) -> str:
     if not page.raw_html_path:
         return ""
     try:
-        from pathlib import Path
-
         return Path(page.raw_html_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         logger.warning("harvest.raw_unreadable path=%s", page.raw_html_path)
         return ""
+
+
+def _payloads_of(page: Page) -> list[Payload]:
+    """Read back what the page fetched for itself, in arrival order.
+
+    Same reasoning as the raw markup: the frozen copy is what a parser
+    reruns against, so a change to it can be judged on exactly what
+    arrived rather than on a fresh request.
+    """
+    out: list[Payload] = []
+    for path in page.payload_paths:
+        try:
+            out.append(Payload(url="", content_type="", body=Path(path).read_bytes()))
+        except OSError:
+            logger.warning("harvest.payload_unreadable path=%s", path)
+    return out
 
 
 def _utcnow() -> datetime.datetime:

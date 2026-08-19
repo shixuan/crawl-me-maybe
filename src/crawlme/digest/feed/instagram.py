@@ -19,9 +19,13 @@ from __future__ import annotations
 import datetime
 import html as html_module
 import json
+import logging
 import re
 
 from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
+from crawlme.schemas import Payload
+
+logger = logging.getLogger(__name__)
 
 PLATFORM = "instagram"
 DOMAIN = "instagram.com"
@@ -66,7 +70,12 @@ def problem(html: str) -> PageProblem | None:
     return None
 
 
-def parse_listing(html: str, url: str) -> Listing:
+def keeps_payload(url: str, content_type: str) -> bool:
+    """The grid is built from a graphql answer, and that answer has the text."""
+    return "json" in content_type and "/graphql/query" in url
+
+
+def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     """Read a grid into items, split by who posted them.
 
     Whose grid this is comes out of the URL here rather than being handed
@@ -74,11 +83,18 @@ def parse_listing(html: str, url: str) -> Listing:
     the markup is: the reserved segments that are not accounts are
     Instagram's own list.
 
-    The generated alt text is kept as the item's text. It is weak, but it
-    is what a listing has, and filtering on it is what stops the crawl
-    paying one request per post to find out the same thing.
+    The markup decides *which* posts are here and who owns them: that is
+    what a grid states. The payload, when there is one, decides what each
+    post *says* -- the grid never renders a caption, so without it the
+    only text is Instagram's generated description of the image, which
+    describes the picture and not the offer in it.
+
+    With no payload this returns exactly what it always did, so a plain
+    HTTP fetch and a platform that changed its response shape both keep
+    working, only with weaker text.
     """
     handle = _account_from_url(url).strip("/").lower()
+    texts = _texts_from_payloads(payloads)
     alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
     own: list[FeedItem] = []
     others: list[FeedItem] = []
@@ -86,13 +102,14 @@ def parse_listing(html: str, url: str) -> Listing:
         owner = href.strip("/").split("/")[0].lower()
         alt = alts.get(href, "")
         author, posted = _from_alt(alt)
+        caption, taken_at = texts.get(code, ("", None))
         item = FeedItem(
             permalink=_absolute(href),
             platform=PLATFORM,
             item_id=code,
             author=author or owner,
-            text=alt,
-            published_at=posted,
+            text=caption or alt,
+            published_at=taken_at or posted,
         )
         (own if owner == handle else others).append(item)
     return Listing(own=own, others=others)
@@ -191,6 +208,52 @@ def _published_at(html: str) -> datetime.datetime | None:
 def _first(pattern: re.Pattern[str], text: str) -> str:
     m = pattern.search(text)
     return m.group(1) if m else ""
+
+
+def _texts_from_payloads(payloads: list[Payload]) -> dict[str, tuple[str, datetime.datetime | None]]:
+    """Map post code -> (caption, exact time) out of the kept responses.
+
+    Found by shape rather than by path. The connection these live under
+    is named for an internal API version and will be renamed; a post is
+    recognisable without knowing where it sits, and looking for the shape
+    keeps one rename from emptying the result.
+    """
+    out: dict[str, tuple[str, datetime.datetime | None]] = {}
+    for payload in payloads:
+        try:
+            data = json.loads(payload.body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.debug("instagram.payload_unreadable url=%s", payload.url)
+            continue
+        _collect_posts(data, out)
+    return out
+
+
+def _collect_posts(node: object, out: dict[str, tuple[str, datetime.datetime | None]]) -> None:
+    if isinstance(node, list):
+        for child in node:
+            _collect_posts(child, out)
+        return
+    if not isinstance(node, dict):
+        return
+    code = node.get("code") or node.get("shortcode")
+    caption = node.get("caption")
+    if isinstance(code, str) and isinstance(caption, dict):
+        text = caption.get("text")
+        if isinstance(text, str) and text.strip():
+            out.setdefault(code, (text.strip(), _taken_at(node.get("taken_at"))))
+    for child in node.values():
+        _collect_posts(child, out)
+
+
+def _taken_at(raw: object) -> datetime.datetime | None:
+    """Instagram states the exact second; the grid alt text often states nothing."""
+    if not isinstance(raw, int) or raw <= 0:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(raw, datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _absolute(href: str) -> str:
