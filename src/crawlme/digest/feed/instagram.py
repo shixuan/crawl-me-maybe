@@ -16,6 +16,7 @@ Nothing here fetches, so all of it is testable against saved pages.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import html as html_module
 import json
@@ -83,35 +84,56 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     the markup is: the reserved segments that are not accounts are
     Instagram's own list.
 
-    The markup decides *which* posts are here and who owns them: that is
-    what a grid states. The payload, when there is one, decides what each
-    post *says* -- the grid never renders a caption, so without it the
-    only text is Instagram's generated description of the image, which
-    describes the picture and not the offer in it.
+    The payload is the better source when there is one: it states what
+    each post says, who posted it and when, none of which the grid
+    renders. It also survives scrolling, and the grid does not -- the
+    markup drops items as they leave the viewport, so a page scrolled for
+    more posts ends up showing fewer of them.
 
-    With no payload this returns exactly what it always did, so a plain
-    HTTP fetch and a platform that changed its response shape both keep
-    working, only with weaker text.
+    The markup is the fallback, and is all there is for a plain HTTP
+    fetch or after the platform changes its response shape. Then the only
+    text is Instagram's generated description of the image, which
+    describes the picture rather than the offer in it, and this returns
+    exactly what it always did.
     """
     handle = _account_from_url(url).strip("/").lower()
-    texts = _texts_from_payloads(payloads)
+    posts = _posts_from_payloads(payloads)
     alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
-    own: list[FeedItem] = []
-    others: list[FeedItem] = []
+    # Ownership is decided by the account a post belongs to, never by the
+    # name shown next to it: the grid's alt text carries a display name
+    # ("MollyTeaCanada") where the handle is what a listing is keyed on.
+    seen: dict[str, FeedItem] = {}
+    owners: dict[str, str] = {}
+
+    for code, post in posts.items():
+        owner = (post.author or handle).lower()
+        owners[code] = owner
+        seen[code] = FeedItem(
+            permalink=f"https://www.instagram.com/{owner}/p/{code}/",
+            platform=PLATFORM,
+            item_id=code,
+            author=owner,
+            text=post.text,
+            published_at=post.taken_at,
+        )
     for href, code in dict.fromkeys(_PERMALINK.findall(html)):
+        if code in seen:
+            continue
         owner = href.strip("/").split("/")[0].lower()
         alt = alts.get(href, "")
         author, posted = _from_alt(alt)
-        caption, taken_at = texts.get(code, ("", None))
-        item = FeedItem(
+        owners[code] = owner
+        seen[code] = FeedItem(
             permalink=_absolute(href),
             platform=PLATFORM,
             item_id=code,
             author=author or owner,
-            text=caption or alt,
-            published_at=taken_at or posted,
+            text=alt,
+            published_at=posted,
         )
-        (own if owner == handle else others).append(item)
+
+    own = [i for c, i in seen.items() if owners[c] == handle]
+    others = [i for c, i in seen.items() if owners[c] != handle]
     return Listing(own=own, others=others)
 
 
@@ -210,15 +232,22 @@ def _first(pattern: re.Pattern[str], text: str) -> str:
     return m.group(1) if m else ""
 
 
-def _texts_from_payloads(payloads: list[Payload]) -> dict[str, tuple[str, datetime.datetime | None]]:
-    """Map post code -> (caption, exact time) out of the kept responses.
+@dataclasses.dataclass(frozen=True)
+class _Post:
+    text: str
+    taken_at: datetime.datetime | None
+    author: str
+
+
+def _posts_from_payloads(payloads: list[Payload]) -> dict[str, _Post]:
+    """Map post code -> what the response says about it.
 
     Found by shape rather than by path. The connection these live under
     is named for an internal API version and will be renamed; a post is
     recognisable without knowing where it sits, and looking for the shape
     keeps one rename from emptying the result.
     """
-    out: dict[str, tuple[str, datetime.datetime | None]] = {}
+    out: dict[str, _Post] = {}
     for payload in payloads:
         try:
             data = json.loads(payload.body)
@@ -229,7 +258,7 @@ def _texts_from_payloads(payloads: list[Payload]) -> dict[str, tuple[str, dateti
     return out
 
 
-def _collect_posts(node: object, out: dict[str, tuple[str, datetime.datetime | None]]) -> None:
+def _collect_posts(node: object, out: dict[str, _Post]) -> None:
     if isinstance(node, list):
         for child in node:
             _collect_posts(child, out)
@@ -241,7 +270,12 @@ def _collect_posts(node: object, out: dict[str, tuple[str, datetime.datetime | N
     if isinstance(code, str) and isinstance(caption, dict):
         text = caption.get("text")
         if isinstance(text, str) and text.strip():
-            out.setdefault(code, (text.strip(), _taken_at(node.get("taken_at"))))
+            user = node.get("user")
+            author = user.get("username") if isinstance(user, dict) else ""
+            out.setdefault(
+                code,
+                _Post(text.strip(), _taken_at(node.get("taken_at")), str(author or "")),
+            )
     for child in node.values():
         _collect_posts(child, out)
 

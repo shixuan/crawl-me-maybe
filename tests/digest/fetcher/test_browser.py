@@ -265,3 +265,65 @@ async def test_a_body_that_is_gone_is_not_an_error() -> None:
     kept: list = []
     await fetcher._read_body(_Gone(), "application/json", kept)
     assert kept == []
+
+
+def test_scrolling_is_off_unless_asked() -> None:
+    """A link graph has nothing below the fold worth waiting for."""
+    assert PlaywrightFetcher()._scrolls == 0
+
+
+@pytest.mark.asyncio
+async def test_scrolling_stops_when_the_page_stops_growing() -> None:
+    """A short account must not cost every scroll it was allowed."""
+
+    class _Page:
+        url = "https://x/"
+
+        def __init__(self) -> None:
+            self.wheels = 0
+            self.waits = 0
+
+        async def evaluate(self, _js: str) -> int:
+            return 1000  # the page never grows
+
+        @property
+        def mouse(self):
+            return self
+
+        async def wheel(self, _x: int, _y: int) -> None:
+            self.wheels += 1
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            self.waits += 1
+
+    page = _Page()
+    await PlaywrightFetcher(scrolls=10)._scroll_through(page)
+    assert page.wheels == 1, "one scroll, then the height said there was no more"
+
+
+@pytest.mark.asyncio
+async def test_scrolling_keeps_asking_while_the_page_grows() -> None:
+    class _Page:
+        url = "https://x/"
+
+        def __init__(self) -> None:
+            self.wheels = 0
+            self.height = 1000
+
+        async def evaluate(self, _js: str) -> int:
+            self.height += 500
+            return self.height
+
+        @property
+        def mouse(self):
+            return self
+
+        async def wheel(self, _x: int, _y: int) -> None:
+            self.wheels += 1
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+    page = _Page()
+    await PlaywrightFetcher(scrolls=3)._scroll_through(page)
+    assert page.wheels == 3

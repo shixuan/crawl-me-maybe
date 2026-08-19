@@ -201,3 +201,36 @@ def test_the_adapter_keeps_only_the_response_that_carries_posts():
     assert ig.keeps_payload("https://www.instagram.com/graphql/query", "application/json") is True
     assert ig.keeps_payload("https://www.instagram.com/static/bundle.js", "application/javascript") is False
     assert ig.keeps_payload("https://www.instagram.com/graphql/query", "text/html") is False
+
+
+def test_posts_the_scrolled_grid_dropped_are_still_found():
+    """A scrolled listing shows fewer posts, not more.
+
+    The markup drops items as they leave the viewport, so discovery that
+    reads only the grid loses exactly what scrolling was for. The
+    responses keep every post the page ever loaded.
+    """
+    empty_grid = "<html><body></body></html>"
+    lst = ig.parse_listing(empty_grid, "https://www.instagram.com/mrsurprisetoys/", [_payload()])
+    assert len(lst.all) == 3
+    assert all(i.text for i in lst.all), "found with their text, not as bare links"
+
+
+def test_a_post_found_only_in_the_payload_gets_a_usable_permalink():
+    lst = ig.parse_listing("<html></html>", "https://www.instagram.com/mrsurprisetoys/", [_payload()])
+    link = next(i.permalink for i in lst.all if i.item_id == "DcFMbOThnuH")
+    assert link == "https://www.instagram.com/mrsurprisetoys/p/DcFMbOThnuH/"
+
+
+def test_the_payload_decides_who_posted_it():
+    """Reposts and tags land in a grid; the response names the author."""
+    body = json.dumps(
+        {"items": [{"code": "AAA111", "caption": {"text": "free tea"}, "user": {"username": "someone_else"}}]}
+    )
+    lst = ig.parse_listing(
+        "<html></html>",
+        "https://www.instagram.com/mrsurprisetoys/",
+        [Payload(url="u", content_type="application/json", body=body.encode())],
+    )
+    assert [i.item_id for i in lst.others] == ["AAA111"]
+    assert lst.own == []

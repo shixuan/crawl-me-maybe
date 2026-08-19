@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     # They are held in memory before they reach disk, so this is the
     # difference between a heavy page and an out-of-memory machine.
     browser_max_payload_bytes: int = 8 * 1024 * 1024
+    # How many times a feed listing is asked for more of itself.  A
+    # listing hands out one screen, so a window measured in weeks is
+    # answered with the dozen most recent posts unless someone keeps
+    # asking.  Each scroll is one more request the page makes, so this is
+    # also the knob that trades coverage against how much a platform
+    # sees of the crawl.  Ignored outside feed mode: a link graph has
+    # nothing below the fold worth waiting for.
+    feed_scrolls: int = 4
     # What a fetched page yields: "links" walks a graph, "instagram"
     # reads a feed listing into post permalinks.  --feed is the
     # documented entry: it changes what a run produces from the same URL,
