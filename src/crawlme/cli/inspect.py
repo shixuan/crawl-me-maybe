@@ -153,7 +153,16 @@ def _print_summary(data: InspectData) -> None:
 
 
 def _export(data: InspectData, fmt: str) -> None:
-    """Dump the pages-and-analyses join to stdout."""
+    """Dump the pages-and-analyses join to stdout.
+
+    The json form is the one meant to be read by something other than a
+    person: it carries the extracted fields with the page text backing
+    each one, so whatever renders it can show a value and let the reader
+    check it against the page.  csv stays flat and leaves them out —
+    every goal declares its own fields, so there is no stable column set
+    to flatten them into, and inventing one per export would make two
+    exports of the same run disagree.
+    """
     pages_by_key = {p["url_key"]: p for p in data.pages}
     rows: list[dict[str, Any]] = []
     for a in data.analyses:
@@ -162,24 +171,33 @@ def _export(data: InspectData, fmt: str) -> None:
         rows.append(
             {
                 "url": json.loads(page["url_json"]).get("canonical", "") if page else "",
+                "url_key": a.get("url_key", ""),
                 "title": (page.get("title") or "") if page else "",
+                "published_at": (page.get("published_at") or "") if page else "",
                 "goal_id": a.get("goal_id", ""),
                 "classification": a.get("classification", "UNKNOWN"),
                 "relevance_score": a.get("relevance_score", 0.0),
                 "hub_score": feedback.get("hub_score", 0.0),
                 "summary": a.get("summary") or "",
                 "tags": json.loads(a.get("tags_json") or "[]"),
+                "extracted": json.loads(a.get("extracted_json") or "{}"),
                 "model": a.get("model", ""),
                 "prompt_version": a.get("prompt_version", ""),
+                "spec_version": a.get("spec_version", ""),
                 "analyzed_at": a.get("analyzed_at", ""),
             }
         )
     if fmt == "json":
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return
+    # csv drops what has no fixed shape; see the docstring.
+    for row in rows:
+        row.pop("extracted", None)
     fieldnames = [
         "url",
+        "url_key",
         "title",
+        "published_at",
         "goal_id",
         "classification",
         "relevance_score",
@@ -188,6 +206,7 @@ def _export(data: InspectData, fmt: str) -> None:
         "tags",
         "model",
         "prompt_version",
+        "spec_version",
         "analyzed_at",
     ]
     writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
