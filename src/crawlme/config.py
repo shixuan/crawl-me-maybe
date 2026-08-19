@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # parser rather than a budget.  A ceiling is not a cost: only tokens
     # actually generated are billed, so headroom is free until used.
     llm_max_output_tokens: int = 8192
+    # How much candidate text one ranking call may carry.  Candidates are
+    # never cut to fit: a batch that would exceed this is split into more
+    # calls, because a post whose only relevant line sits past a cut is
+    # rejected for not containing what was cut off.  Raise it for a model
+    # with a larger context, lower it if a provider rejects the request.
+    llm_max_batch_chars: int = 12_000
 
     # -: Embedding ---
     # Credentials for the api provider (--embedding api).  Keys are
@@ -89,6 +95,10 @@ class Settings(BaseSettings):
     # means an anonymous browser.  Secrets stay out of flags: this is a
     # path, and the file itself never enters the repo.
     browser_storage_state: str = ""
+    # Ceiling on what one page load may keep of its own sub-responses.
+    # They are held in memory before they reach disk, so this is the
+    # difference between a heavy page and an out-of-memory machine.
+    browser_max_payload_bytes: int = 8 * 1024 * 1024
     # What a fetched page yields: "links" walks a graph, "instagram"
     # reads a feed listing into post permalinks.  --feed is the
     # documented entry: it changes what a run produces from the same URL,
@@ -109,15 +119,6 @@ class Settings(BaseSettings):
 
     # -: Frontier ---
     candidate_buffer_size: int = 2_000
-    rank_batch_size: int = 100
-    rank_cooldown_sec: float = 30.0
-    checkpoint_interval: int = 10
-    priority_aging_window: float = 600.0
-
-    # -: Robots ---
-    robots_ttl_hours: int = 24
-    circuit_breaker_threshold: int = 5
-    circuit_breaker_cooldown_min: int = 10
 
     # -: Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF

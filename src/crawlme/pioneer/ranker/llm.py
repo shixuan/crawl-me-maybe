@@ -90,10 +90,17 @@ class LLMRanker:
     never blocks on the LLM.
     """
 
-    def __init__(self, client: LLMClient, batch_size: int = _BATCH_SIZE, demote_dropped: bool = False) -> None:
+    def __init__(
+        self,
+        client: LLMClient,
+        batch_size: int = _BATCH_SIZE,
+        demote_dropped: bool = False,
+        max_batch_chars: int = _MAX_BATCH_CHARS,
+    ) -> None:
         self._client = client
         self._batch_size = batch_size
         self._demote_dropped = demote_dropped
+        self._max_batch_chars = max_batch_chars
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMRanker | None:
@@ -101,7 +108,9 @@ class LLMRanker:
         is nothing to call, so the stage is skipped entirely.  *budget*
         is shared across all LLM consumers of the task."""
         client = LLMClient.from_settings_if_configured(settings, budget=budget)
-        return cls(client, demote_dropped=settings.recall) if client is not None else None
+        if client is None:
+            return None
+        return cls(client, demote_dropped=settings.recall, max_batch_chars=settings.llm_max_batch_chars)
 
     async def rank_batch(
         self,
@@ -137,7 +146,7 @@ class LLMRanker:
         chars = 0
         for c in candidates:
             size = len(c.text)
-            if chunk and (len(chunk) >= self._batch_size or chars + size > _MAX_BATCH_CHARS):
+            if chunk and (len(chunk) >= self._batch_size or chars + size > self._max_batch_chars):
                 out.append(chunk)
                 chunk, chars = [], 0
             chunk.append(c)

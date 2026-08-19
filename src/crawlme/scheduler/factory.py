@@ -114,6 +114,7 @@ def _build_fetcher(settings: Settings) -> Fetcher:
             user_agents=list(settings.user_agents),
             timeout=settings.fetch_timeout_read,
             keep_payload=adapter.keeps_payload if adapter is not None else None,
+            max_payload_bytes=settings.browser_max_payload_bytes,
         )
     return HttpFetcher(
         user_agents=list(settings.user_agents),
