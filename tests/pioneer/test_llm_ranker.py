@@ -364,3 +364,34 @@ async def test_without_recall_a_rejection_is_still_a_removal():
     client = _StubClient([_resp(body)])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
     assert {d.candidate_id for d in decisions if d.dropped} == {"c1"}
+
+
+async def test_a_rejection_carries_the_reason_it_was_rejected():
+    """Every misjudged drop was a black box: no reason was ever stored.
+
+    Reading back why the model rejected something is what decides
+    whether the fix belongs in the goal the user wrote or in how the
+    ranker is asked to judge, instead of guessing between the two.
+    """
+    body = '{"rankings": [], "candidates_to_drop": [{"id": "c0", "rationale": "a toy shop, not food"}]}'
+    client = _StubClient([_resp(body)])
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+
+    assert decisions[0].dropped is True
+    assert decisions[0].rationale == "llm_drop: a toy shop, not food"
+
+
+async def test_a_bare_id_is_still_a_rejection():
+    """What a model returns when it ignores the shape it was asked for."""
+    client = _StubClient([_resp('{"rankings": [], "candidates_to_drop": ["c0"]}')])
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    assert decisions[0].dropped is True
+    assert decisions[0].rationale == "llm_drop"
+
+
+async def test_a_demoted_rejection_keeps_both_the_tag_and_the_reason():
+    body = '{"rankings": [], "candidates_to_drop": [{"id": "c0", "rationale": "weaker than the rest"}]}'
+    client = _StubClient([_resp(body)])
+    decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    assert decisions[0].rationale == "llm_drop_demoted: weaker than the rest"
+    assert decisions[0].dropped is False

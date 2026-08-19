@@ -46,6 +46,8 @@ _NEUTRAL_PRIORITY = 0.5
 # rather than not at all.  Not zero: a candidate nobody has an opinion
 # about should still outrank one the model argued against.
 _DEMOTED_PRIORITY = 0.01
+_DROP_TAG = "llm_drop"
+_DEMOTED_TAG = "llm_drop_demoted"
 # At most this many previously-relevant pages are shown to the model.
 _MAX_RELEVANT = 5
 
@@ -55,12 +57,14 @@ _SYSTEM = (
     "You see a batch of candidate links plus the crawl goal and what the crawl found "
     "so far, so compare the candidates against each other, not in isolation. Reply "
     'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0, '
-    '"rationale": "..."}], "candidates_to_drop": ["<id>"], "new_search_suggestions": '
+    '"rationale": "..."}], "candidates_to_drop": [{"id": "<id>", "rationale": "..."}], '
+    '"new_search_suggestions": '
     '["..."]}. Include every candidate id exactly once, either in rankings or in '
     "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
     "clicked earlier, so use the full 0.0 to 1.0 range. candidates_to_drop holds "
-    "clear junk under the goal. If the whole batch is junk, put every id in "
-    "candidates_to_drop. new_search_suggestions are optional new search directions "
+    "clear junk under the goal, each with a short rationale saying what makes it "
+    "junk. If the whole batch is junk, put every id in candidates_to_drop. "
+    "new_search_suggestions are optional new search directions "
     "you noticed while judging."
 )
 
@@ -160,7 +164,7 @@ class LLMRanker:
             len(chunk),
             kept,
             "demoted" if self._demote_dropped else "dropped",
-            sum(1 for d in decisions if d.rationale in ("llm_drop", "llm_drop_demoted")),
+            sum(1 for d in decisions if (d.rationale or "").startswith(_DROP_TAG)),
             resp.model,
             tokens,
         )
@@ -282,11 +286,23 @@ def _to_decisions(
             rationale = str(rationale).strip() if isinstance(rationale, str) else ""
             scored[cid] = (round(priority, 4), rationale)
 
-    drop_ids: set[str] = set()
+    # A rejection carries its reason, so a mistaken one can be read back
+    # rather than guessed at.  Bare ids stay valid: the older shape, and
+    # what a model returns when it ignores the instruction.
+    drops: dict[str, str] = {}
     raw_drops = data.get("candidates_to_drop")
     if isinstance(raw_drops, list):
-        drop_ids = {d for d in raw_drops if isinstance(d, str) and d}
-    drop_ids -= set(scored)  # rankings win when an id lands in both
+        for d in raw_drops:
+            if isinstance(d, str) and d:
+                drops[d] = ""
+            elif isinstance(d, dict):
+                did = d.get("id")
+                if isinstance(did, str) and did:
+                    why = d.get("rationale")
+                    drops[did] = str(why).strip() if isinstance(why, str) else ""
+    for cid in set(scored):
+        drops.pop(cid, None)  # rankings win when an id lands in both
+    drop_ids = set(drops)
 
     known_ids = {c.candidate_id for c in candidates}
     unknown = (set(scored) | drop_ids) - known_ids
@@ -307,10 +323,13 @@ def _to_decisions(
             if not rationale:
                 rationale = f"llm_priority={priority:.4f}"
         elif cid in drop_ids:
-            if demote_dropped:
-                priority, dropped, rationale = _DEMOTED_PRIORITY, False, "llm_drop_demoted"
-            else:
-                priority, dropped, rationale = 0.0, True, "llm_drop"
+            # The tag stays in front of the reason: it is what marks the
+            # decision as a rejection for anything counting them later,
+            # and the reason is what makes a mistaken one readable.
+            tag = _DEMOTED_TAG if demote_dropped else _DROP_TAG
+            why = drops[cid]
+            rationale = f"{tag}: {why}" if why else tag
+            priority, dropped = (_DEMOTED_PRIORITY, False) if demote_dropped else (0.0, True)
         else:
             priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
             missing += 1
