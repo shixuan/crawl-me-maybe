@@ -114,9 +114,20 @@ def _frontier_drained(
     buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
-    if frontier.size == 0 and buffer.is_empty and c.in_flight == 0 and c.ranking_in_flight == 0:
-        return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
-    return None
+    """Nothing left to fetch, and why there is nothing left.
+
+    An empty frontier has two causes that look identical from here: the
+    crawl read everything it found, or a gate refused what remained. A
+    run that cannot tell them apart reports the second as completion,
+    which is how a feed crawl ended at fifty pages with a hundred and
+    sixty candidates still waiting and said only "completed".
+    """
+    if not (frontier.size == 0 and buffer.is_empty and c.in_flight == 0 and c.ranking_in_flight == 0):
+        return None
+    blocked = getattr(frontier, "blocked_by_domain_budget", 0)
+    if blocked:
+        return StopReason("DOMAIN_BUDGET", f"{blocked} candidates refused by the per-domain ceiling")
+    return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
 
 
 def _diminishing_returns(

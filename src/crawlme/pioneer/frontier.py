@@ -88,7 +88,17 @@ class PriorityFrontier:
         age_factor: float = 1.0,
         source: WorkSource | None = None,
     ) -> None:
+        # Zero means no per-domain ceiling.  One is right for a link
+        # graph, where a single site can otherwise absorb the whole run;
+        # it is wrong for a feed, where every candidate shares the
+        # platform's domain and the ceiling becomes a hidden total that
+        # quietly overrides the page budget.
         self._domain_budget = domain_budget
+        # How many candidates that ceiling turned away.  A frontier can
+        # be empty because there was nothing left or because everything
+        # left was refused, and a run that cannot tell the difference
+        # reports the second as completion.
+        self.blocked_by_domain_budget = 0
         self._lock = asyncio.Lock()
         self._source: WorkSource = source or PriorityHeapSource(
             aging_window=aging_window,
@@ -134,13 +144,14 @@ class PriorityFrontier:
                     item.next_available_at = allowed_at
                     return Gate.DEFER
             used = self._domain_counters.get(item.reg_domain, 0)
-            if used >= self._domain_budget:
+            if self._domain_budget > 0 and used >= self._domain_budget:
                 logger.warning(
                     "frontier.domain_budget domain=%s used=%d/%d",
                     item.reg_domain,
                     used,
                     self._domain_budget,
                 )
+                self.blocked_by_domain_budget += 1
                 return Gate.DROP
             if global_budget is not None and global_budget > 0 and self._global_counter >= global_budget:
                 return Gate.STOP

@@ -296,3 +296,23 @@ def test_diminishing_returns_forgets_an_old_dry_spell():
     """Twenty misses then twenty hits is a healthy crawl, not a dead one."""
     c = _counters(relevance_window=[False] * 20 + [True] * 20)
     assert not any(r.code == "DIMINISHING_RETURNS" for r in check_stop(_task(), _frontier(), _buffer(), c))
+
+
+def test_a_frontier_emptied_by_a_gate_says_so():
+    """An empty frontier has two causes that look identical from here.
+
+    A feed run ended at fifty pages with a hundred and sixty candidates
+    still waiting and reported only "completed": every one of them was
+    refused by a per-domain ceiling that, on one platform, is a total.
+    """
+    frontier = _frontier(size=0)
+    frontier.blocked_by_domain_budget = 7
+    codes = _codes(check_stop(_task(), frontier, _buffer(), _counters(in_flight=0)))
+    assert "DOMAIN_BUDGET" in codes
+    assert "FRONTIER_DRAINED" not in codes
+
+
+def test_a_frontier_that_simply_ran_out_still_says_drained():
+    frontier = _frontier(size=0)
+    frontier.blocked_by_domain_budget = 0
+    assert "FRONTIER_DRAINED" in _codes(check_stop(_task(), frontier, _buffer(), _counters(in_flight=0)))

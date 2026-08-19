@@ -496,3 +496,63 @@ def test_the_old_embedding_spelling_still_works(tmp_path):
             except SystemExit:
                 pass
     assert captured["cfg"].embedding_provider == ""
+
+
+def test_a_feed_run_has_no_per_domain_ceiling_by_default(tmp_path):
+    """It would be a total ceiling: one platform, one domain, every post."""
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://instagram.com/a/",
+        "--feed",
+        "instagram",
+        "--result-dir",
+        str(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 0
+
+
+def test_asking_for_a_domain_budget_still_applies_it(tmp_path):
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://instagram.com/a/",
+        "--feed",
+        "instagram",
+        "--domain-budget",
+        "5",
+        "--result-dir",
+        str(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 5
+
+
+def test_a_link_graph_keeps_its_ceiling(tmp_path):
+    """One site can otherwise absorb a whole graph crawl."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 50

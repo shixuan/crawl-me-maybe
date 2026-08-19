@@ -433,6 +433,14 @@ class CrawlScheduler:
         if self._task:
             self._task.state = "STOPPING"
 
+    def _record_stop_reason(self) -> None:
+        """Name why the run is ending, for a path that bypassed the check."""
+        if self._task is None or self._task.stopping_reason:
+            return
+        reasons = check_stop(self._task, self._frontier, self._buffer, self._counters)
+        self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
+        logger.info("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._counters.pages_fetched)
+
     #: fetch loop -------------------------------------------------------
 
     async def _fetch_pump(self) -> None:
@@ -486,6 +494,11 @@ class CrawlScheduler:
                     continue
                 if self._buffer.is_empty:
                     if self._counters.in_flight == 0:
+                        # The loop leaves here without going back to the
+                        # stop check at the top, so the reason has to be
+                        # recorded on the way out or the run reports
+                        # "completed" with no cause at all.
+                        self._record_stop_reason()
                         logger.info(
                             "fetch_pump.exhausted frontier=%d buffer=%d",
                             self._frontier.size,

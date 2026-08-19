@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.digest.feed import FEEDS
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
@@ -118,6 +119,13 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.depth_limit = args.depth_limit
     if args.domain_budget is not None:
         goal.domain_budget = args.domain_budget
+    elif cfg.source_kind in FEEDS:
+        # Every post shares the platform's domain, so a per-domain
+        # ceiling is a total one wearing the wrong name: it silently
+        # overrode --max-pages and ended a run at 50 pages with 162
+        # candidates still waiting.  --domain-budget still applies when
+        # asked for.
+        goal.domain_budget = 0
     if args.since is not None:
         try:
             goal.since = _parse_since(args.since)

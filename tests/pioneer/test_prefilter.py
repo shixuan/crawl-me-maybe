@@ -159,3 +159,20 @@ def test_the_window_is_off_when_the_goal_sets_none():
         PreFilter().check(_dated("2020-01-01T00:00:00+00:00"), CrawlGoal(prompt="test"), PreFilterContext())[0]
         is Decision.ALLOW
     )
+
+
+def test_a_zero_domain_budget_means_no_ceiling():
+    """Every post on a platform shares its domain, so a per-domain cap
+    becomes a total one wearing the wrong name."""
+    goal = CrawlGoal(prompt="test", domain_budget=0)
+    ctx = PreFilterContext(domain_counters={"instagram.com": 500})
+    c = Candidate(
+        url=URL(
+            raw="https://www.instagram.com/a/p/X/",
+            canonical="https://www.instagram.com/a/p/X/",
+            url_key="x",
+            reg_domain="instagram.com",
+        ),
+        depth=1,
+    )
+    assert PreFilter().check(c, goal, ctx)[0] is Decision.ALLOW

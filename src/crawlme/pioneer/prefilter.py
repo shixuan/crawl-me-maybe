@@ -120,7 +120,7 @@ def depth_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[D
 
 def domain_budget_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     used = ctx.domain_counters.get(c.url.reg_domain, 0)
-    if used >= goal.domain_budget:
+    if goal.domain_budget > 0 and used >= goal.domain_budget:
         return Decision.DROP, "domain_budget"
     return None
 
