@@ -579,3 +579,22 @@ def test_embedded_text_prefers_the_candidates_own_text():
     url = URL(raw="https://x.com/p", canonical="https://x.com/p", url_key="k1")
     assert _text_for(Candidate(url=url, anchor="click here"), None) == "click here"
     assert "free tea today" in _text_for(Candidate(url=url, text="free tea today", anchor="click here"), None)
+
+
+@pytest.mark.asyncio
+async def test_recall_turns_the_top_k_into_an_ordering():
+    """A promise that nothing is discarded has to hold at every stage.
+
+    The cut still decides what is read first; it stops deciding what is
+    read at all.
+    """
+    goal = _goal()
+    embedder = _StubEmbedder(vectors={"close": [1.0, 0.0, 0.0], "far": [0.0, 0.0, 1.0]})
+    ranker = EmbeddingRanker(embedder, keep=1, demote_dropped=True)
+
+    c_close = _candidate("close", anchor="close", snippet=None, parent_heading=None)
+    c_far = _candidate("far", anchor="far", snippet=None, parent_heading=None)
+    decisions = await ranker.rank_batch(goal, [c_far, c_close], _history())
+
+    assert [d.dropped for d in decisions] == [False, False]
+    assert decisions[0].candidate_id == c_close.candidate_id

@@ -446,3 +446,28 @@ def test_two_kinds_of_seed_at_once_is_refused(tmp_path):
         with pytest.raises(SystemExit) as exc:
             main()
     assert exc.value.code == 2
+
+
+def test_recall_flag_reaches_settings(tmp_path):
+    """Trading tokens for coverage is a per-run choice, so it is a flag."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--recall", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].recall is True
+
+
+def test_recall_is_off_unless_asked(tmp_path):
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].recall is False

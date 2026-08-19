@@ -59,8 +59,8 @@ def _rankings_json(n: int, *, drop: list[str] | None = None, priority: float = 0
     return f'{{"rankings": [{rankings}], "candidates_to_drop": [{drops}]}}'
 
 
-def _ranker(client: _StubClient, batch_size: int = 30) -> LLMRanker:
-    return LLMRanker(client, batch_size=batch_size)
+def _ranker(client: _StubClient, batch_size: int = 30, demote_dropped: bool = False) -> LLMRanker:
+    return LLMRanker(client, batch_size=batch_size, demote_dropped=demote_dropped)
 
 
 @pytest.mark.asyncio
@@ -326,3 +326,41 @@ async def test_unparseable_but_complete_still_gets_the_stricter_wording():
     retry = client.calls[1]
     assert retry["max_tokens"] is None
     assert retry["prompt"] != client.calls[0]["prompt"]
+
+
+#: recall mode ------------------------------------------------------------
+
+
+async def test_recall_mode_ranks_a_rejection_last_instead_of_removing_it():
+    """A wrong keep is a page you skim; a wrong drop you never learn about.
+
+    The model still says what it doubts, and that still sinks the
+    candidate. What changes is who stops the work: the page budget
+    rather than one model's yes or no.
+    """
+    body = '{"rankings": [{"id": "c0", "priority": 0.9}], "candidates_to_drop": ["c1"]}'
+    client = _StubClient([_resp(body)])
+    decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+
+    by_id = {d.candidate_id: d for d in decisions}
+    assert by_id["c1"].dropped is False
+    assert by_id["c1"].priority < by_id["c0"].priority
+    assert by_id["c1"].rationale == "llm_drop_demoted"
+
+
+async def test_a_rejection_still_ranks_below_a_candidate_nobody_judged():
+    """Silence is weaker evidence than an argument against."""
+    body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
+    client = _StubClient([_resp(body)])
+    decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+
+    by_id = {d.candidate_id: d for d in decisions}
+    assert by_id["c0"].rationale == "no_opinion"
+    assert by_id["c1"].priority < by_id["c0"].priority
+
+
+async def test_without_recall_a_rejection_is_still_a_removal():
+    body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
+    client = _StubClient([_resp(body)])
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+    assert {d.candidate_id for d in decisions if d.dropped} == {"c1"}

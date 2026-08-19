@@ -42,6 +42,10 @@ _MAX_FIELD_CHARS = 160
 # Priority for candidates the model did not mention at all: kept with a
 # neutral score (fail-open, see module docstring).
 _NEUTRAL_PRIORITY = 0.5
+# Below anything the model scores itself, so a rejection is read last
+# rather than not at all.  Not zero: a candidate nobody has an opinion
+# about should still outrank one the model argued against.
+_DEMOTED_PRIORITY = 0.01
 # At most this many previously-relevant pages are shown to the model.
 _MAX_RELEVANT = 5
 
@@ -77,9 +81,10 @@ class LLMRanker:
     never blocks on the LLM.
     """
 
-    def __init__(self, client: LLMClient, batch_size: int = _BATCH_SIZE) -> None:
+    def __init__(self, client: LLMClient, batch_size: int = _BATCH_SIZE, demote_dropped: bool = False) -> None:
         self._client = client
         self._batch_size = batch_size
+        self._demote_dropped = demote_dropped
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMRanker | None:
@@ -87,7 +92,7 @@ class LLMRanker:
         is nothing to call, so the stage is skipped entirely.  *budget*
         is shared across all LLM consumers of the task."""
         client = LLMClient.from_settings_if_configured(settings, budget=budget)
-        return cls(client) if client is not None else None
+        return cls(client, demote_dropped=settings.recall) if client is not None else None
 
     async def rank_batch(
         self,
@@ -148,13 +153,14 @@ class LLMRanker:
             raise LLMError(f"unparseable JSON for {len(chunk)} candidates after repair retry")
 
         tokens = resp.input_tokens + resp.output_tokens
-        decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow())
+        decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow(), demote_dropped=self._demote_dropped)
         kept = sum(1 for d in decisions if not d.dropped)
         logger.info(
-            "llm.rank batch=%d kept=%d dropped=%d model=%s tokens=+%d",
+            "llm.rank batch=%d kept=%d %s=%d model=%s tokens=+%d",
             len(chunk),
             kept,
-            len(chunk) - kept,
+            "demoted" if self._demote_dropped else "dropped",
+            sum(1 for d in decisions if d.rationale in ("llm_drop", "llm_drop_demoted")),
             resp.model,
             tokens,
         )
@@ -241,12 +247,21 @@ def _to_decisions(
     *,
     tokens_used: int,
     now: datetime.datetime,
+    demote_dropped: bool = False,
 ) -> list[RankDecision]:
     """Turn the parsed response into one decision per candidate.
 
     Candidates in rankings are kept with the model's priority (clamped
     to [0, 1]); candidates in candidates_to_drop are dropped; ids the
     model did not mention are kept with a neutral priority.
+
+    Under *demote_dropped* a rejection becomes the lowest priority there
+    is instead of a removal. What the model would have discarded is then
+    read last and only if the page budget reaches it, so the run's own
+    limit decides where to stop rather than one model's yes or no. It
+    costs a fetch for everything the model doubted, which is the point:
+    a wrong keep is a page you skim, a wrong drop is a result you never
+    learn existed.
     """
     scored: dict[str, tuple[float, str]] = {}
     raw_rankings = data.get("rankings")
@@ -292,7 +307,10 @@ def _to_decisions(
             if not rationale:
                 rationale = f"llm_priority={priority:.4f}"
         elif cid in drop_ids:
-            priority, dropped, rationale = 0.0, True, "llm_drop"
+            if demote_dropped:
+                priority, dropped, rationale = _DEMOTED_PRIORITY, False, "llm_drop_demoted"
+            else:
+                priority, dropped, rationale = 0.0, True, "llm_drop"
         else:
             priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
             missing += 1

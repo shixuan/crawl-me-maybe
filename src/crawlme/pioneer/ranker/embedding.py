@@ -261,9 +261,14 @@ class EmbeddingRanker:
         keep: int = 60,
         cache: EmbeddingCache | None = None,
         stats: RunStats | None = None,
+        demote_dropped: bool = False,
     ) -> None:
         self._embedder = embedder
         self._keep = keep
+        # Under recall the top-K becomes an ordering, not a cut: nothing
+        # below it is removed, only read later.  A promise that no stage
+        # discards has to hold at every stage to mean anything.
+        self._demote_dropped = demote_dropped
         self._cache = cache
         # Cache tallies land in the shared run stats when provided.
         self._stats = stats
@@ -301,7 +306,7 @@ class EmbeddingRanker:
                     candidate_id=c.candidate_id,
                     url_key=c.url.url_key,
                     priority=round(sim, 4),
-                    dropped=i >= self._keep,
+                    dropped=i >= self._keep and not self._demote_dropped,
                     ranker="embedding",
                     rationale=f"emb_sim={sim:.4f}",
                     decided_at=_utcnow(),

@@ -74,6 +74,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.result_dir = Path(args.result_dir)
     if args.ignore_robots:
         cfg.ignore_robots = True
+    if args.recall:
+        cfg.recall = True
     if args.embedding is not None:
         # "off" maps to "" (disabled); otherwise pass the provider through.
         cfg.embedding_provider = args.embedding if args.embedding != "off" else ""

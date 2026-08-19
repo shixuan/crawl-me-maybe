@@ -194,6 +194,7 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
             keep=settings.embedding_keep,
             cache=SqliteEmbeddingCache(Path(settings.result_dir) / "embedding_cache.db"),
             stats=stats,
+            demote_dropped=settings.recall,
         ),
         llm=llm,
     )

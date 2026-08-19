@@ -96,6 +96,12 @@ def main() -> None:
         default=None,
         help="Path to a Playwright storage_state JSON, for crawling as a logged-in session",
     )
+    run_p.add_argument(
+        "--recall",
+        action="store_true",
+        help="Miss less, read more: no stage discards a candidate, it only ranks it "
+        "last, and --max-pages decides where to stop. Costs roughly twice the tokens",
+    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(

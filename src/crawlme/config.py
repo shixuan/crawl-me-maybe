@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     #    mechanically but are not advertised in .env.example) ---------
     result_dir: Path = Path("results")
     ignore_robots: bool = False
+    # Trade tokens for coverage: no stage removes a candidate, it only
+    # ranks it last, and the page budget decides where to stop.  Off by
+    # default because a link graph without a hard filter grows without
+    # bound; a feed is finite, so the trade is available there.
+    recall: bool = False
     # "local" default: the full pipeline (rule + embedding) runs out of
     # the box.  "" (--embedding off) = rule-only v0.1 behavior.
     embedding_provider: str = "local"  # local | api | ""
