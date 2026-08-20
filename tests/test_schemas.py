@@ -41,224 +41,115 @@ def make_url() -> URL:
     )
 
 
-class TestCrawlGoal:
-    def test_minimal(self):
-        g = CrawlGoal(prompt="find AI funding news")
-        assert g.prompt == "find AI funding news"
-        assert g.goal_id
-        assert g.max_pages == 500
-
-    def test_defaults(self):
-        g = CrawlGoal(prompt="test")
-        assert g.max_tokens == 500_000
-        assert g.depth_limit == 5
-        assert g.domain_budget == 50
-
-    def test_prompt_required(self):
-        with pytest.raises(ValidationError):
-            CrawlGoal()  # type: ignore[call-arg]
+# -- defaults other modules rely on -----------------------------------------
+#
+# What each model does with a value it was handed is pydantic's job, not
+# this project's, so only the defaults are pinned here: they are the ones
+# another module reads without setting, and a careless edit to one is
+# silent everywhere else.
 
 
-class TestURL:
-    def test_minimal(self):
-        u = URL(raw="https://x.com", canonical="https://x.com", url_key="k1")
-        assert u.raw == "https://x.com"
-
-    def test_defaults(self):
-        u = URL(raw="r", canonical="c", url_key="k")
-        assert u.scheme == ""
-        assert u.host == ""
-        assert u.reg_domain == ""
+def test_crawl_goal_defaults():
+    g = CrawlGoal(prompt="find AI funding news")
+    assert g.prompt == "find AI funding news"
+    assert g.goal_id
+    assert (g.max_pages, g.max_tokens, g.depth_limit, g.domain_budget) == (500, 500_000, 5, 50)
 
 
-class TestRawLink:
-    def test_minimal(self):
-        r = RawLink(href="/page")
-        assert r.href == "/page"
-        assert r.anchor is None
-        assert r.position == 0
-
-    def test_full(self):
-        r = RawLink(href="/a", anchor="next", snippet="click here", parent_heading="News", position=5)
-        assert r.anchor == "next"
-        assert r.parent_heading == "News"
-        assert r.position == 5
+def test_crawl_goal_needs_a_prompt():
+    with pytest.raises(ValidationError):
+        CrawlGoal()  # type: ignore[call-arg]
 
 
-class TestCandidate:
-    def test_minimal(self):
-        c = Candidate(url=make_url())
-        assert c.candidate_id
-        assert c.status == "INGESTED"
-        assert c.depth == 0
-
-    def test_full(self):
-        c = Candidate(
-            url=make_url(),
-            anchor="link",
-            depth=3,
-            source_url_key="src",
-            status="BUFFERED",
-        )
-        assert c.depth == 3
-        assert c.status == "BUFFERED"
+def test_url_defaults():
+    u = URL(raw="r", canonical="c", url_key="k")
+    assert (u.scheme, u.host, u.reg_domain) == ("", "", "")
 
 
-class TestFrontierItem:
-    def test_minimal(self):
-        u = make_url()
-        fi = FrontierItem(url=u, url_key=u.url_key)
-        assert fi.item_id
-        assert fi.status == "QUEUED"
-        assert fi.score_source == "seed"
-        assert fi.priority == 0.0
-
-    def test_full(self):
-        u = make_url()
-        fi = FrontierItem(
-            url=u,
-            url_key=u.url_key,
-            priority=0.9,
-            score_source="rule",
-            depth=2,
-            seq=42,
-        )
-        assert fi.priority == 0.9
-        assert fi.score_source == "rule"
-        assert fi.seq == 42
+def test_raw_link_defaults():
+    r = RawLink(href="/page")
+    assert r.anchor is None
+    assert r.position == 0
 
 
-class TestFetchResult:
-    def test_minimal(self):
-        u = make_url()
-        fr = FetchResult(item_id="i1", url_key=u.url_key, url=u)
-        assert fr.status_code == 0
-        assert fr.raw == b""
-        assert fr.fetch_attempt == 1
-
-    def test_with_data(self):
-        u = make_url()
-        fr = FetchResult(
-            item_id="i1",
-            url_key=u.url_key,
-            url=u,
-            status_code=200,
-            raw=b"<html>",
-            fetch_duration_ms=150,
-        )
-        assert fr.status_code == 200
-        assert fr.raw == b"<html>"
-        assert fr.fetch_duration_ms == 150
+def test_candidate_defaults():
+    c = Candidate(url=make_url())
+    assert c.candidate_id
+    assert c.status == "INGESTED"
+    assert c.depth == 0
 
 
-class TestPage:
-    def test_minimal(self):
-        u = make_url()
-        p = Page(url_key=u.url_key, url=u)
-        assert p.page_id
-        assert p.extraction_status == "OK"
-
-    def test_degraded(self):
-        u = make_url()
-        p = Page(
-            url_key=u.url_key,
-            url=u,
-            extraction_status="DEGRADED",
-            title="Partial",
-        )
-        assert p.extraction_status == "DEGRADED"
-        assert p.title == "Partial"
+def test_frontier_item_defaults():
+    u = make_url()
+    fi = FrontierItem(url=u, url_key=u.url_key)
+    assert fi.item_id
+    assert (fi.status, fi.score_source, fi.priority) == ("QUEUED", "seed", 0.0)
 
 
-class TestAnalyzerFeedback:
-    def test_defaults(self):
-        af = AnalyzerFeedback()
-        assert af.classification == "UNKNOWN"
-        assert af.relevance_score == 0.0
-        assert af.endorsed_links == []
+def test_fetch_result_defaults():
+    u = make_url()
+    fr = FetchResult(item_id="i1", url_key=u.url_key, url=u)
+    assert (fr.status_code, fr.raw, fr.fetch_attempt) == (0, b"", 1)
 
 
-class TestAnalysisResult:
-    def test_minimal(self):
-        ar = AnalysisResult()
-        assert ar.analysis_id
-        assert ar.classification == "UNKNOWN"
-        assert ar.tokens_used == 0
-
-    def test_relevant(self):
-        ar = AnalysisResult(
-            classification="RELEVANT",
-            relevance_score=0.95,
-            summary="Great find",
-            tags=["AI", "funding"],
-        )
-        assert ar.classification == "RELEVANT"
-        assert ar.summary == "Great find"
-        assert len(ar.tags) == 2
+def test_page_defaults():
+    u = make_url()
+    p = Page(url_key=u.url_key, url=u)
+    assert p.page_id
+    assert p.extraction_status == "OK"
 
 
-class TestRankDecision:
-    def test_minimal(self):
-        rd = RankDecision(candidate_id="c1")
-        assert rd.candidate_id == "c1"
-        assert rd.ranker == "rule"
-
-    def test_dropped(self):
-        rd = RankDecision(candidate_id="c2", dropped=True, rationale="spam")
-        assert rd.dropped is True
-        assert rd.rationale == "spam"
+def test_analyzer_feedback_defaults():
+    af = AnalyzerFeedback()
+    assert (af.classification, af.relevance_score, af.endorsed_links) == ("UNKNOWN", 0.0, [])
 
 
-class TestRankHistorySummary:
-    def test_defaults(self):
-        rhs = RankHistorySummary()
-        assert rhs.pages_seen == 0
-        assert rhs.hub_domains == []
-
-    def test_with_data(self):
-        rhs = RankHistorySummary(
-            goal="AI news",
-            relevant_pages=[{"url": "x.com", "title": "X"}],
-            hub_domains=["github.com"],
-            pages_seen=10,
-            fetched=5,
-        )
-        assert len(rhs.relevant_pages) == 1
-        assert rhs.hub_domains == ["github.com"]
+def test_analysis_result_defaults():
+    ar = AnalysisResult()
+    assert ar.analysis_id
+    assert (ar.classification, ar.tokens_used) == ("UNKNOWN", 0)
 
 
-class TestCrawlTask:
-    def test_defaults(self):
-        ct = CrawlTask()
-        assert ct.task_id
-        assert ct.state == "CREATED"
-
-    def test_state_transition(self):
-        ct = CrawlTask(state="RUNNING")
-        assert ct.state == "RUNNING"
+def test_rank_decision_defaults():
+    rd = RankDecision(candidate_id="c1")
+    assert rd.ranker == "rule"
+    assert rd.dropped is False
 
 
-class TestFrontierSnapshot:
-    def test_minimal(self):
-        fs = FrontierSnapshot()
-        assert fs.snapshot_id
-        assert fs.visited == set()
+def test_rank_history_defaults():
+    rhs = RankHistorySummary()
+    assert (rhs.pages_seen, rhs.hub_domains) == (0, [])
 
-    def test_with_data(self):
-        u = make_url()
-        fi = FrontierItem(url=u, url_key=u.url_key, priority=0.5)
-        fs = FrontierSnapshot(
-            task_id="t1",
-            heap=[fi],
-            visited={"k1", "k2"},
-            budgets={"example.com": 5},
-            counters={"fetched": 42},
-        )
-        assert len(fs.heap) == 1
-        assert fs.heap[0].priority == 0.5
-        assert len(fs.visited) == 2
-        assert fs.budgets["example.com"] == 5
-        assert fs.counters["fetched"] == 42
+
+def test_crawl_task_defaults():
+    ct = CrawlTask()
+    assert ct.task_id
+    assert ct.state == "CREATED"
+
+
+def test_frontier_snapshot_defaults():
+    fs = FrontierSnapshot()
+    assert fs.snapshot_id
+    assert fs.visited == set()
+
+
+def test_frontier_snapshot_keeps_the_pre_ordering_shape():
+    """`heap` predates `ordering` and still has to load.
+
+    Checkpoints written by an older build carry their items here, and
+    dropping the field would turn every one of them into an empty
+    frontier that reports itself as a finished crawl.
+    """
+    u = make_url()
+    fs = FrontierSnapshot(
+        task_id="t1",
+        heap=[FrontierItem(url=u, url_key=u.url_key, priority=0.5)],
+        visited={"k1", "k2"},
+        budgets={"example.com": 5},
+    )
+    assert fs.heap[0].priority == 0.5
+    assert len(fs.visited) == 2
+    assert fs.budgets["example.com"] == 5
 
 
 def test_candidate_carries_its_own_text_and_signals():

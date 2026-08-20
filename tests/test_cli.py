@@ -433,7 +433,7 @@ def test_asking_for_a_file_without_naming_one_is_an_error(tmp_path, capsys):
     assert "--source-path" in capsys.readouterr().err
 
 
-def test_the_old_spelling_still_works(tmp_path):
+def test_old_seed_spelling_works(tmp_path):
     seeds = tmp_path / "seeds.json"
     seeds.write_text('["https://example.com/a"]')
     code, _ = _source_for(["--source", "file", "--source-path", str(seeds)], tmp_path)
@@ -486,7 +486,7 @@ def test_no_embedding_skips_the_stage_for_one_run(tmp_path):
     assert captured["cfg"].embedding_provider == ""
 
 
-def test_the_old_embedding_spelling_still_works(tmp_path):
+def test_old_embedding_spelling_works(tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--embedding", "off", "--result-dir", str(tmp_path)]
     with patch("sys.argv", argv):
@@ -498,7 +498,7 @@ def test_the_old_embedding_spelling_still_works(tmp_path):
     assert captured["cfg"].embedding_provider == ""
 
 
-def test_a_feed_run_has_no_per_domain_ceiling_by_default(tmp_path):
+def test_feed_run_defaults_to_no_ceiling(tmp_path):
     """It would be a total ceiling: one platform, one domain, every post."""
     captured: dict = {}
     argv = [
@@ -545,7 +545,7 @@ def test_asking_for_a_domain_budget_still_applies_it(tmp_path):
     assert captured["goal"].domain_budget == 5
 
 
-def test_a_link_graph_keeps_its_ceiling(tmp_path):
+def test_link_graph_keeps_its_ceiling(tmp_path):
     """One site can otherwise absorb a whole graph crawl."""
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
@@ -558,7 +558,7 @@ def test_a_link_graph_keeps_its_ceiling(tmp_path):
     assert captured["goal"].domain_budget == 50
 
 
-def test_a_result_target_reaches_the_goal(tmp_path):
+def test_result_target_reaches_the_goal(tmp_path):
     captured: dict = {}
     argv = [
         "crawl",

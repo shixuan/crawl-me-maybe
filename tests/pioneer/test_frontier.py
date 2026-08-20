@@ -138,7 +138,7 @@ async def test_pending_items_retry_after_gate(frontier):
 
 
 @pytest.mark.asyncio
-async def test_a_page_being_fetched_is_not_queued_again():
+async def test_page_in_flight_not_requeued():
     """It is neither waiting nor finished, and dedup has to cover both.
 
     Discovered again from another page mid-fetch, it would otherwise be
@@ -155,7 +155,7 @@ async def test_a_page_being_fetched_is_not_queued_again():
 
 
 @pytest.mark.asyncio
-async def test_a_checkpoint_keeps_the_queue():
+async def test_checkpoint_keeps_the_queue():
     """The snapshot used to copy one ordering's internals by name.
 
     With `heap` absent from a composed ordering's state, every
@@ -174,7 +174,7 @@ async def test_a_checkpoint_keeps_the_queue():
 
 
 @pytest.mark.asyncio
-async def test_a_checkpoint_written_before_orderings_carried_state_still_loads():
+async def test_checkpoint_without_ordering_state_loads():
     f = GatedFrontier()
     await f.push_batch([_item("old", 0.7)])
     snap = f.snapshot()
@@ -186,7 +186,7 @@ async def test_a_checkpoint_written_before_orderings_carried_state_still_loads()
 
 
 @pytest.mark.asyncio
-async def test_a_checkpoint_survives_the_trip_through_json():
+async def test_checkpoint_survives_json():
     """The path a real resume takes, which no test walked before.
 
     In memory dump() and load() agreed because both spoke models; on
@@ -207,7 +207,7 @@ async def test_a_checkpoint_survives_the_trip_through_json():
 
 
 @pytest.mark.asyncio
-async def test_a_cooling_item_is_counted_as_work(frontier):
+async def test_cooling_item_counts_as_work(frontier):
     """A pop that returns nothing does not mean there is nothing left.
 
     The fetch pump reads this to tell a frontier that is empty from one
@@ -224,7 +224,7 @@ async def test_a_cooling_item_is_counted_as_work(frontier):
 
 
 @pytest.mark.asyncio
-async def test_an_item_a_gate_refuses_is_not_cooling(frontier):
+async def test_refused_item_is_not_cooling(frontier):
     """A spent budget refuses the same item forever, so nobody should wait.
 
     Counting it as cooling would leave the pump asleep on an item that

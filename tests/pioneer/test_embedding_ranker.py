@@ -86,48 +86,50 @@ class _FailingEmbedder:
 # -- cosine ------------------------------------------------------------
 
 
-def test_cosine_identical():
-    assert _cosine([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == pytest.approx(1.0)
-
-
-def test_cosine_orthogonal():
-    assert _cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
-
-
-def test_cosine_mismatched_lengths():
-    assert _cosine([1.0, 0.0], [1.0]) == 0.0
-
-
-def test_cosine_zero_vector():
-    assert _cosine([0.0, 0.0], [1.0, 0.0]) == 0.0
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], 1.0),
+        ([1.0, 0.0], [0.0, 1.0], 0.0),
+        ([1.0, 0.0], [1.0], 0.0),  # mismatched lengths: no similarity, no crash
+        ([0.0, 0.0], [1.0, 0.0], 0.0),  # a zero vector has no direction
+    ],
+)
+def test_cosine(a, b, expected):
+    assert _cosine(a, b) == pytest.approx(expected)
 
 
 # -- text composition --------------------------------------------------
 
 
-def test_text_for_joins_link_context():
-    c = _candidate(anchor="deep learning", snippet="neural nets", parent_heading="Tutorials")
-    assert _text_for(c, None) == "deep learning neural nets Tutorials"
+@pytest.mark.parametrize(
+    ("kw", "ctx", "expected"),
+    [
+        (
+            {"anchor": "deep learning", "snippet": "neural nets", "parent_heading": "Tutorials"},
+            None,
+            "deep learning neural nets Tutorials",
+        ),
+        (
+            {"anchor": "click here", "snippet": None, "parent_heading": None, "source_url_key": "src1"},
+            {"src1": {"title": "Deep Learning Papers", "link_count": 5}},
+            "click here Deep Learning Papers",
+        ),
+        # Nothing but the URL is still something to embed.
+        (
+            {"anchor": None, "snippet": None, "parent_heading": None, "raw": "https://x.com/only-hope"},
+            None,
+            "https://x.com/only-hope",
+        ),
+    ],
+)
+def test_text_for(kw, ctx, expected):
+    assert _text_for(_candidate(**kw), ctx) == expected
 
 
-def test_text_for_appends_source_title():
-    c = _candidate(anchor="click here", snippet=None, parent_heading=None, source_url_key="src1")
-    ctx = {"src1": {"title": "Deep Learning Papers", "link_count": 5}}
-    assert _text_for(c, ctx) == "click here Deep Learning Papers"
-
-
-def test_text_for_falls_back_to_url():
-    c = _candidate(anchor=None, snippet=None, parent_heading=None, raw="https://x.com/only-hope")
-    assert _text_for(c, None) == "https://x.com/only-hope"
-
-
-def test_text_for_truncates_long_texts():
-    long_anchor = "word " * 500  # 2500 chars
-    c = _candidate(anchor=long_anchor, snippet=None, parent_heading=None)
+def test_truncate():
+    c = _candidate(anchor="word " * 500, snippet=None, parent_heading=None)  # 2500 chars
     assert len(_text_for(c, None)) == 512
-
-
-def test_truncate_short_text_untouched():
     assert _truncate("hello world") == "hello world"
 
 
@@ -330,7 +332,7 @@ def test_local_embedder_model_name():
     assert e2.model_name.startswith("local/BAAI/bge-small-en-v1.5@fastembed")
 
 
-def test_local_embedder_constructs_without_importing_fastembed():
+def test_local_embedder_defers_import():
     """Construction must stay lazy: no heavy import at init time."""
     e = FastEmbedEmbedder()
     assert e._fm is None
@@ -363,18 +365,11 @@ def test_local_embedder_real_encode():
         assert len(v) > 0
 
 
-def test_normalize_unit_vector():
+@pytest.mark.parametrize(("raw", "expected"), [([3.0, 4.0], [0.6, 0.8]), ([0.0, 0.0], [0.0, 0.0])])
+def test_normalize(raw, expected):
     import numpy as np
 
-    v = _normalize(np.array([3.0, 4.0]))
-    assert v == pytest.approx([0.6, 0.8], abs=1e-6)
-
-
-def test_normalize_zero_vector():
-    import numpy as np
-
-    v = _normalize(np.array([0.0, 0.0]))
-    assert v == [0.0, 0.0]
+    assert _normalize(np.array(raw)) == pytest.approx(expected, abs=1e-6)
 
 
 # -- OpenAICompatibleEmbedder -------------------------------------------
@@ -467,87 +462,45 @@ async def test_embedder_single_batch_under_limit():
 # -- E3: retries -------------------------------------------------------
 
 
+_OK = {"data": [{"index": 0, "embedding": [1.0]}]}
+
+
+@pytest.mark.parametrize(
+    ("statuses", "calls", "raises"),
+    [
+        ([500, 503, 200], 3, False),  # initial + two retries, then through
+        ([429, 200], 2, False),  # rate limiting is transient too
+        ([500], 3, True),  # never recovers: initial + two retries, then give up
+        ([400], 1, True),  # permanent: no retry at all
+    ],
+)
 @pytest.mark.asyncio
-async def test_embedder_retries_transient_then_succeeds(monkeypatch):
+async def test_embedder_retries(monkeypatch, statuses, calls, raises):
     import crawlme.pioneer.ranker.embedding as embedding_module
 
     monkeypatch.setattr(embedding_module, "_EMBED_RETRY_BASE", 0.0)  # no sleeping in tests
-
     handler, state = _counting_handler(
-        [
-            httpx.Response(500, json={"error": "boom"}),
-            httpx.Response(503, json={"error": "boom"}),
-            httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]}),
-        ]
+        [httpx.Response(code, json=_OK if code == 200 else {"error": "boom"}) for code in statuses]
     )
-    transport = httpx.MockTransport(handler)
-    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
+    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=httpx.MockTransport(handler))
 
-    vecs = await embedder.embed(["x"])
-    assert vecs == [[1.0]]
-    assert state["calls"] == 3  # 1 initial + 2 retries
-
-
-@pytest.mark.asyncio
-async def test_embedder_retries_429(monkeypatch):
-    import crawlme.pioneer.ranker.embedding as embedding_module
-
-    monkeypatch.setattr(embedding_module, "_EMBED_RETRY_BASE", 0.0)
-
-    handler, state = _counting_handler(
-        [
-            httpx.Response(429, json={"error": "rate limited"}),
-            httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]}),
-        ]
-    )
-    transport = httpx.MockTransport(handler)
-    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
-
-    await embedder.embed(["x"])
-    assert state["calls"] == 2
+    if raises:
+        with pytest.raises(httpx.HTTPStatusError):
+            await embedder.embed(["x"])
+    else:
+        assert await embedder.embed(["x"]) == [[1.0]]
+    assert state["calls"] == calls
 
 
 @pytest.mark.asyncio
-async def test_embedder_gives_up_after_retries(monkeypatch):
-    import crawlme.pioneer.ranker.embedding as embedding_module
-
-    monkeypatch.setattr(embedding_module, "_EMBED_RETRY_BASE", 0.0)
-
-    handler, state = _counting_handler([httpx.Response(500, json={"error": "boom"})])
-    transport = httpx.MockTransport(handler)
-    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await embedder.embed(["x"])
-    assert state["calls"] == 3  # initial + 2 retries, then give up
-
-
-@pytest.mark.asyncio
-async def test_embedder_no_retry_on_permanent_4xx():
-    """400 is permanent: fail immediately, no retry."""
-    handler, state = _counting_handler([httpx.Response(400, json={"error": "bad request"})])
-    transport = httpx.MockTransport(handler)
-    embedder = OpenAICompatibleEmbedder(model="m", api_key="k", transport=transport)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await embedder.embed(["x"])
-    assert state["calls"] == 1
-
-
-@pytest.mark.asyncio
-async def test_aclose_closes_cache():
+async def test_aclose():
     """aclose releases the vector cache, whose real implementation
-    owns an aiosqlite connection with a worker thread."""
+    owns an aiosqlite connection with a worker thread.  Without one
+    there is nothing to release and nothing to raise about."""
     cache = _DictCache()
-    ranker = EmbeddingRanker(_StubEmbedder({}), cache=cache)
-    await ranker.aclose()
+    await EmbeddingRanker(_StubEmbedder({}), cache=cache).aclose()
     assert cache.closed
-
-
-@pytest.mark.asyncio
-async def test_aclose_without_cache_is_noop():
-    ranker = EmbeddingRanker(_StubEmbedder({}))
-    await ranker.aclose()
+    await EmbeddingRanker(_StubEmbedder({})).aclose()
 
 
 @pytest.mark.asyncio
@@ -571,7 +524,7 @@ async def test_stats_record_cache_hits_and_misses():
     assert stats.embedding_cache_misses == misses_after_first
 
 
-def test_embedded_text_prefers_the_candidates_own_text():
+def test_embedding_prefers_own_text():
     """A caption beats the proxies that stand in for one when absent."""
     from crawlme.pioneer.ranker.embedding import _text_for
     from crawlme.schemas import URL, Candidate

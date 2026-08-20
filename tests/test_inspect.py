@@ -172,7 +172,7 @@ async def test_cmd_inspect_exports_csv(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_json_export_carries_the_extracted_fields_and_their_evidence(tmp_path, monkeypatch, capsys):
+async def test_json_export_carries_evidence(tmp_path, monkeypatch, capsys):
     """The json form is what something other than a person reads.
 
     A value without the page text behind it is a claim; with it, whoever

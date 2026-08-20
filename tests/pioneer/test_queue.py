@@ -89,7 +89,7 @@ async def test_stop_ends_the_scan_without_consuming():
 
 
 @pytest.mark.asyncio
-async def test_scan_skips_a_dropped_item_and_takes_the_next():
+async def test_scan_skips_dropped_items():
     src = PriorityQueue()
     await src.add([_item("bad", 0.9), _item("good", 0.1)])
     gate = lambda item, now: Gate.DROP if item.url_key == "bad" else Gate.TAKE  # noqa: E731
@@ -97,7 +97,7 @@ async def test_scan_skips_a_dropped_item_and_takes_the_next():
 
 
 @pytest.mark.asyncio
-async def test_drain_recovers_a_parked_item_on_a_later_call():
+async def test_drain_recovers_a_parked_item():
     """The retry loop exists for items parked by an earlier call.
 
     Within one call a deferred item stays deferred, otherwise a gate that
@@ -115,7 +115,7 @@ async def test_drain_recovers_a_parked_item_on_a_later_call():
 
 
 @pytest.mark.asyncio
-async def test_a_gate_that_always_defers_terminates():
+async def test_always_deferring_gate_terminates():
     """Regression: this looped forever before deferrals were held back."""
     src = PriorityQueue()
     past = _now() - datetime.timedelta(seconds=1)
@@ -160,7 +160,7 @@ async def test_discard_removes_a_key_from_the_index():
 
 
 @pytest.mark.asyncio
-async def test_a_discarded_item_stops_counting():
+async def test_discarded_item_stops_counting():
     """A heap cannot delete from the middle, so the entry stays behind.
 
     Counting it keeps an emptied frontier looking busy, and the run then
@@ -173,7 +173,7 @@ async def test_a_discarded_item_stops_counting():
 
 
 @pytest.mark.asyncio
-async def test_work_in_flight_does_not_count_as_waiting():
+async def test_in_flight_is_not_waiting():
     src = PriorityQueue()
     await src.add([_item("a"), _item("b")])
     await src.take(_now(), _always(Gate.TAKE))
@@ -181,7 +181,7 @@ async def test_work_in_flight_does_not_count_as_waiting():
 
 
 @pytest.mark.asyncio
-async def test_the_count_survives_a_scan_past_a_discarded_item():
+async def test_count_survives_a_discarded_item():
     """The tombstone is cleared where it is found, and only once."""
     src = PriorityQueue()
     await src.add([_item("a", priority=0.9), _item("b", priority=0.1)])
@@ -195,7 +195,7 @@ async def test_the_count_survives_a_scan_past_a_discarded_item():
 
 
 @pytest.mark.asyncio
-async def test_an_item_in_flight_still_counts_as_held():
+async def test_item_in_flight_counts_as_held():
     """Dedup asks contains() whether a URL is already spoken for.
 
     Forgetting an item the moment it is handed out lets the same page be
@@ -209,17 +209,6 @@ async def test_an_item_in_flight_still_counts_as_held():
 
 
 @pytest.mark.asyncio
-async def test_settling_an_item_in_flight_does_not_go_negative():
-    """Its heap entry left when it was taken; there is none to discount."""
-    src = PriorityQueue()
-    await src.add([_item("a"), _item("b")])
-    taken = await src.take(_now(), _always(Gate.TAKE))
-    assert taken is not None
-    src.discard(taken.url_key)
-    assert src.size == 1
-
-
-@pytest.mark.asyncio
 async def test_discarding_a_cooling_item_removes_it():
     src = PriorityQueue()
     await src.add([_item("a")])
@@ -230,7 +219,7 @@ async def test_discarding_a_cooling_item_removes_it():
 
 
 @pytest.mark.asyncio
-async def test_settling_an_item_never_drives_the_count_below_zero():
+async def test_settling_never_goes_negative():
     """A negative size is not a cosmetic error.
 
     The rank pump wakes on "the frontier is empty", written as size == 0.

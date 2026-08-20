@@ -29,28 +29,28 @@ def test_every_row_answers_every_question():
         assert field.default_factory is dataclasses.MISSING, f"{field.name} may not have a default"
 
 
-def test_a_row_that_forgets_a_field_will_not_load():
+def test_row_missing_a_field_fails_to_load():
     with pytest.raises(TypeError):
         Traversal(name="half", adapter=None, factors=GRAPH_FACTORS)  # type: ignore[call-arg]
 
 
-def test_a_traversal_is_data_only():
+def test_traversal_is_data_only():
     """Behaviour on a row is how a table becomes the place special cases go."""
     methods = [n for n in vars(Traversal) if not n.startswith("__") and callable(getattr(Traversal, n, None))]
     assert methods == [], f"Traversal grew behaviour: {methods}"
 
 
 @pytest.mark.parametrize("name", list(TRAVERSALS))
-def test_a_row_is_named_after_its_key(name):
+def test_row_named_after_its_key(name):
     assert TRAVERSALS[name].name == name
 
 
-def test_an_unknown_source_kind_reads_as_a_link_graph():
+def test_unknown_source_kind_is_a_link_graph():
     assert traversal_for("something-else") is DEFAULT
     assert traversal_for("") is DEFAULT
 
 
-def test_the_feed_flag_offers_exactly_the_rows_with_an_adapter(capsys):
+def test_feed_flag_offers_adapter_rows(capsys):
     """Otherwise the flag accepts a value the factory cannot build."""
     assert feed_kinds() == sorted(n for n, t in TRAVERSALS.items() if t.adapter is not None)
     with patch("sys.argv", ["crawl", "run", "--help"]), pytest.raises(SystemExit):
@@ -60,26 +60,26 @@ def test_the_feed_flag_offers_exactly_the_rows_with_an_adapter(capsys):
     assert sorted(offered.group(1).split(",")) == feed_kinds()
 
 
-def test_the_settings_default_names_a_row():
+def test_settings_default_names_a_row():
     assert Settings().source_kind in TRAVERSALS
 
 
 #: the choices themselves --------------------------------------------------
 
 
-def test_a_feed_has_no_per_domain_ceiling():
+def test_feed_has_no_domain_ceiling():
     """Every post shares the platform's host, so the ceiling is a total."""
     assert TRAVERSALS["instagram"].domain_budget == 0
     assert TRAVERSALS["links"].domain_budget > 0
 
 
-def test_a_feed_is_two_levels_deep():
+def test_feed_is_two_levels_deep():
     """A listing and its posts, and there is no third."""
     assert TRAVERSALS["instagram"].depth_limit == 1
     assert TRAVERSALS["links"].depth_limit > 1
 
 
-def test_a_feed_never_ends_a_run_on_age():
+def test_feed_never_ends_on_age():
     """It is ordered per account and never as a whole."""
     assert TRAVERSALS["instagram"].time_horizon is False
     assert TRAVERSALS["links"].time_horizon is True

@@ -32,7 +32,7 @@ def _no_real_sleeping(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_first_attempt_that_works_is_not_retried():
+async def test_first_attempt_not_retried():
     calls = []
 
     async def attempt(n):
@@ -44,7 +44,7 @@ async def test_a_first_attempt_that_works_is_not_retried():
 
 
 @pytest.mark.asyncio
-async def test_a_transient_failure_is_retried_until_it_succeeds():
+async def test_transient_failure_retried():
     calls = []
 
     async def attempt(n):
@@ -67,7 +67,7 @@ async def test_exhausting_the_retries_raises_a_permanent_error():
 
 
 @pytest.mark.asyncio
-async def test_a_permanent_error_is_not_retried():
+async def test_permanent_error_not_retried():
     """A 404 does not become a 200 by asking again."""
     calls = []
 
@@ -95,7 +95,7 @@ async def test_classification_belongs_to_the_caller():
 
 
 @pytest.mark.asyncio
-async def test_the_original_failure_is_kept_as_the_cause():
+async def test_original_failure_kept_as_cause():
     async def attempt(n):
         raise TimeoutError("the real reason")
 
@@ -105,7 +105,7 @@ async def test_the_original_failure_is_kept_as_the_cause():
 
 
 @pytest.mark.asyncio
-async def test_a_single_attempt_configuration_still_runs_once():
+async def test_single_attempt_runs_once():
     calls = []
 
     async def attempt(n):

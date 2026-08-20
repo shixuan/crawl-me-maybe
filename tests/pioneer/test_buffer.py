@@ -170,7 +170,7 @@ def _seeded(key: str, seed: str) -> Candidate:
 
 
 @pytest.mark.asyncio
-async def test_a_drain_takes_a_turn_from_each_seed():
+async def test_drain_takes_a_turn_per_seed():
     """This is the gate that binds: what leaves here is what gets scored.
 
     First-come-first-served let one account's listing fill the queue, and
@@ -195,7 +195,7 @@ async def test_within_one_seed_the_oldest_goes_first():
 
 
 @pytest.mark.asyncio
-async def test_a_seed_that_runs_out_gives_its_turns_away():
+async def test_exhausted_seed_gives_up_its_turns():
     buf = RoundRobinBuffer()
     await buf.add([_seeded("only_a", "a")])
     await buf.add([_seeded(f"b{i}", "b") for i in range(3)])
@@ -221,7 +221,7 @@ async def test_candidates_without_a_seed_share_one_turn():
 
 
 @pytest.mark.asyncio
-async def test_more_seeds_than_a_batch_still_all_get_turns():
+async def test_more_seeds_than_a_batch():
     """A batch is often smaller than the seed list.
 
     Restarting the rotation at the front each time would let the first
@@ -241,7 +241,7 @@ async def test_more_seeds_than_a_batch_still_all_get_turns():
 
 
 @pytest.mark.asyncio
-async def test_the_rotation_resumes_where_it_stopped():
+async def test_rotation_resumes_where_it_stopped():
     buf = RoundRobinBuffer()
     await buf.add([_seeded(f"{s}1", s) for s in ("a", "b", "c")])
     await buf.add([_seeded(f"{s}2", s) for s in ("a", "b", "c")])

@@ -38,48 +38,40 @@ def scorer() -> RuleRanker:
 # -- helpers -----------------------------------------------------------
 
 
-def test_jaccard_identical():
-    assert _jaccard({"hello", "world"}, ["hello", "world"]) == 1.0
-
-
-def test_jaccard_no_overlap():
-    assert _jaccard({"foo"}, ["bar"]) == 0.0
-
-
-def test_jaccard_empty_both():
-    assert _jaccard(set(), []) == 0.5
-
-
-def test_jaccard_empty_text_with_keywords():
-    """Empty text with keywords present should stay neutral (no signal)."""
-    assert _jaccard(set(), ["deep", "learning"]) == 0.5
+@pytest.mark.parametrize(
+    ("text_words", "keywords", "expected"),
+    [
+        ({"hello", "world"}, ["hello", "world"], 1.0),
+        ({"foo"}, ["bar"], 0.0),
+        (set(), [], 0.5),
+        # Empty text with keywords present is no signal, not a bad one.
+        (set(), ["deep", "learning"], 0.5),
+    ],
+)
+def test_jaccard(text_words, keywords, expected):
+    assert _jaccard(text_words, keywords) == expected
 
 
 def test_jaccard_phrase_bonus():
-    score = _jaccard(
-        {"machine", "learning"},
-        ["machine learning"],
-        "machine learning",
-    )
-    assert score > 0.5  # bonus applied
+    assert _jaccard({"machine", "learning"}, ["machine learning"], "machine learning") > 0.5
 
 
 def test_words_tokenizes():
     assert _words("Hello, World! 123") == {"hello", "world", "123"}
 
 
-def test_path_signal_negative():
-    assert _path_signal("https://x.com/about") == 0.0
-    assert _path_signal("https://x.com/login") == 0.0
-
-
-def test_path_signal_positive():
-    assert _path_signal("https://x.com/docs/api") == 1.0
-    assert _path_signal("https://x.com/blog/post") == 1.0
-
-
-def test_path_signal_neutral():
-    assert _path_signal("https://x.com/products/widget") == 0.5
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://x.com/about", 0.0),
+        ("https://x.com/login", 0.0),
+        ("https://x.com/docs/api", 1.0),
+        ("https://x.com/blog/post", 1.0),
+        ("https://x.com/products/widget", 0.5),
+    ],
+)
+def test_path_signal(url, expected):
+    assert _path_signal(url) == expected
 
 
 # -- scoring -----------------------------------------------------------
@@ -251,7 +243,7 @@ def _feed_ctx(keywords: list[str], now: datetime.datetime | None = None) -> Scor
     )
 
 
-def test_a_caption_written_in_decorative_letters_still_matches():
+def test_decorative_letters_still_match():
     """Captions use mathematical alphanumerics for emphasis.
 
     Bold "Giveaway" shares no code point with "giveaway", so without
@@ -267,26 +259,26 @@ def test_a_caption_written_in_decorative_letters_still_matches():
     assert fancy == plain
 
 
-def test_a_post_that_says_nothing_relevant_scores_below_one_that_does():
+def test_irrelevant_post_scores_lower():
     ctx = _feed_ctx(["free", "tea"])
     hit = _text_match(_candidate(text="free tea for members this week"), ctx)
     miss = _text_match(_candidate(text="meet the artists of our september market"), ctx)
     assert hit > miss
 
 
-def test_recency_prefers_newer_without_excluding_older():
+def test_recency_prefers_newer():
     now = datetime.datetime(2026, 8, 19, tzinfo=datetime.timezone.utc)
     fresh = _recency(_candidate(posted_at=now - datetime.timedelta(days=1)), _feed_ctx([], now))
     stale = _recency(_candidate(posted_at=now - datetime.timedelta(days=30)), _feed_ctx([], now))
     assert fresh > stale > 0, "older ranks later, never nowhere"
 
 
-def test_an_undated_post_scores_neutral():
+def test_undated_post_scores_neutral():
     """Absent is not old, the same rule the time window follows."""
     assert _recency(_candidate(), _feed_ctx([])) == 0.5
 
 
-def test_the_feed_set_leaves_out_what_would_be_a_constant():
+def test_feed_set_omits_constants():
     """Every post shares one domain, and no anchor or position exists."""
     names = {f.name for f in FEED_FACTORS}
     assert names == {"text_match", "recency"}

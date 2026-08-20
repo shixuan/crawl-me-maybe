@@ -188,12 +188,12 @@ def test_create_scheduler_builds_steering_from_settings(tmp_path: Path, monkeypa
     assert Path(sched._steering._prior_store._db_path) == tmp_path / "feedback.db"
 
 
-def test_a_feed_run_scores_on_the_feed_factors():
+def test_feed_run_uses_feed_factors():
     """Five of the graph set's seven factors are constants for a post."""
     ranker = _build_ranker(Settings(source_kind="instagram", embedding_provider="local"), llm=None, stats=None)
     assert ranker._rule._factors == FEED_FACTORS
 
 
-def test_a_graph_run_keeps_the_graph_factors():
+def test_graph_run_uses_graph_factors():
     ranker = _build_ranker(Settings(embedding_provider="local"), llm=None, stats=None)
     assert ranker._rule._factors == GRAPH_FACTORS

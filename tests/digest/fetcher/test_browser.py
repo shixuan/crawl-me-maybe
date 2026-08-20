@@ -37,27 +37,24 @@ def test_storage_state_loads(tmp_path: Path) -> None:
     assert _load_storage_state(str(p))["cookies"][0]["name"] == "sessionid"
 
 
-def test_storage_state_missing_file_fails_loudly(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        (None, "not found"),
+        ("not json at all", "readable JSON"),
+        (json.dumps({"cookies": [], "origins": []}), "no cookies"),
+    ],
+)
+def test_storage_state_fails_loudly(tmp_path: Path, content, match) -> None:
     """Silently falling back to anonymous would crawl a login wall.
 
     On a login-walled platform that means a few hundred fetches of the
     same sign-in page and a conclusion that the site is empty.
     """
-    with pytest.raises(FetchError, match="not found"):
-        _load_storage_state(str(tmp_path / "nope.json"))
-
-
-def test_storage_state_bad_json_fails_loudly(tmp_path: Path) -> None:
     p = tmp_path / "session.json"
-    p.write_text("not json at all")
-    with pytest.raises(FetchError, match="readable JSON"):
-        _load_storage_state(str(p))
-
-
-def test_storage_state_without_cookies_fails_loudly(tmp_path: Path) -> None:
-    p = tmp_path / "session.json"
-    p.write_text(json.dumps({"cookies": [], "origins": []}))
-    with pytest.raises(FetchError, match="no cookies"):
+    if content is not None:
+        p.write_text(content)
+    with pytest.raises(FetchError, match=match):
         _load_storage_state(str(p))
 
 
@@ -157,7 +154,7 @@ async def test_renders_javascript_and_reuses_the_browser(js_site: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_transient_navigation_failure_is_retried(monkeypatch):
+async def test_transient_navigation_retried(monkeypatch):
     """Regression: the browser fetcher had no retry at all.
 
     Rendering fails transiently more often than an HTTP GET does, so the
@@ -183,7 +180,7 @@ async def test_a_transient_navigation_failure_is_retried(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_permanent_browser_error_is_not_retried(monkeypatch):
+async def test_permanent_browser_error_not_retried(monkeypatch):
     fetcher = PlaywrightFetcher(max_retries=3)
     calls = []
 
@@ -252,7 +249,7 @@ async def test_payloads_stop_at_the_size_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_body_that_is_gone_is_not_an_error() -> None:
+async def test_missing_body_is_not_an_error() -> None:
     """A missing payload is a weaker crawl, never a failed one."""
 
     class _Gone:
@@ -330,7 +327,7 @@ async def test_scrolling_keeps_asking_while_the_page_grows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_burst_of_first_fetches_starts_one_browser() -> None:
+async def test_concurrent_fetches_start_one_browser() -> None:
     """The pump pops several seeds at once and they all arrive here.
 
     Unguarded, every one of them found no context and launched a

@@ -63,7 +63,7 @@ def _visible_flags() -> set[str]:
     return out
 
 
-def test_a_setting_is_documented_in_one_place_only() -> None:
+def test_setting_documented_once() -> None:
     """A flag and an env line for the same knob leave the reader guessing."""
     flags = _visible_flags()
     both = {n for n in _documented() if n.replace("_", "-") in flags} - _LOG_LEVEL_IS_A_DOCUMENTED_EXCEPTION

@@ -13,7 +13,7 @@ def _item(**kw) -> FeedItem:
     return FeedItem(**base)  # type: ignore[arg-type]
 
 
-def test_caption_lands_in_text_and_the_rest_in_signals():
+def test_caption_lands_in_text():
     """The funnel reads text, so the post's own words must land there."""
     c = _item(
         text="free drink today",
@@ -38,7 +38,7 @@ def test_domain_comes_from_the_permalink():
     assert _item().to_candidate().url.reg_domain == "instagram.com"
 
 
-def test_an_item_without_text_still_converts():
+def test_item_without_text_converts():
     c = _item().to_candidate()
     assert c.text == ""
     assert c.signals == {"platform": "instagram"}

@@ -219,25 +219,21 @@ async def test_stop_sets_stopping():
 
 
 @pytest.mark.asyncio
-async def test_aclose_closes_ranker_and_storage():
-    """Shutdown must release stage-held resources (drain tasks, caches)."""
+async def test_aclose():
+    """Shutdown must release every stage-held resource.
+
+    Each of these owns something that outlives the run: drain tasks and
+    caches in the ranker, a prior DB in the steering facade.  A leaked
+    aiosqlite connection keeps its worker thread, and the process hangs
+    instead of exiting.
+    """
     ranker = MagicMock(aclose=AsyncMock())
     storage = MagicMock(close=AsyncMock())
-    sched = _make_sched(ranker=ranker, storage=storage)
+    steering = MagicMock(aclose=AsyncMock())
+    sched = _make_sched(ranker=ranker, storage=storage, steering=steering)
     await sched.aclose()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_aclose_closes_steering():
-    """The steering facade flushes its prior DB; a leaked connection
-    would keep the process alive (the aiosqlite worker-thread hang)."""
-    steering = MagicMock(aclose=AsyncMock())
-    ranker = MagicMock(aclose=AsyncMock())
-    storage = MagicMock(close=AsyncMock())
-    sched = _make_sched(steering=steering, ranker=ranker, storage=storage)
-    await sched.aclose()
     steering.aclose.assert_awaited_once()
 
 
@@ -306,36 +302,28 @@ def _page_published(when: datetime.datetime | None) -> Page:
     return Page(url_key="k1", url=url, published_at=when)
 
 
-def test_stale_streak_ignores_pages_without_since():
+_SINCE = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
+_STALE = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+_FRESH = datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("since", "published", "expected"),
+    [
+        # No window asked for: the streak stays dormant whatever arrives.
+        (None, [_STALE], 0),
+        (_SINCE, [_STALE] * 3, 3),
+        (_SINCE, [_STALE, _FRESH], 0),
+        # Silence is not evidence: it neither advances nor resets.
+        (_SINCE, [_STALE, None], 1),
+    ],
+)
+def test_stale_streak(since, published, expected):
     sched = _make_sched()
-    sched._counters.since = None
-    sched._note_page_age(_page_published(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)))
-    assert sched._counters.stale_streak == 0
-
-
-def test_stale_streak_advances_on_old_pages():
-    sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
-    for _ in range(3):
-        sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
-    assert sched._counters.stale_streak == 3
-
-
-def test_stale_streak_resets_on_fresh_page():
-    sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
-    sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
-    sched._note_page_age(_page_published(datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)))
-    assert sched._counters.stale_streak == 0
-
-
-def test_stale_streak_untouched_by_undated_page():
-    """Silence is not evidence, so it neither advances nor resets."""
-    sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
-    sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
-    sched._note_page_age(_page_published(None))
-    assert sched._counters.stale_streak == 1
+    sched._counters.since = since
+    for at in published:
+        sched._note_page_age(_page_published(at))
+    assert sched._counters.stale_streak == expected
 
 
 def test_page_context_ignores_empty_url_key():
@@ -427,7 +415,7 @@ async def test_inject_endorsed_respects_prefilter():
 
 
 @pytest.mark.asyncio
-async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
+async def test_harvest_timeout_keeps_the_page(monkeypatch):
     """A page whose link extraction hangs must not stall the crawl.
 
     The page still counts as fetched (it was fetched, extracted, and
@@ -563,7 +551,7 @@ async def test_fetch_slot_is_released_before_returning():
 
 
 @pytest.mark.asyncio
-async def test_fetch_pump_waits_quietly_while_a_batch_is_being_ranked(caplog):
+async def test_fetch_pump_quiet_while_ranking(caplog):
     """The rank pump is inside a rank call: it cannot act on a wake.
 
     Waking it every tick produced a line of log per tick for the whole
@@ -603,12 +591,12 @@ async def test_fetch_pump_waits_quietly_while_a_batch_is_being_ranked(caplog):
         ("WWW.Example.COM", "https://WWW.Example.COM"),
     ],
 )
-def test_an_endorsed_link_that_is_a_link_survives(link, expected):
+def test_endorsed_link_survives(link, expected):
     assert _endorsed_href(link) == expected
 
 
 @pytest.mark.parametrize("link", ["mollyteaca.com", "click here", "", "   ", "see our site"])
-def test_an_endorsement_that_is_not_a_link_is_dropped(link):
+def test_endorsement_that_is_not_a_link_dropped(link):
     """Resolving it against the page would fabricate a URL.
 
     Instagram answers 200 for any path, so the fabricated page looked
@@ -620,7 +608,7 @@ def test_an_endorsement_that_is_not_a_link_is_dropped(link):
 #: end-of-run accounting ---------------------------------------------------
 
 
-def test_a_run_that_stops_holding_work_says_so(caplog):
+def test_unfinished_run_says_so(caplog):
     """Stopping early and finishing look identical from the outside.
 
     A missing session gave COMPLETED with no pages; a per-domain ceiling
@@ -641,7 +629,7 @@ def test_a_run_that_stops_holding_work_says_so(caplog):
     assert "20 candidates were never read" in caplog.text
 
 
-def test_a_run_that_read_everything_stays_quiet(caplog):
+def test_complete_run_stays_quiet(caplog):
     sched = _make_sched()
     sched._counters = CrawlCounters(pages_fetched=10)
     sched._frontier.size = 0
@@ -654,7 +642,7 @@ def test_a_run_that_read_everything_stays_quiet(caplog):
     assert "task.unfinished" not in caplog.text
 
 
-def test_the_rank_drain_stays_near_one_ranker_call():
+def test_rank_drain_matches_one_call():
     """Nothing in a drained batch is fetchable until all of it is scored.
 
     At 100 the ranker split the batch into nine calls of its own; the
@@ -668,7 +656,7 @@ def test_the_rank_drain_stays_near_one_ranker_call():
     assert _RANK_BATCH_SIZE <= _BATCH_SIZE, "a drain larger than one call reintroduces the wait"
 
 
-def test_a_relevant_judgement_counts_toward_the_target():
+def test_relevant_judgement_counts():
     """The tally has to come from the same place the window does.
 
     Both answer questions about the same judgement: the window whether
@@ -684,7 +672,7 @@ def test_a_relevant_judgement_counts_toward_the_target():
 
 
 @pytest.mark.asyncio
-async def test_fetch_pump_waits_out_a_cooldown_instead_of_declaring_the_end(caplog):
+async def test_cooldown_is_not_exhaustion(caplog):
     """Nothing poppable right now is not the same as nothing left.
 
     A clock that stepped backwards on the host left the only seed with a
@@ -712,7 +700,7 @@ async def test_fetch_pump_waits_out_a_cooldown_instead_of_declaring_the_end(capl
 
 
 @pytest.mark.asyncio
-async def test_a_refused_page_ends_the_run_and_a_gone_one_does_not():
+async def test_refusal_stops_the_run():
     """The engine has to act on the difference, not just record it.
 
     Before this the harvester's verdict reached a log line and stopped

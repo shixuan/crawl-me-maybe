@@ -108,7 +108,7 @@ async def test_keywords_sanitized():
     assert enhanced.keywords == ["ml", "papers", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10", "k11", "k12"]
 
 
-async def test_missing_keywords_fall_back_to_bare_tokenization():
+async def test_missing_keywords_tokenize_prompt():
     content = '{"goal_statement": "Find Rust jobs", "since": null}'
     enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal("find rust jobs"))
     assert enhanced is not None
@@ -142,14 +142,14 @@ def _spec_json(fields: str) -> str:
     )
 
 
-async def test_a_goal_that_names_fields_gets_a_spec():
+async def test_goal_naming_fields_gets_a_spec():
     enhancer = GoalEnhancer(_StubClient([_resp(_spec_json('{"merchant": "who runs it", "deadline": "when it ends"}'))]))
     enhanced = await enhancer.enhance(_goal())
     assert enhanced is not None
     assert enhanced.extraction_spec == {"fields": {"merchant": "who runs it", "deadline": "when it ends"}}
 
 
-async def test_a_goal_that_only_asks_to_find_pages_gets_no_spec():
+async def test_goal_without_fields_gets_no_spec():
     """Extracting from a goal that named nothing to collect is waste."""
     enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
     enhanced = await enhancer.enhance(_goal())
@@ -167,7 +167,7 @@ async def test_a_goal_that_only_asks_to_find_pages_gets_no_spec():
         "[]",
     ],
 )
-async def test_field_names_that_are_not_plain_identifiers_are_dropped(fields):
+async def test_odd_field_names_dropped(fields):
     """A field name becomes a key the whole downstream depends on.
 
     Anything the model invents that is not a snake_case name is dropped
@@ -201,7 +201,7 @@ async def test_empty_content_is_reported_as_its_own_failure(caplog):
     assert "unparseable" not in caplog.text
 
 
-async def test_the_ceiling_belongs_to_the_client():
+async def test_ceiling_belongs_to_the_client():
     """One knob for every stage: the right value follows from the model."""
     client = _StubClient([_resp(_valid_json())])
     await GoalEnhancer(client).enhance(_goal())

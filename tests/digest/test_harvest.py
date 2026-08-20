@@ -78,7 +78,7 @@ def test_links_carry_their_business_card(tmp_path: Path) -> None:
 #: feed ------------------------------------------------------------------
 
 
-def test_a_listing_yields_its_post_permalinks(tmp_path: Path) -> None:
+def test_listing_yields_permalinks(tmp_path: Path) -> None:
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates
     assert len(out) == 3
@@ -87,7 +87,7 @@ def test_a_listing_yields_its_post_permalinks(tmp_path: Path) -> None:
     assert all(len(c.url.url_key) == 16 for c in out), "same key shape as every other source"
 
 
-def test_a_listing_marks_posts_that_only_tagged_the_account(tmp_path: Path) -> None:
+def test_listing_marks_tagged_only_posts(tmp_path: Path) -> None:
     """Kept, but distinguishable: a reviewer's post is not the shop's."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates
@@ -96,13 +96,13 @@ def test_a_listing_marks_posts_that_only_tagged_the_account(tmp_path: Path) -> N
     assert tagged["https://www.instagram.com/hellofoodbaby_/p/CCC333/"] is True
 
 
-def test_a_post_yields_nothing(tmp_path: Path) -> None:
+def test_post_yields_nothing(tmp_path: Path) -> None:
     """A post is a leaf: its caption is the product, not a pointer on."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
     assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates == []
 
 
-def test_a_page_that_is_not_content_says_why(tmp_path: Path) -> None:
+def test_not_content_says_why(tmp_path: Path) -> None:
     """A renamed account must not read as an account with a quiet week.
 
     Empty was the only answer available before, so the two were the same
@@ -115,7 +115,7 @@ def test_a_page_that_is_not_content_says_why(tmp_path: Path) -> None:
     assert not out.problem.refuses_the_run, "one gone account must not end a thirty-account run"
 
 
-def test_a_quiet_account_is_not_a_problem(tmp_path: Path) -> None:
+def test_quiet_account_is_not_a_problem(tmp_path: Path) -> None:
     """Empty and refused have to stay distinguishable in both directions."""
     page = _page(tmp_path, _EMPTY_LISTING, "https://www.instagram.com/quiet/")
     out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
@@ -123,7 +123,7 @@ def test_a_quiet_account_is_not_a_problem(tmp_path: Path) -> None:
     assert out.problem is None
 
 
-def test_a_block_is_about_the_crawl_not_the_page(tmp_path: Path) -> None:
+def test_block_refuses_the_crawl(tmp_path: Path) -> None:
     """Rate limiting and a dead session settle every request that follows."""
     for html, expected in (
         (b"<html>Please wait a few minutes before you try again.</html>", PageProblem.BLOCKED),
@@ -135,7 +135,7 @@ def test_a_block_is_about_the_crawl_not_the_page(tmp_path: Path) -> None:
         assert out.problem.refuses_the_run
 
 
-def test_a_page_with_no_stored_html_yields_nothing(tmp_path: Path) -> None:
+def test_missing_html_yields_nothing(tmp_path: Path) -> None:
     page = Page(url_key="k", url=URL(raw="https://x/", canonical="https://x/", url_key="k"))
     assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates == []
 
@@ -155,7 +155,7 @@ def test_links_is_the_default() -> None:
     assert isinstance(_build_harvester(Settings(), Canonicalizer()), LinkHarvester)
 
 
-def test_a_page_from_another_platform_yields_nothing(tmp_path: Path) -> None:
+def test_off_platform_page_yields_nothing(tmp_path: Path) -> None:
     """A crawl wanders off: an analyzer endorses the shop's own site.
 
     Being a leaf there is a policy, not luck. A site that happens to use
@@ -170,7 +170,7 @@ def test_a_page_from_another_platform_yields_nothing(tmp_path: Path) -> None:
     assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates == []
 
 
-def test_the_platform_check_reads_the_adapter_not_a_hardcoded_name(tmp_path: Path) -> None:
+def test_platform_check_reads_the_adapter(tmp_path: Path) -> None:
     """Swapping the adapter swaps which pages are ours, with no edit here."""
 
     class _Elsewhere:

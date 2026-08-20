@@ -41,20 +41,20 @@ _POST = f"""<html><head>
 </body></html>"""
 
 
-def test_a_wrong_handle_is_detected_from_the_body():
+def test_wrong_handle_detected_from_body():
     """Instagram answers 200 with a full page, so status codes lie."""
     assert ig.problem("<html>Sorry, this page isn't available.</html>") is PageProblem.UNAVAILABLE
 
 
-def test_a_challenge_is_not_confused_with_content():
+def test_challenge_is_not_content():
     assert ig.problem('<html>{"challenge_required":true}</html>') is PageProblem.BLOCKED
 
 
-def test_a_login_wall_is_detected():
+def test_login_wall_detected():
     assert ig.problem('<html><form id="loginForm"></form></html>') is PageProblem.LOGIN_REQUIRED
 
 
-def test_a_healthy_post_reports_no_problem():
+def test_healthy_post_has_no_problem():
     assert ig.problem(_POST) is None
 
 
@@ -73,7 +73,7 @@ def test_listing_ignores_links_that_are_not_posts():
     )
 
 
-def test_item_prefers_the_full_caption_over_the_truncated_meta():
+def test_item_prefers_full_caption():
     item = ig.parse_item(_POST, "https://www.instagram.com/p/AAA111/")
     assert item is not None
     assert item.text.endswith("Ends Saturday.")
@@ -89,24 +89,24 @@ def test_item_reads_timestamp_author_and_likes():
     assert item.item_id == "AAA111"
 
 
-def test_item_falls_back_to_meta_when_the_json_shape_changes():
+def test_item_falls_back_to_meta():
     """The JSON nesting is the fragile part; the meta tag outlives it."""
     item = ig.parse_item(_POST.replace('"caption"', '"captionX"'), "https://www.instagram.com/p/AAA111/")
     assert item is not None
     assert "Top Up, Get More!" in item.text
 
 
-def test_a_profile_page_is_not_parsed_as_a_post():
+def test_profile_is_not_a_post():
     """Regression: a profile carries og:description too, so parsing one
     as a post produced an item whose caption was the account bio."""
     assert ig.parse_item(_PROFILE, "https://www.instagram.com/mollytea_canada/") is None
 
 
-def test_an_unavailable_page_yields_no_item():
+def test_unavailable_page_yields_no_item():
     assert ig.parse_item("<html>Sorry, this page isn't available</html>", "https://x/p/A/") is None
 
 
-def test_against_real_captures_when_the_machine_has_any():
+def test_against_real_captures():
     """Guards the distillations above from drifting away from reality.
 
     Skips everywhere but a machine that has run the probe: CI stays
@@ -148,7 +148,7 @@ def _payload() -> Payload:
     )
 
 
-def test_the_payload_supplies_the_text_the_grid_withholds():
+def test_payload_supplies_withheld_text():
     """The grid describes the picture; the payload says what the post says.
 
     A run that ranked on the description alone fetched the two least
@@ -161,7 +161,7 @@ def test_the_payload_supplies_the_text_the_grid_withholds():
     assert "May be pop art" not in text
 
 
-def test_the_payload_supplies_an_exact_time():
+def test_payload_supplies_exact_time():
     """The grid states a day at best, and often nothing at all."""
     lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [_payload()])
     posted = {i.item_id: i.published_at for i in lst.all}
@@ -170,7 +170,7 @@ def test_the_payload_supplies_an_exact_time():
     assert posted["DbbjpjPD2e0"] is not None
 
 
-def test_without_a_payload_the_listing_is_what_it_always_was():
+def test_listing_without_payload_unchanged():
     """A plain HTTP fetch, or a platform that changed shape underneath."""
     lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [])
     by_code = {i.item_id: i for i in lst.all}
@@ -178,13 +178,13 @@ def test_without_a_payload_the_listing_is_what_it_always_was():
     assert by_code["DbbjpjPD2e0"].published_at is None
 
 
-def test_an_unreadable_payload_is_not_fatal():
+def test_unreadable_payload_is_not_fatal():
     junk = Payload(url="x", content_type="application/json", body=b"{not json")
     lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [junk])
     assert len(lst.all) == 2
 
 
-def test_posts_are_found_by_shape_not_by_where_they_sit():
+def test_posts_found_by_shape():
     """The connection is named for an API version and will be renamed."""
     moved = json.dumps(
         {"whatever": {"deeper": [{"code": "AAA111", "caption": {"text": "free tea"}, "taken_at": 1786841169}]}}
@@ -197,13 +197,13 @@ def test_posts_are_found_by_shape_not_by_where_they_sit():
     assert lst.all[0].text == "free tea"
 
 
-def test_the_adapter_keeps_only_the_response_that_carries_posts():
+def test_adapter_keeps_only_post_responses():
     assert ig.keeps_payload("https://www.instagram.com/graphql/query", "application/json") is True
     assert ig.keeps_payload("https://www.instagram.com/static/bundle.js", "application/javascript") is False
     assert ig.keeps_payload("https://www.instagram.com/graphql/query", "text/html") is False
 
 
-def test_posts_the_scrolled_grid_dropped_are_still_found():
+def test_scrolled_off_posts_still_found():
     """A scrolled listing shows fewer posts, not more.
 
     The markup drops items as they leave the viewport, so discovery that
@@ -216,13 +216,13 @@ def test_posts_the_scrolled_grid_dropped_are_still_found():
     assert all(i.text for i in lst.all), "found with their text, not as bare links"
 
 
-def test_a_post_found_only_in_the_payload_gets_a_usable_permalink():
+def test_payload_only_post_gets_permalink():
     lst = ig.parse_listing("<html></html>", "https://www.instagram.com/mrsurprisetoys/", [_payload()])
     link = next(i.permalink for i in lst.all if i.item_id == "DcFMbOThnuH")
     assert link == "https://www.instagram.com/mrsurprisetoys/p/DcFMbOThnuH/"
 
 
-def test_the_payload_decides_who_posted_it():
+def test_payload_decides_the_author():
     """Reposts and tags land in a grid; the response names the author."""
     body = json.dumps(
         {"items": [{"code": "AAA111", "caption": {"text": "free tea"}, "user": {"username": "someone_else"}}]}

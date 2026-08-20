@@ -154,34 +154,23 @@ async def test_prose_wrapped_json_is_tolerated():
     assert result.classification == "RELEVANT"
 
 
+@pytest.mark.parametrize(
+    ("content", "classification", "relevance", "hub"),
+    [
+        # A label outside the vocabulary degrades rather than guesses.
+        ('{"classification": "totally-relevant", "relevance_score": 0.5}', "UNKNOWN", 0.5, 0.0),
+        ('{"classification": "HUB", "relevance_score": 1.7, "hub_score": -0.3}', "HUB", 1.0, 0.0),
+        # True is not a score, however happily JSON carries it.
+        ('{"classification": "HUB", "relevance_score": true, "hub_score": false}', "HUB", 0.0, 0.0),
+    ],
+)
 @pytest.mark.asyncio
-async def test_unknown_classification_degrades_to_unknown():
-    content = '{"classification": "totally-relevant", "relevance_score": 0.5}'
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
+async def test_field_coercion(content, classification, relevance, hub):
+    result = await _analyzer(_StubClient([_resp(content)])).analyze(_page(), _goal())
     assert result is not None
-    assert result.classification == "UNKNOWN"
-    assert result.feedback.classification == "UNKNOWN"
-
-
-@pytest.mark.asyncio
-async def test_scores_clamped_to_unit_interval():
-    content = '{"classification": "HUB", "relevance_score": 1.7, "hub_score": -0.3}'
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
-    assert result is not None
-    assert result.relevance_score == 1.0
-    assert result.feedback.hub_score == 0.0
-
-
-@pytest.mark.asyncio
-async def test_bool_score_rejected():
-    content = '{"classification": "HUB", "relevance_score": true, "hub_score": false}'
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
-    assert result is not None
-    assert result.relevance_score == 0.0
-    assert result.feedback.hub_score == 0.0
+    assert result.classification == classification
+    assert result.relevance_score == relevance
+    assert result.feedback.hub_score == hub
 
 
 @pytest.mark.asyncio
@@ -372,7 +361,7 @@ def _extract_json(body: str) -> str:
     return _valid_json()[:-1] + ', "extracted": ' + body + "}"
 
 
-async def test_declared_fields_are_extracted_with_their_evidence():
+async def test_declared_fields_carry_evidence():
     client = _StubClient(
         [
             _resp(
@@ -389,7 +378,7 @@ async def test_declared_fields_are_extracted_with_their_evidence():
     assert result.extracted["deadline"].evidence == "until August 31 2026"
 
 
-async def test_a_field_whose_evidence_is_not_in_the_page_is_dropped():
+async def test_field_without_evidence_dropped():
     """The check is what separates acting on a result from trusting it."""
     client = _StubClient(
         [_resp(_extract_json('{"deadline": {"value": "2026-09-30", "evidence": "offer ends Sept 30"}}'))]
@@ -399,7 +388,7 @@ async def test_a_field_whose_evidence_is_not_in_the_page_is_dropped():
     assert result.extracted == {}
 
 
-async def test_a_field_the_page_does_not_state_is_simply_absent():
+async def test_unstated_field_is_absent():
     """Omission is the correct answer, and must not become a guess."""
     client = _StubClient(
         [_resp(_extract_json('{"offer": {"value": "free sago topping", "evidence": "Free sago topping for members"}}'))]
@@ -416,14 +405,14 @@ async def test_fields_outside_the_spec_are_ignored():
     assert result.extracted == {}
 
 
-async def test_evidence_matching_ignores_whitespace_and_case():
+async def test_evidence_match_ignores_case():
     client = _StubClient([_resp(_extract_json('{"offer": {"value": "sago", "evidence": "FREE SAGO   TOPPING"}}'))])
     result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
     assert result is not None
     assert "offer" in result.extracted
 
 
-async def test_a_goal_with_no_spec_asks_for_nothing_extra():
+async def test_no_spec_asks_nothing_extra():
     """Every link-graph crawl: same prompt, same envelope as before."""
     client = _StubClient([_resp(_valid_json())])
     result = await _analyzer(client).analyze(_page(), _goal())
@@ -433,7 +422,7 @@ async def test_a_goal_with_no_spec_asks_for_nothing_extra():
     assert "evidence" not in client.calls[0]["system"]
 
 
-async def test_a_goal_with_a_spec_lists_its_fields_in_the_prompt():
+async def test_spec_fields_reach_the_prompt():
     client = _StubClient([_resp(_valid_json())])
     await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
     prompt = client.calls[0]["prompt"]
@@ -442,7 +431,7 @@ async def test_a_goal_with_a_spec_lists_its_fields_in_the_prompt():
     assert "evidence" in client.calls[0]["system"]
 
 
-async def test_the_spec_is_part_of_what_makes_an_analysis_the_same():
+async def test_spec_is_part_of_analysis_identity():
     """A different field list is a different reading of the page.
 
     It does not belong in goal_id: that is sha256(prompt), which is what
@@ -464,7 +453,7 @@ async def test_the_spec_is_part_of_what_makes_an_analysis_the_same():
     assert first.spec_version and second.spec_version
 
 
-async def test_a_goal_with_no_spec_has_no_spec_version():
+async def test_no_spec_has_no_spec_version():
     """So it matches every analysis written before specs existed."""
     client = _StubClient([_resp(_valid_json())])
     result = await _analyzer(client).analyze(_page(), _goal())
@@ -472,7 +461,7 @@ async def test_a_goal_with_no_spec_has_no_spec_version():
     assert result.spec_version == ""
 
 
-async def test_wording_a_field_differently_is_a_different_spec():
+async def test_reworded_field_is_a_new_spec():
     """The description steers the extraction, so it counts as identity."""
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
     analyzer = _analyzer(client)
