@@ -57,6 +57,7 @@ crawl run "all press coverage" --seeds "..." --draining
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
 | `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
 | `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
+| `--order` | `fair` \| `best` | Take a turn from each seed, or the best candidate anywhere (default: fair) |
 | `--feed` | `instagram` | Read the source as a platform feed |
 | `--session` | path | Playwright storage_state, to crawl as a logged-in session |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
