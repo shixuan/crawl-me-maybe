@@ -18,7 +18,8 @@ from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.pioneer.frontier import PriorityFrontier
+from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.pioneer.ordering import BestFirst, HybridOrdering, Ordering, RoundRobin
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import HybridRanker, Ranker, RuleRanker
 from crawlme.pioneer.ranker.embedding import (
@@ -29,7 +30,6 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.pioneer.ranker.rule import FEED_FACTORS, GRAPH_FACTORS
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.work_source import PriorityHeapSource, RoundRobinSource, WorkSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
@@ -72,9 +72,9 @@ def create_scheduler(
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
-        "frontier": PriorityFrontier(
+        "frontier": GatedFrontier(
             domain_budget=goal.domain_budget if goal else 50,
-            source=_build_work_source(settings),
+            source=_build_ordering(settings),
         ),
         "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
@@ -91,19 +91,20 @@ def create_scheduler(
     return CrawlScheduler(**kwargs)
 
 
-def _build_work_source(settings: Settings) -> WorkSource | None:
-    """Best-first, or a turn each.
+def _build_ordering(settings: Settings) -> Ordering:
+    """One structure, two plugs.
 
-    Fair is the default for a feed because naming several accounts is
-    asking about all of them: best-first over one platform gives the
-    account that posts nothing but offers every page of the budget, and
-    the others their listing page and nothing else.  A link graph keeps
-    best-first, where the question really is what the best pages are.
+    Groups are the seeds the user named, so a run over several entry
+    points reads all of them instead of whichever one shouts loudest.
+    The outer plug decides whose turn it is; the inner one decides what
+    comes first inside a seed.
+
+    "best" is not a second code path: taking the best group's best item
+    is taking the best item anywhere, so it is this same structure with
+    BestFirst in the outer slot.
     """
-    order = settings.order or ("fair" if settings.source_kind in FEEDS else "best")
-    if order != "fair":
-        return None
-    return RoundRobinSource(PriorityHeapSource)
+    outer: Ordering = BestFirst() if settings.order == "best" else RoundRobin()
+    return HybridOrdering(lambda item: item.seed_url_key or item.url_key, outer, BestFirst)
 
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:

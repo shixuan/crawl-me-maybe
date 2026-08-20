@@ -7,7 +7,7 @@ import time
 import pytest
 
 from crawlme.pioneer.buffer import InMemoryBuffer
-from crawlme.pioneer.frontier import PriorityFrontier
+from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.scheduler.stop_conds import check_stop
 from crawlme.schemas import URL, CrawlTask, FrontierItem
 from crawlme.state.context import CrawlCounters
@@ -17,13 +17,13 @@ def _task(state: str = "RUNNING") -> CrawlTask:
     return CrawlTask(task_id="t1", state=state)  # type: ignore[arg-type]
 
 
-def _frontier(size: int = 0) -> PriorityFrontier:
+def _frontier(size: int = 0) -> GatedFrontier:
     """Populate through the public API rather than the heap internals.
 
     Reaching into _heap/_items coupled these tests to one ordering
-    implementation, which is exactly what the WorkSource seam removes.
+    implementation, which is exactly what the Ordering seam removes.
     """
-    f = PriorityFrontier()
+    f = GatedFrontier()
     items = [
         FrontierItem(
             url=URL(raw=f"https://x.com/{i}", canonical=f"https://x.com/{i}", url_key=f"k{i}"),

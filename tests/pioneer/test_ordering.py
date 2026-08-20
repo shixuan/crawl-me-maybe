@@ -1,4 +1,4 @@
-"""PriorityHeapSource: ordering, and the four gate outcomes.
+"""BestFirst: ordering, and the four gate outcomes.
 
 The gate is the contract between the shell and the source, and its four
 outcomes are not interchangeable: a deferred item comes back, a dropped
@@ -12,7 +12,7 @@ import datetime
 
 import pytest
 
-from crawlme.pioneer.work_source import Gate, PriorityHeapSource
+from crawlme.pioneer.ordering import BestFirst, Gate, RoundRobin
 from crawlme.schemas import URL, FrontierItem
 
 
@@ -31,7 +31,7 @@ def _always(decision: Gate):
 
 @pytest.mark.asyncio
 async def test_takes_highest_priority_first():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("low", 0.1), _item("high", 0.9), _item("mid", 0.5)])
     order = [(await src.take(_now(), _always(Gate.TAKE))).url_key for _ in range(3)]
     assert order == ["high", "mid", "low"]
@@ -39,21 +39,21 @@ async def test_takes_highest_priority_first():
 
 @pytest.mark.asyncio
 async def test_equal_priority_keeps_push_order():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("first", 0.5), _item("second", 0.5)])
     assert (await src.take(_now(), _always(Gate.TAKE))).url_key == "first"
 
 
 @pytest.mark.asyncio
 async def test_duplicate_keys_are_ignored():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("k"), _item("k")])
     assert src.size == 1
 
 
 @pytest.mark.asyncio
 async def test_empty_source_yields_nothing():
-    assert await PriorityHeapSource().take(_now(), _always(Gate.TAKE)) is None
+    assert await BestFirst().take(_now(), _always(Gate.TAKE)) is None
 
 
 #: the four gate outcomes -------------------------------------------------
@@ -62,7 +62,7 @@ async def test_empty_source_yields_nothing():
 @pytest.mark.asyncio
 async def test_defer_keeps_the_item_for_later():
     """Deferred is not dropped: the item still counts and comes back."""
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("k")])
     assert await src.take(_now(), _always(Gate.DEFER)) is None
     assert src.size == 1, "a deferred item vanished from the source"
@@ -73,7 +73,7 @@ async def test_defer_keeps_the_item_for_later():
 
 @pytest.mark.asyncio
 async def test_drop_discards_the_item_permanently():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("k")])
     assert await src.take(_now(), _always(Gate.DROP)) is None
     assert src.size == 0, "a dropped item was kept"
@@ -82,7 +82,7 @@ async def test_drop_discards_the_item_permanently():
 @pytest.mark.asyncio
 async def test_stop_ends_the_scan_without_consuming():
     """STOP is about the run, not the item: nothing may be discarded."""
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("a"), _item("b")])
     assert await src.take(_now(), _always(Gate.STOP)) is None
     assert src.size == 2
@@ -90,7 +90,7 @@ async def test_stop_ends_the_scan_without_consuming():
 
 @pytest.mark.asyncio
 async def test_scan_skips_a_dropped_item_and_takes_the_next():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("bad", 0.9), _item("good", 0.1)])
     gate = lambda item, now: Gate.DROP if item.url_key == "bad" else Gate.TAKE  # noqa: E731
     assert (await src.take(_now(), gate)).url_key == "good"
@@ -104,7 +104,7 @@ async def test_drain_recovers_a_parked_item_on_a_later_call():
     defers for a reason other than the clock would spin forever. Across
     calls, a due item must come back without the caller doing anything.
     """
-    src = PriorityHeapSource()
+    src = BestFirst()
     past = _now() - datetime.timedelta(seconds=1)
     await src.add([_item("k", next_available_at=past)])
 
@@ -117,7 +117,7 @@ async def test_drain_recovers_a_parked_item_on_a_later_call():
 @pytest.mark.asyncio
 async def test_a_gate_that_always_defers_terminates():
     """Regression: this looped forever before deferrals were held back."""
-    src = PriorityHeapSource()
+    src = BestFirst()
     past = _now() - datetime.timedelta(seconds=1)
     await src.add([_item("a", next_available_at=past), _item("b", next_available_at=past)])
     assert await src.take(_now(), _always(Gate.DEFER)) is None
@@ -129,7 +129,7 @@ async def test_a_gate_that_always_defers_terminates():
 
 @pytest.mark.asyncio
 async def test_waiting_raises_effective_priority():
-    src = PriorityHeapSource(aging_window=10.0, age_factor=1.0)
+    src = BestFirst(aging_window=10.0, age_factor=1.0)
     await src.add([_item("k", 0.5)])
     taken = await src.take(_now() + datetime.timedelta(seconds=10), _always(Gate.TAKE))
     assert taken.priority > 0.5
@@ -137,11 +137,11 @@ async def test_waiting_raises_effective_priority():
 
 @pytest.mark.asyncio
 async def test_dump_and_load_round_trip():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("a", 0.9), _item("b", 0.1)])
     state = src.dump()
 
-    restored = PriorityHeapSource()
+    restored = BestFirst()
     restored.load(state)
     assert restored.size == 2
     assert (await restored.take(_now(), _always(Gate.TAKE))).url_key == "a"
@@ -149,8 +149,94 @@ async def test_dump_and_load_round_trip():
 
 @pytest.mark.asyncio
 async def test_discard_removes_a_key_from_the_index():
-    src = PriorityHeapSource()
+    src = BestFirst()
     await src.add([_item("k")])
     src.discard("k")
     assert not src.contains("k")
     assert src.keys() == set()
+
+
+#: what size means --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_discarded_item_stops_counting():
+    """A heap cannot delete from the middle, so the entry stays behind.
+
+    Counting it keeps an emptied frontier looking busy, and the run then
+    never reaches the check that would have ended it.
+    """
+    src = BestFirst()
+    await src.add([_item("a"), _item("b")])
+    src.discard("a")
+    assert src.size == 1
+
+
+@pytest.mark.asyncio
+async def test_work_in_flight_does_not_count_as_waiting():
+    src = BestFirst()
+    await src.add([_item("a"), _item("b")])
+    await src.take(_now(), _always(Gate.TAKE))
+    assert src.size == 1, "the item handed out is no longer queued"
+
+
+@pytest.mark.asyncio
+async def test_the_count_survives_a_scan_past_a_discarded_item():
+    """The tombstone is cleared where it is found, and only once."""
+    src = BestFirst()
+    await src.add([_item("a", priority=0.9), _item("b", priority=0.1)])
+    src.discard("a")
+    taken = await src.take(_now(), _always(Gate.TAKE))
+    assert taken is not None and taken.url_key == "b"
+    assert src.size == 0
+
+
+#: round robin ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_lap_visits_each_key_once():
+    rr = RoundRobin()
+    await rr.add([_item("a"), _item("b"), _item("c")])
+    taken = [(await rr.take(_now(), _always(Gate.TAKE))).url_key for _ in range(3)]
+    assert taken == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_taking_does_not_also_skip_the_next_turn():
+    """Taking removes the key, so the next position already holds what
+    came after it; advancing past that too costs a source its turn."""
+    rr = RoundRobin()
+    await rr.add([_item("a"), _item("b")])
+    first = await rr.take(_now(), _always(Gate.TAKE))
+    second = await rr.take(_now(), _always(Gate.TAKE))
+    assert [first.url_key, second.url_key] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_a_key_added_again_after_a_take_appears_once():
+    """Leaving the key in the rotation on discard lets a re-add append a
+    second copy, and the rotation then visits it twice a lap."""
+    rr = RoundRobin()
+    await rr.add([_item("a"), _item("b")])
+    await rr.take(_now(), _always(Gate.TAKE))
+    await rr.add([_item("a")])
+    taken = [(await rr.take(_now(), _always(Gate.TAKE))).url_key for _ in range(2)]
+    assert sorted(taken) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_key_keeps_its_place():
+    rr = RoundRobin()
+    await rr.add([_item("a"), _item("b")])
+    gate = lambda i, n: Gate.DEFER if i.url_key == "a" else Gate.TAKE  # noqa: E731
+    assert (await rr.take(_now(), gate)).url_key == "b"
+    assert rr.contains("a")
+
+
+@pytest.mark.asyncio
+async def test_priority_is_ignored_on_purpose():
+    """The loudest source outranking every other one is the problem."""
+    rr = RoundRobin()
+    await rr.add([_item("quiet", priority=0.1), _item("loud", priority=0.99)])
+    assert (await rr.take(_now(), _always(Gate.TAKE))).url_key == "quiet"

@@ -1,10 +1,10 @@
-"""Frontier: the shell around a WorkSource.
+"""Frontier: the shell around a Ordering.
 
 The Frontier is the crawler's scheduling hub: it owns the set of URLs
 waiting to be fetched and decides which one goes next.  It does not call
 AI and does not know page content; it only manages state.
 
-Ordering lives in a WorkSource (see work_source.py).  Everything below is
+Ordering lives behind the Ordering seam (see ordering.py).  Everything below is
 traversal-independent, which is the point: a feed cursor drops in as a
 different source and inherits all of it instead of growing a second copy.
 See docs/refactor.md G2.
@@ -43,8 +43,8 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from crawlme.pioneer.ordering import BestFirst, Gate, GateFn, Ordering
 from crawlme.pioneer.prefilter import PreFilterContext
-from crawlme.pioneer.work_source import Gate, GateFn, PriorityHeapSource, WorkSource
 from crawlme.schemas import FrontierItem, FrontierItemStatus, FrontierSnapshot
 
 logger = logging.getLogger(__name__)
@@ -78,15 +78,20 @@ class Frontier(Protocol):
     def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
 
 
-class PriorityFrontier:
-    """Gating, budgets, dedup and checkpoints over a pluggable ordering."""
+class GatedFrontier:
+    """Gating, budgets, dedup and checkpoints over a pluggable ordering.
+
+    Named for what it does rather than for how it orders: ordering moved
+    behind the Ordering seam, and a frontier that still called itself
+    Priority was describing a component it no longer contains.
+    """
 
     def __init__(
         self,
         domain_budget: int = 50,
         aging_window: float = 600.0,
         age_factor: float = 1.0,
-        source: WorkSource | None = None,
+        source: Ordering | None = None,
     ) -> None:
         # Zero means no per-domain ceiling.  One is right for a link
         # graph, where a single site can otherwise absorb the whole run;
@@ -100,7 +105,7 @@ class PriorityFrontier:
         # reports the second as completion.
         self.blocked_by_domain_budget = 0
         self._lock = asyncio.Lock()
-        self._source: WorkSource = source or PriorityHeapSource(
+        self._source: Ordering = source or BestFirst(
             aging_window=aging_window,
             age_factor=age_factor,
         )

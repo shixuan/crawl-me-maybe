@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from crawlme.pioneer.frontier import PriorityFrontier
+from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.schemas import URL, FrontierItem
 
 
@@ -18,8 +18,8 @@ def _item(url_key: str = "k1", priority: float = 0.5, domain: str = "example.com
 
 
 @pytest.fixture
-def frontier() -> PriorityFrontier:
-    return PriorityFrontier()
+def frontier() -> GatedFrontier:
+    return GatedFrontier()
 
 
 @pytest.mark.asyncio
@@ -45,7 +45,7 @@ async def test_pop_respects_domain_gate(frontier):
 
 @pytest.mark.asyncio
 async def test_domain_budget_exhausted(frontier):
-    f = PriorityFrontier(domain_budget=1)
+    f = GatedFrontier(domain_budget=1)
     items = [_item("k1", 0.5, "x.com"), _item("k2", 0.9, "x.com")]
     await f.push_batch(items)
 
@@ -97,7 +97,7 @@ async def test_snapshot_roundtrip(frontier):
     snap = frontier.snapshot(task_id="t1")
     assert len(snap.visited) == 1
 
-    f2 = PriorityFrontier()
+    f2 = GatedFrontier()
     f2.restore(snap)
     assert f2.contains("k1")
     assert f2.contains("k2")
@@ -116,7 +116,7 @@ async def test_snapshot_pending_gated_items(frontier):
     assert len(snap.pending) == 1
     assert snap.pending[0].url_key == "k1"
 
-    f2 = PriorityFrontier()
+    f2 = GatedFrontier()
     f2.restore(snap)
     assert f2.size == 1
 

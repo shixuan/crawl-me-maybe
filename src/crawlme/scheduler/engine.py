@@ -158,6 +158,12 @@ class CrawlScheduler:
         # canonical URL -> url_key, for endorsed links to inherit their
         # source page's depth.
         self._url_key_of: dict[str, str] = {}
+        # url_key -> the seed it descends from, so a candidate found on a
+        # page inherits that page's seed rather than pointing at the page
+        # itself.  Grouping on the immediate parent would make fairness
+        # mean "a turn from every page fetched", which a crawl generates
+        # itself and without bound.
+        self._seed_of: dict[str, str] = {}
         self._events: EventEmitter | None = None
 
     #: seed ingestion --------------------------------------------------
@@ -194,6 +200,7 @@ class CrawlScheduler:
                     priority=1.0,
                     score_source="seed",
                     reg_domain=url.reg_domain,
+                    seed_url_key=url.url_key,
                 )
             )
             n_ingested += 1
@@ -561,6 +568,9 @@ class CrawlScheduler:
                     score_source="endorsed",
                     depth=source_depth + 1,
                     reg_domain=url.reg_domain,
+                    # A shop's own site endorsed from an account belongs
+                    # to that account's share, not to a share of its own.
+                    seed_url_key=self._seed_of.get(source_key, source_key),
                 )
             )
         if items:
@@ -676,6 +686,12 @@ class CrawlScheduler:
             except asyncio.TimeoutError:
                 logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 candidates = []
+            # Every candidate belongs to the seed its page belonged to,
+            # however many hops back.  Recorded here because this is the
+            # only place that holds both ends of the link.
+            seed = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+            for c in candidates:
+                c.seed_url_key = seed
             self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
@@ -698,6 +714,7 @@ class CrawlScheduler:
                 },
             )
             self._url_key_of[page.url.canonical] = page.url_key
+            self._seed_of[page.url_key] = seed
             ctx = self._frontier.get_prefilter_context(
                 allow_fetch=lambda url: self._robots.allow_fetch(url),
             )
@@ -840,7 +857,7 @@ class CrawlScheduler:
                     rationale=d.rationale,
                     depth=depth,
                     reg_domain=reg_domain,
-                    source_url_key=(c.source_url_key or "") if c else "",
+                    seed_url_key=(c.seed_url_key or "") if c else "",
                 )
             )
         await self._frontier.push_batch(items)

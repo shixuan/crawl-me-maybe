@@ -21,6 +21,10 @@ class Candidate(BaseModel):
     position: int = 0
     source_page_id: str | None = None
     source_url_key: str | None = None
+    # The seed at the top of this candidate's chain, inherited from the
+    # page it was found on.  Empty until the engine, which alone knows
+    # the chain, fills it in.
+    seed_url_key: str = ""
     depth: int = 0
     # The text this candidate carries on its own, whatever the source
     # calls it: empty for a link (its business card lives in anchor and
@@ -56,10 +60,12 @@ class FrontierItem(BaseModel):
     rationale: str | None = None
     depth: int = 0
     reg_domain: str = ""
-    # The page this came from, kept so ordering can be fair across
-    # sources rather than only best-first: monitoring several accounts
-    # means wanting each one read, not the global top of one of them.
-    source_url_key: str = ""
+    # The seed this descends from, however many hops back. Ordering
+    # groups on it, so fairness is shared out between the entry points
+    # the user named -- a fixed, chosen set -- rather than between the
+    # pages a crawl happened to fetch, which it generates itself and
+    # without bound.
+    seed_url_key: str = ""
     status: FrontierItemStatus = "QUEUED"
     attempts: int = 0
     next_available_at: datetime.datetime = Field(default_factory=_utcnow)
