@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import datetime
+import json
 
 import pytest
 
 from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.ordering import BestFirst, HybridOrdering, RoundRobin
-from crawlme.schemas import URL, FrontierItem
+from crawlme.schemas import URL, FrontierItem, FrontierSnapshot
 
 
 def _item(url_key: str = "k1", priority: float = 0.5, domain: str = "example.com") -> FrontierItem:
@@ -114,12 +115,10 @@ async def test_snapshot_pending_gated_items(frontier):
     await frontier.pop_next()
 
     snap = frontier.snapshot()
-    assert len(snap.pending) == 1
-    assert snap.pending[0].url_key == "k1"
-
     f2 = GatedFrontier()
     f2.restore(snap)
-    assert f2.size == 1
+    assert f2.size == 1, "an item waiting on a cooldown survived the round trip"
+    assert f2.get_prefilter_context().is_visited_or_queued("k1")
 
 
 @pytest.mark.asyncio
@@ -153,3 +152,55 @@ async def test_a_page_being_fetched_is_not_queued_again():
     await f.push_batch([_item("dup", priority=0.9)])
     assert f.size == 0, "the same page came back while it was in flight"
     assert f.get_prefilter_context().is_visited_or_queued("dup")
+
+
+@pytest.mark.asyncio
+async def test_a_checkpoint_keeps_the_queue_whatever_the_ordering_is():
+    """The snapshot used to copy one ordering's internals by name.
+
+    With `heap` absent from a composed ordering's state, every
+    checkpoint stored an empty queue and every resume began with nothing
+    to fetch, without an error anywhere.
+    """
+    make = lambda: HybridOrdering(lambda i: i.seed_url_key, RoundRobin(), BestFirst)  # noqa: E731
+    f = GatedFrontier(source=make())
+    await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
+    assert f.size == 2
+
+    restored = GatedFrontier(source=make())
+    restored.restore(f.snapshot())
+    assert restored.size == 2
+    assert restored.get_prefilter_context().is_visited_or_queued("a")
+
+
+@pytest.mark.asyncio
+async def test_a_checkpoint_written_before_orderings_carried_state_still_loads():
+    f = GatedFrontier()
+    await f.push_batch([_item("old", 0.7)])
+    snap = f.snapshot()
+    legacy = snap.model_copy(update={"ordering": {}, "heap": [_item("old", 0.7)]})
+
+    restored = GatedFrontier()
+    restored.restore(legacy)
+    assert restored.size == 1
+
+
+@pytest.mark.asyncio
+async def test_a_checkpoint_survives_the_trip_through_json():
+    """The path a real resume takes, which no test walked before.
+
+    In memory dump() and load() agreed because both spoke models; on
+    disk the state is data, and the first thing load() did with it was
+    read an attribute.
+    """
+    make = lambda: HybridOrdering(lambda i: i.seed_url_key, RoundRobin(), BestFirst)  # noqa: E731
+    f = GatedFrontier(source=make())
+    await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
+
+    on_disk = json.loads(f.snapshot().model_dump_json())
+    restored = GatedFrontier(source=make())
+    restored.restore(FrontierSnapshot.model_validate(on_disk))
+
+    assert restored.size == 2
+    got = await restored.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
+    assert got is not None and got.url_key == "a", "priority survived too"

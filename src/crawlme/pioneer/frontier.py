@@ -199,24 +199,32 @@ class GatedFrontier:
         return self._source.size
 
     def snapshot(self, task_id: str = "") -> FrontierSnapshot:
-        state = self._source.dump()
+        """Store the ordering's state without reading into it.
+
+        Naming its keys here made the checkpoint a copy of one ordering's
+        internals: the moment the ordering became a composition of
+        others, `heap` was absent and every checkpoint saved an empty
+        queue, silently, and a resume began with nothing to fetch.
+        """
         return FrontierSnapshot(
             task_id=task_id,
-            heap=state.get("heap", []),
-            pending=state.get("pending", []),
+            ordering=self._source.dump(),
             visited=self._visited.copy(),
             budgets={"domain": dict(self._domain_counters), "global": self._global_counter},
-            counters={"seq": state.get("seq", 0)},
         )
 
     def restore(self, snap: FrontierSnapshot) -> None:
         self._visited = snap.visited.copy()
         self._domain_counters = dict(snap.budgets.get("domain", {}))
         self._global_counter = snap.budgets.get("global", 0)
+        if snap.ordering:
+            self._source.load(snap.ordering)
+            return
+        # A checkpoint written before orderings carried their own state.
         self._source.load(
             {
-                "heap": list(snap.heap),
-                "pending": list(snap.pending),
+                "heap": [i.model_dump(mode="json") for i in snap.heap],
+                "pending": [i.model_dump(mode="json") for i in snap.pending],
                 "seq": snap.counters.get("seq", 0),
             }
         )

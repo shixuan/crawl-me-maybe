@@ -100,6 +100,14 @@ class RankHistorySummary(BaseModel):
 class FrontierSnapshot(BaseModel):
     snapshot_id: str = Field(default_factory=_new_id)
     task_id: str = ""
+    # Whatever the ordering says its state is, kept as it gave it.  The
+    # frontier used to lift `heap` and `pending` out of that state by
+    # name, which quietly stored nothing at all once the ordering became
+    # something other than one heap.
+    ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # The shape checkpoints were written in before `ordering` existed.
+    # Read on restore so an older checkpoint still resumes; no longer
+    # written.
     heap: list[FrontierItem] = Field(default_factory=list)
     pending: list[FrontierItem] = Field(default_factory=list)
     visited: set[str] = Field(default_factory=set)

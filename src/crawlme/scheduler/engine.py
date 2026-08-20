@@ -53,7 +53,19 @@ from crawlme.storage.contracts import CrawlDb
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_INTERVAL = 10
-_RANK_BATCH_SIZE = 100
+# How many candidates the rank pump takes out of the buffer at once, and
+# therefore how long anything waits to become fetchable: nothing in a
+# drained batch reaches the frontier until the whole batch is scored.
+#
+# It was 100, which the ranker then split into nine calls of its own; the
+# first was scored within thirty seconds and enqueued four and a half
+# minutes later, after the run had already stopped for lack of anything
+# to fetch.  Sized to about one of the ranker's own calls instead, so
+# scoring and fetching overlap rather than alternate.
+#
+# It is not a comparison-set knob.  The ranker never saw all hundred at
+# once, so it compares the same candidates against each other either way.
+_RANK_BATCH_SIZE = 25
 _POP_SLEEP = 0.2
 
 
@@ -273,6 +285,7 @@ class CrawlScheduler:
         task.state = "COMPLETED"
         task.end_at = _utcnow()
         reason = task.stopping_reason or "none"
+        self._reconcile()
         logger.info(
             "task.done task_id=%s pages=%d tokens=%d reason=%s",
             task.task_id,
@@ -439,6 +452,40 @@ class CrawlScheduler:
         self._state = "STOPPING"
         if self._task:
             self._task.state = "STOPPING"
+
+    def _reconcile(self) -> None:
+        """Say what the run had against what it read, at the end.
+
+        A run that stops holding work reports success exactly like one
+        that finished: a missing session gave a COMPLETED with no pages,
+        a per-domain ceiling gave one with a hundred and sixty
+        candidates still queued, and a rank batch that landed after the
+        last fetch gave one that never opened the account it was asked
+        about.  None of them said so anywhere.
+
+        Whether leaving work behind is wrong depends on the reason -- a
+        page budget is supposed to stop early -- so this states the
+        numbers and leaves the judgement to whoever reads them, loudly
+        enough to be seen.
+        """
+        left_frontier = self._frontier.size
+        left_buffer = self._buffer.size
+        stats = self._ctx.stats
+        logger.info(
+            "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
+            stats.links_discovered,
+            stats.candidates_ranked,
+            self._counters.pages_fetched,
+            left_frontier,
+            left_buffer,
+        )
+        if left_frontier or left_buffer:
+            logger.warning(
+                "task.unfinished %d candidates were never read (frontier=%d buffer=%d)",
+                left_frontier + left_buffer,
+                left_frontier,
+                left_buffer,
+            )
 
     def _record_stop_reason(self) -> None:
         """Name why the run is ending, for a path that bypassed the check."""

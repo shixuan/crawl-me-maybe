@@ -606,3 +606,54 @@ def test_an_endorsement_that_is_not_a_link_is_dropped(link):
     like a successful fetch and cost an analysis and a page of budget.
     """
     assert _endorsed_href(link) is None
+
+
+#: end-of-run accounting ---------------------------------------------------
+
+
+def test_a_run_that_stops_holding_work_says_so(caplog):
+    """Stopping early and finishing look identical from the outside.
+
+    A missing session gave COMPLETED with no pages; a per-domain ceiling
+    gave COMPLETED with a hundred and sixty candidates still queued; a
+    rank batch landing after the last fetch gave COMPLETED for an account
+    that was never opened. None of them said anything.
+    """
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=45)
+    sched._frontier.size = 16
+    sched._buffer.size = 4
+
+    with caplog.at_level(logging.INFO):
+        sched._reconcile()
+
+    assert "task.reconcile" in caplog.text
+    assert "task.unfinished" in caplog.text
+    assert "20 candidates were never read" in caplog.text
+
+
+def test_a_run_that_read_everything_stays_quiet(caplog):
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=10)
+    sched._frontier.size = 0
+    sched._buffer.size = 0
+
+    with caplog.at_level(logging.INFO):
+        sched._reconcile()
+
+    assert "task.reconcile" in caplog.text
+    assert "task.unfinished" not in caplog.text
+
+
+def test_the_rank_drain_stays_near_one_ranker_call():
+    """Nothing in a drained batch is fetchable until all of it is scored.
+
+    At 100 the ranker split the batch into nine calls of its own; the
+    first was scored in thirty seconds and reached the frontier four and
+    a half minutes later, after the run had stopped for lack of anything
+    to fetch. The drain size is that latency, not a throughput knob.
+    """
+    from crawlme.pioneer.ranker.llm import _BATCH_SIZE
+    from crawlme.scheduler.engine import _RANK_BATCH_SIZE
+
+    assert _RANK_BATCH_SIZE <= _BATCH_SIZE, "a drain larger than one call reintroduces the wait"

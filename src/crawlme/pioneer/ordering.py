@@ -232,18 +232,35 @@ class BestFirst:
         return item.priority + self._age_factor * age_seconds / self._aging_window
 
     def dump(self) -> dict[str, Any]:
+        """State as plain data, the same shape in memory and on disk.
+
+        Returning models worked until a checkpoint was written and read
+        back, at which point load() was handed dicts and reached for an
+        attribute they do not have.
+        """
         heap_items = [self._items[k] for _, _, k in self._heap if k in self._items]
-        return {"heap": heap_items, "pending": list(self._pending), "seq": _SEQ}
+        return {
+            "heap": [i.model_dump(mode="json") for i in heap_items],
+            "pending": [i.model_dump(mode="json") for i in self._pending],
+            "seq": _SEQ,
+        }
 
     def load(self, state: dict[str, Any]) -> None:
         global _SEQ
         self._heap.clear()
         self._items.clear()
-        self._pending = list(state.get("pending", []))
+        self._taken.clear()
+        self._pending = [_as_item(raw) for raw in state.get("pending", [])]
         _SEQ = state.get("seq", 0)
-        for item in state.get("heap", []):
+        for raw in state.get("heap", []):
+            item = _as_item(raw)
             self._items[item.url_key] = item
             heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
+
+
+def _as_item(raw: Any) -> FrontierItem:
+    """Accept either form: a checkpoint read back is data, not models."""
+    return raw if isinstance(raw, FrontierItem) else FrontierItem.model_validate(raw)
 
 
 def _utcnow() -> datetime.datetime:
@@ -338,7 +355,7 @@ class RoundRobin:
     def load(self, state: dict[str, Any]) -> None:
         self._items = {}
         for raw in state.get("items") or []:
-            item = FrontierItem.model_validate(raw)
+            item = _as_item(raw)
             self._items[item.url_key] = item
         self._order = [k for k in (state.get("order") or []) if k in self._items]
         self._cursor = int(state.get("cursor") or 0)
