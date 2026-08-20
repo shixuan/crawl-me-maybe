@@ -54,19 +54,23 @@ from crawlme.storage.contracts import CrawlDb
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_INTERVAL = 10
-# How many candidates the rank pump takes out of the buffer at once, and
-# therefore how long anything waits to become fetchable: nothing in a
-# drained batch reaches the frontier until the whole batch is scored.
+# How many candidates the rank pump takes out of the buffer at once,
+# and therefore how long anything waits to become fetchable: nothing in
+# a drained batch reaches the frontier until all of it is scored.
 #
-# It was 100, which the ranker then split into nine calls of its own; the
-# first was scored within thirty seconds and enqueued four and a half
-# minutes later, after the run had already stopped for lack of anything
-# to fetch.  Sized to about one of the ranker's own calls instead, so
-# scoring and fetching overlap rather than alternate.
+# It no longer decides coverage.  The buffer hands out a turn from each
+# seed, so a drain of any size is the same mix; before that it was
+# first-come-first-served and the size was the only thing standing
+# between one loud account and the whole run.
 #
-# It is not a comparison-set knob.  The ranker never saw all hundred at
-# once, so it compares the same candidates against each other either way.
-_RANK_BATCH_SIZE = 25
+# What is left is latency against call count, and the measured rates
+# settle it: scoring supplies about twenty candidates a minute and
+# fetching consumes about nine, so there is no shortage of supply to
+# buy with a bigger batch.  There is a shortage of *early* supply --
+# fetching cannot start until the first batch lands -- so this is sized
+# to one of the ranker's own calls, which its character budget puts at
+# roughly twenty.
+_RANK_BATCH_SIZE = 20
 _POP_SLEEP = 0.2
 
 
