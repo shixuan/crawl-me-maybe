@@ -12,7 +12,7 @@ import datetime
 
 import pytest
 
-from crawlme.pioneer.frontier.queue import Gate, PriorityQueue
+from crawlme.pioneer.queue import Gate, PriorityQueue
 from crawlme.schemas import URL, FrontierItem
 
 

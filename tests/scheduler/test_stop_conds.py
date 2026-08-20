@@ -6,8 +6,8 @@ import time
 
 import pytest
 
+from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
 from crawlme.scheduler.stop_conds import check_stop
 from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
 from crawlme.state.context import CrawlCounters

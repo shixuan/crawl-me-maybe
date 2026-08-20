@@ -28,7 +28,7 @@ from crawlme.digest.harvest import Harvester, LinkHarvester
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.frontier.prefilter import PreFilter
+from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.stop_conds import check_stop

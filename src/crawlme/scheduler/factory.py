@@ -15,10 +15,10 @@ from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
 from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
 from crawlme.llm import TokenBudget
+from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
-from crawlme.pioneer.frontier.prefilter import PreFilter
+from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import HybridRanker, Ranker, RuleRanker
 from crawlme.pioneer.ranker.embedding import (
     Embedder,

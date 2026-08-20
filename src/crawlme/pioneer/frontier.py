@@ -1,13 +1,20 @@
-"""Frontier: the shell around a ordering.
+"""The contract for the frontier, and the one thing that satisfies it.
 
-The Frontier is the crawler's scheduling hub: it owns the set of URLs
-waiting to be fetched and decides which one goes next.  It does not call
-AI and does not know page content; it only manages state.
+The frontier is the crawler's scheduling hub: it owns every URL that has
+been discovered and not yet read, and decides which one goes next.  It
+does not call AI and does not know page content; it only manages state.
 
-ordering lives in a PriorityQueue (see queue.py).  Everything below is
-traversal-independent, which is the point: a feed cursor drops in as a
-different source and inherits all of it instead of growing a second copy.
-See docs/refactor.md G2.
+It holds that set in two halves, neither of which it implements itself:
+candidates waiting to be scored go to a Buffer (buffer.py), and scored
+ones waiting for a fetch slot to a PriorityQueue (queue.py).  What is
+left here -- gating, budgets, dedup, checkpoints -- is the same whatever
+the traversal, which is the point: a feed inherits all of it instead of
+growing a second copy.  See docs/refactor.md G2.
+
+The contract lives here beside its implementation because there is one
+implementation.  A second Frontier is what would justify splitting them
+into a package, and until then the split would only cost a reader a file
+to open.
 
 Gating (two levels)
 -------------------
@@ -41,15 +48,60 @@ import asyncio
 import datetime
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
-from crawlme.pioneer.frontier.base import Buffer, Gate, GateFn
-from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
-from crawlme.pioneer.frontier.prefilter import PreFilterContext
-from crawlme.pioneer.frontier.queue import PriorityQueue
+from crawlme.pioneer.buffer import Buffer, RoundRobinBuffer
+from crawlme.pioneer.prefilter import PreFilterContext
+from crawlme.pioneer.queue import Gate, GateFn, PriorityQueue
 from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, FrontierSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+class Frontier(Protocol):
+    """Contract for the priority-queue URL frontier."""
+
+    @property
+    def size(self) -> int: ...
+
+    #: the unscored half: candidates waiting for someone to score them.
+    async def push_candidates(self, candidates: list[Candidate]) -> None: ...
+    async def take_for_ranking(self, n: int) -> list[Candidate]: ...
+    def finish_ranking(self, n: int) -> None: ...
+
+    @property
+    def cooling(self) -> int:
+        """Scored items a cooldown will release on its own."""
+        ...
+
+    @property
+    def scoring(self) -> int:
+        """Candidates out being scored, in neither half but still work."""
+        ...
+
+    @property
+    def waiting(self) -> Buffer: ...
+
+    @property
+    def waiting_size(self) -> int: ...
+
+    #: the scored half.
+    async def push_batch(self, items: list[FrontierItem]) -> None: ...
+
+    async def pop_next(
+        self,
+        now: datetime.datetime | None = None,
+        next_allowed: Callable[[str], datetime.datetime] | None = None,
+        global_budget: int | None = None,
+    ) -> FrontierItem | None: ...
+
+    async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None: ...
+
+    def snapshot(self, task_id: str = "") -> FrontierSnapshot: ...
+
+    def restore(self, snap: FrontierSnapshot) -> None: ...
+
+    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
 
 
 def _utcnow() -> datetime.datetime:

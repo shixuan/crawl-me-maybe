@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
+from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.schemas import URL, Candidate
 
 

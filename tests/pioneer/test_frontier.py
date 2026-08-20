@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from crawlme.pioneer.frontier import GatedFrontier, PriorityQueue
+from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.pioneer.queue import PriorityQueue
 from crawlme.schemas import URL, FrontierItem, FrontierSnapshot
 
 

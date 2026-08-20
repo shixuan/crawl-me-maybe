@@ -382,7 +382,7 @@ async def test_inject_endorsed_pushes_priority_1_items():
     """Endorsed links skip ranking, resolve against their source page,
     and enter the frontier at full priority."""
     from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.pioneer.frontier.prefilter import Decision
+    from crawlme.pioneer.prefilter import Decision
     from crawlme.steering.loop import SteeringLoop
     from crawlme.steering.signals import InflightSignals
 
@@ -410,7 +410,7 @@ async def test_inject_endorsed_pushes_priority_1_items():
 async def test_inject_endorsed_respects_prefilter():
     """An endorsement never overrides the prefilter's hard rules."""
     from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.pioneer.frontier.prefilter import Decision
+    from crawlme.pioneer.prefilter import Decision
     from crawlme.steering.loop import SteeringLoop
     from crawlme.steering.signals import InflightSignals
 

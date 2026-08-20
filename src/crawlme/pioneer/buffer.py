@@ -17,8 +17,14 @@ Ordering *after* the ranker is a different question with a different
 answer: there the scarce thing is the page budget, and the right way to
 spend it is the priority the ranker just produced.
 
-Candidates that pass PreFilter accumulate here.  The scheduler calls ready()
-to decide when to flush; when ready, drain(n) hands candidates to the Ranker.
+Candidates that pass PreFilter accumulate here, reached through the
+frontier that owns this half rather than directly: ready() says when a
+batch is worth scoring, drain(n) hands one out.
+
+The Buffer contract sits in this file with the one class that satisfies
+it.  A second way to choose who gets scored next is what would earn the
+two their own package; the seam is declared now because the frontier is
+built against it, not because a second one exists.
 
 Key behaviours:
 
@@ -39,11 +45,45 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from crawlme.schemas import Candidate
 
 logger = logging.getLogger(__name__)
+
+
+class Buffer(Protocol):
+    """Contract for the in-memory candidate staging area."""
+
+    @property
+    def size(self) -> int: ...
+    @property
+    def is_empty(self) -> bool: ...
+
+    async def add(self, candidates: list[Candidate]) -> None: ...
+
+    def contains(self, url_key: str) -> bool:
+        """Whether this URL is already waiting here.
+
+        Part of the contract because the frontier asks one dedup
+        question across both halves, and a half that cannot answer it
+        leaves the gap that made the same page arrive twice.
+        """
+        ...
+
+    def dump(self) -> dict[str, Any]:
+        """State for a checkpoint.  A crawl that stops mid-scoring holds
+        most of its work here, and a resume that cannot read it back
+        starts over without knowing what it had found."""
+        ...
+
+    def load(self, state: dict[str, Any]) -> None: ...
+    async def drain(self, n: int | None = None) -> list[Candidate]: ...
+
+    def ready(self, frontier_hungry: bool = False) -> bool: ...
+
+    async def wait_until(self, predicate: Callable[[], bool] | None = None) -> None: ...
+    async def wake(self) -> None: ...
 
 
 def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[list[Candidate], str]:

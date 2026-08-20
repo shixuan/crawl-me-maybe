@@ -29,14 +29,35 @@ See docs/refactor.md G2 and G6.
 from __future__ import annotations
 
 import datetime
+import enum
 import heapq
 import logging
+from collections.abc import Callable
 from typing import Any
 
-from crawlme.pioneer.frontier.base import Gate, GateFn
 from crawlme.schemas import FrontierItem
 
 logger = logging.getLogger(__name__)
+
+
+class Gate(enum.Enum):
+    """What the shell decided about one candidate item.
+
+    Four outcomes rather than a boolean, because the existing frontier
+    already distinguishes them and collapsing any two would change
+    behavior: a rate-limited item comes back later, a budget-exhausted
+    domain never does, and a spent global budget ends the scan for
+    everyone rather than for one item.
+    """
+
+    TAKE = "take"
+    DEFER = "defer"
+    DROP = "drop"
+    STOP = "stop"
+
+
+#: Called with (item, now) while the source scans its own ordering.
+GateFn = Callable[[FrontierItem, datetime.datetime], Gate]
 
 
 _SEQ = 0
