@@ -16,7 +16,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.frontier.buffer import Buffer
 from crawlme.schemas import CrawlTask
 from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
 
@@ -34,13 +33,12 @@ class StopReason:
 #: individual checks ---------------------------------------------------
 
 # All checks share the same signature so _CHECKS is a flat list.
-_CheckFunc = Callable[[CrawlTask, Frontier, Buffer, CrawlCounters], StopReason | None]
+_CheckFunc = Callable[[CrawlTask, Frontier, CrawlCounters], StopReason | None]
 
 
 def _budget_pages(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     if c.max_pages > 0 and c.pages_fetched >= c.max_pages:
@@ -51,7 +49,6 @@ def _budget_pages(
 def _budget_tokens(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     if c.max_tokens > 0 and c.tokens_used >= c.max_tokens:
@@ -62,7 +59,6 @@ def _budget_tokens(
 def _budget_time(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     if c.max_duration_sec > 0 and c.started_at > 0 and (time.monotonic() - c.started_at) >= c.max_duration_sec:
@@ -73,7 +69,6 @@ def _budget_time(
 def _time_horizon(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     """Stop once the content has aged out of the goal's window.
@@ -115,32 +110,45 @@ def _time_horizon(
     return None
 
 
+def _is_drained(frontier: Frontier, c: CrawlCounters) -> bool:
+    """Nothing to fetch in either half, and nothing on its way back."""
+    return frontier.size == 0 and frontier.waiting.is_empty and c.in_flight == 0 and frontier.scoring == 0
+
+
 def _frontier_drained(
     _task: CrawlTask,
     frontier: Frontier,
-    buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
-    """Nothing left to fetch, and why there is nothing left.
-
-    An empty frontier has two causes that look identical from here: the
-    crawl read everything it found, or a gate refused what remained. A
-    run that cannot tell them apart reports the second as completion,
-    which is how a feed crawl ended at fifty pages with a hundred and
-    sixty candidates still waiting and said only "completed".
-    """
-    if not (frontier.size == 0 and buffer.is_empty and c.in_flight == 0 and c.ranking_in_flight == 0):
+    """The crawl read everything it found."""
+    if not _is_drained(frontier, c):
         return None
-    blocked = getattr(frontier, "blocked_by_domain_budget", 0)
-    if blocked:
-        return StopReason("DOMAIN_BUDGET", f"{blocked} candidates refused by the per-domain ceiling")
     return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
+
+
+def _ceiling_refused(
+    _task: CrawlTask,
+    frontier: Frontier,
+    c: CrawlCounters,
+) -> StopReason | None:
+    """The per-domain ceiling refused candidates before the run ended.
+
+    Said alongside FRONTIER_DRAINED rather than instead of it, because
+    both are true and only together do they answer why nothing is left.
+    A feed crawl ended at fifty pages with a hundred and sixty
+    candidates refused and reported only "completed"; a graph crawl that
+    genuinely exhausts itself refuses thousands along the way and is
+    still a real completion.
+    """
+    blocked = getattr(frontier, "blocked_by_domain_budget", 0)
+    if not blocked or not _is_drained(frontier, c):
+        return None
+    return StopReason("DOMAIN_BUDGET", f"{blocked} candidates refused by the per-domain ceiling")
 
 
 def _enough_found(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     """Stop once the run has what it was asked for.
@@ -163,7 +171,6 @@ def _enough_found(
 def _diminishing_returns(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     window = c.relevance_window
@@ -175,7 +182,6 @@ def _diminishing_returns(
 def _user_requested(
     task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     _counters: CrawlCounters,
 ) -> StopReason | None:
     if task.state == "STOPPING":
@@ -186,7 +192,6 @@ def _user_requested(
 def _fatal(
     _task: CrawlTask,
     _frontier: Frontier,
-    _buffer: Buffer,
     c: CrawlCounters,
 ) -> StopReason | None:
     if c.fatal_error:
@@ -206,18 +211,18 @@ _CHECKS: list[_CheckFunc] = [
     _enough_found,
     _diminishing_returns,
     _frontier_drained,
+    _ceiling_refused,
 ]
 
 
 def check_stop(
     task: CrawlTask,
     frontier: Frontier,
-    buffer: Buffer,
     counters: CrawlCounters,
 ) -> list[StopReason]:
     reasons: list[StopReason] = []
     for check in _CHECKS:
-        result = check(task, frontier, buffer, counters)
+        result = check(task, frontier, counters)
         if result is not None:
             reasons.append(result)
     return reasons

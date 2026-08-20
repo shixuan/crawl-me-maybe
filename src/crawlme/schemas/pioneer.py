@@ -105,6 +105,10 @@ class FrontierSnapshot(BaseModel):
     # name, which quietly stored nothing at all once the ordering became
     # something other than one heap.
     ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # The unscored half.  Absent from checkpoints written while it lived
+    # outside the frontier, which is why a resume then began knowing
+    # nothing about the candidates still waiting to be scored.
+    waiting: dict[str, Any] = Field(default_factory=dict[str, Any])
     # The shape checkpoints were written in before `ordering` existed.
     # Read on restore so an older checkpoint still resumes; no longer
     # written.

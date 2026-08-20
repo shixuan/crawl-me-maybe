@@ -41,11 +41,13 @@ import asyncio
 import datetime
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any
 
+from crawlme.pioneer.frontier.base import Buffer, Gate, GateFn
+from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
 from crawlme.pioneer.frontier.prefilter import PreFilterContext
-from crawlme.pioneer.frontier.queue import Gate, GateFn, PriorityQueue
-from crawlme.schemas import FrontierItem, FrontierItemStatus, FrontierSnapshot
+from crawlme.pioneer.frontier.queue import PriorityQueue
+from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, FrontierSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -54,36 +56,23 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class Frontier(Protocol):
-    """Contract for the priority-queue URL frontier."""
-
-    @property
-    def size(self) -> int: ...
-
-    async def push_batch(self, items: list[FrontierItem]) -> None: ...
-
-    async def pop_next(
-        self,
-        now: datetime.datetime | None = None,
-        next_allowed: Callable[[str], datetime.datetime] | None = None,
-        global_budget: int | None = None,
-    ) -> FrontierItem | None: ...
-
-    async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None: ...
-
-    def snapshot(self, task_id: str = "") -> FrontierSnapshot: ...
-
-    def restore(self, snap: FrontierSnapshot) -> None: ...
-
-    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
-
-
 class GatedFrontier:
-    """Gating, budgets, dedup and checkpoints over a pluggable ordering.
+    """Everything discovered and not yet fetched, in its two states.
 
-    Named for what it does rather than for how it orders: ordering moved
-    behind the ordering seam, and a frontier that still called itself
-    Priority was describing a component it no longer contains.
+    A frontier is the set of URLs a crawl has found and not read, which
+    is both compartments here: candidates waiting for a score, and
+    scored candidates waiting for a fetch slot.  They stay apart because
+    an unscored candidate has no priority to sort by, and they stay
+    *here* because splitting them across two owners left the crawl with
+    two answers to "do I already have this URL" and a moment between
+    them where both said no.
+
+    Owning both also means a checkpoint covers both.  When the waiting
+    half lived outside, a run that stopped with eighty-seven candidates
+    still unscored resumed knowing nothing about them.
+
+    It coordinates and does not implement: the rotation belongs to the
+    Buffer, the heap and its cooldowns to the PriorityQueue.
     """
 
     def __init__(
@@ -92,6 +81,7 @@ class GatedFrontier:
         aging_window: float = 600.0,
         age_factor: float = 1.0,
         source: PriorityQueue | None = None,
+        buffer: Buffer | None = None,
     ) -> None:
         # Zero means no per-domain ceiling.  One is right for a link
         # graph, where a single site can otherwise absorb the whole run;
@@ -99,6 +89,12 @@ class GatedFrontier:
         # platform's domain and the ceiling becomes a hidden total that
         # quietly overrides the page budget.
         self._domain_budget = domain_budget
+        # The unscored half.  Typed to the contract, not to the rotation:
+        # this package has already had two answers to "which candidate
+        # gets scored next" and will have others.
+        self._waiting: Buffer = buffer if buffer is not None else RoundRobinBuffer()
+        # Candidates out being scored: in neither half, still work.
+        self._scoring = 0
         # How many candidates that ceiling turned away.  A frontier can
         # be empty because there was nothing left or because everything
         # left was refused, and a run that cannot tell the difference
@@ -113,10 +109,66 @@ class GatedFrontier:
         self._domain_counters: dict[str, int] = {}
         self._global_counter: int = 0
 
+    #: the unscored half ------------------------------------------------
+
+    async def push_candidates(self, candidates: list[Candidate]) -> None:
+        """Hold candidates until something scores them.
+
+        One question, asked once, covering both halves and what has
+        already been read.  When the halves had separate owners each
+        kept its own answer, and a candidate on its way from one to the
+        other was unknown to both.
+        """
+        fresh = [c for c in candidates if not self.holds(c.url.url_key)]
+        await self._waiting.add(fresh)
+
+    async def take_for_ranking(self, n: int) -> list[Candidate]:
+        """Hand out the next candidates to score, a turn from each seed.
+
+        Counted while they are gone.  Between leaving here and coming
+        back scored they are in neither half, and a run that read the
+        two halves as "nothing left" ended while its next batch was
+        still being scored.
+        """
+        batch = list(await self._waiting.drain(n))
+        self._scoring += len(batch)
+        return batch
+
+    def finish_ranking(self, n: int) -> None:
+        """Report that *n* candidates came back from scoring, or died there."""
+        self._scoring = max(0, self._scoring - n)
+
+    @property
+    def scoring(self) -> int:
+        return self._scoring
+
+    @property
+    def cooling(self) -> int:
+        """Scored items waiting out a cooldown rather than a decision."""
+        return self._source.cooling
+
+    @property
+    def waiting(self) -> Buffer:
+        """The unscored half, for the rank pump's own wake-up signal."""
+        return self._waiting
+
+    @property
+    def waiting_size(self) -> int:
+        return int(self._waiting.size)
+
+    #: the scored half ---------------------------------------------------
+
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:
+            # Scored items come back from the ranker, which was handed
+            # them from the waiting half, so they are no longer held
+            # there: only the read set and the scored half can object.
             fresh = [i for i in items if i.url_key not in self._visited and not self._source.contains(i.url_key)]
             await self._source.add(fresh)
+
+    def holds(self, url_key: str) -> bool:
+        """Whether this URL is already spoken for, anywhere."""
+        return url_key in self._visited or self._source.contains(url_key) or self._waiting.contains(url_key)
 
     async def pop_next(
         self,
@@ -209,6 +261,7 @@ class GatedFrontier:
         return FrontierSnapshot(
             task_id=task_id,
             ordering=self._source.dump(),
+            waiting=self._waiting.dump(),
             visited=self._visited.copy(),
             budgets={"domain": dict(self._domain_counters), "global": self._global_counter},
         )
@@ -217,6 +270,8 @@ class GatedFrontier:
         self._visited = snap.visited.copy()
         self._domain_counters = dict(snap.budgets.get("domain", {}))
         self._global_counter = snap.budgets.get("global", 0)
+        if snap.waiting:
+            self._waiting.load(snap.waiting)
         if snap.ordering:
             self._source.load(snap.ordering)
             return

@@ -72,12 +72,12 @@ def create_scheduler(
         "storage": storage,
         "frontier": GatedFrontier(
             domain_budget=goal.domain_budget if goal else 50,
+            buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         ),
         "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
-        "buffer": RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
         "canonicalizer": canonicalizer,
         "harvester": _build_harvester(settings, canonicalizer),

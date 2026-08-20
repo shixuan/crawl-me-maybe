@@ -39,7 +39,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any
 
 from crawlme.schemas import Candidate
 
@@ -82,23 +82,6 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
         if not took:
             break
     return out, (keys[served] if keys else "")
-
-
-class Buffer(Protocol):
-    """Contract for the in-memory candidate staging area."""
-
-    @property
-    def size(self) -> int: ...
-    @property
-    def is_empty(self) -> bool: ...
-
-    async def add(self, candidates: list[Candidate]) -> None: ...
-    async def drain(self, n: int | None = None) -> list[Candidate]: ...
-
-    def ready(self, frontier_hungry: bool = False) -> bool: ...
-
-    async def wait_until(self, predicate: Callable[[], bool] | None = None) -> None: ...
-    async def wake(self) -> None: ...
 
 
 class RoundRobinBuffer:
@@ -175,6 +158,21 @@ class RoundRobinBuffer:
             self._cond.notify_all()
 
     #: properties -------------------------------------------------------
+
+    def contains(self, url_key: str) -> bool:
+        return url_key in self._seen
+
+    def dump(self) -> dict[str, Any]:
+        return {
+            "candidates": [c.model_dump(mode="json") for c in self._candidates],
+            "seen": sorted(self._seen),
+            "next_seed": self._next_seed,
+        }
+
+    def load(self, state: dict[str, Any]) -> None:
+        self._candidates = [Candidate.model_validate(c) for c in state.get("candidates") or []]
+        self._seen = set(state.get("seen") or [])
+        self._next_seed = str(state.get("next_seed") or "")
 
     @property
     def size(self) -> int:

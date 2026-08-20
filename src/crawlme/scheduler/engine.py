@@ -28,7 +28,6 @@ from crawlme.digest.harvest import Harvester, LinkHarvester
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.frontier.buffer import Buffer
 from crawlme.pioneer.frontier.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
@@ -122,7 +121,6 @@ class CrawlScheduler:
         extractor: Extractor,
         robots: RobotsPolicy,
         prefilter: PreFilter,
-        buffer: Buffer,
         ranker: Ranker,
         canonicalizer: Canonicalizer,
         harvester: Harvester | None = None,
@@ -136,7 +134,6 @@ class CrawlScheduler:
         self._extractor = extractor
         self._robots = robots
         self._prefilter = prefilter
-        self._buffer = buffer
         self._ranker = ranker
         self._canonicalizer = canonicalizer
         # What a page yields depends on the kind of source it came
@@ -484,7 +481,7 @@ class CrawlScheduler:
         enough to be seen.
         """
         left_frontier = self._frontier.size
-        left_buffer = self._buffer.size
+        left_buffer = self._frontier.waiting_size
         stats = self._ctx.stats
         logger.info(
             "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
@@ -506,7 +503,7 @@ class CrawlScheduler:
         """Name why the run is ending, for a path that bypassed the check."""
         if self._task is None or self._task.stopping_reason:
             return
-        reasons = check_stop(self._task, self._frontier, self._buffer, self._counters)
+        reasons = check_stop(self._task, self._frontier, self._counters)
         self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
         logger.info("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._counters.pages_fetched)
 
@@ -518,7 +515,6 @@ class CrawlScheduler:
             reasons = check_stop(
                 self._task,  # type: ignore[arg-type]
                 self._frontier,
-                self._buffer,
                 self._counters,
             )
             if reasons:
@@ -530,10 +526,10 @@ class CrawlScheduler:
                     codes,
                     self._counters.pages_fetched,
                     self._frontier.size,
-                    self._buffer.size,
+                    self._frontier.waiting_size,
                     self._counters.in_flight,
                 )
-                await self._buffer.wake()
+                await self._frontier.waiting.wake()
                 break
 
             # Page budget gates pops, not just completions: committed
@@ -555,36 +551,42 @@ class CrawlScheduler:
                 global_budget=self._counters.max_pages,
             )
             if item is None:
-                if self._counters.ranking_in_flight > 0:
+                if self._frontier.scoring > 0:
                     # A rank call holds the only candidates there are.
                     # The rank pump is inside it, so it is neither asleep
                     # nor able to act on a wake: waiting is the whole job.
                     await asyncio.sleep(_POP_SLEEP)
                     continue
-                if self._buffer.is_empty:
-                    if self._counters.in_flight == 0:
+                if self._frontier.waiting.is_empty:
+                    # A pop that returns nothing is not the same as an
+                    # empty frontier: an item whose cooldown has not
+                    # expired stays queued and comes back on its own.
+                    # Reading the first as the second ended a run at zero
+                    # pages with its only seed still waiting.  Items a
+                    # gate refuses outright are not a reason to wait,
+                    # because nothing about them will change.
+                    if self._counters.in_flight == 0 and self._frontier.cooling == 0:
                         # The loop leaves here without going back to the
                         # stop check at the top, so the reason has to be
                         # recorded on the way out or the run reports
                         # "completed" with no cause at all.
                         self._record_stop_reason()
-                        logger.info(
-                            "fetch_pump.exhausted frontier=%d buffer=%d",
-                            self._frontier.size,
-                            self._buffer.size,
-                        )
-                        await self._buffer.wake()
+                        logger.info("fetch_pump.exhausted frontier=0 buffer=0")
+                        await self._frontier.waiting.wake()
                         break
-                    # Buffer is empty but in_flight > 0: tasks may produce
-                    # new candidates.  Wake the rank pump in case it is
-                    # blocked on wait_until so it can observe state changes.
-                    await self._buffer.wake()
+                    # Nothing waiting to be scored, but either a fetch is
+                    # in the air or an item is cooling down, so more work
+                    # is coming.  Wake the rank pump in case it is blocked
+                    # on wait_until so it can observe state changes.
+                    await self._frontier.waiting.wake()
                 elif self._frontier.size == 0 and self._counters.in_flight == 0:
                     # Buffer has items but nothing is fetching: the rank
                     # pump may be asleep on a stale predicate (frontier was
                     # non-empty when it last checked).  Wake it.
-                    logger.debug("fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
-                    await self._buffer.wake()
+                    logger.debug(
+                        "fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size
+                    )
+                    await self._frontier.waiting.wake()
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -786,7 +788,7 @@ class CrawlScheduler:
                 decision, _ = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
                 if decision.value == "allow":
                     c.status = "BUFFERED"
-                    await self._buffer.add([c])
+                    await self._frontier.push_candidates([c])
                     n_allowed += 1
                     self._storage.save_link(c)
                 else:
@@ -852,33 +854,28 @@ class CrawlScheduler:
     async def _rank_pump(self) -> None:
         ranked_total = 0
         while self._state == "RUNNING":
-            logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
-            await self._buffer.wait_until(
-                lambda: self._buffer.ready(self._frontier.size == 0) or self._state != "RUNNING"
+            logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
+            await self._frontier.waiting.wait_until(
+                lambda: self._frontier.waiting.ready(self._frontier.size == 0) or self._state != "RUNNING"
             )
             logger.debug(
                 "rank_pump.woke frontier=%d buffer=%d state=%s",
                 self._frontier.size,
-                self._buffer.size,
+                self._frontier.waiting_size,
                 self._state,
             )
             if self._state != "RUNNING":
                 break
 
-            batch = await self._buffer.drain(_RANK_BATCH_SIZE)
+            batch = await self._frontier.take_for_ranking(_RANK_BATCH_SIZE)
             if not batch:
                 continue
 
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
-
-            # Held from the moment the batch leaves the buffer until it
-            # lands in the frontier.  A rank call is a network round trip
-            # and the batch is invisible for its whole duration.
-            self._counters.ranking_in_flight += len(batch)
             try:
                 await self._rank_and_enqueue(batch)
             finally:
-                self._counters.ranking_in_flight -= len(batch)
+                self._frontier.finish_ranking(len(batch))
                 ranked_total += len(batch)
                 self._ctx.stats.candidates_ranked = ranked_total
 

@@ -203,3 +203,37 @@ async def test_a_checkpoint_survives_the_trip_through_json():
     assert restored.size == 2
     got = await restored.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
     assert got is not None and got.url_key == "a", "priority survived too"
+
+
+@pytest.mark.asyncio
+async def test_a_cooling_item_is_counted_as_work(frontier):
+    """A pop that returns nothing does not mean there is nothing left.
+
+    The fetch pump reads this to tell a frontier that is empty from one
+    whose only item is waiting out a clock, and once read the two the
+    same way it ended a run at zero pages with its seed still queued.
+    """
+    item = _item("k1", 1.0)
+    item.next_available_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+    await frontier.push_batch([item])
+    assert await frontier.pop_next() is None
+
+    assert frontier.cooling == 1
+    assert frontier.size == 1
+
+
+@pytest.mark.asyncio
+async def test_an_item_a_gate_refuses_is_not_cooling(frontier):
+    """A spent budget refuses the same item forever, so nobody should wait.
+
+    Counting it as cooling would leave the pump asleep on an item that
+    is never coming, which is the opposite failure and just as quiet.
+    """
+    await frontier.push_batch([_item("k1", 1.0)])
+    first = await frontier.pop_next(global_budget=1)
+    await frontier.record_outcome(first, "COMPLETED")
+
+    await frontier.push_batch([_item("k2", 1.0)])
+    assert await frontier.pop_next(global_budget=1) is None, "the budget is spent"
+    assert frontier.size == 1
+    assert frontier.cooling == 0
