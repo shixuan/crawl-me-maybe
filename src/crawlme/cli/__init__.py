@@ -20,7 +20,7 @@ import sys
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
-from crawlme.digest.feed import FEEDS
+from crawlme.scheduler.traversal import feed_kinds
 
 
 def main() -> None:
@@ -88,7 +88,7 @@ def main() -> None:
     )
     run_p.add_argument(
         "--feed",
-        choices=sorted(FEEDS),
+        choices=feed_kinds(),
         default=None,
         help="Read the source as a platform feed: a listing yields post permalinks "
         "instead of the links on the page (default: crawl the link graph)",

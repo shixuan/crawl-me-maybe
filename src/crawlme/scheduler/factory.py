@@ -12,7 +12,6 @@ from typing import Any
 from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
-from crawlme.digest.feed import FEEDS
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
 from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
 from crawlme.llm import TokenBudget
@@ -28,9 +27,9 @@ from crawlme.pioneer.ranker.embedding import (
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
 )
-from crawlme.pioneer.ranker.rule import FEED_FACTORS, GRAPH_FACTORS
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.steering import InflightSignals, SteeringLoop, SteeringSystem
@@ -109,7 +108,7 @@ def _build_ordering(settings: Settings) -> Ordering:
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
     """What a page yields depends on the kind of source it came from."""
-    adapter = FEEDS.get(settings.source_kind)
+    adapter = traversal_for(settings.source_kind).adapter
     if adapter is not None:
         return FeedHarvester(adapter, canonicalizer)
     return LinkHarvester(canonicalizer)
@@ -128,14 +127,14 @@ def _build_fetcher(settings: Settings) -> Fetcher:
         # A feed adapter is the only thing that knows which of a page's
         # own requests carries the posts.  Without one, nothing is kept
         # and the browser behaves exactly as it did before.
-        adapter = FEEDS.get(settings.source_kind)
+        t = traversal_for(settings.source_kind)
         return PlaywrightFetcher(
             storage_state=settings.browser_storage_state or None,
             user_agents=list(settings.user_agents),
             timeout=settings.fetch_timeout_read,
-            keep_payload=adapter.keeps_payload if adapter is not None else None,
+            keep_payload=t.adapter.keeps_payload if t.adapter is not None else None,
             max_payload_bytes=settings.browser_max_payload_bytes,
-            scrolls=settings.feed_scrolls if adapter is not None else 0,
+            scrolls=settings.feed_scrolls if t.scrolls else 0,
         )
     return HttpFetcher(
         user_agents=list(settings.user_agents),
@@ -214,7 +213,7 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
         # A feed post has no anchor, no path shape and no position in a
         # page, and every post shares one domain: the graph set would
         # score five of its seven factors on constants.
-        rule=RuleRanker(threshold=0.0, factors=FEED_FACTORS if settings.source_kind in FEEDS else GRAPH_FACTORS),
+        rule=RuleRanker(threshold=0.0, factors=traversal_for(settings.source_kind).factors),
         embedding=EmbeddingRanker(
             embedder,
             keep=settings.embedding_keep,

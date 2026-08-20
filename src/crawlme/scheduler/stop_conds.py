@@ -98,7 +98,14 @@ def _time_horizon(
     everywhere; PreFilter's `stale_check` does it whenever a listing
     stated the date.  See refactor.md R3.
     """
-    if c.since is None or c.max_stale_streak <= 0 or c.seed_count != 1:
+    # Two conditions, two reasons.  The traversal says whether its
+    # source is ordered by time at all; the seed count says whether this
+    # run walks one of them or interleaves several, which turns "pages in
+    # a row" into pages from sources that have nothing to do with each
+    # other.
+    if c.since is None or c.max_stale_streak <= 0:
+        return None
+    if not c.time_horizon_allowed or c.seed_count != 1:
         return None
     if c.stale_streak >= c.max_stale_streak:
         return StopReason(

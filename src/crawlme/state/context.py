@@ -69,6 +69,13 @@ class CrawlCounters:
     # decide whether "consecutive stale pages" means anything; see the
     # check's own docstring for why anything but 1 leaves it dormant.
     seed_count: int = 0
+    # Whether this traversal can ever read "no recent content" as "no
+    # more content".  Declared by the traversal rather than guessed from
+    # the run's shape: a feed listing is time-ordered per account and
+    # never as a whole, so the answer never depends on how a given run
+    # went.  The seed count still matters on top of it, for a different
+    # reason -- see the check itself.
+    time_horizon_allowed: bool = True
 
 
 @dataclasses.dataclass
