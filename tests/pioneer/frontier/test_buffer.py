@@ -218,3 +218,35 @@ async def test_candidates_without_a_seed_share_one_turn():
         [Candidate(url=URL(raw=f"https://x/{i}", canonical=f"https://x/{i}", url_key=str(i))) for i in range(4)]
     )
     assert len(await buf.drain(2)) == 2
+
+
+@pytest.mark.asyncio
+async def test_more_seeds_than_a_batch_still_all_get_turns():
+    """A batch is often smaller than the seed list.
+
+    Restarting the rotation at the front each time would let the first
+    `n` seeds take every turn and leave the rest exactly as starved as
+    first-come-first-served did, only with a larger cartel.
+    """
+    buf = RoundRobinBuffer()
+    await buf.add([_seeded(f"s{s}_{i}", f"seed{s}") for s in range(50) for i in range(4)])
+
+    seen: dict[str, int] = {}
+    for _ in range(5):
+        for c in await buf.drain(20):
+            seen[c.seed_url_key] = seen.get(c.seed_url_key, 0) + 1
+
+    assert len(seen) == 50, "every seed was reached"
+    assert set(seen.values()) == {2}, "and reached equally"
+
+
+@pytest.mark.asyncio
+async def test_the_rotation_resumes_where_it_stopped():
+    buf = RoundRobinBuffer()
+    await buf.add([_seeded(f"{s}1", s) for s in ("a", "b", "c")])
+    await buf.add([_seeded(f"{s}2", s) for s in ("a", "b", "c")])
+
+    first = [c.seed_url_key for c in await buf.drain(2)]
+    second = [c.seed_url_key for c in await buf.drain(2)]
+    assert first == ["a", "b"]
+    assert second[0] == "c", "the next drain picks up at the seed that was skipped"

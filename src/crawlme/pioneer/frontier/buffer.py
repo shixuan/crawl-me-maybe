@@ -46,30 +46,42 @@ from crawlme.schemas import Candidate
 logger = logging.getLogger(__name__)
 
 
-def _take_turns(candidates: list[Candidate], n: int) -> list[Candidate]:
+def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[list[Candidate], str]:
     """Up to *n*, one from each seed in turn, oldest first within a seed.
 
-    A seed that runs out simply stops being asked, so its unused turns
-    go to whoever still has candidates rather than being reserved and
-    wasted.  Seeds are visited in the order they first appeared, which
-    keeps the result the same from run to run.
+    Returns what to hand out and which seed the next call should start
+    from.  Carrying that across calls is the whole point: a batch is
+    smaller than the seed list often enough to matter, and starting from
+    the front every time would let the first `n` seeds take every turn
+    and leave the rest exactly as starved as first-come-first-served
+    did, only with a larger cartel.
+
+    A seed that runs out stops being asked, so its unused turns go to
+    whoever still has candidates rather than being reserved and wasted.
     """
     groups: dict[str, list[Candidate]] = {}
     for c in candidates:
         groups.setdefault(c.seed_url_key or c.source_url_key or "", []).append(c)
+
+    keys = list(groups)
+    offset = keys.index(start) if start in keys else 0
     out: list[Candidate] = []
+    served = offset
     while len(out) < n:
         took = False
-        for queue in groups.values():
+        for i in range(len(keys)):
+            key = keys[(offset + i) % len(keys)]
+            queue = groups[key]
             if not queue:
                 continue
             out.append(queue.pop(0))
+            served = (keys.index(key) + 1) % len(keys)
             took = True
             if len(out) >= n:
                 break
         if not took:
             break
-    return out
+    return out, (keys[served] if keys else "")
 
 
 class Buffer(Protocol):
@@ -96,6 +108,10 @@ class RoundRobinBuffer:
         self._seen: set[str] = set()
         self._cond = asyncio.Condition()
         self._last_added_at: float = 0.0
+        # Where the next drain resumes the rotation.  Without it every
+        # drain restarts at the first seed, and any seed past the batch
+        # size never gets a turn at all.
+        self._next_seed: str = ""
 
     #: write path -------------------------------------------------------
 
@@ -133,7 +149,7 @@ class RoundRobinBuffer:
                 batch = self._candidates[:]
                 self._candidates.clear()
                 return batch
-            batch = _take_turns(self._candidates, n)
+            batch, self._next_seed = _take_turns(self._candidates, n, self._next_seed)
             taken = {id(c) for c in batch}
             self._candidates = [c for c in self._candidates if id(c) not in taken]
             return batch
