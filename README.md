@@ -19,8 +19,11 @@ pip install -e .
 
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --page-budget 200
+  --max-relevant 40 --page-budget 200
 ```
+
+`--max-relevant` says when you have enough; `--page-budget` says how much you
+are willing to spend looking. Whichever comes first ends the run.
 
 Semantic ranking is on by default. The first run downloads a local embedding model (~220MB) once.
 
@@ -34,7 +37,14 @@ crawl run "C++ backend job postings" --seeds-rss "https://hnrss.org/newest"
 # {"seeds": [...], "allowed_domains": [...]}
 crawl run "release notes" --seeds-file ./seeds.json
 
-# ignore --max-pages, stop when the frontier runs dry
+# a feed: read several accounts, taking a turn from each
+crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
+  --seeds-file ./seeds.json \
+  --feed instagram --session ./ig-state.json \
+  --max-relevant 40 --page-budget 150 \
+  --since '2 weeks' --depth-limit 1 --ignore-robots
+
+# ignore the page budget, stop when the frontier runs dry
 crawl run "all press coverage" --seeds "..." --draining
 ```
 
