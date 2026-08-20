@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 
-from crawlme.pioneer.prefilter import Decision, PreFilter, PreFilterContext
+from crawlme.pioneer.frontier.prefilter import Decision, PreFilter, PreFilterContext
 from crawlme.schemas import URL, Candidate, CrawlGoal
 
 

@@ -15,11 +15,10 @@ from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
 from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
 from crawlme.llm import TokenBudget
-from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.pioneer.ordering import BestFirst, HybridOrdering, Ordering, RoundRobin
-from crawlme.pioneer.prefilter import PreFilter
+from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
+from crawlme.pioneer.frontier.prefilter import PreFilter
 from crawlme.pioneer.ranker import HybridRanker, Ranker, RuleRanker
 from crawlme.pioneer.ranker.embedding import (
     Embedder,
@@ -73,13 +72,12 @@ def create_scheduler(
         "storage": storage,
         "frontier": GatedFrontier(
             domain_budget=goal.domain_budget if goal else 50,
-            source=_build_ordering(settings),
         ),
         "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
-        "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
+        "buffer": RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
         "canonicalizer": canonicalizer,
         "harvester": _build_harvester(settings, canonicalizer),
@@ -88,22 +86,6 @@ def create_scheduler(
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
-
-
-def _build_ordering(settings: Settings) -> Ordering:
-    """One structure, two plugs.
-
-    Groups are the seeds the user named, so a run over several entry
-    points reads all of them instead of whichever one shouts loudest.
-    The outer plug decides whose turn it is; the inner one decides what
-    comes first inside a seed.
-
-    "best" is not a second code path: taking the best group's best item
-    is taking the best item anywhere, so it is this same structure with
-    BestFirst in the outer slot.
-    """
-    outer: Ordering = BestFirst() if settings.order == "best" else RoundRobin()
-    return HybridOrdering(lambda item: item.seed_url_key or item.url_key, outer, BestFirst)
 
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:

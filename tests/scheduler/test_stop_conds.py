@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from crawlme.pioneer.buffer import InMemoryBuffer
 from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.pioneer.frontier.buffer import RoundRobinBuffer
 from crawlme.scheduler.stop_conds import check_stop
 from crawlme.schemas import URL, CrawlTask, FrontierItem
 from crawlme.state.context import CrawlCounters
@@ -37,8 +37,8 @@ def _frontier(size: int = 0) -> GatedFrontier:
     return f
 
 
-def _buffer() -> InMemoryBuffer:
-    return InMemoryBuffer()
+def _buffer() -> RoundRobinBuffer:
+    return RoundRobinBuffer()
 
 
 def _counters(**kw) -> CrawlCounters:

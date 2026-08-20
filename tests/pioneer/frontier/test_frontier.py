@@ -5,8 +5,7 @@ import json
 
 import pytest
 
-from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.pioneer.ordering import BestFirst, HybridOrdering, RoundRobin
+from crawlme.pioneer.frontier import GatedFrontier, PriorityQueue
 from crawlme.schemas import URL, FrontierItem, FrontierSnapshot
 
 
@@ -144,7 +143,7 @@ async def test_a_page_being_fetched_is_not_queued_again():
     Discovered again from another page mid-fetch, it would otherwise be
     read twice and analysed twice.
     """
-    f = GatedFrontier(domain_budget=0, source=HybridOrdering(lambda i: i.seed_url_key, RoundRobin(), BestFirst))
+    f = GatedFrontier(domain_budget=0, source=PriorityQueue())
     await f.push_batch([_item("dup", priority=0.9)])
     taken = await f.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
     assert taken is not None
@@ -155,14 +154,14 @@ async def test_a_page_being_fetched_is_not_queued_again():
 
 
 @pytest.mark.asyncio
-async def test_a_checkpoint_keeps_the_queue_whatever_the_ordering_is():
+async def test_a_checkpoint_keeps_the_queue():
     """The snapshot used to copy one ordering's internals by name.
 
     With `heap` absent from a composed ordering's state, every
     checkpoint stored an empty queue and every resume began with nothing
     to fetch, without an error anywhere.
     """
-    make = lambda: HybridOrdering(lambda i: i.seed_url_key, RoundRobin(), BestFirst)  # noqa: E731
+    make = PriorityQueue
     f = GatedFrontier(source=make())
     await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
     assert f.size == 2
@@ -193,7 +192,7 @@ async def test_a_checkpoint_survives_the_trip_through_json():
     disk the state is data, and the first thing load() did with it was
     read an attribute.
     """
-    make = lambda: HybridOrdering(lambda i: i.seed_url_key, RoundRobin(), BestFirst)  # noqa: E731
+    make = PriorityQueue
     f = GatedFrontier(source=make())
     await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
 

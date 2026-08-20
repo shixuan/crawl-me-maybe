@@ -106,13 +106,6 @@ def main() -> None:
         help="Miss less, read more: no stage discards a candidate, it only ranks it "
         "last, and --max-pages decides where to stop. Costs roughly twice the tokens",
     )
-    run_p.add_argument(
-        "--order",
-        choices=["fair", "best"],
-        default=None,
-        help="What to read next: 'fair' takes a turn from each source, 'best' takes "
-        "the highest priority anywhere (default: fair for a feed, best for a link graph)",
-    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(

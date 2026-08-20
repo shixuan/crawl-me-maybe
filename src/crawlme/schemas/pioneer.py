@@ -60,11 +60,11 @@ class FrontierItem(BaseModel):
     rationale: str | None = None
     depth: int = 0
     reg_domain: str = ""
-    # The seed this descends from, however many hops back. Ordering
-    # groups on it, so fairness is shared out between the entry points
-    # the user named -- a fixed, chosen set -- rather than between the
-    # pages a crawl happened to fetch, which it generates itself and
-    # without bound.
+    # The seed this descends from.  Carried across the frontier because
+    # a page's children inherit it, and the engine's own map of it is
+    # in memory only: without this a resumed run would regroup every
+    # candidate under the page it was found on.  The grouping that uses
+    # it happens upstream, on the candidate, not here.
     seed_url_key: str = ""
     status: FrontierItemStatus = "QUEUED"
     attempts: int = 0

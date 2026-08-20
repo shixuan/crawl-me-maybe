@@ -77,8 +77,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.ignore_robots = True
     if args.recall:
         cfg.recall = True
-    if args.order is not None:
-        cfg.order = args.order
     if args.no_embedding:
         # "" is the disabled provider: rule-only ranking, no model loaded.
         cfg.embedding_provider = ""

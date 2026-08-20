@@ -67,7 +67,7 @@ _NEGATIVE_ANCHOR = re.compile(
 
 
 def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
-    from crawlme.pioneer.blacklist import DOMAIN_BLACKLIST
+    from crawlme.pioneer.frontier.blacklist import DOMAIN_BLACKLIST
 
     if c.url.reg_domain in DOMAIN_BLACKLIST or c.url.domain in DOMAIN_BLACKLIST:
         return Decision.DROP, "blacklist"

@@ -6,7 +6,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from crawlme.config import Settings
-from crawlme.pioneer.ordering import BestFirst, HybridOrdering, RoundRobin
 from crawlme.pioneer.ranker import HybridRanker
 from crawlme.pioneer.ranker.embedding import (
     EmbeddingRanker,
@@ -14,8 +13,7 @@ from crawlme.pioneer.ranker.embedding import (
     OpenAICompatibleEmbedder,
 )
 from crawlme.pioneer.ranker.rule import FEED_FACTORS, GRAPH_FACTORS, RuleRanker
-from crawlme.scheduler.factory import _build_ordering, _build_ranker, create_scheduler
-from crawlme.schemas import URL, FrontierItem
+from crawlme.scheduler.factory import _build_ranker, create_scheduler
 from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
@@ -199,26 +197,3 @@ def test_a_feed_run_scores_on_the_feed_factors():
 def test_a_graph_run_keeps_the_graph_factors():
     ranker = _build_ranker(Settings(embedding_provider="local"), llm=None, stats=None)
     assert ranker._rule._factors == GRAPH_FACTORS
-
-
-@pytest.mark.parametrize(("order", "outer"), [("", RoundRobin), ("fair", RoundRobin), ("best", BestFirst)])
-def test_the_order_setting_chooses_the_outer_algorithm(order, outer):
-    """One structure either way: only the plug in the outer slot changes.
-
-    There is no separate best-first path, because taking the best
-    group's best item is taking the best item anywhere.
-    """
-    got = _build_ordering(Settings(order=order))
-    assert isinstance(got, HybridOrdering)
-    assert isinstance(got._outer, outer)
-
-
-def test_grouping_is_by_seed_not_by_the_page_a_link_sat_on():
-    """Fairness is shared between entry points the user chose.
-
-    Grouping on the immediate parent would share it between the pages a
-    crawl fetched, which it generates itself and without bound.
-    """
-    got = _build_ordering(Settings())
-    item = FrontierItem(url=URL(raw="u", canonical="u", url_key="k"), url_key="k", seed_url_key="s")
-    assert got._partition_of(item) == "s"

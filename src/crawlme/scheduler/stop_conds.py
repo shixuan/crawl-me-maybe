@@ -15,8 +15,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.frontier import Frontier
+from crawlme.pioneer.frontier.buffer import Buffer
 from crawlme.schemas import CrawlTask
 from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
 

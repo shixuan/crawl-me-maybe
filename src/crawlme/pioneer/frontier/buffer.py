@@ -1,4 +1,21 @@
-"""Candidate buffer: in-memory staging area between prefilter and ranking.
+"""Candidate buffer: what gets scored next, and in what mix.
+
+This is where the scarce thing is decided.  Scoring costs an LLM call
+per batch, so whatever leaves here is what the crawl will ever have an
+opinion about; anything still sitting here when the run ends was never
+considered at all.
+
+Which makes the order it hands candidates out in a coverage decision,
+not a detail.  It used to be first-come-first-served, and a run over
+five accounts read fifty-three posts from one of them and none from
+three others: the first listing fetched filled the queue, and the run
+ended before the ranker reached anyone else.  Taking a turn from each
+seed instead costs nothing and is the whole fix -- fairness belongs
+here, upstream of the ranker, because this is the gate that binds.
+
+Ordering *after* the ranker is a different question with a different
+answer: there the scarce thing is the page budget, and the right way to
+spend it is the priority the ranker just produced.
 
 Candidates that pass PreFilter accumulate here.  The scheduler calls ready()
 to decide when to flush; when ready, drain(n) hands candidates to the Ranker.
@@ -29,6 +46,32 @@ from crawlme.schemas import Candidate
 logger = logging.getLogger(__name__)
 
 
+def _take_turns(candidates: list[Candidate], n: int) -> list[Candidate]:
+    """Up to *n*, one from each seed in turn, oldest first within a seed.
+
+    A seed that runs out simply stops being asked, so its unused turns
+    go to whoever still has candidates rather than being reserved and
+    wasted.  Seeds are visited in the order they first appeared, which
+    keeps the result the same from run to run.
+    """
+    groups: dict[str, list[Candidate]] = {}
+    for c in candidates:
+        groups.setdefault(c.seed_url_key or c.source_url_key or "", []).append(c)
+    out: list[Candidate] = []
+    while len(out) < n:
+        took = False
+        for queue in groups.values():
+            if not queue:
+                continue
+            out.append(queue.pop(0))
+            took = True
+            if len(out) >= n:
+                break
+        if not took:
+            break
+    return out
+
+
 class Buffer(Protocol):
     """Contract for the in-memory candidate staging area."""
 
@@ -46,7 +89,7 @@ class Buffer(Protocol):
     async def wake(self) -> None: ...
 
 
-class InMemoryBuffer:
+class RoundRobinBuffer:
     def __init__(self, capacity: int = 2000) -> None:
         self._capacity = capacity
         self._candidates: list[Candidate] = []
@@ -79,14 +122,20 @@ class InMemoryBuffer:
     #: read / drain path ------------------------------------------------
 
     async def drain(self, n: int | None = None) -> list[Candidate]:
-        """Remove and return up to *n* candidates (all if None)."""
+        """Remove and return up to *n* candidates, a turn from each seed.
+
+        Within one seed the oldest goes first: among an account's own
+        posts there is nothing yet to prefer, since none of them have
+        been scored.
+        """
         async with self._cond:
             if n is None or n >= len(self._candidates):
                 batch = self._candidates[:]
                 self._candidates.clear()
-            else:
-                batch = self._candidates[:n]
-                self._candidates = self._candidates[n:]
+                return batch
+            batch = _take_turns(self._candidates, n)
+            taken = {id(c) for c in batch}
+            self._candidates = [c for c in self._candidates if id(c) not in taken]
             return batch
 
     def ready(self, frontier_hungry: bool = False) -> bool:
