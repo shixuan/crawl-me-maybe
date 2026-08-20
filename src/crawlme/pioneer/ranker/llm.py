@@ -61,14 +61,16 @@ _SYSTEM = (
     "whether a link is relevant, but which link to click first under a limited budget. "
     "You see a batch of candidate links plus the crawl goal and what the crawl found "
     "so far, so compare the candidates against each other, not in isolation. Reply "
-    'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0, '
-    '"rationale": "..."}], "candidates_to_drop": [{"id": "<id>", "rationale": "..."}], '
+    'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0}], '
+    '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}], '
     '"new_search_suggestions": '
     '["..."]}. Include every candidate id exactly once, either in rankings or in '
     "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
-    "clicked earlier, so use the full 0.0 to 1.0 range. candidates_to_drop holds "
-    "clear junk under the goal, each with a short rationale saying what makes it "
-    "junk. If the whole batch is junk, put every id in candidates_to_drop. "
+    "clicked earlier, so use the full 0.0 to 1.0 range, and no rationale: the "
+    "priority is the whole answer for something you are keeping. candidates_to_drop "
+    "holds clear junk under the goal, each with a short rationale saying what makes "
+    "it junk, because a rejection is the one a reader has to be able to argue with. "
+    "If the whole batch is junk, put every id in candidates_to_drop. "
     "new_search_suggestions are optional new search directions "
     "you noticed while judging."
 )
@@ -101,6 +103,9 @@ class LLMRanker:
         self._batch_size = batch_size
         self._demote_dropped = demote_dropped
         self._max_batch_chars = max_batch_chars
+        # Lowered whenever a reply runs out of room, so the cost of
+        # learning the right size is paid once rather than per batch.
+        self._cap = batch_size
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMRanker | None:
@@ -146,7 +151,7 @@ class LLMRanker:
         chars = 0
         for c in candidates:
             size = len(c.text)
-            if chunk and (len(chunk) >= self._batch_size or chars + size > self._max_batch_chars):
+            if chunk and (len(chunk) >= min(self._batch_size, self._cap) or chars + size > self._max_batch_chars):
                 out.append(chunk)
                 chunk, chars = [], 0
             chunk.append(c)
@@ -160,6 +165,17 @@ class LLMRanker:
         the CLI's job at loop teardown."""
         return None
 
+    async def _halve_batches(self, overran: int) -> None:
+        """Remember the size that did not fit, for the batches after this.
+
+        Splitting recovers the batch in hand; without lowering the cap
+        the next one is cut to the same size and overruns the same way.
+        """
+        cap = max(1, min(self._cap, overran) // 2)
+        if cap < self._cap:
+            logger.warning("llm.rank batch cap %d -> %d after an overrun", self._cap, cap)
+            self._cap = cap
+
     async def _rank_chunk(
         self,
         goal: CrawlGoal,
@@ -171,21 +187,27 @@ class LLMRanker:
         resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
         data = _parse_response(resp.content)
         if data is None:
-            # A reply that used the whole ceiling was cut off mid-JSON,
-            # and no amount of stricter wording buys the room to finish
-            # it.  Asking again the same way just spends the ceiling
-            # twice, which is what a run on a reasoning model did before
-            # falling back to embedding-only scores.
+            # A reply that used the whole ceiling was cut off mid-JSON.
+            # Raising the ceiling was the first answer and the wrong one:
+            # the reply has to be that long because the batch is that
+            # big, so a bigger ceiling buys another slow call that runs
+            # out too.  One run spent four of them, 33k wasted output
+            # tokens, and 284 seconds -- half its total time -- doubling
+            # its way through the same twenty-one candidates.
+            #
+            # The ceiling belongs to the model; the batch size is ours.
+            if resp.truncated and len(chunk) > 1:
+                await self._halve_batches(len(chunk))
+                mid = len(chunk) // 2
+                first = await self._rank_chunk(goal, chunk[:mid], history, page_contexts)
+                return first + await self._rank_chunk(goal, chunk[mid:], history, page_contexts)
             if resp.truncated:
-                logger.warning(
-                    "llm.rank hit the output ceiling for %d candidates, retrying with more room",
-                    len(chunk),
-                )
+                # One candidate that will not fit is the only case where
+                # more room is the answer, because there is nothing to
+                # split.
+                logger.warning("llm.rank one candidate overruns the ceiling, retrying with more room")
                 resp = await self._client.chat(
-                    prompt,
-                    system=_SYSTEM,
-                    max_tokens=resp.output_tokens * 2,
-                    json_mode=True,
+                    prompt, system=_SYSTEM, max_tokens=resp.output_tokens * 2, json_mode=True
                 )
             else:
                 logger.warning(

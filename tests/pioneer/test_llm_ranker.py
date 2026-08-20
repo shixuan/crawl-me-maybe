@@ -311,20 +311,38 @@ def test_from_settings_wires_client_and_budget():
     assert ranker._client._model  # provider default when llm_model is unset
 
 
-async def test_a_truncated_rank_reply_is_retried_with_more_room():
-    """Stricter wording cannot buy the room to finish the JSON.
+async def test_a_reply_that_runs_out_of_room_splits_the_batch():
+    """A bigger ceiling buys another slow call that runs out too.
 
-    A run on a reasoning model spent the ceiling twice on the same
-    prompt and fell back to embedding-only scores; the second attempt
-    has to be bigger, not sterner.
+    The reply is that long because the batch is that big. One run spent
+    four doublings, 33k wasted output tokens and 284 seconds -- half its
+    total time -- on the same twenty-one candidates.
     """
     cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
-    client = _StubClient([cut_off, _resp(_rankings_json(2))])
-    await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+    client = _StubClient([cut_off, _resp(_rankings_json(1)), _resp(_rankings_json(1))])
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
-    retry = client.calls[1]
-    assert retry["max_tokens"] == 8192, "twice what the cut-off reply managed"
-    assert retry["prompt"] == client.calls[0]["prompt"], "the wording was never the problem"
+    assert len(client.calls) == 3, "the overrun, then each half"
+    assert all(c["max_tokens"] is None for c in client.calls), "the ceiling was never the knob"
+    assert len(decisions) == 2, "every candidate still gets a decision"
+
+
+async def test_an_overrun_shrinks_the_batches_that_follow():
+    """Splitting saves the batch in hand; the next one repeats it."""
+    cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
+    client = _StubClient([cut_off, _resp(_rankings_json(1)), _resp(_rankings_json(1))])
+    ranker = _ranker(client)
+    assert ranker._cap == 30
+    await ranker.rank_batch(_goal(), _candidates(2), RankHistorySummary())
+    assert ranker._cap == 1, "the size that did not fit, halved"
+
+
+async def test_one_candidate_too_large_is_the_only_case_for_more_room():
+    """There is nothing left to split."""
+    cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
+    client = _StubClient([cut_off, _resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    assert client.calls[1]["max_tokens"] == 8192
 
 
 async def test_unparseable_but_complete_still_gets_the_stricter_wording():
@@ -445,3 +463,25 @@ async def test_a_link_keeps_its_short_proxies_capped():
     c = _candidate("c0", anchor="z" * 500)
     await _ranker(client).rank_batch(_goal(), [c], RankHistorySummary())
     assert "z" * 500 not in client.calls[0]["prompt"]
+
+
+async def test_a_kept_candidate_needs_no_rationale():
+    """Its priority is the whole answer, and prose is what overran.
+
+    Rationales for a batch of twenty-one were most of an 8k reply; a
+    rejection still carries one, because that is the judgement a reader
+    has to be able to argue with.
+    """
+    body = '{"rankings": [{"id": "c0", "priority": 0.8}], "candidates_to_drop": []}'
+    client = _StubClient([_resp(body)])
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    assert decisions[0].dropped is False
+    assert decisions[0].rationale == "llm_priority=0.8000", "the score stands in for words"
+
+
+async def test_the_prompt_asks_for_rationale_only_where_it_is_read():
+    client = _StubClient([_resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    system = client.calls[0]["system"]
+    assert '"rankings": [{"id": "<id>", "priority": 0.0}]' in system
+    assert '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]' in system
