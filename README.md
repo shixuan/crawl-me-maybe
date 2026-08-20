@@ -67,7 +67,8 @@ crawl run "all press coverage" --seeds "..." --draining
 | `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
 | `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
-| `--recall` | flag | Diagnostic: keep what the ranker rejected so a run can measure whether it was right |
+| `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
+| `--fetcher` | `http` \| `browser` | How to fetch; `browser` for JS-rendered or login-walled pages |
 | `--feed` | `instagram` | Read the source as a platform feed |
 | `--session` | path | Playwright storage_state, to crawl as a logged-in session |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
@@ -145,7 +146,7 @@ EMBEDDING_BASE_URL=https://api.jina.ai/v1
 | v0.1 | ✅ | Full pipeline at zero LLM cost |
 | v0.1.1 | ✅ | EmbeddingRanker, semantic ranking on a local model |
 | v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis and steering, replay, inspect, time horizon |
-| v0.3 | planned | Playwright with login state, feed traversal, weekly digests |
+| v0.3 | 🚧 | Playwright with login state, feed traversal, extracted fields with evidence |
 
 ---
 
