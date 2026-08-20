@@ -207,3 +207,97 @@ class PriorityHeapSource:
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+class RoundRobinSource:
+    """Fair ordering across the pages candidates came from.
+
+    Best-first is right when the question is "what are the best results";
+    it is wrong when the question is "what do these accounts have". A run
+    over five shops fetched fifty-five posts from the one that posts
+    nothing but offers and one page from each of the other four, because
+    every one of its posts genuinely outranked theirs. The ordering was
+    correct and the answer was useless.
+
+    Fairness here needs no quota to tune. A group with three candidates
+    contributes three and leaves the rotation, and its unused turns go to
+    whoever still has work, where a reserved share would have been spent
+    on nothing. With a single group this behaves exactly like the source
+    it delegates to.
+
+    Ordering *within* a group is still best-first: this composes one
+    inner source per group rather than reimplementing the priority
+    ordering, the deferral handling, and the livelock rule they carry.
+    """
+
+    def __init__(self, make_source: Callable[[], WorkSource]) -> None:
+        self._make_source = make_source
+        self._groups: dict[str, WorkSource] = {}
+        self._order: list[str] = []
+        self._cursor = 0
+        self._group_of: dict[str, str] = {}
+
+    @property
+    def size(self) -> int:
+        return sum(g.size for g in self._groups.values())
+
+    def contains(self, url_key: str) -> bool:
+        return url_key in self._group_of
+
+    def keys(self) -> set[str]:
+        return set(self._group_of)
+
+    def discard(self, url_key: str) -> None:
+        group = self._group_of.pop(url_key, None)
+        if group is not None:
+            self._groups[group].discard(url_key)
+
+    async def add(self, items: list[FrontierItem]) -> None:
+        for item in items:
+            if item.url_key in self._group_of:
+                continue
+            # A seed has no source of its own, so it is its own group:
+            # it must not queue behind the pages it will go on to find.
+            group = item.source_url_key or item.url_key
+            if group not in self._groups:
+                self._groups[group] = self._make_source()
+                self._order.append(group)
+            self._group_of[item.url_key] = group
+            await self._groups[group].add([item])
+
+    async def take(self, now: datetime.datetime, gate: GateFn) -> FrontierItem | None:
+        """One item, from the group whose turn it is.
+
+        A group with nothing to give passes; the turn only advances past
+        a group that gave something, so a quiet source never costs a
+        round.
+        """
+        for offset in range(len(self._order)):
+            group = self._order[(self._cursor + offset) % len(self._order)]
+            item = await self._groups[group].take(now, gate)
+            if item is not None:
+                self._cursor = (self._cursor + offset + 1) % len(self._order)
+                self._group_of.pop(item.url_key, None)
+                return item
+        return None
+
+    def dump(self) -> dict[str, Any]:
+        return {
+            "order": list(self._order),
+            "cursor": self._cursor,
+            "groups": {name: g.dump() for name, g in self._groups.items()},
+        }
+
+    def load(self, state: dict[str, Any]) -> None:
+        self._groups.clear()
+        self._group_of.clear()
+        self._order = list(state.get("order") or [])
+        self._cursor = int(state.get("cursor") or 0)
+        for name, sub in (state.get("groups") or {}).items():
+            source = self._make_source()
+            source.load(sub)
+            self._groups[name] = source
+            if name not in self._order:
+                self._order.append(name)
+            for key in source.keys():
+                self._group_of[key] = name

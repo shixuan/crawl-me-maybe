@@ -29,6 +29,7 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.pioneer.ranker.rule import FEED_FACTORS, GRAPH_FACTORS
 from crawlme.pioneer.robots import RobotsPolicy
+from crawlme.pioneer.work_source import PriorityHeapSource, RoundRobinSource, WorkSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
@@ -71,7 +72,10 @@ def create_scheduler(
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
-        "frontier": PriorityFrontier(domain_budget=goal.domain_budget if goal else 50),
+        "frontier": PriorityFrontier(
+            domain_budget=goal.domain_budget if goal else 50,
+            source=_build_work_source(settings),
+        ),
         "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
@@ -85,6 +89,21 @@ def create_scheduler(
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _build_work_source(settings: Settings) -> WorkSource | None:
+    """Best-first, or a turn each.
+
+    Fair is the default for a feed because naming several accounts is
+    asking about all of them: best-first over one platform gives the
+    account that posts nothing but offers every page of the budget, and
+    the others their listing page and nothing else.  A link graph keeps
+    best-first, where the question really is what the best pages are.
+    """
+    order = settings.order or ("fair" if settings.source_kind in FEEDS else "best")
+    if order != "fair":
+        return None
+    return RoundRobinSource(PriorityHeapSource)
 
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:

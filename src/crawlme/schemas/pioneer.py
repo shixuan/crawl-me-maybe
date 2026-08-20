@@ -56,6 +56,10 @@ class FrontierItem(BaseModel):
     rationale: str | None = None
     depth: int = 0
     reg_domain: str = ""
+    # The page this came from, kept so ordering can be fair across
+    # sources rather than only best-first: monitoring several accounts
+    # means wanting each one read, not the global top of one of them.
+    source_url_key: str = ""
     status: FrontierItemStatus = "QUEUED"
     attempts: int = 0
     next_available_at: datetime.datetime = Field(default_factory=_utcnow)

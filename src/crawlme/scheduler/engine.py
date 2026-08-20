@@ -840,6 +840,7 @@ class CrawlScheduler:
                     rationale=d.rationale,
                     depth=depth,
                     reg_domain=reg_domain,
+                    source_url_key=(c.source_url_key or "") if c else "",
                 )
             )
         await self._frontier.push_batch(items)

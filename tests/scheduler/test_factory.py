@@ -13,7 +13,8 @@ from crawlme.pioneer.ranker.embedding import (
     OpenAICompatibleEmbedder,
 )
 from crawlme.pioneer.ranker.rule import FEED_FACTORS, GRAPH_FACTORS, RuleRanker
-from crawlme.scheduler.factory import _build_ranker, create_scheduler
+from crawlme.pioneer.work_source import RoundRobinSource
+from crawlme.scheduler.factory import _build_ranker, _build_work_source, create_scheduler
 from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
@@ -197,3 +198,19 @@ def test_a_feed_run_scores_on_the_feed_factors():
 def test_a_graph_run_keeps_the_graph_factors():
     ranker = _build_ranker(Settings(embedding_provider="local"), llm=None, stats=None)
     assert ranker._rule._factors == GRAPH_FACTORS
+
+
+def test_a_feed_run_reads_a_turn_from_each_account():
+    """Naming several accounts is asking about all of them."""
+    assert isinstance(_build_work_source(Settings(source_kind="instagram")), RoundRobinSource)
+
+
+def test_a_graph_run_stays_best_first():
+    """There the question really is what the best pages are."""
+    assert _build_work_source(Settings()) is None
+
+
+@pytest.mark.parametrize(("order", "fair"), [("fair", True), ("best", False)])
+def test_the_order_flag_overrides_the_default(order, fair):
+    got = _build_work_source(Settings(order=order))
+    assert isinstance(got, RoundRobinSource) is fair

@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     # sees of the crawl.  Ignored outside feed mode: a link graph has
     # nothing below the fold worth waiting for.
     feed_scrolls: int = 4
+    # How the frontier picks what to read next: "best" takes the highest
+    # priority anywhere, "fair" takes a turn from each page candidates
+    # came from.  Empty lets the source kind decide.
+    order: str = ""
     # What a fetched page yields: "links" walks a graph, "instagram"
     # reads a feed listing into post permalinks.  --feed is the
     # documented entry: it changes what a run produces from the same URL,
