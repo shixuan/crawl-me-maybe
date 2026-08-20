@@ -355,7 +355,12 @@ class CrawlScheduler:
         # The only place a page is ever judged, so the only place the
         # relevance window can be fed.  DIMINISHING_RETURNS reads it to
         # decide whether the crawl has stopped finding anything.
-        self._counters.relevance_window.append(result.relevance_score >= self._counters.relevance_threshold)
+        relevant = result.relevance_score >= self._counters.relevance_threshold
+        self._counters.relevance_window.append(relevant)
+        # The same judgement answers both questions the run asks: the
+        # window says whether this is still working, the tally says
+        # whether it is enough.
+        self._counters.relevant_found += relevant
 
     def _note_page_age(self, page: Page) -> None:
         """Track how many pages in a row fell outside the goal's window.

@@ -42,6 +42,11 @@ class CrawlCounters:
     max_tokens: int = 0
     max_duration_sec: int = 0
     relevance_threshold: float = 0.7
+    # How many pages have been judged relevant so far, and how many the
+    # run was asked for.  Separate from the sliding window: that one
+    # answers "is this still working", this one answers "is this enough".
+    relevant_found: int = 0
+    max_relevant: int = 0
     pages_fetched: int = 0
     tokens_used: int = 0
     started_at: float = 0.0
@@ -119,6 +124,7 @@ class CrawlContext:
             max_tokens=goal.max_tokens,
             max_duration_sec=goal.max_duration_sec,
             relevance_threshold=goal.relevance_threshold,
+            max_relevant=goal.max_relevant,
             started_at=time.monotonic(),
             tokens_used=tokens_used_start,
             since=goal.since,

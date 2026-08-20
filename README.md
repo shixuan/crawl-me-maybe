@@ -19,7 +19,7 @@ pip install -e .
 
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-pages 200
+  --page-budget 200
 ```
 
 Semantic ranking is on by default. The first run downloads a local embedding model (~220MB) once.
@@ -49,14 +49,15 @@ crawl run "all press coverage" --seeds "..." --draining
 | `--seeds` | string | Comma-separated seed URLs |
 | `--seeds-file` | path | JSON file of seed URLs |
 | `--seeds-rss` | url | RSS or Atom feed to take seeds from |
-| `--max-pages` | int | Page budget; 0 means no limit |
-| `--max-tokens` | int | LLM token budget (default: 500000) |
+| `--max-relevant` | int | Stop once this many pages are judged relevant (the goal) |
+| `--page-budget` | int | Pages this run may read; 0 means no limit (the cost) |
+| `--token-budget` | int | LLM tokens this run may spend (default: 500000) |
 | `--max-duration` | int | Time budget, seconds |
 | `--depth-limit` | int | Max depth from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
 | `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
-| `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
+| `--recall` | flag | Diagnostic: keep what the ranker rejected so a run can measure whether it was right |
 | `--feed` | `instagram` | Read the source as a platform feed |
 | `--session` | path | Playwright storage_state, to crawl as a logged-in session |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |

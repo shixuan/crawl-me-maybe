@@ -657,3 +657,18 @@ def test_the_rank_drain_stays_near_one_ranker_call():
     from crawlme.scheduler.engine import _RANK_BATCH_SIZE
 
     assert _RANK_BATCH_SIZE <= _BATCH_SIZE, "a drain larger than one call reintroduces the wait"
+
+
+def test_a_relevant_judgement_counts_toward_the_target():
+    """The tally has to come from the same place the window does.
+
+    Both answer questions about the same judgement: the window whether
+    the crawl is still working, the tally whether it is done.
+    """
+    sched = _make_sched()
+    sched._counters = CrawlCounters(relevance_threshold=0.7)
+    sched._on_analysis(AnalysisResult(url_key="a", relevance_score=0.9, classification="RELEVANT"))
+    sched._on_analysis(AnalysisResult(url_key="b", relevance_score=0.2, classification="IRRELEVANT"))
+    sched._on_analysis(AnalysisResult(url_key="c", relevance_score=0.75, classification="RELEVANT"))
+    assert sched._counters.relevant_found == 2
+    assert list(sched._counters.relevance_window) == [True, False, True]

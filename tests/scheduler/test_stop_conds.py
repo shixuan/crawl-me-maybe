@@ -316,3 +316,38 @@ def test_a_frontier_that_simply_ran_out_still_says_drained():
     frontier = _frontier(size=0)
     frontier.blocked_by_domain_budget = 0
     assert "FRONTIER_DRAINED" in _codes(check_stop(_task(), frontier, _buffer(), _counters(in_flight=0)))
+
+
+#: what the run is for ----------------------------------------------------
+
+
+def test_a_run_stops_once_it_has_what_it_was_asked_for():
+    """The only stop condition that states a goal rather than a ceiling.
+
+    Without it a page budget has to stand in for one, and "sixty pages"
+    tells nobody how many answers that buys: one run spent sixty and
+    returned twenty-two.
+    """
+    c = _counters(max_relevant=50)
+    c.relevant_found = 50
+    assert "MAX_RELEVANT" in _codes(check_stop(_task(), _frontier(size=9), _buffer(), c))
+
+
+def test_a_run_short_of_its_target_keeps_going():
+    c = _counters(max_relevant=50)
+    c.relevant_found = 49
+    assert "MAX_RELEVANT" not in _codes(check_stop(_task(), _frontier(size=9), _buffer(), c))
+
+
+def test_no_target_means_the_budgets_decide():
+    """Every run before this flag existed, and every run that omits it."""
+    c = _counters(max_relevant=0)
+    c.relevant_found = 500
+    assert "MAX_RELEVANT" not in _codes(check_stop(_task(), _frontier(size=9), _buffer(), c))
+
+
+def test_overshooting_the_target_still_stops():
+    """Analysis lags fetching, so the tally can pass the target."""
+    c = _counters(max_relevant=10)
+    c.relevant_found = 13
+    assert "MAX_RELEVANT" in _codes(check_stop(_task(), _frontier(size=9), _buffer(), c))

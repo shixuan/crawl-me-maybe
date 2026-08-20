@@ -137,6 +137,29 @@ def _frontier_drained(
     return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
 
 
+def _enough_found(
+    _task: CrawlTask,
+    _frontier: Frontier,
+    _buffer: Buffer,
+    c: CrawlCounters,
+) -> StopReason | None:
+    """Stop once the run has what it was asked for.
+
+    The other stop conditions are ceilings on what a run may spend; this
+    one is the only statement of what it is for.  Without it a page
+    budget has to stand in for a goal, and "sixty pages" tells nobody
+    how many answers that buys -- one run spent sixty and returned
+    twenty-two.
+
+    Analysis lags fetching, so the tally can pass the target by whatever
+    was already in flight.  Overshooting by a page or two beats holding
+    the pumps to make the count exact.
+    """
+    if c.max_relevant > 0 and c.relevant_found >= c.max_relevant:
+        return StopReason("MAX_RELEVANT", f"found {c.relevant_found}/{c.max_relevant} relevant pages")
+    return None
+
+
 def _diminishing_returns(
     _task: CrawlTask,
     _frontier: Frontier,
@@ -180,6 +203,7 @@ _CHECKS: list[_CheckFunc] = [
     _time_horizon,
     _fatal,
     _user_requested,
+    _enough_found,
     _diminishing_returns,
     _frontier_drained,
 ]

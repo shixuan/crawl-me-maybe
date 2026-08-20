@@ -32,9 +32,26 @@ def main() -> None:
     #: run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
-    run_p.add_argument("--max-pages", type=int, help="Page budget limit (0 = unlimited)")
-    run_p.add_argument("--max-tokens", type=int, help="Token budget limit")
-    run_p.add_argument("--max-duration", type=int, help="Time limit in seconds")
+    # Two families, and the names say which is which.  A page budget is
+    # what the run may spend; it says nothing about how many answers that
+    # buys, and reading it as a target is how "sixty pages" came to mean
+    # twenty-two results.
+    run_p.add_argument(
+        "--max-relevant",
+        type=int,
+        default=None,
+        help="Stop once this many pages have been judged relevant (0 = no target). "
+        "May overshoot slightly: analysis lags fetching",
+    )
+    run_p.add_argument(
+        "--page-budget", "--max-pages", type=int, dest="max_pages", help="Pages this run may read (0 = unlimited)"
+    )
+    run_p.add_argument(
+        "--token-budget", "--max-tokens", type=int, dest="max_tokens", help="LLM tokens this run may spend"
+    )
+    run_p.add_argument(
+        "--time-budget", "--max-duration", type=int, dest="max_duration", help="Seconds this run may take"
+    )
     run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
     run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
     # Where the entry points come from.  One flag per kind, each carrying
@@ -103,8 +120,10 @@ def main() -> None:
     run_p.add_argument(
         "--recall",
         action="store_true",
-        help="Miss less, read more: no stage discards a candidate, it only ranks it "
-        "last, and --max-pages decides where to stop. Costs roughly twice the tokens",
+        help="Diagnostic: keep what the ranker rejected, ranked last, so a run can "
+        "measure whether the rejections were right. Spends the tail of the budget "
+        "on them, so leave it off when you want results rather than an answer "
+        "about the ranker",
     )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
