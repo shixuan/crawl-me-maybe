@@ -556,3 +556,38 @@ def test_a_link_graph_keeps_its_ceiling(tmp_path):
             except SystemExit:
                 pass
     assert captured["goal"].domain_budget == 50
+
+
+def test_a_result_target_reaches_the_goal(tmp_path):
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://example.com",
+        "--max-relevant",
+        "50",
+        "--result-dir",
+        str(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].max_relevant == 50
+
+
+def test_budgets_keep_their_older_spelling(tmp_path):
+    """--max-pages is in every command line already written."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--max-pages", "7", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].max_pages == 7

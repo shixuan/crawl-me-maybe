@@ -102,6 +102,9 @@ class PlaywrightFetcher:
         # drive concurrently, and fetch_concurrency already bounds the
         # callers.  This keeps the browser honest about that.
         self._lock = asyncio.Lock()
+        # Held only while starting up, so a burst of first fetches
+        # produces one browser rather than one each.
+        self._start_lock = asyncio.Lock()
 
     #: lifecycle --------------------------------------------------------
 
@@ -110,9 +113,20 @@ class PlaywrightFetcher:
 
         Lazy because constructing a scheduler must not launch a browser,
         and because the import itself is optional.
+
+        Guarded because the first fetches arrive together: the pump pops
+        several seeds at once, every one of them finds no context, and
+        every one of them launches a browser.  The last assignment wins
+        and the rest become processes nobody holds a reference to, so
+        aclose() cannot reach them.  One run showed five starts where it
+        should have shown one.
         """
-        if self._context is not None:
-            return self._context
+        async with self._start_lock:
+            if self._context is not None:
+                return self._context
+            return await self._start_context()
+
+    async def _start_context(self) -> BrowserContext:
         try:
             from playwright.async_api import async_playwright
         except ImportError as e:  # pragma: no cover - depends on install

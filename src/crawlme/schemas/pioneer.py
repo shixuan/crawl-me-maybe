@@ -21,6 +21,10 @@ class Candidate(BaseModel):
     position: int = 0
     source_page_id: str | None = None
     source_url_key: str | None = None
+    # The seed at the top of this candidate's chain, inherited from the
+    # page it was found on.  Empty until the engine, which alone knows
+    # the chain, fills it in.
+    seed_url_key: str = ""
     depth: int = 0
     # The text this candidate carries on its own, whatever the source
     # calls it: empty for a link (its business card lives in anchor and
@@ -56,6 +60,12 @@ class FrontierItem(BaseModel):
     rationale: str | None = None
     depth: int = 0
     reg_domain: str = ""
+    # The seed this descends from.  Carried across the frontier because
+    # a page's children inherit it, and the engine's own map of it is
+    # in memory only: without this a resumed run would regroup every
+    # candidate under the page it was found on.  The grouping that uses
+    # it happens upstream, on the candidate, not here.
+    seed_url_key: str = ""
     status: FrontierItemStatus = "QUEUED"
     attempts: int = 0
     next_available_at: datetime.datetime = Field(default_factory=_utcnow)
@@ -90,6 +100,18 @@ class RankHistorySummary(BaseModel):
 class FrontierSnapshot(BaseModel):
     snapshot_id: str = Field(default_factory=_new_id)
     task_id: str = ""
+    # Whatever the ordering says its state is, kept as it gave it.  The
+    # frontier used to lift `heap` and `pending` out of that state by
+    # name, which quietly stored nothing at all once the ordering became
+    # something other than one heap.
+    ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # The unscored half.  Absent from checkpoints written while it lived
+    # outside the frontier, which is why a resume then began knowing
+    # nothing about the candidates still waiting to be scored.
+    waiting: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # The shape checkpoints were written in before `ordering` existed.
+    # Read on restore so an older checkpoint still resumes; no longer
+    # written.
     heap: list[FrontierItem] = Field(default_factory=list)
     pending: list[FrontierItem] = Field(default_factory=list)
     visited: set[str] = Field(default_factory=set)

@@ -8,15 +8,40 @@ Fail-open on rule exceptions: a broken rule never blocks a candidate.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 from crawlme.schemas import Candidate, CrawlGoal
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_BLACKLIST: frozenset[str] = frozenset({"wikidata.org"})
+
+
+def _load_blacklist() -> frozenset[str]:
+    """Domains to refuse, read from ``blacklist.json`` beside the run.
+
+    Kept out of ``src/`` so editing the list is not editing the crawler,
+    and read once at import: it decides every candidate the crawl ever
+    sees, and re-reading a file that often would cost more than the rule.
+    """
+    path = Path("blacklist.json")
+    try:
+        data = json.loads(path.read_text())
+        domains = data.get("domains", [])
+        if isinstance(domains, list) and all(isinstance(d, str) for d in domains):
+            return frozenset(domains)
+    except Exception:
+        logger.debug("blacklist.json not found or invalid, using defaults", exc_info=True)
+    return _DEFAULT_BLACKLIST
+
+
+DOMAIN_BLACKLIST: frozenset[str] = _load_blacklist()
 
 
 class Decision(Enum):
@@ -67,8 +92,6 @@ _NEGATIVE_ANCHOR = re.compile(
 
 
 def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
-    from crawlme.pioneer.blacklist import DOMAIN_BLACKLIST
-
     if c.url.reg_domain in DOMAIN_BLACKLIST or c.url.domain in DOMAIN_BLACKLIST:
         return Decision.DROP, "blacklist"
     return None

@@ -19,8 +19,11 @@ pip install -e .
 
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-pages 200
+  --max-relevant 40 --page-budget 200
 ```
+
+`--max-relevant` says when you have enough; `--page-budget` says how much you
+are willing to spend looking. Whichever comes first ends the run.
 
 Semantic ranking is on by default. The first run downloads a local embedding model (~220MB) once.
 
@@ -34,7 +37,14 @@ crawl run "C++ backend job postings" --seeds-rss "https://hnrss.org/newest"
 # {"seeds": [...], "allowed_domains": [...]}
 crawl run "release notes" --seeds-file ./seeds.json
 
-# ignore --max-pages, stop when the frontier runs dry
+# a feed: read several accounts, taking a turn from each
+crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
+  --seeds-file ./seeds.json \
+  --feed instagram --session ./ig-state.json \
+  --max-relevant 40 --page-budget 150 \
+  --since '2 weeks' --depth-limit 1 --ignore-robots
+
+# ignore the page budget, stop when the frontier runs dry
 crawl run "all press coverage" --seeds "..." --draining
 ```
 
@@ -49,14 +59,15 @@ crawl run "all press coverage" --seeds "..." --draining
 | `--seeds` | string | Comma-separated seed URLs |
 | `--seeds-file` | path | JSON file of seed URLs |
 | `--seeds-rss` | url | RSS or Atom feed to take seeds from |
-| `--max-pages` | int | Page budget; 0 means no limit |
-| `--max-tokens` | int | LLM token budget (default: 500000) |
+| `--max-relevant` | int | Stop once this many pages are judged relevant (the goal) |
+| `--page-budget` | int | Pages this run may read; 0 means no limit (the cost) |
+| `--token-budget` | int | LLM tokens this run may spend (default: 500000) |
 | `--max-duration` | int | Time budget, seconds |
 | `--depth-limit` | int | Max depth from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
 | `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
-| `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
+| `--recall` | flag | Diagnostic: keep what the ranker rejected so a run can measure whether it was right |
 | `--feed` | `instagram` | Read the source as a platform feed |
 | `--session` | path | Playwright storage_state, to crawl as a logged-in session |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
@@ -104,7 +115,7 @@ A funnel. Each layer costs more and keeps fewer:
 
 Every fetched page also gets one analyzer call: classification, summary, relevance and hub scores, endorsed links. Those judgments land in `analyses` and steer the crawl in flight through priority multipliers, endorsed links, and cross-task domain reputation.
 
-Two async loops run side by side. `fetch_pump` downloads and discovers links; `rank_pump` scores them and pushes them into the frontier. They coordinate only through the Frontier and the Buffer.
+Two async loops run side by side. `fetch_pump` downloads and discovers links; `rank_pump` scores them and pushes them into the frontier. They coordinate only through the Frontier, which owns both halves: candidates waiting for a score, and scored candidates waiting for a fetch slot.
 
 Every stage's decision is recorded: which rule dropped a link, what each ranker scored it, which model and prompt version produced a judgment. Raw HTML is kept, so a better prompt can re-judge a finished run without re-crawling.
 

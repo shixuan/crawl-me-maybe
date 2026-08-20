@@ -42,15 +42,15 @@ class CrawlCounters:
     max_tokens: int = 0
     max_duration_sec: int = 0
     relevance_threshold: float = 0.7
+    # How many pages have been judged relevant so far, and how many the
+    # run was asked for.  Separate from the sliding window: that one
+    # answers "is this still working", this one answers "is this enough".
+    relevant_found: int = 0
+    max_relevant: int = 0
     pages_fetched: int = 0
     tokens_used: int = 0
     started_at: float = 0.0
     in_flight: int = 0
-    # Candidates that have left the buffer and not yet reached the
-    # frontier, i.e. sitting inside a rank call.  They belong to nothing
-    # the drain check can see, so without this they read as gone; see
-    # _frontier_drained.
-    ranking_in_flight: int = 0
     # Sliding window over the most recent analyzed pages, one bool each.
     # A deque with maxlen keeps "recent" true by construction, which is
     # what the DIMINISHING_RETURNS check assumes.
@@ -69,6 +69,13 @@ class CrawlCounters:
     # decide whether "consecutive stale pages" means anything; see the
     # check's own docstring for why anything but 1 leaves it dormant.
     seed_count: int = 0
+    # Whether this traversal can ever read "no recent content" as "no
+    # more content".  Declared by the traversal rather than guessed from
+    # the run's shape: a feed listing is time-ordered per account and
+    # never as a whole, so the answer never depends on how a given run
+    # went.  The seed count still matters on top of it, for a different
+    # reason -- see the check itself.
+    time_horizon_allowed: bool = True
 
 
 @dataclasses.dataclass
@@ -112,6 +119,7 @@ class CrawlContext:
             max_tokens=goal.max_tokens,
             max_duration_sec=goal.max_duration_sec,
             relevance_threshold=goal.relevance_threshold,
+            max_relevant=goal.max_relevant,
             started_at=time.monotonic(),
             tokens_used=tokens_used_start,
             since=goal.since,

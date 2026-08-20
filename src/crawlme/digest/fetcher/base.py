@@ -7,7 +7,7 @@ module for a private constant, which is the wrong direction: a contract
 should not live inside one of the things it constrains.
 
 Structural typing rather than a base class, matching every other seam in
-this codebase (Ranker, CrawlDb, Analyzer, WorkSource).  Retry is the only
+this codebase (Ranker, CrawlDb, Analyzer, Ordering).  Retry is the only
 behaviour the fetchers actually share, and twenty lines of it belong in a
 function; a base class would invite shared state to accumulate, and would
 break the plain mocks the scheduler tests inject.

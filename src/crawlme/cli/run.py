@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.digest.feed import FEEDS
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
@@ -28,6 +27,7 @@ from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
@@ -111,21 +111,19 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.max_pages = 0
     elif args.max_pages is not None:
         goal.max_pages = args.max_pages
+    if args.max_relevant is not None:
+        goal.max_relevant = args.max_relevant
     if args.max_tokens is not None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
-    if args.depth_limit is not None:
-        goal.depth_limit = args.depth_limit
-    if args.domain_budget is not None:
-        goal.domain_budget = args.domain_budget
-    elif cfg.source_kind in FEEDS:
-        # Every post shares the platform's domain, so a per-domain
-        # ceiling is a total one wearing the wrong name: it silently
-        # overrode --max-pages and ended a run at 50 pages with 162
-        # candidates still waiting.  --domain-budget still applies when
-        # asked for.
-        goal.domain_budget = 0
+    # What a traversal decides, unless the run says otherwise.  Both of
+    # these used to be a link graph's answer inherited in silence: a
+    # per-domain ceiling that on one platform is a total, and a depth of
+    # five where a listing and its posts are two.
+    traversal = traversal_for(cfg.source_kind)
+    goal.depth_limit = args.depth_limit if args.depth_limit is not None else traversal.depth_limit
+    goal.domain_budget = args.domain_budget if args.domain_budget is not None else traversal.domain_budget
     if args.since is not None:
         try:
             goal.since = _parse_since(args.since)

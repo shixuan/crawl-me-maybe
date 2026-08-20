@@ -44,19 +44,26 @@ def _make_sched(**overrides) -> CrawlScheduler:
     """Build a scheduler with all-mock components for unit tests."""
     from crawlme.config import Settings
 
-    buffer_mock = MagicMock()
-    buffer_mock.wake = AsyncMock()
-    buffer_mock.wait_until = AsyncMock()
+    # The waiting half lives inside the frontier now, so the mock hangs
+    # off it rather than beside it.
+    frontier_mock = MagicMock()
+    frontier_mock.waiting = MagicMock()
+    frontier_mock.waiting.wake = AsyncMock()
+    frontier_mock.waiting.wait_until = AsyncMock()
+    frontier_mock.take_for_ranking = AsyncMock(return_value=[])
+    frontier_mock.push_candidates = AsyncMock()
+    # Counts, not auto-attributes: the pumps compare them to zero.
+    frontier_mock.scoring = 0
+    frontier_mock.cooling = 0
 
     kwargs: dict = {
         "settings": Settings(),
         "storage": MagicMock(),
-        "frontier": MagicMock(),
+        "frontier": frontier_mock,
         "fetcher": MagicMock(aclose=AsyncMock()),
         "extractor": MagicMock(),
         "robots": MagicMock(),
         "prefilter": MagicMock(),
-        "buffer": buffer_mock,
         "ranker": MagicMock(aclose=AsyncMock()),
         "canonicalizer": MagicMock(),
     }
@@ -159,7 +166,7 @@ async def test_budget_gate_allows_pops_under_budget():
     pop_mock = AsyncMock(return_value=None)
     sched._frontier.pop_next = pop_mock
     sched._frontier.size = 0
-    sched._buffer.is_empty = True
+    sched._frontier.waiting.is_empty = True
 
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(sched._fetch_pump(), timeout=0.5)
@@ -565,13 +572,14 @@ async def test_fetch_pump_waits_quietly_while_a_batch_is_being_ranked(caplog):
     sched._state = "RUNNING"
     sched._goal = _goal()
     sched._task = _task()
-    sched._counters = CrawlCounters(ranking_in_flight=11)
+    sched._counters = CrawlCounters()
 
+    sched._frontier.scoring = 11
     sched._frontier.pop_next = AsyncMock(return_value=None)
     sched._frontier.size = 0
-    sched._buffer.is_empty = True
+    sched._frontier.waiting.is_empty = True
     wake = AsyncMock()
-    sched._buffer.wake = wake
+    sched._frontier.waiting.wake = wake
 
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(asyncio.TimeoutError):
@@ -606,3 +614,97 @@ def test_an_endorsement_that_is_not_a_link_is_dropped(link):
     like a successful fetch and cost an analysis and a page of budget.
     """
     assert _endorsed_href(link) is None
+
+
+#: end-of-run accounting ---------------------------------------------------
+
+
+def test_a_run_that_stops_holding_work_says_so(caplog):
+    """Stopping early and finishing look identical from the outside.
+
+    A missing session gave COMPLETED with no pages; a per-domain ceiling
+    gave COMPLETED with a hundred and sixty candidates still queued; a
+    rank batch landing after the last fetch gave COMPLETED for an account
+    that was never opened. None of them said anything.
+    """
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=45)
+    sched._frontier.size = 16
+    sched._frontier.waiting_size = 4
+
+    with caplog.at_level(logging.INFO):
+        sched._reconcile()
+
+    assert "task.reconcile" in caplog.text
+    assert "task.unfinished" in caplog.text
+    assert "20 candidates were never read" in caplog.text
+
+
+def test_a_run_that_read_everything_stays_quiet(caplog):
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=10)
+    sched._frontier.size = 0
+    sched._frontier.waiting_size = 0
+
+    with caplog.at_level(logging.INFO):
+        sched._reconcile()
+
+    assert "task.reconcile" in caplog.text
+    assert "task.unfinished" not in caplog.text
+
+
+def test_the_rank_drain_stays_near_one_ranker_call():
+    """Nothing in a drained batch is fetchable until all of it is scored.
+
+    At 100 the ranker split the batch into nine calls of its own; the
+    first was scored in thirty seconds and reached the frontier four and
+    a half minutes later, after the run had stopped for lack of anything
+    to fetch. The drain size is that latency, not a throughput knob.
+    """
+    from crawlme.pioneer.ranker.llm import _BATCH_SIZE
+    from crawlme.scheduler.engine import _RANK_BATCH_SIZE
+
+    assert _RANK_BATCH_SIZE <= _BATCH_SIZE, "a drain larger than one call reintroduces the wait"
+
+
+def test_a_relevant_judgement_counts_toward_the_target():
+    """The tally has to come from the same place the window does.
+
+    Both answer questions about the same judgement: the window whether
+    the crawl is still working, the tally whether it is done.
+    """
+    sched = _make_sched()
+    sched._counters = CrawlCounters(relevance_threshold=0.7)
+    sched._on_analysis(AnalysisResult(url_key="a", relevance_score=0.9, classification="RELEVANT"))
+    sched._on_analysis(AnalysisResult(url_key="b", relevance_score=0.2, classification="IRRELEVANT"))
+    sched._on_analysis(AnalysisResult(url_key="c", relevance_score=0.75, classification="RELEVANT"))
+    assert sched._counters.relevant_found == 2
+    assert list(sched._counters.relevance_window) == [True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_fetch_pump_waits_out_a_cooldown_instead_of_declaring_the_end(caplog):
+    """Nothing poppable right now is not the same as nothing left.
+
+    A clock that stepped backwards on the host left the only seed with a
+    cooldown in the future. The pop was refused, the pump read that as
+    an exhausted frontier, and the run reported itself finished having
+    fetched nothing at all.
+    """
+    sched = _make_sched()
+    sched._state = "RUNNING"
+    sched._goal = _goal()
+    sched._task = _task()
+    sched._counters = CrawlCounters()
+
+    sched._frontier.pop_next = AsyncMock(return_value=None)
+    sched._frontier.size = 1
+    sched._frontier.cooling = 1
+    sched._frontier.waiting.is_empty = True
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(sched._fetch_pump(), timeout=0.3)
+
+    assert "fetch_pump.exhausted" not in caplog.text
+    assert sched._task.stopping_reason is None

@@ -327,3 +327,27 @@ async def test_scrolling_keeps_asking_while_the_page_grows() -> None:
     page = _Page()
     await PlaywrightFetcher(scrolls=3)._scroll_through(page)
     assert page.wheels == 3
+
+
+@pytest.mark.asyncio
+async def test_a_burst_of_first_fetches_starts_one_browser() -> None:
+    """The pump pops several seeds at once and they all arrive here.
+
+    Unguarded, every one of them found no context and launched a
+    browser; the last assignment won and the rest became processes
+    nothing held a reference to, so aclose() could not reach them. One
+    run showed five starts where it should have shown one.
+    """
+    fetcher = PlaywrightFetcher()
+    starts = 0
+
+    async def _count_start():
+        nonlocal starts
+        starts += 1
+        await asyncio.sleep(0.01)  # a real launch is slow; that is the window
+        fetcher._context = object()  # type: ignore[assignment]
+        return fetcher._context
+
+    fetcher._start_context = _count_start  # type: ignore[assignment]
+    await asyncio.gather(*(fetcher._ensure_context() for _ in range(5)))
+    assert starts == 1

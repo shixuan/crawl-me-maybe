@@ -26,13 +26,13 @@ from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.harvest import Harvester, LinkHarvester
 from crawlme.logging import setup_logging
-from crawlme.pioneer.buffer import Buffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.stop_conds import check_stop
+from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -53,7 +53,23 @@ from crawlme.storage.contracts import CrawlDb
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_INTERVAL = 10
-_RANK_BATCH_SIZE = 100
+# How many candidates the rank pump takes out of the buffer at once,
+# and therefore how long anything waits to become fetchable: nothing in
+# a drained batch reaches the frontier until all of it is scored.
+#
+# It no longer decides coverage.  The buffer hands out a turn from each
+# seed, so a drain of any size is the same mix; before that it was
+# first-come-first-served and the size was the only thing standing
+# between one loud account and the whole run.
+#
+# What is left is latency against call count, and the measured rates
+# settle it: scoring supplies about twenty candidates a minute and
+# fetching consumes about nine, so there is no shortage of supply to
+# buy with a bigger batch.  There is a shortage of *early* supply --
+# fetching cannot start until the first batch lands -- so this is sized
+# to one of the ranker's own calls, which its character budget puts at
+# roughly twenty.
+_RANK_BATCH_SIZE = 20
 _POP_SLEEP = 0.2
 
 
@@ -105,7 +121,6 @@ class CrawlScheduler:
         extractor: Extractor,
         robots: RobotsPolicy,
         prefilter: PreFilter,
-        buffer: Buffer,
         ranker: Ranker,
         canonicalizer: Canonicalizer,
         harvester: Harvester | None = None,
@@ -119,7 +134,6 @@ class CrawlScheduler:
         self._extractor = extractor
         self._robots = robots
         self._prefilter = prefilter
-        self._buffer = buffer
         self._ranker = ranker
         self._canonicalizer = canonicalizer
         # What a page yields depends on the kind of source it came
@@ -158,6 +172,12 @@ class CrawlScheduler:
         # canonical URL -> url_key, for endorsed links to inherit their
         # source page's depth.
         self._url_key_of: dict[str, str] = {}
+        # url_key -> the seed it descends from, so a candidate found on a
+        # page inherits that page's seed rather than pointing at the page
+        # itself.  Grouping on the immediate parent would make fairness
+        # mean "a turn from every page fetched", which a crawl generates
+        # itself and without bound.
+        self._seed_of: dict[str, str] = {}
         self._events: EventEmitter | None = None
 
     #: seed ingestion --------------------------------------------------
@@ -194,6 +214,7 @@ class CrawlScheduler:
                     priority=1.0,
                     score_source="seed",
                     reg_domain=url.reg_domain,
+                    seed_url_key=url.url_key,
                 )
             )
             n_ingested += 1
@@ -246,6 +267,11 @@ class CrawlScheduler:
         self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
 
         self._ctx.reset(goal=goal, tokens_used_start=self._tokens_used_start)
+        # From the traversal, not the goal: whether this kind of source
+        # is ordered by time at all is a property of the source, and the
+        # same goal against a feed and against a link graph gets
+        # different answers.
+        self._counters.time_horizon_allowed = traversal_for(self._cfg.source_kind).time_horizon
         # Persist goal (with its enhanced statement / keywords / since)
         # and task rows so replay and introspection have a record.
         self._storage.save_goal(goal.model_dump(mode="json"))
@@ -266,6 +292,7 @@ class CrawlScheduler:
         task.state = "COMPLETED"
         task.end_at = _utcnow()
         reason = task.stopping_reason or "none"
+        self._reconcile()
         logger.info(
             "task.done task_id=%s pages=%d tokens=%d reason=%s",
             task.task_id,
@@ -325,7 +352,12 @@ class CrawlScheduler:
         # The only place a page is ever judged, so the only place the
         # relevance window can be fed.  DIMINISHING_RETURNS reads it to
         # decide whether the crawl has stopped finding anything.
-        self._counters.relevance_window.append(result.relevance_score >= self._counters.relevance_threshold)
+        relevant = result.relevance_score >= self._counters.relevance_threshold
+        self._counters.relevance_window.append(relevant)
+        # The same judgement answers both questions the run asks: the
+        # window says whether this is still working, the tally says
+        # whether it is enough.
+        self._counters.relevant_found += relevant
 
     def _note_page_age(self, page: Page) -> None:
         """Track how many pages in a row fell outside the goal's window.
@@ -433,11 +465,45 @@ class CrawlScheduler:
         if self._task:
             self._task.state = "STOPPING"
 
+    def _reconcile(self) -> None:
+        """Say what the run had against what it read, at the end.
+
+        A run that stops holding work reports success exactly like one
+        that finished: a missing session gave a COMPLETED with no pages,
+        a per-domain ceiling gave one with a hundred and sixty
+        candidates still queued, and a rank batch that landed after the
+        last fetch gave one that never opened the account it was asked
+        about.  None of them said so anywhere.
+
+        Whether leaving work behind is wrong depends on the reason -- a
+        page budget is supposed to stop early -- so this states the
+        numbers and leaves the judgement to whoever reads them, loudly
+        enough to be seen.
+        """
+        left_frontier = self._frontier.size
+        left_buffer = self._frontier.waiting_size
+        stats = self._ctx.stats
+        logger.info(
+            "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
+            stats.links_discovered,
+            stats.candidates_ranked,
+            self._counters.pages_fetched,
+            left_frontier,
+            left_buffer,
+        )
+        if left_frontier or left_buffer:
+            logger.warning(
+                "task.unfinished %d candidates were never read (frontier=%d buffer=%d)",
+                left_frontier + left_buffer,
+                left_frontier,
+                left_buffer,
+            )
+
     def _record_stop_reason(self) -> None:
         """Name why the run is ending, for a path that bypassed the check."""
         if self._task is None or self._task.stopping_reason:
             return
-        reasons = check_stop(self._task, self._frontier, self._buffer, self._counters)
+        reasons = check_stop(self._task, self._frontier, self._counters)
         self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
         logger.info("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._counters.pages_fetched)
 
@@ -449,7 +515,6 @@ class CrawlScheduler:
             reasons = check_stop(
                 self._task,  # type: ignore[arg-type]
                 self._frontier,
-                self._buffer,
                 self._counters,
             )
             if reasons:
@@ -461,10 +526,10 @@ class CrawlScheduler:
                     codes,
                     self._counters.pages_fetched,
                     self._frontier.size,
-                    self._buffer.size,
+                    self._frontier.waiting_size,
                     self._counters.in_flight,
                 )
-                await self._buffer.wake()
+                await self._frontier.waiting.wake()
                 break
 
             # Page budget gates pops, not just completions: committed
@@ -486,36 +551,42 @@ class CrawlScheduler:
                 global_budget=self._counters.max_pages,
             )
             if item is None:
-                if self._counters.ranking_in_flight > 0:
+                if self._frontier.scoring > 0:
                     # A rank call holds the only candidates there are.
                     # The rank pump is inside it, so it is neither asleep
                     # nor able to act on a wake: waiting is the whole job.
                     await asyncio.sleep(_POP_SLEEP)
                     continue
-                if self._buffer.is_empty:
-                    if self._counters.in_flight == 0:
+                if self._frontier.waiting.is_empty:
+                    # A pop that returns nothing is not the same as an
+                    # empty frontier: an item whose cooldown has not
+                    # expired stays queued and comes back on its own.
+                    # Reading the first as the second ended a run at zero
+                    # pages with its only seed still waiting.  Items a
+                    # gate refuses outright are not a reason to wait,
+                    # because nothing about them will change.
+                    if self._counters.in_flight == 0 and self._frontier.cooling == 0:
                         # The loop leaves here without going back to the
                         # stop check at the top, so the reason has to be
                         # recorded on the way out or the run reports
                         # "completed" with no cause at all.
                         self._record_stop_reason()
-                        logger.info(
-                            "fetch_pump.exhausted frontier=%d buffer=%d",
-                            self._frontier.size,
-                            self._buffer.size,
-                        )
-                        await self._buffer.wake()
+                        logger.info("fetch_pump.exhausted frontier=0 buffer=0")
+                        await self._frontier.waiting.wake()
                         break
-                    # Buffer is empty but in_flight > 0: tasks may produce
-                    # new candidates.  Wake the rank pump in case it is
-                    # blocked on wait_until so it can observe state changes.
-                    await self._buffer.wake()
+                    # Nothing waiting to be scored, but either a fetch is
+                    # in the air or an item is cooling down, so more work
+                    # is coming.  Wake the rank pump in case it is blocked
+                    # on wait_until so it can observe state changes.
+                    await self._frontier.waiting.wake()
                 elif self._frontier.size == 0 and self._counters.in_flight == 0:
                     # Buffer has items but nothing is fetching: the rank
                     # pump may be asleep on a stale predicate (frontier was
                     # non-empty when it last checked).  Wake it.
-                    logger.debug("fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
-                    await self._buffer.wake()
+                    logger.debug(
+                        "fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size
+                    )
+                    await self._frontier.waiting.wake()
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -561,6 +632,9 @@ class CrawlScheduler:
                     score_source="endorsed",
                     depth=source_depth + 1,
                     reg_domain=url.reg_domain,
+                    # A shop's own site endorsed from an account belongs
+                    # to that account's share, not to a share of its own.
+                    seed_url_key=self._seed_of.get(source_key, source_key),
                 )
             )
         if items:
@@ -676,6 +750,12 @@ class CrawlScheduler:
             except asyncio.TimeoutError:
                 logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 candidates = []
+            # Every candidate belongs to the seed its page belonged to,
+            # however many hops back.  Recorded here because this is the
+            # only place that holds both ends of the link.
+            seed = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+            for c in candidates:
+                c.seed_url_key = seed
             self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
@@ -698,6 +778,7 @@ class CrawlScheduler:
                 },
             )
             self._url_key_of[page.url.canonical] = page.url_key
+            self._seed_of[page.url_key] = seed
             ctx = self._frontier.get_prefilter_context(
                 allow_fetch=lambda url: self._robots.allow_fetch(url),
             )
@@ -707,7 +788,7 @@ class CrawlScheduler:
                 decision, _ = self._prefilter.check(c, self._goal, ctx)  # type: ignore[arg-type]
                 if decision.value == "allow":
                     c.status = "BUFFERED"
-                    await self._buffer.add([c])
+                    await self._frontier.push_candidates([c])
                     n_allowed += 1
                     self._storage.save_link(c)
                 else:
@@ -773,33 +854,28 @@ class CrawlScheduler:
     async def _rank_pump(self) -> None:
         ranked_total = 0
         while self._state == "RUNNING":
-            logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._buffer.size)
-            await self._buffer.wait_until(
-                lambda: self._buffer.ready(self._frontier.size == 0) or self._state != "RUNNING"
+            logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
+            await self._frontier.waiting.wait_until(
+                lambda: self._frontier.waiting.ready(self._frontier.size == 0) or self._state != "RUNNING"
             )
             logger.debug(
                 "rank_pump.woke frontier=%d buffer=%d state=%s",
                 self._frontier.size,
-                self._buffer.size,
+                self._frontier.waiting_size,
                 self._state,
             )
             if self._state != "RUNNING":
                 break
 
-            batch = await self._buffer.drain(_RANK_BATCH_SIZE)
+            batch = await self._frontier.take_for_ranking(_RANK_BATCH_SIZE)
             if not batch:
                 continue
 
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
-
-            # Held from the moment the batch leaves the buffer until it
-            # lands in the frontier.  A rank call is a network round trip
-            # and the batch is invisible for its whole duration.
-            self._counters.ranking_in_flight += len(batch)
             try:
                 await self._rank_and_enqueue(batch)
             finally:
-                self._counters.ranking_in_flight -= len(batch)
+                self._frontier.finish_ranking(len(batch))
                 ranked_total += len(batch)
                 self._ctx.stats.candidates_ranked = ranked_total
 
@@ -840,6 +916,7 @@ class CrawlScheduler:
                     rationale=d.rationale,
                     depth=depth,
                     reg_domain=reg_domain,
+                    seed_url_key=(c.seed_url_key or "") if c else "",
                 )
             )
         await self._frontier.push_batch(items)

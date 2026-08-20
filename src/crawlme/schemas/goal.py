@@ -29,6 +29,9 @@ class CrawlGoal(BaseModel):
     max_tokens: int = 500_000
     max_duration_sec: int = 3600
     relevance_threshold: float = 0.7
+    # Stop once this many pages have been judged relevant.  0 means the
+    # run has no target and stops only when a budget runs out.
+    max_relevant: int = 0
     depth_limit: int = 5
     domain_budget: int = 50
     extraction_spec: dict[str, Any] | None = None
