@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.digest.harvest import Harvest
 from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
 from crawlme.schemas import (
     URL,
@@ -438,7 +439,7 @@ async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
 
     def _slow_links(_page, _depth):
         done.wait(10)  # released by the test so the worker thread exits
-        return []
+        return Harvest([])
 
     sched = _make_sched()
     sched._goal = _goal(max_pages=5)
@@ -524,7 +525,7 @@ async def test_analysis_runs_outside_the_fetch_slot(monkeypatch):
     from crawlme.config import Settings
 
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
-    sched._harvester = MagicMock(harvest=lambda page, depth: [])
+    sched._harvester = MagicMock(harvest=lambda page, depth: Harvest([]))
     sched._goal = _goal()
     sched._task = _task()
 
@@ -708,3 +709,30 @@ async def test_fetch_pump_waits_out_a_cooldown_instead_of_declaring_the_end(capl
 
     assert "fetch_pump.exhausted" not in caplog.text
     assert sched._task.stopping_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_page_ends_the_run_and_a_gone_one_does_not():
+    """The engine has to act on the difference, not just record it.
+
+    Before this the harvester's verdict reached a log line and stopped
+    there, so a rate-limited crawl kept requesting pages that would all
+    be refused, and reported the empty result as a finished run.
+    """
+    from crawlme.digest.feed.base import PageProblem
+
+    sched = _make_sched()
+    sched._ctx.stats.reset()
+
+    sched._note_not_content(PageProblem.UNAVAILABLE)
+    assert sched._counters.refused_by == "", "a gone account is not a reason to stop"
+
+    sched._note_not_content(PageProblem.BLOCKED)
+    assert sched._counters.refused_by == "blocked"
+
+    # Later refusals do not overwrite: the first one is what ended it.
+    sched._note_not_content(PageProblem.LOGIN_REQUIRED)
+    assert sched._counters.refused_by == "blocked"
+
+    assert sched._ctx.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
+    assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}

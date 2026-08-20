@@ -39,6 +39,21 @@ class PageProblem(str, enum.Enum):
     BLOCKED = "blocked"
     LOGIN_REQUIRED = "login_required"
 
+    @property
+    def refuses_the_run(self) -> bool:
+        """Whether this is about the crawl rather than about one page.
+
+        A gone account is a fact about that account: the other
+        twenty-nine are still worth reading.  A block or a dead session
+        is a fact about us, and every request after it is wasted at
+        best and another strike against the account at worst.
+
+        Written as an exclusion so that a fourth kind stops the run
+        until somebody decides it should not.  Being loud about an
+        unfamiliar refusal is the cheaper mistake.
+        """
+        return self is not PageProblem.UNAVAILABLE
+
 
 @dataclass(frozen=True)
 class FeedItem:

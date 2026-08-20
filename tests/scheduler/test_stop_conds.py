@@ -362,3 +362,36 @@ def test_overshooting_the_target_still_stops():
     c = _counters(max_relevant=10)
     c.relevant_found = 13
     assert "MAX_RELEVANT" in _codes(check_stop(_task(), _frontier(size=9), c))
+
+
+# -- the platform refusing the crawl -------------------------------------
+
+
+def test_a_block_ends_the_run():
+    """One refusal is enough: the rest of the run would be refused too.
+
+    A rate-limited crawl used to read as a quiet week. Every listing came
+    back with no posts, the frontier drained on schedule, and the run
+    reported completion having learned nothing.
+    """
+    reasons = check_stop(_task(), _frontier(), _counters(refused_by="blocked"))
+    assert any(r.code == "RATE_LIMITED" for r in reasons)
+
+
+def test_a_dead_session_says_so_rather_than_rate_limiting():
+    """Two causes, two fixes: wait a while, or export a new session."""
+    reasons = check_stop(_task(), _frontier(), _counters(refused_by="login_required"))
+    codes = _codes(reasons)
+    assert "LOGIN_REQUIRED" in codes
+    assert "RATE_LIMITED" not in codes
+
+
+def test_a_gone_account_never_reaches_the_stop_check():
+    """UNAVAILABLE is about one account, so it is counted, not obeyed.
+
+    Monitoring thirty shops means three of them will be renamed sooner
+    or later, and losing the other twenty-seven over it is the failure
+    this split exists to prevent.
+    """
+    reasons = check_stop(_task(), _frontier(), _counters())
+    assert not any(r.code in ("RATE_LIMITED", "LOGIN_REQUIRED") for r in reasons)

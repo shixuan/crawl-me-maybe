@@ -13,6 +13,7 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.digest.feed import instagram
+from crawlme.digest.feed.base import PageProblem
 from crawlme.digest.harvest import FeedHarvester, LinkHarvester
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.factory import _build_harvester
@@ -28,6 +29,10 @@ _LISTING = b"""<html><body>
 <a href="/mollytea_canada/p/BBB222/">b</a>
 <a href="/hellofoodbaby_/p/CCC333/">tagged</a>
 </body></html>"""
+
+#: A real profile whose grid holds no posts: an account that simply did
+#: not post, which must stay distinguishable from one that was refused.
+_EMPTY_LISTING = b"""<html><body><main>no posts yet</main></body></html>"""
 
 _POST = b"""<html><head>
 <meta property="og:description" content="103 likes, 0 comments - mollytea_canada on August 13, 2026: &quot;free tea">
@@ -51,7 +56,7 @@ def _page(tmp_path: Path, html: bytes, url: str) -> Page:
 
 def test_links_become_candidates_with_resolved_urls(tmp_path: Path) -> None:
     page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
-    out = LinkHarvester(Canonicalizer()).harvest(page, depth=2)
+    out = LinkHarvester(Canonicalizer()).harvest(page, depth=2).candidates
     assert len(out) == 3
     assert all(c.depth == 3 for c in out), "candidates sit one level below their source"
     assert all(c.source_url_key == "src1" for c in out)
@@ -65,7 +70,7 @@ def test_links_become_candidates_with_resolved_urls(tmp_path: Path) -> None:
 def test_links_carry_their_business_card(tmp_path: Path) -> None:
     """A link has no text of its own, so the proxies are all there is."""
     page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
-    first = LinkHarvester(Canonicalizer()).harvest(page, depth=0)[0]
+    first = LinkHarvester(Canonicalizer()).harvest(page, depth=0).candidates[0]
     assert first.anchor == "first"
     assert first.text == "", "a link carries no content of its own"
 
@@ -75,7 +80,7 @@ def test_links_carry_their_business_card(tmp_path: Path) -> None:
 
 def test_a_listing_yields_its_post_permalinks(tmp_path: Path) -> None:
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
+    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates
     assert len(out) == 3
     assert all(c.signals["platform"] == "instagram" for c in out)
     assert all(c.url.reg_domain == "instagram.com" for c in out)
@@ -85,7 +90,7 @@ def test_a_listing_yields_its_post_permalinks(tmp_path: Path) -> None:
 def test_a_listing_marks_posts_that_only_tagged_the_account(tmp_path: Path) -> None:
     """Kept, but distinguishable: a reviewer's post is not the shop's."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
+    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates
     tagged = {c.url.canonical: c.signals["tagged_only"] for c in out}
     assert tagged["https://www.instagram.com/mollytea_canada/p/AAA111/"] is False
     assert tagged["https://www.instagram.com/hellofoodbaby_/p/CCC333/"] is True
@@ -94,18 +99,45 @@ def test_a_listing_marks_posts_that_only_tagged_the_account(tmp_path: Path) -> N
 def test_a_post_yields_nothing(tmp_path: Path) -> None:
     """A post is a leaf: its caption is the product, not a pointer on."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
-    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0) == []
+    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates == []
 
 
-def test_a_page_that_is_not_content_yields_nothing(tmp_path: Path) -> None:
-    """A renamed account must not read as an account with a quiet week."""
+def test_a_page_that_is_not_content_says_why(tmp_path: Path) -> None:
+    """A renamed account must not read as an account with a quiet week.
+
+    Empty was the only answer available before, so the two were the same
+    answer: the harvest now carries the reason it came back empty.
+    """
     page = _page(tmp_path, b"<html>Sorry, this page isn't available</html>", "https://www.instagram.com/gone/")
-    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0) == []
+    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
+    assert out.candidates == []
+    assert out.problem is PageProblem.UNAVAILABLE
+    assert not out.problem.refuses_the_run, "one gone account must not end a thirty-account run"
+
+
+def test_a_quiet_account_is_not_a_problem(tmp_path: Path) -> None:
+    """Empty and refused have to stay distinguishable in both directions."""
+    page = _page(tmp_path, _EMPTY_LISTING, "https://www.instagram.com/quiet/")
+    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
+    assert out.candidates == []
+    assert out.problem is None
+
+
+def test_a_block_is_about_the_crawl_not_the_page(tmp_path: Path) -> None:
+    """Rate limiting and a dead session settle every request that follows."""
+    for html, expected in (
+        (b"<html>Please wait a few minutes before you try again.</html>", PageProblem.BLOCKED),
+        (b'<html><form action="/accounts/login/">Log in</form></html>', PageProblem.LOGIN_REQUIRED),
+    ):
+        page = _page(tmp_path, html, "https://www.instagram.com/someone/")
+        out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
+        assert out.problem is expected
+        assert out.problem.refuses_the_run
 
 
 def test_a_page_with_no_stored_html_yields_nothing(tmp_path: Path) -> None:
     page = Page(url_key="k", url=URL(raw="https://x/", canonical="https://x/", url_key="k"))
-    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0) == []
+    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates == []
 
 
 #: wiring ----------------------------------------------------------------
@@ -135,7 +167,7 @@ def test_a_page_from_another_platform_yields_nothing(tmp_path: Path) -> None:
     <a href="/p/BBB222/">so does this</a>
     </body></html>"""
     page = _page(tmp_path, trap, "https://mollyteaca.com/promotions")
-    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0) == []
+    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).candidates == []
 
 
 def test_the_platform_check_reads_the_adapter_not_a_hardcoded_name(tmp_path: Path) -> None:
@@ -150,4 +182,4 @@ def test_the_platform_check_reads_the_adapter_not_a_hardcoded_name(tmp_path: Pat
         parse_listing = staticmethod(instagram.parse_listing)
 
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    assert FeedHarvester(_Elsewhere(), Canonicalizer()).harvest(page, depth=0) == []
+    assert FeedHarvester(_Elsewhere(), Canonicalizer()).harvest(page, depth=0).candidates == []

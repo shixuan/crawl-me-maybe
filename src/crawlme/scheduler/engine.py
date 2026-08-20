@@ -23,8 +23,9 @@ from typing import Any
 
 from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
+from crawlme.digest.feed.base import PageProblem
 from crawlme.digest.fetcher import Fetcher
-from crawlme.digest.harvest import Harvester, LinkHarvester
+from crawlme.digest.harvest import Harvest, Harvester, LinkHarvester
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
@@ -385,6 +386,19 @@ class CrawlScheduler:
             return
         self._page_contexts.setdefault(url_key, {}).update(fields)
 
+    def _note_not_content(self, problem: PageProblem) -> None:
+        """Record a page that was not content, and stop if it was about us.
+
+        The first refusal aimed at the crawl wins: later ones say the
+        same thing, and overwriting would report whichever arrived last
+        rather than what actually ended the run.
+        """
+        stats = self._ctx.stats
+        stats.not_content[problem.value] = stats.not_content.get(problem.value, 0) + 1
+        if problem.refuses_the_run and not self._counters.refused_by:
+            self._counters.refused_by = problem.value
+            logger.warning("crawl.refused problem=%s pages=%d", problem.value, self._counters.pages_fetched)
+
     def summary(self) -> dict[str, Any]:
         """End-of-run statistics for the CLI's terminal report.
 
@@ -403,6 +417,8 @@ class CrawlScheduler:
         }
         if counters.started_at:
             report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
+        if stats.not_content:
+            report["not_content"] = dict(stats.not_content)
         if stats.embedding_cache_hits or stats.embedding_cache_misses:
             report["embedding_cache_hits"] = stats.embedding_cache_hits
             report["embedding_cache_misses"] = stats.embedding_cache_misses
@@ -743,13 +759,16 @@ class CrawlScheduler:
             # Bounded like the extraction step: a pathological page
             # must lose its links, not stall the whole crawl.
             try:
-                candidates = await asyncio.wait_for(
+                harvest = await asyncio.wait_for(
                     asyncio.to_thread(self._harvester.harvest, page, item.depth),
                     timeout=self._cfg.extract_timeout,
                 )
             except asyncio.TimeoutError:
                 logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                candidates = []
+                harvest = Harvest([])
+            candidates = harvest.candidates
+            if harvest.problem is not None:
+                self._note_not_content(harvest.problem)
             # Every candidate belongs to the seed its page belonged to,
             # however many hops back.  Recorded here because this is the
             # only place that holds both ends of the link.

@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import datetime
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from crawlme.digest.feed.base import FeedAdapter
+from crawlme.digest.feed.base import FeedAdapter, PageProblem
 from crawlme.digest.links import extract_links
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.schemas import Candidate, Page, Payload
@@ -31,10 +31,24 @@ from crawlme.schemas import Candidate, Page, Payload
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class Harvest:
+    """What a page yielded, and why it yielded nothing when it did.
+
+    An empty list used to be the only thing a harvester could say, which
+    made "this account posted nothing this week" and "the platform
+    refused us" the same answer.  A run that cannot tell them apart
+    reports being blocked as a quiet week, every week.
+    """
+
+    candidates: list[Candidate]
+    problem: PageProblem | None = None
+
+
 class Harvester(Protocol):
     """Turn one fetched page into the candidates it offers."""
 
-    def harvest(self, page: Page, depth: int) -> list[Candidate]: ...
+    def harvest(self, page: Page, depth: int) -> Harvest: ...
 
 
 class LinkHarvester:
@@ -43,7 +57,7 @@ class LinkHarvester:
     def __init__(self, canonicalizer: Canonicalizer) -> None:
         self._canonicalizer = canonicalizer
 
-    def harvest(self, page: Page, depth: int) -> list[Candidate]:
+    def harvest(self, page: Page, depth: int) -> Harvest:
         base = page.url.canonical
         out: list[Candidate] = []
         for raw in extract_links(page):
@@ -59,7 +73,9 @@ class LinkHarvester:
                     discovered_at=_utcnow(),
                 )
             )
-        return out
+        # A link graph has no notion of a page that refuses to be one:
+        # a wall is just a page with no links on it.
+        return Harvest(out)
 
 
 class FeedHarvester:
@@ -89,7 +105,7 @@ class FeedHarvester:
         # reached from a link and from a listing would not dedup.
         self._canonicalizer = canonicalizer
 
-    def harvest(self, page: Page, depth: int) -> list[Candidate]:
+    def harvest(self, page: Page, depth: int) -> Harvest:
         if page.url.reg_domain != self._adapter.DOMAIN:
             # A crawl can wander off the platform: an analyzer endorses a
             # shop's own site, and that page arrives here. It is a leaf by
@@ -98,7 +114,7 @@ class FeedHarvester:
             # platform's path shape would otherwise yield candidates
             # pointing at the wrong host entirely.
             logger.debug("harvest.off_platform url=%s platform=%s", page.url.canonical, self._adapter.PLATFORM)
-            return []
+            return Harvest([])
 
         html = _html_of(page)
         problem = self._adapter.problem(html)
@@ -106,9 +122,9 @@ class FeedHarvester:
             # Not an empty page: a page that is not content at all. Saying
             # so is what stops a renamed account reading as a quiet one.
             logger.warning("harvest.not_content url=%s problem=%s", page.url.canonical, problem.value)
-            return []
+            return Harvest([], problem)
         if self._adapter.parse_item(html, page.url.canonical) is not None:
-            return []
+            return Harvest([])
 
         listing = self._adapter.parse_listing(html, page.url.canonical, _payloads_of(page))
         own = {i.permalink for i in listing.own}
@@ -118,7 +134,7 @@ class FeedHarvester:
             candidate = marked.to_candidate(source_url_key=page.url_key, depth=depth + 1)
             candidate.url = self._canonicalizer.canonicalize(candidate.url.raw, page.url.canonical)
             out.append(candidate)
-        return out
+        return Harvest(out)
 
 
 def _html_of(page: Page) -> str:

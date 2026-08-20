@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from crawlme.digest.feed.base import PageProblem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.schemas import CrawlTask
 from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
@@ -179,6 +180,29 @@ def _diminishing_returns(
     return None
 
 
+def _platform_refused(
+    _task: CrawlTask,
+    _frontier: Frontier,
+    c: CrawlCounters,
+) -> StopReason | None:
+    """The platform is refusing this crawl, not just this page.
+
+    Rate limiting and an expired session are facts about the crawler,
+    so the first one settles every request that would follow: they
+    would all be refused too, and on a platform that counts strikes,
+    asking again is how a session becomes a ban.  Stopping on the first
+    one trades a re-run for that risk.
+
+    A gone account is the opposite kind of fact and never arrives here;
+    it is counted and reported instead.  See PageProblem.refuses_the_run.
+    """
+    if not c.refused_by:
+        return None
+    if c.refused_by == PageProblem.LOGIN_REQUIRED.value:
+        return StopReason("LOGIN_REQUIRED", "the platform asked for a login; the session is not valid")
+    return StopReason("RATE_LIMITED", f"the platform refused the crawl ({c.refused_by})")
+
+
 def _user_requested(
     task: CrawlTask,
     _frontier: Frontier,
@@ -207,6 +231,7 @@ _CHECKS: list[_CheckFunc] = [
     _budget_time,
     _time_horizon,
     _fatal,
+    _platform_refused,
     _user_requested,
     _enough_found,
     _diminishing_returns,

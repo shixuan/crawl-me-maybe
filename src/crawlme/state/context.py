@@ -58,6 +58,11 @@ class CrawlCounters:
         default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
     )
     fatal_error: str = ""
+    # The first page problem that was about the crawl rather than about
+    # one page, as its PageProblem value.  A block or a dead session
+    # makes every later request wasted, so one is enough to end the run;
+    # see _platform_refused.
+    refused_by: str = ""
     # Time horizon (2.8).  since=None keeps TIME_HORIZON dormant, which
     # is every run that does not ask for a window.  stale_streak counts
     # consecutive pages that stated a publication time older than the
@@ -86,6 +91,10 @@ class RunStats:
     candidates_ranked: int = 0
     fetch_errors: int = 0
     analyses_by_class: dict[str, int] = dataclasses.field(default_factory=dict)
+    # Pages that came back as something other than content, by kind.
+    # Reported because a run that read thirty accounts and found three
+    # of them gone is a different run from one that found none gone.
+    not_content: dict[str, int] = dataclasses.field(default_factory=dict)
     embedding_cache_hits: int = 0
     embedding_cache_misses: int = 0
 
@@ -95,6 +104,7 @@ class RunStats:
         self.candidates_ranked = 0
         self.fetch_errors = 0
         self.analyses_by_class = {}
+        self.not_content = {}
         self.embedding_cache_hits = 0
         self.embedding_cache_misses = 0
 
