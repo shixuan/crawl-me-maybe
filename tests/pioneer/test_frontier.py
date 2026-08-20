@@ -5,6 +5,7 @@ import datetime
 import pytest
 
 from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.pioneer.ordering import BestFirst, HybridOrdering, RoundRobin
 from crawlme.schemas import URL, FrontierItem
 
 
@@ -135,3 +136,20 @@ async def test_pending_items_retry_after_gate(frontier):
     popped = await frontier.pop_next(now=future + datetime.timedelta(seconds=1))
     assert popped is not None
     assert popped.url_key == "k1"
+
+
+@pytest.mark.asyncio
+async def test_a_page_being_fetched_is_not_queued_again():
+    """It is neither waiting nor finished, and dedup has to cover both.
+
+    Discovered again from another page mid-fetch, it would otherwise be
+    read twice and analysed twice.
+    """
+    f = GatedFrontier(domain_budget=0, source=HybridOrdering(lambda i: i.seed_url_key, RoundRobin(), BestFirst))
+    await f.push_batch([_item("dup", priority=0.9)])
+    taken = await f.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
+    assert taken is not None
+
+    await f.push_batch([_item("dup", priority=0.9)])
+    assert f.size == 0, "the same page came back while it was in flight"
+    assert f.get_prefilter_context().is_visited_or_queued("dup")

@@ -102,28 +102,35 @@ class BestFirst:
         self._age_factor = age_factor
         self._heap: list[tuple[float, int, str]] = []
         self._items: dict[str, FrontierItem] = {}
+        # Three sets, one meaning each, so no count has to be inferred:
+        # queued and in the heap, cooling down, and handed out but not
+        # settled.  The heap keeps stale entries either way -- it cannot
+        # delete from the middle -- but nothing reads the heap to answer
+        # a question about membership or size.
         self._pending: list[FrontierItem] = []
-        # Heap entries whose item has been discarded.  A heap cannot
-        # remove from the middle, so they are counted rather than found.
-        self._tombstones = 0
+        self._taken: set[str] = set()
 
     @property
     def size(self) -> int:
-        # Heap entries still standing, minus the ones whose item is gone.
-        # An item handed out leaves the heap, so in-flight work does not
-        # count; an item discarded leaves only its heap entry behind, and
-        # counting that would keep an empty frontier looking busy forever.
-        return len(self._heap) - self._tombstones + len(self._pending)
+        """Work still waiting: queued plus cooling down, never in flight."""
+        return len(self._items) + len(self._pending)
 
     def contains(self, url_key: str) -> bool:
-        return url_key in self._items
+        """Spoken for: queued, cooling down, or being fetched right now.
+
+        Dedup asks this before enqueuing, and an item in flight has to
+        answer yes or the same page is read twice.
+        """
+        return url_key in self._items or url_key in self._taken or any(i.url_key == url_key for i in self._pending)
 
     def keys(self) -> set[str]:
-        return set(self._items.keys())
+        return set(self._items) | self._taken | {i.url_key for i in self._pending}
 
     def discard(self, url_key: str) -> None:
-        if self._items.pop(url_key, None) is not None:
-            self._tombstones += 1
+        """Forget an item, wherever it currently sits."""
+        self._items.pop(url_key, None)
+        self._taken.discard(url_key)
+        self._pending = [i for i in self._pending if i.url_key != url_key]
 
     async def add(self, items: list[FrontierItem]) -> None:
         for item in items:
@@ -160,8 +167,7 @@ class BestFirst:
             _, _, url_key = self._heap[0]
             item = self._items.get(url_key)
             if item is None:
-                heapq.heappop(self._heap)
-                self._tombstones -= 1
+                heapq.heappop(self._heap)  # stale: its item left another way
                 continue
 
             decision = gate(item, now)
@@ -176,9 +182,11 @@ class BestFirst:
             if decision is Gate.DROP:
                 heapq.heappop(self._heap)
                 self._items.pop(item.url_key, None)
-                continue  # not a tombstone: the entry left with the item
+                continue
 
             heapq.heappop(self._heap)
+            self._items.pop(item.url_key, None)
+            self._taken.add(item.url_key)
             item.priority = self._effective_priority(item, now)
             item.status = "IN_FLIGHT"
             return item
@@ -197,7 +205,6 @@ class BestFirst:
             if item is not None:
                 return item
             heapq.heappop(self._heap)
-            self._tombstones -= 1
         return self._pending[0] if self._pending else None
 
     def _drain_pending(self, now: datetime.datetime, skip: set[str] | None = None) -> bool:
@@ -384,6 +391,7 @@ class HybridOrdering:
         return sum(g.size for g in self._groups.values())
 
     def contains(self, url_key: str) -> bool:
+        """Queued or in flight, which is what dedup means by "already have"."""
         return url_key in self._group_of
 
     def keys(self) -> set[str]:
@@ -430,7 +438,11 @@ class HybridOrdering:
                 name = _group_name(token)
                 item = await self._groups[name].take(now, gate)
                 if item is not None:
-                    self._group_of.pop(item.url_key, None)
+                    # The key stays. An item handed out is in flight, not
+                    # gone, and dedup asks contains() whether a URL is
+                    # already spoken for: forgetting it here lets the same
+                    # page be discovered again mid-fetch and queued twice.
+                    # record_outcome discards it when the fetch settles.
                     await self._refresh_token(name)
                     return item
                 held.append(token)

@@ -140,3 +140,17 @@ async def test_state_survives_a_round_trip():
     restored.load(o.dump())
     assert restored.size == 2
     assert restored.contains("a1") and restored.contains("b1")
+
+
+async def test_the_two_levels_agree_on_what_is_held():
+    """Anything the inner ordering remembers, this must remember too.
+
+    It reports to the same dedup check, so a disagreement is a URL
+    fetched twice.
+    """
+    o = _hybrid()
+    await o.add([_item("a", "s", 0.5)])
+    await o.take(_NOW, _take)
+    assert o.contains("a") and "a" in o.keys()
+    o.discard("a")
+    assert not o.contains("a")

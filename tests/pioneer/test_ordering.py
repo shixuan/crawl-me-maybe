@@ -240,3 +240,67 @@ async def test_priority_is_ignored_on_purpose():
     rr = RoundRobin()
     await rr.add([_item("quiet", priority=0.1), _item("loud", priority=0.99)])
     assert (await rr.take(_now(), _always(Gate.TAKE))).url_key == "quiet"
+
+
+#: what "already have it" means -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_item_in_flight_still_counts_as_held():
+    """Dedup asks contains() whether a URL is already spoken for.
+
+    Forgetting an item the moment it is handed out lets the same page be
+    discovered again mid-fetch and queued a second time.
+    """
+    src = BestFirst()
+    await src.add([_item("a")])
+    await src.take(_now(), _always(Gate.TAKE))
+    assert src.contains("a") and "a" in src.keys()
+    assert src.size == 0, "held, but no longer waiting"
+
+
+@pytest.mark.asyncio
+async def test_settling_an_item_in_flight_does_not_go_negative():
+    """Its heap entry left when it was taken; there is none to discount."""
+    src = BestFirst()
+    await src.add([_item("a"), _item("b")])
+    taken = await src.take(_now(), _always(Gate.TAKE))
+    assert taken is not None
+    src.discard(taken.url_key)
+    assert src.size == 1
+
+
+@pytest.mark.asyncio
+async def test_discarding_a_cooling_item_removes_it():
+    src = BestFirst()
+    await src.add([_item("a")])
+    await src.take(_now(), _always(Gate.DEFER))
+    assert src.size == 1, "waiting on a cooldown, still work"
+    src.discard("a")
+    assert src.size == 0
+
+
+@pytest.mark.asyncio
+async def test_settling_an_item_never_drives_the_count_below_zero():
+    """A negative size is not a cosmetic error.
+
+    The rank pump wakes on "the frontier is empty", written as size == 0.
+    At -1 that is never true, so ranked work sits in the buffer and the
+    run stalls with no error anywhere. The caller also sets status before
+    settling, so nothing here may infer state from it.
+    """
+    src = BestFirst()
+    await src.add([_item("a")])
+    taken = await src.take(_now(), _always(Gate.TAKE))
+    assert taken is not None
+    taken.status = "COMPLETED"  # what record_outcome does before discarding
+    src.discard(taken.url_key)
+    assert src.size == 0
+
+
+@pytest.mark.asyncio
+async def test_size_counts_only_what_is_still_waiting():
+    src = BestFirst()
+    await src.add([_item("a"), _item("b"), _item("c")])
+    await src.take(_now(), _always(Gate.TAKE))
+    assert src.size == 2, "one is in flight, two still queued"
