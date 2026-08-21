@@ -69,7 +69,7 @@ python dashboard/serve.py
 | `--max-relevant` | int | Stop once this many pages are judged relevant (the goal) |
 | `--page-budget` | int | Pages this run may read; 0 means no limit (the cost) |
 | `--token-budget` | int | LLM tokens this run may spend (default: 500000) |
-| `--max-duration` | int | Time budget, seconds |
+| `--time-budget` | int | Seconds this run may take |
 | `--depth-limit` | int | Max depth from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
