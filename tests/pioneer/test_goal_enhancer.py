@@ -7,6 +7,9 @@ interface, so the client is faked with a scripted responder.
 from __future__ import annotations
 
 import datetime
+import logging
+
+import pytest
 
 from crawlme.llm import LLMError, LLMResponse, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
@@ -18,8 +21,8 @@ class _StubClient:
         self._script = list(script)
         self.calls: list[dict] = []
 
-    async def chat(self, prompt: str, *, system: str = "", max_tokens: int = 512, json_mode: bool = False):
-        self.calls.append({"prompt": prompt, "system": system, "json_mode": json_mode})
+    async def chat(self, prompt: str, *, system: str = "", max_tokens: int | None = None, json_mode: bool = False):
+        self.calls.append({"prompt": prompt, "system": system, "json_mode": json_mode, "max_tokens": max_tokens})
         item = self._script.pop(0)
         if isinstance(item, BaseException):
             raise item
@@ -105,7 +108,7 @@ async def test_keywords_sanitized():
     assert enhanced.keywords == ["ml", "papers", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10", "k11", "k12"]
 
 
-async def test_missing_keywords_fall_back_to_bare_tokenization():
+async def test_missing_keywords_tokenize_prompt():
     content = '{"goal_statement": "Find Rust jobs", "since": null}'
     enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal("find rust jobs"))
     assert enhanced is not None
@@ -127,3 +130,79 @@ async def test_since_rejects_future_and_ancient_dates():
         enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal())
         assert enhanced is not None
         assert enhanced.since is None
+
+
+#: extraction spec --------------------------------------------------------
+
+
+def _spec_json(fields: str) -> str:
+    return (
+        '{"goal_statement": "Find giveaways", "keywords": ["giveaway"], '
+        '"since": null, "extraction_spec": {"fields": ' + fields + "}}"
+    )
+
+
+async def test_goal_naming_fields_gets_a_spec():
+    enhancer = GoalEnhancer(_StubClient([_resp(_spec_json('{"merchant": "who runs it", "deadline": "when it ends"}'))]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert enhanced.extraction_spec == {"fields": {"merchant": "who runs it", "deadline": "when it ends"}}
+
+
+async def test_goal_without_fields_gets_no_spec():
+    """Extracting from a goal that named nothing to collect is waste."""
+    enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert enhanced.extraction_spec is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        '{"Merchant Name": "spaces and caps"}',
+        '{"9lives": "leading digit"}',
+        '{"merchant-name": "hyphen"}',
+        '{"merchant": 5}',
+        "[]",
+    ],
+)
+async def test_odd_field_names_dropped(fields):
+    """A field name becomes a key the whole downstream depends on.
+
+    Anything the model invents that is not a snake_case name is dropped
+    rather than carried into the analyzer's prompt and into results.
+    """
+    enhancer = GoalEnhancer(_StubClient([_resp(_spec_json(fields))]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert enhanced.extraction_spec is None
+
+
+async def test_field_names_are_normalized_and_capped():
+    many = ", ".join(f'"f{i}": "d{i}"' for i in range(12))
+    enhancer = GoalEnhancer(_StubClient([_resp(_spec_json("{" + many + "}"))]))
+    enhanced = await enhancer.enhance(_goal())
+    assert enhanced is not None
+    assert len(enhanced.extraction_spec["fields"]) == 8
+
+
+async def test_empty_content_is_reported_as_its_own_failure(caplog):
+    """A reasoning model can spend the whole ceiling before writing JSON.
+
+    It reads as "unparseable" unless it is named, and the cure is a
+    bigger ceiling rather than a better parser, so the log has to tell
+    the two apart.
+    """
+    enhancer = GoalEnhancer(_StubClient([LLMResponse(content="", input_tokens=300, output_tokens=4096, model="stub")]))
+    with caplog.at_level(logging.WARNING):
+        assert await enhancer.enhance(_goal()) is None
+    assert "empty content" in caplog.text
+    assert "unparseable" not in caplog.text
+
+
+async def test_ceiling_belongs_to_the_client():
+    """One knob for every stage: the right value follows from the model."""
+    client = _StubClient([_resp(_valid_json())])
+    await GoalEnhancer(client).enhance(_goal())
+    assert client.calls[0]["max_tokens"] is None

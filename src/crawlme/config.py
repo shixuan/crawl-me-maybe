@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     #    mechanically but are not advertised in .env.example) ---------
     result_dir: Path = Path("results")
     ignore_robots: bool = False
+    # Trade tokens for coverage: no stage removes a candidate, it only
+    # ranks it last, and the page budget decides where to stop.  Off by
+    # default because a link graph without a hard filter grows without
+    # bound; a feed is finite, so the trade is available there.
+    recall: bool = False
     # "local" default: the full pipeline (rule + embedding) runs out of
     # the box.  "" (--embedding off) = rule-only v0.1 behavior.
     embedding_provider: str = "local"  # local | api | ""
@@ -55,6 +60,18 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2
+    # Ceiling on one response, and on a reasoning model the thinking is
+    # spent out of it before any answer is written.  Too low and the
+    # reply comes back empty or half-finished, which reads like a broken
+    # parser rather than a budget.  A ceiling is not a cost: only tokens
+    # actually generated are billed, so headroom is free until used.
+    llm_max_output_tokens: int = 8192
+    # How much candidate text one ranking call may carry.  Candidates are
+    # never cut to fit: a batch that would exceed this is split into more
+    # calls, because a post whose only relevant line sits past a cut is
+    # rejected for not containing what was cut off.  Raise it for a model
+    # with a larger context, lower it if a provider rejects the request.
+    llm_max_batch_chars: int = 12_000
 
     # -: Embedding ---
     # Credentials for the api provider (--embedding api).  Keys are
@@ -78,6 +95,23 @@ class Settings(BaseSettings):
     # means an anonymous browser.  Secrets stay out of flags: this is a
     # path, and the file itself never enters the repo.
     browser_storage_state: str = ""
+    # Ceiling on what one page load may keep of its own sub-responses.
+    # They are held in memory before they reach disk, so this is the
+    # difference between a heavy page and an out-of-memory machine.
+    browser_max_payload_bytes: int = 8 * 1024 * 1024
+    # How many times a feed listing is asked for more of itself.  A
+    # listing hands out one screen, so a window measured in weeks is
+    # answered with the dozen most recent posts unless someone keeps
+    # asking.  Each scroll is one more request the page makes, so this is
+    # also the knob that trades coverage against how much a platform
+    # sees of the crawl.  Ignored outside feed mode: a link graph has
+    # nothing below the fold worth waiting for.
+    feed_scrolls: int = 4
+    # What a fetched page yields: "links" walks a graph, "instagram"
+    # reads a feed listing into post permalinks.  --feed is the
+    # documented entry: it changes what a run produces from the same URL,
+    # so it belongs in the command that describes the run.
+    source_kind: str = "links"
     user_agents: list[str] = [
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]
@@ -93,15 +127,6 @@ class Settings(BaseSettings):
 
     # -: Frontier ---
     candidate_buffer_size: int = 2_000
-    rank_batch_size: int = 100
-    rank_cooldown_sec: float = 30.0
-    checkpoint_interval: int = 10
-    priority_aging_window: float = 600.0
-
-    # -: Robots ---
-    robots_ttl_hours: int = 24
-    circuit_breaker_threshold: int = 5
-    circuit_breaker_cooldown_min: int = 10
 
     # -: Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF

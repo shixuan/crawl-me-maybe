@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from crawlme.cli import main
+from crawlme.cli.run import _build_source
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.state.context import CrawlCounters
@@ -211,6 +213,65 @@ def test_run_flag_beats_env_twin(monkeypatch):
     assert captured["cfg"].embedding_provider == ""
 
 
+def test_run_feed_flag_picks_the_harvester(tmp_path):
+    """--feed decides what a page yields, so it has to reach Settings.
+
+    It changes the result of crawling the same URL, which is why it is a
+    flag and not an env-only knob: a run that read a profile as a link
+    graph would quietly return navigation links.
+    """
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "test prompt",
+        "--seeds",
+        "https://instagram.com/x/",
+        "--feed",
+        "instagram",
+        "--session",
+        _session(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].source_kind == "instagram"
+
+
+def test_run_without_feed_flag_walks_the_link_graph():
+    captured: dict = {}
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com"]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].source_kind == "links"
+
+
+def test_run_session_flag_implies_a_browser(tmp_path):
+    """Asking to crawl as someone and getting plain httpx would crawl
+    the logged-out site and report it as the site."""
+    captured: dict = {}
+    # A real file: the run refuses to start without one, deliberately.
+    session = tmp_path / "state.json"
+    session.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
+    state = str(session)
+    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--session", state]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].browser_storage_state == state
+    assert captured["cfg"].fetcher == "browser"
+
+
 def test_run_wires_llm_ranker_into_factory(monkeypatch):
     """A configured LLM ranker is passed to the scheduler factory."""
     captured: dict = {}
@@ -350,3 +411,265 @@ def test_parse_since_rejects_garbage() -> None:
 
     with pytest.raises(ValueError):
         _parse_since("whenever")
+
+
+#: where the entry points come from ---------------------------------------
+
+
+def _source_for(argv_tail: list[str], tmp_path):
+    captured: dict = {}
+    argv = ["crawl", "run", "test prompt", "--result-dir", str(tmp_path), *argv_tail]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            with patch("crawlme.cli.run._build_source", side_effect=_build_source) as spy:
+                try:
+                    main()
+                except SystemExit as exc:
+                    return exc.code, spy
+    return 0, spy
+
+
+def test_seeds_file_needs_no_mode_flag(tmp_path):
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text('["https://example.com/a"]')
+    code, _ = _source_for(["--seeds-file", str(seeds)], tmp_path)
+    assert code in (0, None)
+
+
+def test_asking_for_a_file_without_naming_one_is_an_error(tmp_path, capsys):
+    """The older pair let this become an empty manual list.
+
+    A typo then produced a run that started, found nothing, and reported
+    COMPLETED — the same shape of silent success as a missing session.
+    """
+    code, _ = _source_for(["--source", "file"], tmp_path)
+    assert code == 1
+    assert "--source-path" in capsys.readouterr().err
+
+
+def test_old_seed_spelling_works(tmp_path):
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text('["https://example.com/a"]')
+    code, _ = _source_for(["--source", "file", "--source-path", str(seeds)], tmp_path)
+    assert code in (0, None)
+
+
+def test_two_kinds_of_seed_at_once_is_refused(tmp_path):
+    """argparse rejects it, so the ambiguity never reaches the code."""
+    with patch("sys.argv", ["crawl", "run", "p", "--seeds", "a", "--seeds-file", "b"]):
+        with pytest.raises(SystemExit) as exc:
+            main()
+    assert exc.value.code == 2
+
+
+def test_recall_flag_reaches_settings(tmp_path):
+    """Trading tokens for coverage is a per-run choice, so it is a flag."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--recall", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].recall is True
+
+
+def test_recall_is_off_unless_asked(tmp_path):
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].recall is False
+
+
+def test_no_embedding_skips_the_stage_for_one_run(tmp_path):
+    """Which backend and which model are setup; whether to run it is not."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--no-embedding", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].embedding_provider == ""
+
+
+def test_old_embedding_spelling_works(tmp_path):
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--embedding", "off", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["cfg"].embedding_provider == ""
+
+
+def test_feed_run_defaults_to_no_ceiling(tmp_path):
+    """It would be a total ceiling: one platform, one domain, every post."""
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://instagram.com/a/",
+        "--feed",
+        "instagram",
+        "--session",
+        _session(tmp_path),
+        "--result-dir",
+        str(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 0
+
+
+def test_asking_for_a_domain_budget_still_applies_it(tmp_path):
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://instagram.com/a/",
+        "--feed",
+        "instagram",
+        "--session",
+        _session(tmp_path),
+        "--domain-budget",
+        "5",
+        "--result-dir",
+        str(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 5
+
+
+def test_link_graph_keeps_its_ceiling(tmp_path):
+    """One site can otherwise absorb a whole graph crawl."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 50
+
+
+def test_result_target_reaches_the_goal(tmp_path):
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://example.com",
+        "--max-relevant",
+        "50",
+        "--result-dir",
+        str(tmp_path),
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].max_relevant == 50
+
+
+def test_budgets_keep_their_older_spelling(tmp_path):
+    """--max-pages is in every command line already written."""
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--max-pages", "7", "--result-dir", str(tmp_path)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].max_pages == 7
+
+
+def _session(tmp_path) -> str:
+    """A feed run refuses to start without one, so every feed test needs it."""
+    f = tmp_path / "session.json"
+    f.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
+    return str(f)
+
+
+#: the session preflight ---------------------------------------------------
+
+
+def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
+    """It used to raise inside the fetcher, several hundred pages in."""
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://instagram.com/x/",
+        "--feed",
+        "instagram",
+        "--session",
+        str(tmp_path / "nope.json"),
+    ]
+    with patch("sys.argv", argv):
+        with pytest.raises(SystemExit):
+            main()
+    err = capsys.readouterr().err
+    assert "no session file" in err
+    assert "crawl session" in err, "the message has to name the command that fixes it"
+
+
+def test_a_feed_without_a_session_is_refused(capsys):
+    """A warning here scrolls past, and the run spends a browser on it.
+
+    Every fetch would land on the platform's login page, which reads as
+    a platform with nothing on it.
+    """
+    from crawlme.cli.run import _check_session
+
+    with pytest.raises(SystemExit):
+        _check_session(argparse.Namespace(session=None, feed="instagram"))
+    assert "crawl session" in capsys.readouterr().err
+
+
+def test_a_link_graph_without_a_session_says_nothing(capsys):
+    from crawlme.cli.run import _check_session
+
+    _check_session(argparse.Namespace(session=None, feed=None))
+    assert capsys.readouterr().err == ""
+
+
+def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
+    """It asked for a session and named a file that is not there, which
+    is worth saying. The advice for making one is feed-shaped, so
+    offering it here would point at a command that cannot serve it."""
+    from crawlme.cli.run import _check_session
+
+    with pytest.raises(SystemExit):
+        _check_session(argparse.Namespace(session=str(tmp_path / "nope.json"), feed=None))
+    err = capsys.readouterr().err
+    assert "no session file" in err
+    assert "crawl session" not in err

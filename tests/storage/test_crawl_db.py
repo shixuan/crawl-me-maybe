@@ -208,6 +208,30 @@ def test_has_analysis_matches_identity(storage):
     assert not _run(storage.has_analysis("other", "g1", "v1"))
 
 
+def test_has_analysis_separates_field_lists(storage):
+    """A page read for a different field list has not been read yet.
+
+    The goal is the same in both cases, so goal_id cannot tell them
+    apart; spec_version is what does.
+    """
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "goal_id": "g1",
+            "prompt_version": "v1",
+            "model": "m1",
+            "spec_version": "aaaa1111",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+
+    assert _run(storage.has_analysis("abc", "g1", "v1", "m1", "aaaa1111"))
+    assert not _run(storage.has_analysis("abc", "g1", "v1", "m1", "bbbb2222"))
+    assert not _run(storage.has_analysis("abc", "g1", "v1", "m1")), "a goal asking for no fields is not the same read"
+
+
 def test_save_and_get_snapshot(storage):
     storage.save_snapshot(
         {

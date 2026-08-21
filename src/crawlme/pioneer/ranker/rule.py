@@ -35,6 +35,7 @@ import dataclasses
 import datetime
 import math
 import re
+import unicodedata
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -101,6 +102,10 @@ class ScoreContext:
     source_page_title: str = ""
     page_link_count: int = 0
     domain_prior: dict[str, float] = dataclasses.field(default_factory=dict)
+    # Read by time-sensitive factors.  Held here rather than called for
+    # inside one, so a batch scores against a single instant and two
+    # candidates never disagree about when "now" was.
+    now: datetime.datetime = dataclasses.field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,6 +158,59 @@ def _position_signal(c: Candidate, ctx: ScoreContext) -> float:
     if ctx.page_link_count > 0:
         return 1.0 - (c.position / ctx.page_link_count)
     return 0.5
+
+
+def _text_match(c: Candidate, ctx: ScoreContext) -> float:
+    """What the candidate itself says, against what the goal asked for.
+
+    A feed post carries its own words, so this is the only factor that
+    looks at content rather than at a proxy for it. It is most of the
+    score for that reason.
+    """
+    if not ctx.goal_keywords:
+        return 0.5
+    return _jaccard(_words(c.text), ctx.goal_keywords, _fold(c.text))
+
+
+def _recency(c: Candidate, ctx: ScoreContext) -> float:
+    """Newer first, because what a feed offers expires.
+
+    A soft preference, not a cutoff: the hard window is the goal's
+    `since`, enforced once in the pre-filter. An undated candidate scores
+    neutral rather than last, for the same reason it is never dropped —
+    absent is not old.
+    """
+    if c.posted_at is None:
+        return 0.5
+    posted = c.posted_at if c.posted_at.tzinfo else c.posted_at.replace(tzinfo=datetime.timezone.utc)
+    days = (ctx.now - posted).total_seconds() / 86400.0
+    if days <= 0:
+        return 1.0
+    return round(_RECENCY_HALF_LIFE_DAYS / (_RECENCY_HALF_LIFE_DAYS + days), 4)
+
+
+#: How fast a post's score halves with age.  A week matches how long a
+#: promotion tends to stay worth reading about; it is a starting point to
+#: be revised against an unbiased sample, not a measured constant.
+_RECENCY_HALF_LIFE_DAYS = 7.0
+
+
+#: The feed factor set.  Deliberately two.
+#:
+#: `domain_prior` is absent because every post on a platform shares one
+#: registrable domain, so it would contribute the same constant to every
+#: candidate. The signal that would help is per-account, and that needs
+#: state no run keeps yet.
+#:
+#: `tagged_only` is absent because there is no evidence for a weight. The
+#: one run measured had 21 fetched candidates and every one was the
+#: account's own post, so the factor would be a guess dressed as a
+#: number. The recall run is what produces an unbiased sample; weights
+#: are worth revisiting then and not before.
+FEED_FACTORS: tuple[Factor, ...] = (
+    Factor("text_match", 0.75, _text_match),
+    Factor("recency", 0.25, _recency),
+)
 
 
 #: The graph-traversal factor set.  Order is preserved in the rationale
@@ -309,7 +367,19 @@ def _build_domain_prior(history: RankHistorySummary) -> dict[str, float]:
 
 
 def _words(text: str) -> set[str]:
-    return {w.lower() for w in _WORD_RE.findall(text)}
+    return {w.lower() for w in _WORD_RE.findall(_fold(text))}
+
+
+def _fold(text: str) -> str:
+    """Fold decorative code points onto the letters they imitate.
+
+    Social captions are written in mathematical alphanumerics and
+    fullwidth forms for emphasis, so a post titled with the bold
+    "Giveaway" shares no character with the keyword "giveaway" and
+    matches nothing. NFKC maps both onto plain letters, which turns a
+    silent zero into a hit.
+    """
+    return unicodedata.normalize("NFKC", text)
 
 
 def _jaccard(a: set[str], b: list[str], original_text: str = "") -> float:

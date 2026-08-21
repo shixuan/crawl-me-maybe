@@ -100,10 +100,12 @@ CREATE TABLE IF NOT EXISTS analyses (
     relevance_score REAL DEFAULT 0.0,
     summary         TEXT,
     structured_data TEXT DEFAULT '{}',
+    extracted_json  TEXT DEFAULT '{}',
     tags_json       TEXT DEFAULT '[]',
     feedback_json   TEXT DEFAULT '{}',
     model           TEXT DEFAULT '',
     prompt_version  TEXT DEFAULT '',
+    spec_version    TEXT DEFAULT '',
     tokens_used     INTEGER DEFAULT 0,
     analyzed_at     TEXT NOT NULL
 );
@@ -239,6 +241,16 @@ class SqliteCrawlDb:
 
     def save_raw_html(self, url_key: str, fetch_id: str, content: bytes) -> str:
         path = Path(self.raw_html_path(url_key, fetch_id))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return str(path)
+
+    def payload_path(self, url_key: str, fetch_id: str, index: int) -> str:
+        return str(self._raw_dir / url_key / f"{fetch_id}.payload.{index}")
+
+    def save_payload(self, url_key: str, fetch_id: str, index: int, content: bytes) -> str:
+        """Store one kept sub-response beside the page that fetched it."""
+        path = Path(self.payload_path(url_key, fetch_id, index))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         return str(path)
@@ -402,9 +414,9 @@ class SqliteCrawlDb:
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
-            "classification, relevance_score, summary, structured_data, tags_json, "
-            "feedback_json, model, prompt_version, tokens_used, analyzed_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "classification, relevance_score, summary, structured_data, extracted_json, "
+            "tags_json, feedback_json, model, prompt_version, spec_version, tokens_used, "
+            "analyzed_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_json["analysis_id"],
                 analysis_json.get("page_id", ""),
@@ -414,12 +426,14 @@ class SqliteCrawlDb:
                 analysis_json.get("relevance_score", 0.0),
                 analysis_json.get("summary"),
                 json.dumps(analysis_json.get("structured_data", {})),
+                json.dumps(analysis_json.get("extracted", {})),
                 json.dumps(analysis_json.get("tags", [])),
                 # The schema field is "feedback"; a plain model dump
                 # carries it under that key (never "feedback_json").
                 json.dumps(analysis_json.get("feedback", {})),
                 analysis_json.get("model", ""),
                 analysis_json.get("prompt_version", ""),
+                analysis_json.get("spec_version", ""),
                 analysis_json.get("tokens_used", 0),
                 analysis_json.get("analyzed_at", ""),
             ),
@@ -429,17 +443,26 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    async def has_analysis(self, url_key: str, goal_id: str, prompt_version: str, model: str = "") -> bool:
+    async def has_analysis(
+        self,
+        url_key: str,
+        goal_id: str,
+        prompt_version: str,
+        model: str = "",
+        spec_version: str = "",
+    ) -> bool:
         """Whether an analysis with this identity already exists.
 
-        The identity is (url_key, goal_id, prompt_version, model); the
-        model is only known after an LLM call, so callers that run the
-        provider default (no model configured) pass "" to match any
-        model instead.
+        The identity is (url_key, goal_id, prompt_version, spec_version,
+        model); the model is only known after an LLM call, so callers
+        that run the provider default (no model configured) pass "" to
+        match any model instead.  spec_version is "" for a goal that asks
+        for no fields, which matches every analysis written before there
+        were any.
         """
         cur = await self._execute_now(
-            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ?",
-            (url_key, goal_id, prompt_version),
+            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ? AND spec_version = ?",
+            (url_key, goal_id, prompt_version, spec_version),
         )
         rows = [dict(r) for r in await cur.fetchall()]
         if model == "":

@@ -27,7 +27,8 @@ from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask
+from crawlme.scheduler.traversal import traversal_for
+from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,12 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.result_dir = Path(args.result_dir)
     if args.ignore_robots:
         cfg.ignore_robots = True
-    if args.embedding is not None:
-        # "off" maps to "" (disabled); otherwise pass the provider through.
+    if args.recall:
+        cfg.recall = True
+    if args.no_embedding:
+        # "" is the disabled provider: rule-only ranking, no model loaded.
+        cfg.embedding_provider = ""
+    elif args.embedding is not None:
         cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
     if args.embedding_model is not None:
         cfg.embedding_model = args.embedding_model
@@ -85,11 +90,14 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
-    if args.cookies is not None:
-        # A session implies a browser: asking for cookies and getting
-        # plain httpx would silently crawl the logged-out site.
-        cfg.browser_storage_state = args.cookies
+    if args.feed is not None:
+        cfg.source_kind = args.feed
+    if args.session is not None:
+        # A session implies a browser: asking to crawl as someone and
+        # getting plain httpx would silently crawl the logged-out site.
+        cfg.browser_storage_state = args.session
         cfg.fetcher = "browser"
+    _check_session(args)
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
@@ -104,20 +112,33 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.max_pages = 0
     elif args.max_pages is not None:
         goal.max_pages = args.max_pages
+    if args.max_relevant is not None:
+        goal.max_relevant = args.max_relevant
     if args.max_tokens is not None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
-    if args.depth_limit is not None:
-        goal.depth_limit = args.depth_limit
-    if args.domain_budget is not None:
-        goal.domain_budget = args.domain_budget
+    # What a traversal decides, unless the run says otherwise.  Both of
+    # these used to be a link graph's answer inherited in silence: a
+    # per-domain ceiling that on one platform is a total, and a depth of
+    # five where a listing and its posts are two.
+    traversal = traversal_for(cfg.source_kind)
+    goal.depth_limit = args.depth_limit if args.depth_limit is not None else traversal.depth_limit
+    goal.domain_budget = args.domain_budget if args.domain_budget is not None else traversal.domain_budget
     if args.since is not None:
         try:
             goal.since = _parse_since(args.since)
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
+
+    # Before the run directory exists and before the enhancer spends a
+    # call: bad arguments should cost nothing.
+    try:
+        source = _build_source(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     task = CrawlTask(goal_id=goal.goal_id)
     # One shared TokenBudget covers every LLM consumer (the ranker and
@@ -148,14 +169,15 @@ async def cmd_run(args: argparse.Namespace) -> None:
         # it from prose.
         if args.since is None:
             goal.since = enhanced.since
+        goal.extraction_spec = enhanced.extraction_spec
         logger.info(
-            "goal.enhanced statement_len=%d keywords=%d since=%s",
+            "goal.enhanced statement_len=%d keywords=%d since=%s fields=%s",
             len(enhanced.statement),
             len(enhanced.keywords),
             enhanced.since.isoformat() if enhanced.since else "none",
+            ",".join(spec_fields(enhanced.extraction_spec)) or "none",
         )
 
-    source = _build_source(args)
     candidates = await source.discover(goal)
     allowed_domains: set[str] | None = None
     if hasattr(source, "allowed_domains"):
@@ -202,6 +224,40 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # loop-close debug records, all of which would otherwise print
     # after the report at DEBUG level.
     logging.getLogger().setLevel(logging.CRITICAL)
+
+
+def _check_session(args: argparse.Namespace) -> None:
+    """Refuse the run before it starts, not several hundred pages in.
+
+    Both cases used to surface only once a page came back: a path that
+    points at nothing raised inside the fetcher, and no path at all
+    crawled the logged-out platform, which looks exactly like a platform
+    with nothing on it.  Neither told anyone how to fix it.
+
+    A warning would have been the softer answer for the second one, and
+    the wrong one: it scrolls past, and what follows is a whole browser
+    run spent fetching login pages.  There is no flag to crawl a feed
+    anonymously because nobody has wanted one; the day someone does is
+    the day it earns its place.
+
+    A link graph is left alone entirely.  It asks for no session, and
+    the advice for making one is feed-shaped, so offering it to a graph
+    crawl would point at a command that cannot serve it.
+    """
+    if args.session:
+        if Path(args.session).is_file():
+            return
+        print(f"Error: no session file at {args.session}", file=sys.stderr)
+        if args.feed:
+            print(f"  Make one with:  crawl session {args.session} --feed {args.feed}", file=sys.stderr)
+        sys.exit(1)
+    if not args.feed:
+        return
+    print(f"Error: crawling {args.feed} needs a session.", file=sys.stderr)
+    print("  Without one this is a logged-out visitor, and a login-walled", file=sys.stderr)
+    print("  platform answers with its login page, not with nothing.", file=sys.stderr)
+    print(f"  Make one with:  crawl session ./{args.feed}-session.json --feed {args.feed}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:
@@ -251,16 +307,42 @@ def _format_summary(s: dict[str, Any]) -> str:
         parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))
         lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")
 
+    # Printed whenever it happened at all: a page that was not content
+    # is invisible everywhere else, and "0 relevant" reads very
+    # differently once you know nine accounts were gone or refused.
+    refused = s.get("not_content") or {}
+    if refused:
+        parts = ", ".join(f"{n} {kind}" for kind, n in sorted(refused.items(), key=lambda kv: -kv[1]))
+        lines.append(f"  no content: {sum(refused.values())} pages ({parts})")
+
+    # An adapter that stops recognising a platform's markup shows up as
+    # readable listings holding nothing.  Printed whenever any listing
+    # came back empty, because "0 relevant" reads very differently once
+    # you know the pages arrived and the parser found nothing on them.
+    seen, empty = (s.get("listings") or [0, 0])[:2]
+    if empty:
+        lines.append(f"  listings:   {seen} read, {empty} held no items")
+
     if s.get("duration_sec") is not None:
         lines.append(f"  duration:   {s['duration_sec']}s")
     return "\n".join(lines)
 
 
 def _build_source(args: argparse.Namespace) -> UrlSource:
-    """Create a URL source from CLI arguments."""
-    if args.source == "file" and args.source_path:
-        return FileSource(args.source_path)
-    if args.source == "rss" and args.source_path:
-        return RssSource(args.source_path)
+    """Create a URL source from CLI arguments.
+
+    Raises ValueError rather than falling back when the arguments do not
+    name a source: the older pair let "--source file" without a path
+    become an empty manual list, so a typo produced a run that started,
+    found nothing, and reported COMPLETED.
+    """
+    if args.seeds_file:
+        return FileSource(args.seeds_file)
+    if args.seeds_rss:
+        return RssSource(args.seeds_rss)
+    if args.source in {"file", "rss"}:
+        if not args.source_path:
+            raise ValueError(f"--source {args.source} needs --source-path (or use --seeds-{args.source})")
+        return FileSource(args.source_path) if args.source == "file" else RssSource(args.source_path)
     seeds = [s.strip() for s in (args.seeds or "").split(",") if s.strip()]
     return ManualSource(seeds)

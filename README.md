@@ -19,8 +19,11 @@ pip install -e .
 
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-pages 200
+  --max-relevant 40 --page-budget 200
 ```
+
+`--max-relevant` says when you have enough; `--page-budget` says how much you
+are willing to spend looking. Whichever comes first ends the run.
 
 Semantic ranking is on by default. The first run downloads a local embedding model (~220MB) once.
 
@@ -28,13 +31,28 @@ The LLM stages turn on when `LLM_API_KEY` or `LLM_BASE_URL` is set. Without cred
 
 ```bash
 # seeds from an RSS feed
-crawl run "C++ backend job postings" --source rss --source-path "https://hnrss.org/newest"
+crawl run "C++ backend job postings" --seeds-rss "https://hnrss.org/newest"
 
-# seeds from a file
-crawl run "release notes" --source file --source-path ./urls.txt
+# seeds from a JSON file: ["https://a", "https://b"], or
+# {"seeds": [...], "allowed_domains": [...]}
+crawl run "release notes" --seeds-file ./seeds.json
 
-# ignore --max-pages, stop when the frontier runs dry
+# a feed: log in once, then read several accounts, taking a turn from each.
+# --feed without --session is refused: a logged-out crawl of a walled
+# platform fetches login pages and reports them as an empty platform.
+crawl session ./ig-state.json --feed instagram
+
+crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
+  --seeds-file ./seeds.json \
+  --feed instagram --session ./ig-state.json \
+  --max-relevant 40 --page-budget 150 \
+  --since '2 weeks' --depth-limit 1 --ignore-robots
+
+# ignore the page budget, stop when the frontier runs dry
 crawl run "all press coverage" --seeds "..." --draining
+
+# read the results in a browser instead of a terminal
+python dashboard/serve.py
 ```
 
 ---
@@ -46,22 +64,41 @@ crawl run "all press coverage" --seeds "..." --draining
 | Flag | Type | What it does |
 |------|------|--------------|
 | `--seeds` | string | Comma-separated seed URLs |
-| `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
-| `--source-path` | path | File path or RSS feed URL |
-| `--max-pages` | int | Page budget; 0 means no limit |
-| `--max-tokens` | int | LLM token budget (default: 500000) |
-| `--max-duration` | int | Time budget, seconds |
+| `--seeds-file` | path | JSON file of seed URLs |
+| `--seeds-rss` | url | RSS or Atom feed to take seeds from |
+| `--max-relevant` | int | Stop once this many pages are judged relevant (the goal) |
+| `--page-budget` | int | Pages this run may read; 0 means no limit (the cost) |
+| `--token-budget` | int | LLM tokens this run may spend (default: 500000) |
+| `--time-budget` | int | Seconds this run may take |
 | `--depth-limit` | int | Max depth from seeds (default: 5) |
 | `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
 | `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
-| `--embedding` | `local` \| `api` \| `off` | Semantic ranking (default: `local`) |
-| `--embedding-model` | string | Overrides the provider default |
+| `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
+| `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
+| `--fetcher` | `http` \| `browser` | How to fetch; `browser` for JS-rendered or login-walled pages |
+| `--feed` | `instagram` | Read the source as a platform feed |
+| `--session` | path | Playwright storage_state, to crawl as a logged-in session |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
 | `--analyzer-max-chars` | int | Page text per analyzer call (default: 3000) |
 | `--ignore-robots` | flag | Bypass robots.txt |
 | `--domain-budget` | int | Max pages per domain |
 | `--log-level` | `DEBUG` … `OFF` | Overrides env `LOG_LEVEL` |
 | `--result-dir` | path | Where results go (default: `results`) |
+
+### `crawl session <path>`
+
+Opens a real browser at the platform, waits while you log in, and saves the
+session Playwright needs. Your credentials are typed into the platform's own
+page and never reach this process; what lands on disk is the session that
+login produced.
+
+| Flag | Type | Meaning |
+|------|------|---------|
+| `--feed` | `instagram` | Which platform to open (default: the first one) |
+| `--force` | flag | Replace an existing session file |
+| `--timeout` | int | Seconds to wait for the login (default: 600) |
+
+A visible browser needs a desktop: WSLg on WSL, an X display over SSH.
 
 ### `crawl inspect <task-id>`
 
@@ -86,6 +123,29 @@ Re-analyze a finished task's pages. No re-fetching: pages are a frozen corpus, a
 
 ---
 
+## Dashboard
+
+```bash
+python dashboard/serve.py                       # http://127.0.0.1:8765
+python dashboard/serve.py --port 9000 --results-dir ./results
+```
+
+A local, read-only page over what the crawls found: pick a run, filter by
+classification, search across titles, summaries, extracted fields and page
+text. Every extracted field is shown with the sentence it was checked
+against, which is the point -- a value you cannot trace is a value you
+cannot use.
+
+Nothing about it is specific to any goal. Field names come from the run's own
+extraction spec and are rendered as declared, so a run about shops and a run
+about papers look the same and neither needed a line of code.
+
+It binds to the loopback address and opens the run databases read-only: a run
+database holds whatever a logged-in session could see, and browsing must never
+be able to damage a run.
+
+---
+
 ## How it works
 
 A funnel. Each layer costs more and keeps fewer:
@@ -101,7 +161,7 @@ A funnel. Each layer costs more and keeps fewer:
 
 Every fetched page also gets one analyzer call: classification, summary, relevance and hub scores, endorsed links. Those judgments land in `analyses` and steer the crawl in flight through priority multipliers, endorsed links, and cross-task domain reputation.
 
-Two async loops run side by side. `fetch_pump` downloads and discovers links; `rank_pump` scores them and pushes them into the frontier. They coordinate only through the Frontier and the Buffer.
+Two async loops run side by side. `fetch_pump` downloads and discovers links; `rank_pump` scores them and pushes them into the frontier. They coordinate only through the Frontier, which owns both halves: candidates waiting for a score, and scored candidates waiting for a fetch slot.
 
 Every stage's decision is recorded: which rule dropped a link, what each ranker scored it, which model and prompt version produced a judgment. Raw HTML is kept, so a better prompt can re-judge a finished run without re-crawling.
 
@@ -109,14 +169,16 @@ Every stage's decision is recorded: which rule dropped a link, what each ranker 
 
 ## Configuration
 
-Flags are per-run choices. `.env` is for things you set once — secrets, timeouts, deep-tuning knobs. Everything has a default, so `.env` is optional. See [`.env.example`](.env.example).
+Flags say what this run is doing; `.env` says what this machine and account can do — credentials, endpoints, which model, how much memory to spend. Everything has a default, so `.env` is optional. See [`.env.example`](.env.example).
 
 ```bash
 # .env
 LLM_API_KEY=sk-xxx
 LLM_MODEL=deepseek/deepseek-v4-flash   # default: openai/gpt-4o-mini
 LLM_BASE_URL=                          # for OpenAI-compatible endpoints
-EMBEDDING_API_KEY=jina_xxx             # only for --embedding api
+EMBEDDING_PROVIDER=local               # local | api
+EMBEDDING_MODEL=                       # empty = the provider's default
+EMBEDDING_API_KEY=jina_xxx             # only for the api provider
 EMBEDDING_BASE_URL=https://api.jina.ai/v1
 ```
 
@@ -129,7 +191,7 @@ EMBEDDING_BASE_URL=https://api.jina.ai/v1
 | v0.1 | ✅ | Full pipeline at zero LLM cost |
 | v0.1.1 | ✅ | EmbeddingRanker, semantic ranking on a local model |
 | v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis and steering, replay, inspect, time horizon |
-| v0.3 | planned | Playwright with login state, feed traversal, weekly digests |
+| v0.3 | 🚧 | Playwright with login state, feed traversal, extracted fields with evidence |
 
 ---
 

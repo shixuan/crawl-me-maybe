@@ -17,9 +17,11 @@ import argparse
 import asyncio
 import sys
 
+from crawlme.cli import session
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
+from crawlme.scheduler.traversal import feed_kinds
 
 
 def main() -> None:
@@ -31,22 +33,53 @@ def main() -> None:
     #: run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
-    run_p.add_argument("--max-pages", type=int, help="Page budget limit (0 = unlimited)")
-    run_p.add_argument("--max-tokens", type=int, help="Token budget limit")
-    run_p.add_argument("--max-duration", type=int, help="Time limit in seconds")
+    # Two families, and the names say which is which.  A page budget is
+    # what the run may spend; it says nothing about how many answers that
+    # buys, and reading it as a target is how "sixty pages" came to mean
+    # twenty-two results.
+    run_p.add_argument(
+        "--max-relevant",
+        type=int,
+        default=None,
+        help="Stop once this many pages have been judged relevant (0 = no target). "
+        "May overshoot slightly: analysis lags fetching",
+    )
+    run_p.add_argument(
+        "--page-budget", "--max-pages", type=int, dest="max_pages", help="Pages this run may read (0 = unlimited)"
+    )
+    run_p.add_argument(
+        "--token-budget", "--max-tokens", type=int, dest="max_tokens", help="LLM tokens this run may spend"
+    )
+    run_p.add_argument(
+        "--time-budget", "--max-duration", type=int, dest="max_duration", help="Seconds this run may take"
+    )
     run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
     run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
-    run_p.add_argument("--seeds", help="Comma-separated seed URLs")
-    run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
-    run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
+    # Where the entry points come from.  One flag per kind, each carrying
+    # its own argument, so "I want a file" cannot be said without saying
+    # which file -- the older --source/--source-path pair could, and a
+    # missing path silently became an empty manual list.
+    seeds = run_p.add_mutually_exclusive_group()
+    seeds.add_argument("--seeds", help="Comma-separated seed URLs")
+    seeds.add_argument("--seeds-file", help="JSON file of seed URLs: a list, or {seeds: [...], allowed_domains: [...]}")
+    seeds.add_argument("--seeds-rss", help="RSS or Atom feed URL to take seeds from")
+    # The spelling this shipped under.  --source-path is required when
+    # --source names anything but manual; run.py says so rather than
+    # falling back to an empty crawl.
+    seeds.add_argument("--source", choices=["manual", "file", "rss"], default=None, help=argparse.SUPPRESS)
+    run_p.add_argument("--source-path", help=argparse.SUPPRESS)
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
-        "--embedding",
-        choices=["local", "api", "off"],
-        default=None,
-        help="Semantic ranking provider (default: local; 'off' = rule-only)",
+        "--no-embedding",
+        action="store_true",
+        help="Skip semantic ranking for this run: rules only, no model loaded",
     )
-    run_p.add_argument("--embedding-model", default=None, help="Model id, overriding the provider default")
+    # Which backend serves embeddings, and which model it runs, follow
+    # from the machine and the account rather than from the run, so they
+    # live in EMBEDDING_PROVIDER and EMBEDDING_MODEL.  Kept as the
+    # spelling this shipped under.
+    run_p.add_argument("--embedding", choices=["local", "api", "off"], default=None, help=argparse.SUPPRESS)
+    run_p.add_argument("--embedding-model", default=None, help=argparse.SUPPRESS)
     run_p.add_argument(
         "--analysis",
         choices=["on", "off"],
@@ -62,8 +95,8 @@ def main() -> None:
     run_p.add_argument(
         "--since",
         default=None,
-        help="Time window, e.g. '1 week' or '2026-08-01'. Stops on TIME_HORIZON once "
-        "content ages out; assumes the source is ordered newest first",
+        help="Time window, e.g. '1 week' or '2026-08-01'. Skips candidates already "
+        "dated outside it; with a single seed, also stops once content ages out",
     )
     run_p.add_argument(
         "--fetcher",
@@ -72,9 +105,26 @@ def main() -> None:
         help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
     )
     run_p.add_argument(
-        "--cookies",
+        "--feed",
+        choices=feed_kinds(),
+        default=None,
+        help="Read the source as a platform feed: a listing yields post permalinks "
+        "instead of the links on the page (default: crawl the link graph)",
+    )
+    run_p.add_argument(
+        "--session",
+        "--cookies",  # the name this shipped under
+        dest="session",
         default=None,
         help="Path to a Playwright storage_state JSON, for crawling as a logged-in session",
+    )
+    run_p.add_argument(
+        "--recall",
+        action="store_true",
+        help="Diagnostic: keep what the ranker rejected, ranked last, so a run can "
+        "measure whether the rejections were right. Spends the tail of the budget "
+        "on them, so leave it off when you want results rather than an answer "
+        "about the ranker",
     )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
@@ -118,6 +168,8 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
+    session.add_arguments(sub)
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -135,3 +187,5 @@ async def _dispatch(args: argparse.Namespace) -> None:
         await cmd_inspect(args)
     elif cmd == "replay":
         await cmd_replay(args)
+    elif cmd == "session":
+        await session.cmd_session(args)

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.digest.harvest import Harvest
+from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -43,19 +45,26 @@ def _make_sched(**overrides) -> CrawlScheduler:
     """Build a scheduler with all-mock components for unit tests."""
     from crawlme.config import Settings
 
-    buffer_mock = MagicMock()
-    buffer_mock.wake = AsyncMock()
-    buffer_mock.wait_until = AsyncMock()
+    # The waiting half lives inside the frontier now, so the mock hangs
+    # off it rather than beside it.
+    frontier_mock = MagicMock()
+    frontier_mock.waiting = MagicMock()
+    frontier_mock.waiting.wake = AsyncMock()
+    frontier_mock.waiting.wait_until = AsyncMock()
+    frontier_mock.take_for_ranking = AsyncMock(return_value=[])
+    frontier_mock.push_candidates = AsyncMock()
+    # Counts, not auto-attributes: the pumps compare them to zero.
+    frontier_mock.scoring = 0
+    frontier_mock.cooling = 0
 
     kwargs: dict = {
         "settings": Settings(),
         "storage": MagicMock(),
-        "frontier": MagicMock(),
+        "frontier": frontier_mock,
         "fetcher": MagicMock(aclose=AsyncMock()),
         "extractor": MagicMock(),
         "robots": MagicMock(),
         "prefilter": MagicMock(),
-        "buffer": buffer_mock,
         "ranker": MagicMock(aclose=AsyncMock()),
         "canonicalizer": MagicMock(),
     }
@@ -158,7 +167,7 @@ async def test_budget_gate_allows_pops_under_budget():
     pop_mock = AsyncMock(return_value=None)
     sched._frontier.pop_next = pop_mock
     sched._frontier.size = 0
-    sched._buffer.is_empty = True
+    sched._frontier.waiting.is_empty = True
 
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(sched._fetch_pump(), timeout=0.5)
@@ -210,25 +219,21 @@ async def test_stop_sets_stopping():
 
 
 @pytest.mark.asyncio
-async def test_aclose_closes_ranker_and_storage():
-    """Shutdown must release stage-held resources (drain tasks, caches)."""
+async def test_aclose():
+    """Shutdown must release every stage-held resource.
+
+    Each of these owns something that outlives the run: drain tasks and
+    caches in the ranker, a prior DB in the steering facade.  A leaked
+    aiosqlite connection keeps its worker thread, and the process hangs
+    instead of exiting.
+    """
     ranker = MagicMock(aclose=AsyncMock())
     storage = MagicMock(close=AsyncMock())
-    sched = _make_sched(ranker=ranker, storage=storage)
+    steering = MagicMock(aclose=AsyncMock())
+    sched = _make_sched(ranker=ranker, storage=storage, steering=steering)
     await sched.aclose()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_aclose_closes_steering():
-    """The steering facade flushes its prior DB; a leaked connection
-    would keep the process alive (the aiosqlite worker-thread hang)."""
-    steering = MagicMock(aclose=AsyncMock())
-    ranker = MagicMock(aclose=AsyncMock())
-    storage = MagicMock(close=AsyncMock())
-    sched = _make_sched(steering=steering, ranker=ranker, storage=storage)
-    await sched.aclose()
     steering.aclose.assert_awaited_once()
 
 
@@ -297,36 +302,28 @@ def _page_published(when: datetime.datetime | None) -> Page:
     return Page(url_key="k1", url=url, published_at=when)
 
 
-def test_stale_streak_ignores_pages_without_since():
+_SINCE = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
+_STALE = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+_FRESH = datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("since", "published", "expected"),
+    [
+        # No window asked for: the streak stays dormant whatever arrives.
+        (None, [_STALE], 0),
+        (_SINCE, [_STALE] * 3, 3),
+        (_SINCE, [_STALE, _FRESH], 0),
+        # Silence is not evidence: it neither advances nor resets.
+        (_SINCE, [_STALE, None], 1),
+    ],
+)
+def test_stale_streak(since, published, expected):
     sched = _make_sched()
-    sched._counters.since = None
-    sched._note_page_age(_page_published(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)))
-    assert sched._counters.stale_streak == 0
-
-
-def test_stale_streak_advances_on_old_pages():
-    sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
-    for _ in range(3):
-        sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
-    assert sched._counters.stale_streak == 3
-
-
-def test_stale_streak_resets_on_fresh_page():
-    sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
-    sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
-    sched._note_page_age(_page_published(datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)))
-    assert sched._counters.stale_streak == 0
-
-
-def test_stale_streak_untouched_by_undated_page():
-    """Silence is not evidence, so it neither advances nor resets."""
-    sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc)
-    sched._note_page_age(_page_published(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)))
-    sched._note_page_age(_page_published(None))
-    assert sched._counters.stale_streak == 1
+    sched._counters.since = since
+    for at in published:
+        sched._note_page_age(_page_published(at))
+    assert sched._counters.stale_streak == expected
 
 
 def test_page_context_ignores_empty_url_key():
@@ -418,7 +415,7 @@ async def test_inject_endorsed_respects_prefilter():
 
 
 @pytest.mark.asyncio
-async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
+async def test_harvest_timeout_keeps_the_page(monkeypatch):
     """A page whose link extraction hangs must not stall the crawl.
 
     The page still counts as fetched (it was fetched, extracted, and
@@ -428,9 +425,9 @@ async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
     """
     done = threading.Event()
 
-    def _slow_links(_page):
+    def _slow_links(_page, _depth):
         done.wait(10)  # released by the test so the worker thread exits
-        return []
+        return Harvest([])
 
     sched = _make_sched()
     sched._goal = _goal(max_pages=5)
@@ -447,7 +444,9 @@ async def test_link_extraction_timeout_drops_links_but_counts_page(monkeypatch):
             title="slow page",
         )
     )
-    monkeypatch.setattr("crawlme.scheduler.engine.extract_links", _slow_links)
+    # The harvester is injected now, so a pathological page is
+    # simulated by a slow harvest rather than a patched import.
+    sched._harvester = MagicMock(harvest=_slow_links)
     sched._frontier.record_outcome = AsyncMock()
 
     try:
@@ -513,9 +512,8 @@ async def test_analysis_runs_outside_the_fetch_slot(monkeypatch):
     """
     from crawlme.config import Settings
 
-    monkeypatch.setattr("crawlme.scheduler.engine.extract_links", lambda page: [])
-
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
+    sched._harvester = MagicMock(harvest=lambda page, depth: Harvest([]))
     sched._goal = _goal()
     sched._task = _task()
 
@@ -550,3 +548,179 @@ async def test_fetch_slot_is_released_before_returning():
 
     assert await sched._fetch_and_extract(_item()) is None
     assert not sched._fetch_sem.locked()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pump_quiet_while_ranking(caplog):
+    """The rank pump is inside a rank call: it cannot act on a wake.
+
+    Waking it every tick produced a line of log per tick for the whole
+    length of the call, saying the buffer had items when it was empty.
+    """
+    sched = _make_sched()
+    sched._state = "RUNNING"
+    sched._goal = _goal()
+    sched._task = _task()
+    sched._counters = CrawlCounters()
+
+    sched._frontier.scoring = 11
+    sched._frontier.pop_next = AsyncMock(return_value=None)
+    sched._frontier.size = 0
+    sched._frontier.waiting.is_empty = True
+    wake = AsyncMock()
+    sched._frontier.waiting.wake = wake
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(sched._fetch_pump(), timeout=0.3)
+
+    wake.assert_not_called()
+    assert "waking_rank" not in caplog.text
+
+
+#: endorsed links ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("link", "expected"),
+    [
+        ("https://example.com/deals", "https://example.com/deals"),
+        ("http://example.com/x", "http://example.com/x"),
+        ("/promotions", "/promotions"),
+        ("www.mollyteaca.com", "https://www.mollyteaca.com"),
+        ("WWW.Example.COM", "https://WWW.Example.COM"),
+    ],
+)
+def test_endorsed_link_survives(link, expected):
+    assert _endorsed_href(link) == expected
+
+
+@pytest.mark.parametrize("link", ["mollyteaca.com", "click here", "", "   ", "see our site"])
+def test_endorsement_that_is_not_a_link_dropped(link):
+    """Resolving it against the page would fabricate a URL.
+
+    Instagram answers 200 for any path, so the fabricated page looked
+    like a successful fetch and cost an analysis and a page of budget.
+    """
+    assert _endorsed_href(link) is None
+
+
+#: end-of-run accounting ---------------------------------------------------
+
+
+def test_unfinished_run_says_so(caplog):
+    """Stopping early and finishing look identical from the outside.
+
+    A missing session gave COMPLETED with no pages; a per-domain ceiling
+    gave COMPLETED with a hundred and sixty candidates still queued; a
+    rank batch landing after the last fetch gave COMPLETED for an account
+    that was never opened. None of them said anything.
+    """
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=45)
+    sched._frontier.size = 16
+    sched._frontier.waiting_size = 4
+
+    with caplog.at_level(logging.INFO):
+        sched._reconcile()
+
+    assert "task.reconcile" in caplog.text
+    assert "task.unfinished" in caplog.text
+    assert "20 candidates were never read" in caplog.text
+
+
+def test_complete_run_stays_quiet(caplog):
+    sched = _make_sched()
+    sched._counters = CrawlCounters(pages_fetched=10)
+    sched._frontier.size = 0
+    sched._frontier.waiting_size = 0
+
+    with caplog.at_level(logging.INFO):
+        sched._reconcile()
+
+    assert "task.reconcile" in caplog.text
+    assert "task.unfinished" not in caplog.text
+
+
+def test_rank_drain_matches_one_call():
+    """Nothing in a drained batch is fetchable until all of it is scored.
+
+    At 100 the ranker split the batch into nine calls of its own; the
+    first was scored in thirty seconds and reached the frontier four and
+    a half minutes later, after the run had stopped for lack of anything
+    to fetch. The drain size is that latency, not a throughput knob.
+    """
+    from crawlme.pioneer.ranker.llm import _BATCH_SIZE
+    from crawlme.scheduler.engine import _RANK_BATCH_SIZE
+
+    assert _RANK_BATCH_SIZE <= _BATCH_SIZE, "a drain larger than one call reintroduces the wait"
+
+
+def test_relevant_judgement_counts():
+    """The tally has to come from the same place the window does.
+
+    Both answer questions about the same judgement: the window whether
+    the crawl is still working, the tally whether it is done.
+    """
+    sched = _make_sched()
+    sched._counters = CrawlCounters(relevance_threshold=0.7)
+    sched._on_analysis(AnalysisResult(url_key="a", relevance_score=0.9, classification="RELEVANT"))
+    sched._on_analysis(AnalysisResult(url_key="b", relevance_score=0.2, classification="IRRELEVANT"))
+    sched._on_analysis(AnalysisResult(url_key="c", relevance_score=0.75, classification="RELEVANT"))
+    assert sched._counters.relevant_found == 2
+    assert list(sched._counters.relevance_window) == [True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_cooldown_is_not_exhaustion(caplog):
+    """Nothing poppable right now is not the same as nothing left.
+
+    A clock that stepped backwards on the host left the only seed with a
+    cooldown in the future. The pop was refused, the pump read that as
+    an exhausted frontier, and the run reported itself finished having
+    fetched nothing at all.
+    """
+    sched = _make_sched()
+    sched._state = "RUNNING"
+    sched._goal = _goal()
+    sched._task = _task()
+    sched._counters = CrawlCounters()
+
+    sched._frontier.pop_next = AsyncMock(return_value=None)
+    sched._frontier.size = 1
+    sched._frontier.cooling = 1
+    sched._frontier.waiting.is_empty = True
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(sched._fetch_pump(), timeout=0.3)
+
+    assert "fetch_pump.exhausted" not in caplog.text
+    assert sched._task.stopping_reason is None
+
+
+@pytest.mark.asyncio
+async def test_refusal_stops_the_run():
+    """The engine has to act on the difference, not just record it.
+
+    Before this the harvester's verdict reached a log line and stopped
+    there, so a rate-limited crawl kept requesting pages that would all
+    be refused, and reported the empty result as a finished run.
+    """
+    from crawlme.digest.feed.base import PageProblem
+
+    sched = _make_sched()
+    sched._ctx.stats.reset()
+
+    sched._note_not_content(PageProblem.UNAVAILABLE)
+    assert sched._counters.refused_by == "", "a gone account is not a reason to stop"
+
+    sched._note_not_content(PageProblem.BLOCKED)
+    assert sched._counters.refused_by == "blocked"
+
+    # Later refusals do not overwrite: the first one is what ended it.
+    sched._note_not_content(PageProblem.LOGIN_REQUIRED)
+    assert sched._counters.refused_by == "blocked"
+
+    assert sched._ctx.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
+    assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}

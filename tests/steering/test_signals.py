@@ -39,7 +39,7 @@ def _fb(
 # -- summary -----------------------------------------------------------
 
 
-def test_summary_caps_relevant_pages_and_keeps_most_recent():
+def test_summary_caps_relevant_pages():
     signals = InflightSignals()
     for i in range(12):
         signals.update(_fb(url=f"https://example.com/{i}", title=f"Page {i}"))

@@ -44,6 +44,10 @@ class LLMResponse:
     input_tokens: int
     output_tokens: int
     model: str
+    # The reply used the whole output ceiling, so it is very likely cut
+    # short.  Callers see this before they see unparseable JSON, which
+    # is what stops a budget problem from being read as a parser one.
+    truncated: bool = False
 
 
 async def _sleep(seconds: float) -> None:
@@ -132,12 +136,14 @@ class LLMClient:
         base_url: str = "",
         concurrency: int = 2,
         budget: TokenBudget | None = None,
+        max_output_tokens: int = 8192,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
         self._sem = asyncio.Semaphore(concurrency)
         self._budget = budget
+        self._max_output_tokens = max_output_tokens
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient:
@@ -152,6 +158,7 @@ class LLMClient:
             base_url=settings.llm_base_url,
             concurrency=settings.llm_concurrency,
             budget=budget,
+            max_output_tokens=settings.llm_max_output_tokens,
         )
 
     @classmethod
@@ -176,14 +183,21 @@ class LLMClient:
         prompt: str,
         *,
         system: str = "",
-        max_tokens: int = 512,
+        max_tokens: int | None = None,
         json_mode: bool = False,
     ) -> LLMResponse:
         """One chat completion.
 
         *json_mode* requests structured JSON output where the provider
         supports it (OpenAI and compatible endpoints).
+
+        *max_tokens* defaults to the client's configured ceiling.  Call
+        sites are deliberately not each holding their own constant: the
+        right value follows from which model is configured, not from
+        which stage is asking, and three constants meant three separate
+        discoveries of the same problem.
         """
+        ceiling = max_tokens if max_tokens is not None else self._max_output_tokens
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -196,13 +210,21 @@ class LLMClient:
         async with self._sem:
             for attempt in range(_LLM_MAX_RETRIES + 1):
                 try:
-                    resp = await self._complete(messages, max_tokens, json_mode)
+                    resp = await self._complete(messages, ceiling, json_mode)
                     content = (resp.choices[0].message.content or "").strip()
                     usage = resp.usage
                     input_tokens = getattr(usage, "prompt_tokens", 0) or 0
                     output_tokens = getattr(usage, "completion_tokens", 0) or 0
                     if self._budget is not None:
                         self._budget.record(input_tokens, output_tokens)
+                    truncated = output_tokens >= ceiling
+                    if truncated:
+                        logger.warning(
+                            "llm.chat.output_ceiling out=%d ceiling=%d; the reply is cut short "
+                            "(raise LLM_MAX_OUTPUT_TOKENS)",
+                            output_tokens,
+                            ceiling,
+                        )
                     return LLMResponse(
                         content=content,
                         input_tokens=input_tokens,
@@ -214,6 +236,7 @@ class LLMClient:
                         # deepseek-v4-flash for deepseek/deepseek-chat),
                         # which would break replay-of-replay skipping.
                         model=str(self._model or getattr(resp, "model", "")),
+                        truncated=truncated,
                     )
                 except LLMError:
                     raise
