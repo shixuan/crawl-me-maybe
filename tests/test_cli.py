@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -220,7 +221,17 @@ def test_run_feed_flag_picks_the_harvester(tmp_path):
     graph would quietly return navigation links.
     """
     captured: dict = {}
-    argv = ["crawl", "run", "test prompt", "--seeds", "https://instagram.com/x/", "--feed", "instagram"]
+    argv = [
+        "crawl",
+        "run",
+        "test prompt",
+        "--seeds",
+        "https://instagram.com/x/",
+        "--feed",
+        "instagram",
+        "--session",
+        _session(tmp_path),
+    ]
     with patch("sys.argv", argv):
         with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
@@ -246,7 +257,10 @@ def test_run_session_flag_implies_a_browser(tmp_path):
     """Asking to crawl as someone and getting plain httpx would crawl
     the logged-out site and report it as the site."""
     captured: dict = {}
-    state = str(tmp_path / "state.json")
+    # A real file: the run refuses to start without one, deliberately.
+    session = tmp_path / "state.json"
+    session.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
+    state = str(session)
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--session", state]
     with patch("sys.argv", argv):
         with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
@@ -509,6 +523,8 @@ def test_feed_run_defaults_to_no_ceiling(tmp_path):
         "https://instagram.com/a/",
         "--feed",
         "instagram",
+        "--session",
+        _session(tmp_path),
         "--result-dir",
         str(tmp_path),
     ]
@@ -531,6 +547,8 @@ def test_asking_for_a_domain_budget_still_applies_it(tmp_path):
         "https://instagram.com/a/",
         "--feed",
         "instagram",
+        "--session",
+        _session(tmp_path),
         "--domain-budget",
         "5",
         "--result-dir",
@@ -591,3 +609,67 @@ def test_budgets_keep_their_older_spelling(tmp_path):
             except SystemExit:
                 pass
     assert captured["goal"].max_pages == 7
+
+
+def _session(tmp_path) -> str:
+    """A feed run refuses to start without one, so every feed test needs it."""
+    f = tmp_path / "session.json"
+    f.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
+    return str(f)
+
+
+#: the session preflight ---------------------------------------------------
+
+
+def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
+    """It used to raise inside the fetcher, several hundred pages in."""
+    argv = [
+        "crawl",
+        "run",
+        "p",
+        "--seeds",
+        "https://instagram.com/x/",
+        "--feed",
+        "instagram",
+        "--session",
+        str(tmp_path / "nope.json"),
+    ]
+    with patch("sys.argv", argv):
+        with pytest.raises(SystemExit):
+            main()
+    err = capsys.readouterr().err
+    assert "no session file" in err
+    assert "crawl session" in err, "the message has to name the command that fixes it"
+
+
+def test_a_feed_without_a_session_is_refused(capsys):
+    """A warning here scrolls past, and the run spends a browser on it.
+
+    Every fetch would land on the platform's login page, which reads as
+    a platform with nothing on it.
+    """
+    from crawlme.cli.run import _check_session
+
+    with pytest.raises(SystemExit):
+        _check_session(argparse.Namespace(session=None, feed="instagram"))
+    assert "crawl session" in capsys.readouterr().err
+
+
+def test_a_link_graph_without_a_session_says_nothing(capsys):
+    from crawlme.cli.run import _check_session
+
+    _check_session(argparse.Namespace(session=None, feed=None))
+    assert capsys.readouterr().err == ""
+
+
+def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
+    """It asked for a session and named a file that is not there, which
+    is worth saying. The advice for making one is feed-shaped, so
+    offering it here would point at a command that cannot serve it."""
+    from crawlme.cli.run import _check_session
+
+    with pytest.raises(SystemExit):
+        _check_session(argparse.Namespace(session=str(tmp_path / "nope.json"), feed=None))
+    err = capsys.readouterr().err
+    assert "no session file" in err
+    assert "crawl session" not in err

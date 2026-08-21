@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import sys
 
+from crawlme.cli import session
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
@@ -167,6 +168,8 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
+    session.add_arguments(sub)
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -184,3 +187,5 @@ async def _dispatch(args: argparse.Namespace) -> None:
         await cmd_inspect(args)
     elif cmd == "replay":
         await cmd_replay(args)
+    elif cmd == "session":
+        await session.cmd_session(args)

@@ -37,7 +37,11 @@ crawl run "C++ backend job postings" --seeds-rss "https://hnrss.org/newest"
 # {"seeds": [...], "allowed_domains": [...]}
 crawl run "release notes" --seeds-file ./seeds.json
 
-# a feed: read several accounts, taking a turn from each
+# a feed: log in once, then read several accounts, taking a turn from each.
+# --feed without --session is refused: a logged-out crawl of a walled
+# platform fetches login pages and reports them as an empty platform.
+crawl session ./ig-state.json --feed instagram
+
 crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
   --seeds-file ./seeds.json \
   --feed instagram --session ./ig-state.json \
@@ -46,6 +50,9 @@ crawl run "nearby merchants giving something away, with the shop, the offer and 
 
 # ignore the page budget, stop when the frontier runs dry
 crawl run "all press coverage" --seeds "..." --draining
+
+# read the results in a browser instead of a terminal
+python dashboard/serve.py
 ```
 
 ---
@@ -78,6 +85,21 @@ crawl run "all press coverage" --seeds "..." --draining
 | `--log-level` | `DEBUG` … `OFF` | Overrides env `LOG_LEVEL` |
 | `--result-dir` | path | Where results go (default: `results`) |
 
+### `crawl session <path>`
+
+Opens a real browser at the platform, waits while you log in, and saves the
+session Playwright needs. Your credentials are typed into the platform's own
+page and never reach this process; what lands on disk is the session that
+login produced.
+
+| Flag | Type | Meaning |
+|------|------|---------|
+| `--feed` | `instagram` | Which platform to open (default: the first one) |
+| `--force` | flag | Replace an existing session file |
+| `--timeout` | int | Seconds to wait for the login (default: 600) |
+
+A visible browser needs a desktop: WSLg on WSL, an X display over SSH.
+
 ### `crawl inspect <task-id>`
 
 Read-only summary of a finished task: goal, pages, analyses by classification, top relevant pages.
@@ -98,6 +120,29 @@ Re-analyze a finished task's pages. No re-fetching: pages are a frozen corpus, a
 | `--max-tokens` | int | Token budget for this replay |
 | `--analyzer-max-chars` | int | Page text per analyzer call |
 | `--force` | flag | Re-analyze pages that already have an identical analysis |
+
+---
+
+## Dashboard
+
+```bash
+python dashboard/serve.py                       # http://127.0.0.1:8765
+python dashboard/serve.py --port 9000 --results-dir ./results
+```
+
+A local, read-only page over what the crawls found: pick a run, filter by
+classification, search across titles, summaries, extracted fields and page
+text. Every extracted field is shown with the sentence it was checked
+against, which is the point -- a value you cannot trace is a value you
+cannot use.
+
+Nothing about it is specific to any goal. Field names come from the run's own
+extraction spec and are rendered as declared, so a run about shops and a run
+about papers look the same and neither needed a line of code.
+
+It binds to the loopback address and opens the run databases read-only: a run
+database holds whatever a logged-in session could see, and browsing must never
+be able to damage a run.
 
 ---
 

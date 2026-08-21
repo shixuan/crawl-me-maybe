@@ -97,6 +97,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         # getting plain httpx would silently crawl the logged-out site.
         cfg.browser_storage_state = args.session
         cfg.fetcher = "browser"
+    _check_session(args)
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
@@ -223,6 +224,40 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # loop-close debug records, all of which would otherwise print
     # after the report at DEBUG level.
     logging.getLogger().setLevel(logging.CRITICAL)
+
+
+def _check_session(args: argparse.Namespace) -> None:
+    """Refuse the run before it starts, not several hundred pages in.
+
+    Both cases used to surface only once a page came back: a path that
+    points at nothing raised inside the fetcher, and no path at all
+    crawled the logged-out platform, which looks exactly like a platform
+    with nothing on it.  Neither told anyone how to fix it.
+
+    A warning would have been the softer answer for the second one, and
+    the wrong one: it scrolls past, and what follows is a whole browser
+    run spent fetching login pages.  There is no flag to crawl a feed
+    anonymously because nobody has wanted one; the day someone does is
+    the day it earns its place.
+
+    A link graph is left alone entirely.  It asks for no session, and
+    the advice for making one is feed-shaped, so offering it to a graph
+    crawl would point at a command that cannot serve it.
+    """
+    if args.session:
+        if Path(args.session).is_file():
+            return
+        print(f"Error: no session file at {args.session}", file=sys.stderr)
+        if args.feed:
+            print(f"  Make one with:  crawl session {args.session} --feed {args.feed}", file=sys.stderr)
+        sys.exit(1)
+    if not args.feed:
+        return
+    print(f"Error: crawling {args.feed} needs a session.", file=sys.stderr)
+    print("  Without one this is a logged-out visitor, and a login-walled", file=sys.stderr)
+    print("  platform answers with its login page, not with nothing.", file=sys.stderr)
+    print(f"  Make one with:  crawl session ./{args.feed}-session.json --feed {args.feed}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:
