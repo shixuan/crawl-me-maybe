@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import logging
 from types import SimpleNamespace
 
 import httpx
@@ -94,7 +95,7 @@ async def test_chat_returns_content_usage_and_model(provider, no_sleep):
         {"role": "system", "content": "be brief"},
         {"role": "user", "content": "hello?"},
     ]
-    assert sent["max_tokens"] == 512
+    assert sent["max_tokens"] == 8192, "the configured ceiling, not a per-call-site constant"
     assert sent["model"] == "openai/gpt-4o-mini"
     assert "response_format" not in sent
     assert no_sleep == []
@@ -171,7 +172,7 @@ async def test_permanent_error_raises_without_retry(monkeypatch, no_sleep):
     assert no_sleep == []
 
 
-async def test_missing_credentials_is_permanent_despite_5xx_mapping(monkeypatch, no_sleep):
+async def test_missing_credentials_is_permanent(monkeypatch, no_sleep):
     # litellm maps missing credentials to InternalServerError, which is
     # normally transient.  The message check must win.
     stub = _StubLitellm([_StubLitellm.InternalServerError("Missing credentials. Please pass an `api_key`.")])
@@ -269,28 +270,48 @@ def test_configured_flags_credentials():
     assert LLMClient("openai/gpt-4o-mini", base_url="http://localhost:11434/v1").configured
 
 
-def test_from_settings_if_configured_skips_without_credentials():
-    # Explicit empties beat whatever the developer's .env holds.
-    settings = Settings(llm_model="", llm_api_key="", llm_base_url="")
-    assert LLMClient.from_settings_if_configured(settings) is None
-
-
-def test_from_settings_if_configured_wires_with_key():
-    # Key alone is enough: the model falls back to the provider default.
-    settings = Settings(llm_model="", llm_api_key="sk-1", llm_base_url="")
+@pytest.mark.parametrize(
+    ("api_key", "base_url", "built"),
+    [
+        # Explicit empties beat whatever the developer's .env holds.
+        ("", "", False),
+        # A key alone is enough; so is a local endpoint that wants none.
+        ("sk-1", "", True),
+        ("", "http://localhost:11434/v1", True),
+    ],
+)
+def test_from_settings_if_configured(api_key, base_url, built):
+    settings = Settings(llm_model="", llm_api_key=api_key, llm_base_url=base_url)
     client = LLMClient.from_settings_if_configured(settings)
-    assert client is not None
-    assert client._api_key == "sk-1"
-    assert client._model == "openai/gpt-4o-mini"
+    assert (client is not None) is built
+    if client is not None:
+        assert client._api_key == api_key
+        assert client._base_url == base_url
+        assert client._model == "openai/gpt-4o-mini"  # falls back to the provider default
 
 
 def test_from_settings_resolves_default_model_when_empty():
-    client = LLMClient.from_settings(Settings(llm_model=""))
-    assert client._model == "openai/gpt-4o-mini"
+    assert LLMClient.from_settings(Settings(llm_model=""))._model == "openai/gpt-4o-mini"
 
 
-def test_from_settings_if_configured_allows_keyless_local_endpoint():
-    settings = Settings(llm_model="", llm_api_key="", llm_base_url="http://localhost:11434/v1")
-    client = LLMClient.from_settings_if_configured(settings)
-    assert client is not None
-    assert client._base_url == "http://localhost:11434/v1"
+@pytest.mark.asyncio
+async def test_reply_at_the_ceiling_says_so(monkeypatch, caplog):
+    """Otherwise a budget problem arrives disguised as a parser one.
+
+    A reasoning model spends the ceiling on thinking, and what comes back
+    is empty or cut off mid-JSON. Callers that only see unparseable text
+    go looking at the parser, which is the wrong place.
+    """
+    monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("{", out_tok=64)]))
+    client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
+    with caplog.at_level(logging.WARNING):
+        resp = await client.chat("hi")
+    assert resp.truncated is True
+    assert "output_ceiling" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reply_under_the_ceiling_not_flagged(monkeypatch):
+    monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("ok", out_tok=5)]))
+    client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
+    assert (await client.chat("hi")).truncated is False

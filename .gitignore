@@ -13,3 +13,8 @@ results/*
 .coverage
 coverage.xml
 htmlcov/
+
+# Browser sessions: real login cookies, never commit
+*session*.json
+*cookies*.json
+.auth/

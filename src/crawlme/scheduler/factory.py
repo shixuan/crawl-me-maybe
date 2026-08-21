@@ -12,11 +12,12 @@ from typing import Any
 from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
-from crawlme.digest.fetcher import HttpFetcher
+from crawlme.digest.fetcher import Fetcher, HttpFetcher
+from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
 from crawlme.llm import TokenBudget
-from crawlme.pioneer.buffer import InMemoryBuffer
+from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.pioneer.frontier import PriorityFrontier
+from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import HybridRanker, Ranker, RuleRanker
 from crawlme.pioneer.ranker.embedding import (
@@ -27,6 +28,7 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.steering import InflightSignals, SteeringLoop, SteeringSystem
@@ -62,29 +64,66 @@ def create_scheduler(
     # resets it in place when run() starts, so the references handed
     # out here stay valid for the scheduler's lifetime.
     ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
+    canonicalizer = Canonicalizer()
     if steering is None:
         steering = _build_steering(settings, budget)
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
-        "frontier": PriorityFrontier(domain_budget=goal.domain_budget if goal else 50),
-        "fetcher": HttpFetcher(
-            user_agents=list(settings.user_agents),
-            connect_timeout=settings.fetch_timeout_connect,
-            read_timeout=settings.fetch_timeout_read,
-            max_retries=settings.fetch_max_retries,
+        "frontier": GatedFrontier(
+            domain_budget=goal.domain_budget if goal else 50,
+            buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         ),
+        "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
-        "buffer": InMemoryBuffer(capacity=settings.candidate_buffer_size),
         "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
-        "canonicalizer": Canonicalizer(),
+        "canonicalizer": canonicalizer,
+        "harvester": _build_harvester(settings, canonicalizer),
         "steering": steering,
         "context": ctx,
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
+    """What a page yields depends on the kind of source it came from."""
+    adapter = traversal_for(settings.source_kind).adapter
+    if adapter is not None:
+        return FeedHarvester(adapter, canonicalizer)
+    return LinkHarvester(canonicalizer)
+
+
+def _build_fetcher(settings: Settings) -> Fetcher:
+    """Plain HTTP unless the run asks for a browser.
+
+    Playwright is imported inside the browser branch so an http run never
+    pays for the optional dependency, and so a missing install fails at
+    the point that wanted it.
+    """
+    if settings.fetcher == "browser":
+        from crawlme.digest.fetcher import PlaywrightFetcher
+
+        # A feed adapter is the only thing that knows which of a page's
+        # own requests carries the posts.  Without one, nothing is kept
+        # and the browser behaves exactly as it did before.
+        t = traversal_for(settings.source_kind)
+        return PlaywrightFetcher(
+            storage_state=settings.browser_storage_state or None,
+            user_agents=list(settings.user_agents),
+            timeout=settings.fetch_timeout_read,
+            keep_payload=t.adapter.keeps_payload if t.adapter is not None else None,
+            max_payload_bytes=settings.browser_max_payload_bytes,
+            scrolls=settings.feed_scrolls if t.scrolls else 0,
+        )
+    return HttpFetcher(
+        user_agents=list(settings.user_agents),
+        connect_timeout=settings.fetch_timeout_connect,
+        read_timeout=settings.fetch_timeout_read,
+        max_retries=settings.fetch_max_retries,
+    )
 
 
 def _build_steering(settings: Settings, budget: TokenBudget | None = None) -> SteeringSystem | None:
@@ -153,12 +192,16 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
             max_batch=settings.embedding_batch_size,
         )
     return HybridRanker(
-        rule=RuleRanker(threshold=0.0),
+        # A feed post has no anchor, no path shape and no position in a
+        # page, and every post shares one domain: the graph set would
+        # score five of its seven factors on constants.
+        rule=RuleRanker(threshold=0.0, factors=traversal_for(settings.source_kind).factors),
         embedding=EmbeddingRanker(
             embedder,
             keep=settings.embedding_keep,
             cache=SqliteEmbeddingCache(Path(settings.result_dir) / "embedding_cache.db"),
             stats=stats,
+            demote_dropped=settings.recall,
         ),
         llm=llm,
     )

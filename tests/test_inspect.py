@@ -166,6 +166,55 @@ async def test_cmd_inspect_exports_csv(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     lines = out.strip().splitlines()
-    assert lines[0].startswith("url,title,goal_id,classification")
+    assert lines[0].startswith("url,url_key,title,published_at,goal_id,classification")
     assert len(lines) == 4  # header + 3 analyses
     assert "https://example.com/a" in lines[1]
+
+
+@pytest.mark.asyncio
+async def test_json_export_carries_evidence(tmp_path, monkeypatch, capsys):
+    """The json form is what something other than a person reads.
+
+    A value without the page text behind it is a claim; with it, whoever
+    renders this can let the reader check it.
+    """
+    run_dir = await _write_run(tmp_path, "20260101_000001")
+    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    await db.start()
+    db.save_analysis(
+        {
+            "analysis_id": "a-extracted",
+            "page_id": "p-k1",
+            "url_key": "k1",
+            "goal_id": _goal("find rust posts").goal_id,
+            "classification": "RELEVANT",
+            "relevance_score": 0.9,
+            "extracted": {"merchant_name": {"value": "Molly Tea", "evidence": "Molly Tea is treating you"}},
+            "spec_version": "abc123",
+            "model": "stub-model",
+            "analyzed_at": "2026-01-02T00:00:00Z",
+        }
+    )
+    await db._write_queue.join()
+    await db.close()
+
+    monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export="json"))
+    rows = json.loads(capsys.readouterr().out)
+
+    row = next(r for r in rows if r["analyzed_at"] == "2026-01-02T00:00:00Z")
+    assert row["extracted"]["merchant_name"]["value"] == "Molly Tea"
+    assert row["extracted"]["merchant_name"]["evidence"] == "Molly Tea is treating you"
+    assert row["spec_version"] == "abc123"
+    assert "url_key" in row and "published_at" in row
+
+
+@pytest.mark.asyncio
+async def test_csv_export_leaves_the_extracted_fields_out(tmp_path, monkeypatch, capsys):
+    """Every goal declares its own fields, so there is no stable column
+    set; inventing one per export would make two exports disagree."""
+    await _write_run(tmp_path, "20260101_000001")
+    monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export="csv"))
+    header = capsys.readouterr().out.splitlines()[0]
+    assert "extracted" not in header

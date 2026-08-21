@@ -54,11 +54,11 @@ import datetime
 import logging
 import random
 import time
-from typing import Protocol
 from urllib.parse import urljoin
 
 import httpx
 
+from crawlme.digest.fetcher.base import DEFAULT_UA, FetchError, with_retries
 from crawlme.schemas import URL, FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
@@ -68,27 +68,8 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-_DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
-
 # Hard cap on the manual redirect chain; loops are detected separately.
 _MAX_REDIRECTS = 10
-
-
-class FetchError(Exception):
-    pass
-
-
-class Fetcher(Protocol):
-    """Contract for HTTP fetch workers.
-
-    aclose() releases whatever the implementation holds open between
-    fetches.  A connection pool can be rebuilt cheaply, but a browser
-    pool cannot, so the contract has to allow one.
-    """
-
-    async def fetch(self, item: FrontierItem) -> FetchResult: ...
-
-    async def aclose(self) -> None: ...
 
 
 class HttpFetcher:
@@ -100,7 +81,7 @@ class HttpFetcher:
         max_retries: int = 3,
         total_timeout: float | None = None,
     ) -> None:
-        self._uas = user_agents if user_agents else [_DEFAULT_UA]
+        self._uas = user_agents if user_agents else [DEFAULT_UA]
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
         self._max_retries = max_retries
@@ -131,46 +112,18 @@ class HttpFetcher:
             self._client = None
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
-        last_err: BaseException | None = None
+        async def attempt(n: int) -> FetchResult:
+            return await asyncio.wait_for(
+                self._do_fetch(item, n, time.monotonic()),
+                timeout=self._total_timeout,
+            )
 
-        for attempt in range(1, self._max_retries + 1):
-            started = time.monotonic()
-            try:
-                result = await asyncio.wait_for(
-                    self._do_fetch(item, attempt, started),
-                    timeout=self._total_timeout,
-                )
-                return result
-            except asyncio.TimeoutError as e:
-                last_err = e
-                if attempt < self._max_retries:
-                    delay = min(2**attempt, 60)
-                    logger.warning(
-                        "fetch.retry url=%s attempt=%d/%d delay=%.1fs error=total timeout %.0fs",
-                        item.url.canonical,
-                        attempt,
-                        self._max_retries,
-                        delay,
-                        self._total_timeout,
-                    )
-                    await asyncio.sleep(delay)
-            except _TransientError as e:
-                last_err = e.__cause__ or e
-                if attempt < self._max_retries:
-                    delay = min(2**attempt, 60)
-                    logger.warning(
-                        "fetch.retry url=%s attempt=%d/%d delay=%.1fs error=%s",
-                        item.url.canonical,
-                        attempt,
-                        self._max_retries,
-                        delay,
-                        e,
-                    )
-                    await asyncio.sleep(delay)
-            except FetchError:
-                raise
-
-        raise FetchError(f"Fetch failed after {self._max_retries} attempts") from last_err
+        return await with_retries(
+            attempt,
+            max_retries=self._max_retries,
+            is_transient=_is_transient,
+            label=f"url={item.url.canonical}",
+        )
 
     async def _do_fetch(self, item: FrontierItem, attempt: int, started: float) -> FetchResult:
         client = self._get_client()
@@ -246,3 +199,8 @@ class HttpFetcher:
 
 class _TransientError(Exception):
     """Internal signal that a retryable error occurred."""
+
+
+def _is_transient(err: BaseException) -> bool:
+    """A total-deadline timeout and a 5xx/429 both deserve another try."""
+    return isinstance(err, asyncio.TimeoutError | _TransientError)

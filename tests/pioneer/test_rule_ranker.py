@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
-from crawlme.pioneer.ranker.rule import RuleRanker, _build_domain_prior, _jaccard, _path_signal, _words
+from crawlme.pioneer.ranker.rule import (
+    FEED_FACTORS,
+    RuleRanker,
+    ScoreContext,
+    _build_domain_prior,
+    _jaccard,
+    _path_signal,
+    _recency,
+    _text_match,
+    _words,
+)
 from crawlme.schemas import URL, Candidate, RankHistorySummary
 
 
@@ -26,48 +38,40 @@ def scorer() -> RuleRanker:
 # -- helpers -----------------------------------------------------------
 
 
-def test_jaccard_identical():
-    assert _jaccard({"hello", "world"}, ["hello", "world"]) == 1.0
-
-
-def test_jaccard_no_overlap():
-    assert _jaccard({"foo"}, ["bar"]) == 0.0
-
-
-def test_jaccard_empty_both():
-    assert _jaccard(set(), []) == 0.5
-
-
-def test_jaccard_empty_text_with_keywords():
-    """Empty text with keywords present should stay neutral (no signal)."""
-    assert _jaccard(set(), ["deep", "learning"]) == 0.5
+@pytest.mark.parametrize(
+    ("text_words", "keywords", "expected"),
+    [
+        ({"hello", "world"}, ["hello", "world"], 1.0),
+        ({"foo"}, ["bar"], 0.0),
+        (set(), [], 0.5),
+        # Empty text with keywords present is no signal, not a bad one.
+        (set(), ["deep", "learning"], 0.5),
+    ],
+)
+def test_jaccard(text_words, keywords, expected):
+    assert _jaccard(text_words, keywords) == expected
 
 
 def test_jaccard_phrase_bonus():
-    score = _jaccard(
-        {"machine", "learning"},
-        ["machine learning"],
-        "machine learning",
-    )
-    assert score > 0.5  # bonus applied
+    assert _jaccard({"machine", "learning"}, ["machine learning"], "machine learning") > 0.5
 
 
 def test_words_tokenizes():
     assert _words("Hello, World! 123") == {"hello", "world", "123"}
 
 
-def test_path_signal_negative():
-    assert _path_signal("https://x.com/about") == 0.0
-    assert _path_signal("https://x.com/login") == 0.0
-
-
-def test_path_signal_positive():
-    assert _path_signal("https://x.com/docs/api") == 1.0
-    assert _path_signal("https://x.com/blog/post") == 1.0
-
-
-def test_path_signal_neutral():
-    assert _path_signal("https://x.com/products/widget") == 0.5
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://x.com/about", 0.0),
+        ("https://x.com/login", 0.0),
+        ("https://x.com/docs/api", 1.0),
+        ("https://x.com/blog/post", 1.0),
+        ("https://x.com/products/widget", 0.5),
+    ],
+)
+def test_path_signal(url, expected):
+    assert _path_signal(url) == expected
 
 
 # -- scoring -----------------------------------------------------------
@@ -169,7 +173,7 @@ def test_build_domain_prior_merges_statistics_and_hubs():
 
 def test_custom_factor_set_replaces_the_default():
     """A different kind of source brings its own factors, same machinery."""
-    from crawlme.pioneer.ranker.rule import Factor, RuleRanker, ScoreContext
+    from crawlme.pioneer.ranker.rule import Factor, RuleRanker
 
     calls: list[str] = []
 
@@ -227,3 +231,55 @@ def test_default_factor_set_is_the_graph_one():
         "position",
     ]
     assert sum(f.weight for f in GRAPH_FACTORS) == pytest.approx(1.0)
+
+
+#: the feed factor set ----------------------------------------------------
+
+
+def _feed_ctx(keywords: list[str], now: datetime.datetime | None = None) -> ScoreContext:
+    return ScoreContext(
+        goal_keywords=keywords,
+        now=now or datetime.datetime(2026, 8, 19, tzinfo=datetime.timezone.utc),
+    )
+
+
+def test_decorative_letters_still_match():
+    """Captions use mathematical alphanumerics for emphasis.
+
+    Bold "Giveaway" shares no code point with "giveaway", so without
+    folding the match is zero and nothing says why — the post simply
+    ranks like noise. A real post from a real run reads this way.
+    """
+    plain = _text_match(_candidate(text="Unbox With Mr.Surprise + BJD Giveaway"), _feed_ctx(["giveaway"]))
+    # The suppression below is deliberate: these "ambiguous" characters
+    # are what the test is about.
+    decorated = "𝙐𝙣𝙗𝙤𝙭 𝙒𝙞𝙩𝙝 𝙈𝙧.𝙎𝙪𝙧𝙥𝙧𝙞𝙨𝙚 + 𝘽𝙅𝘿 𝙂𝙞𝙫𝙚𝙖𝙬𝙖𝙮"  # noqa: RUF001
+    fancy = _text_match(_candidate(text=decorated), _feed_ctx(["giveaway"]))
+    assert fancy > 0
+    assert fancy == plain
+
+
+def test_irrelevant_post_scores_lower():
+    ctx = _feed_ctx(["free", "tea"])
+    hit = _text_match(_candidate(text="free tea for members this week"), ctx)
+    miss = _text_match(_candidate(text="meet the artists of our september market"), ctx)
+    assert hit > miss
+
+
+def test_recency_prefers_newer():
+    now = datetime.datetime(2026, 8, 19, tzinfo=datetime.timezone.utc)
+    fresh = _recency(_candidate(posted_at=now - datetime.timedelta(days=1)), _feed_ctx([], now))
+    stale = _recency(_candidate(posted_at=now - datetime.timedelta(days=30)), _feed_ctx([], now))
+    assert fresh > stale > 0, "older ranks later, never nowhere"
+
+
+def test_undated_post_scores_neutral():
+    """Absent is not old, the same rule the time window follows."""
+    assert _recency(_candidate(), _feed_ctx([])) == 0.5
+
+
+def test_feed_set_omits_constants():
+    """Every post shares one domain, and no anchor or position exists."""
+    names = {f.name for f in FEED_FACTORS}
+    assert names == {"text_match", "recency"}
+    assert "domain_prior" not in names

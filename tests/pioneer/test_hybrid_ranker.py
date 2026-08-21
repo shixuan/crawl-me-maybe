@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.pioneer.ranker import HybridRanker, Ranker
+from crawlme.pioneer.ranker import HybridRanker
 from crawlme.pioneer.ranker.hybrid import _blend, _merge, _survive
 from crawlme.pioneer.ranker.rule import RuleRanker, _extract_keywords
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankDecision, RankHistorySummary
@@ -41,16 +41,6 @@ class _MockRanker:
             RankDecision(candidate_id=c.candidate_id, url_key=c.url.url_key, priority=0.5, ranker="mock")
             for c in candidates
         ]
-
-
-def test_protocol_accepts_implementation():
-    r: Ranker = _MockRanker()
-    assert r is not None
-
-
-def test_protocol_accepts_rule_ranker():
-    r: Ranker = RuleRanker()
-    assert r is not None
 
 
 # -- keyword extraction -------------------------------------------------
@@ -192,7 +182,7 @@ async def test_page_contexts_grouped_scoring(ranker):
 
 
 @pytest.mark.asyncio
-async def test_llm_curated_keywords_override_bare_tokenization():
+async def test_curated_keywords_win():
     """keywords set by the Goal Enhancer drive the rule stage, instead
     of the bare tokenization of the prompt."""
     r = RuleRanker(threshold=0.0)
