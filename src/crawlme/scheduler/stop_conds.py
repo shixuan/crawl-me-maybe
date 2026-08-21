@@ -37,6 +37,11 @@ class StopReason:
 _CheckFunc = Callable[[CrawlTask, Frontier, CrawlCounters], StopReason | None]
 
 
+#: Listings a run must have read before "all of them were empty" means
+#: anything.  One or two quiet accounts is a normal week.
+_EMPTY_LISTING_FLOOR = 3
+
+
 def _budget_pages(
     _task: CrawlTask,
     _frontier: Frontier,
@@ -203,6 +208,29 @@ def _platform_refused(
     return StopReason("RATE_LIMITED", f"the platform refused the crawl ({c.refused_by})")
 
 
+def _adapter_empty(
+    _task: CrawlTask,
+    frontier: Frontier,
+    c: CrawlCounters,
+) -> StopReason | None:
+    """Every listing was readable and none of them held anything.
+
+    That is what a platform redesign looks like from inside: the pages
+    still arrive, the adapter still recognises them as pages, and it
+    recognises nothing on any of them.  The run then drains on schedule
+    and reports a finished crawl of a platform that posted nothing.
+
+    Said alongside FRONTIER_DRAINED rather than instead of it, and only
+    once the run is over: a single empty account is an account having a
+    quiet week, and mid-run there is no telling which this is.
+    """
+    if not _is_drained(frontier, c):
+        return None
+    if c.listings_seen < _EMPTY_LISTING_FLOOR or c.listings_empty < c.listings_seen:
+        return None
+    return StopReason("ADAPTER_EMPTY", f"all {c.listings_seen} listings parsed and none held an item")
+
+
 def _user_requested(
     task: CrawlTask,
     _frontier: Frontier,
@@ -232,6 +260,7 @@ _CHECKS: list[_CheckFunc] = [
     _time_horizon,
     _fatal,
     _platform_refused,
+    _adapter_empty,
     _user_requested,
     _enough_found,
     _diminishing_returns,

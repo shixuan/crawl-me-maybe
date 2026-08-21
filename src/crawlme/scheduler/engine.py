@@ -419,6 +419,8 @@ class CrawlScheduler:
             report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
         if stats.not_content:
             report["not_content"] = dict(stats.not_content)
+        if counters.listings_seen:
+            report["listings"] = [counters.listings_seen, counters.listings_empty]
         if stats.embedding_cache_hits or stats.embedding_cache_misses:
             report["embedding_cache_hits"] = stats.embedding_cache_hits
             report["embedding_cache_misses"] = stats.embedding_cache_misses
@@ -769,6 +771,9 @@ class CrawlScheduler:
             candidates = harvest.candidates
             if harvest.problem is not None:
                 self._note_not_content(harvest.problem)
+            if harvest.listing:
+                self._counters.listings_seen += 1
+                self._counters.listings_empty += int(not candidates)
             # Every candidate belongs to the seed its page belonged to,
             # however many hops back.  Recorded here because this is the
             # only place that holds both ends of the link.

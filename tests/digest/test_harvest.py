@@ -183,3 +183,25 @@ def test_platform_check_reads_the_adapter(tmp_path: Path) -> None:
 
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     assert FeedHarvester(_Elsewhere(), Canonicalizer()).harvest(page, depth=0).candidates == []
+
+
+def test_a_listing_says_it_was_one(tmp_path: Path) -> None:
+    """Only a listing can be judged empty, so only a listing says so."""
+    page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
+    assert FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0).listing
+
+
+def test_a_post_is_not_a_listing(tmp_path: Path) -> None:
+    """An item yields nothing by design and must never read as broken."""
+    page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
+    out = FeedHarvester(instagram, Canonicalizer()).harvest(page, depth=0)
+    assert out.candidates == []
+    assert not out.listing
+
+
+def test_a_link_graph_page_is_not_a_listing(tmp_path: Path) -> None:
+    """A page with no links is ordinary; the graph has no listings."""
+    page = _page(tmp_path, b"<html><body>no links here</body></html>", "https://example.com/")
+    out = LinkHarvester(Canonicalizer()).harvest(page, depth=0)
+    assert out.candidates == []
+    assert not out.listing

@@ -291,3 +291,35 @@ def test_no_reasons_when_healthy():
         ),
     )
     assert reasons == []
+
+
+# -- an adapter that stopped recognising its platform --------------------
+
+
+@pytest.mark.parametrize(
+    ("seen", "empty", "fires"),
+    [
+        (5, 5, True),
+        # One or two quiet accounts is a normal week, not a redesign.
+        (2, 2, False),
+        # Some worked, so the adapter still understands the markup.
+        (5, 4, False),
+        (5, 0, False),
+        (0, 0, False),
+    ],
+)
+def test_adapter_empty(seen, empty, fires):
+    """Readable listings that hold nothing is what a redesign looks like.
+
+    The pages still arrive and the adapter still recognises them as
+    pages; it recognises nothing on any of them. The run then drains on
+    schedule and reports a finished crawl of a silent platform.
+    """
+    c = _counters(in_flight=0, listings_seen=seen, listings_empty=empty)
+    assert ("ADAPTER_EMPTY" in _codes(check_stop(_task(), _frontier(), c))) is fires
+
+
+def test_adapter_empty_waits_for_the_end():
+    """Mid-run there is no telling a dead adapter from a slow start."""
+    c = _counters(in_flight=2, listings_seen=5, listings_empty=5)
+    assert "ADAPTER_EMPTY" not in _codes(check_stop(_task(), _frontier(size=3), c))

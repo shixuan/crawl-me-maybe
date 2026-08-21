@@ -315,6 +315,14 @@ def _format_summary(s: dict[str, Any]) -> str:
         parts = ", ".join(f"{n} {kind}" for kind, n in sorted(refused.items(), key=lambda kv: -kv[1]))
         lines.append(f"  no content: {sum(refused.values())} pages ({parts})")
 
+    # An adapter that stops recognising a platform's markup shows up as
+    # readable listings holding nothing.  Printed whenever any listing
+    # came back empty, because "0 relevant" reads very differently once
+    # you know the pages arrived and the parser found nothing on them.
+    seen, empty = (s.get("listings") or [0, 0])[:2]
+    if empty:
+        lines.append(f"  listings:   {seen} read, {empty} held no items")
+
     if s.get("duration_sec") is not None:
         lines.append(f"  duration:   {s['duration_sec']}s")
     return "\n".join(lines)

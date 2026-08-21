@@ -43,6 +43,12 @@ class Harvest:
 
     candidates: list[Candidate]
     problem: PageProblem | None = None
+    #: Whether this came from a page that lists other pages.  Only a
+    #: listing can be judged empty or not: an item page yields nothing by
+    #: design, and a link graph has no listings at all.  Declared by the
+    #: harvester, which knows, rather than inferred by the caller, which
+    #: would be guessing from the shape of the candidates.
+    listing: bool = False
 
 
 class Harvester(Protocol):
@@ -134,7 +140,9 @@ class FeedHarvester:
             candidate = marked.to_candidate(source_url_key=page.url_key, depth=depth + 1)
             candidate.url = self._canonicalizer.canonicalize(candidate.url.raw, page.url.canonical)
             out.append(candidate)
-        return Harvest(out)
+        if not out:
+            logger.warning("harvest.listing_empty url=%s platform=%s", page.url.canonical, self._adapter.PLATFORM)
+        return Harvest(out, listing=True)
 
 
 def _html_of(page: Page) -> str:

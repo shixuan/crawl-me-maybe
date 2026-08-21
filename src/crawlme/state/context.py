@@ -63,6 +63,12 @@ class CrawlCounters:
     # makes every later request wasted, so one is enough to end the run;
     # see _platform_refused.
     refused_by: str = ""
+    # Listings that parsed as content and yielded no items at all.  A
+    # platform redesign shows up here first: the pages still arrive, the
+    # adapter still recognises them as pages, and it finds nothing on
+    # any of them.  See _adapter_empty.
+    listings_seen: int = 0
+    listings_empty: int = 0
     # Time horizon (2.8).  since=None keeps TIME_HORIZON dormant, which
     # is every run that does not ask for a window.  stale_streak counts
     # consecutive pages that stated a publication time older than the
