@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from crawlme.pioneer.ranker.embedding import FastEmbedEmbedder, _role_prefixes, _truncate
 from crawlme.pioneer.ranker.rule import GRAPH_FACTORS, ScoreContext, _score_one, factors_for
 from crawlme.schemas import URL, Candidate
 
@@ -79,21 +80,28 @@ def rule_scores(keywords: list[str], rows: list[Row]) -> list[float]:
     return out
 
 
-def embed_scores(goal_text: str, rows: list[Row], max_tokens: int | None) -> list[float]:
-    """Cosine to the goal, at a chosen truncation.
+def embed_scores(goal_text: str, rows: list[Row], model_name: str | None, max_tokens: int | None) -> list[float]:
+    """Cosine to the goal, through the embedder the crawler ships.
 
-    *max_tokens* None leaves the model packaged as it ships, which is the
-    number the crawler actually runs with.
+    Going through FastEmbedEmbedder rather than fastembed directly is
+    the point: the role prefixes and the character cap are part of what
+    is being measured, and a benchmark that reimplements them measures
+    a system nobody runs.
+
+    *max_tokens* overrides the model's own truncation, for asking what a
+    different ceiling would have been worth.
     """
     warnings.filterwarnings("ignore")
-    from fastembed import TextEmbedding
-
-    model = TextEmbedding("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    embedder = FastEmbedEmbedder(**({"model": model_name} if model_name else {}))
+    fm = embedder._load()
     if max_tokens is not None:
-        model.model.tokenizer.enable_truncation(max_length=max_tokens)
-    goal_vec = next(iter(model.embed([goal_text])))
-    vecs = list(model.embed([r.text or r.anchor or r.url for r in rows]))
-    return [_cosine(goal_vec, v) for v in vecs]
+        fm.model.tokenizer.enable_truncation(max_length=max_tokens)
+
+    query_prefix, passage_prefix = _role_prefixes(embedder.model_name)
+    texts = [query_prefix + _truncate(goal_text)]
+    texts += [passage_prefix + _truncate(r.text or r.anchor or r.url) for r in rows]
+    vecs = list(fm.embed(texts))
+    return [_cosine(vecs[0], v) for v in vecs[1:]]
 
 
 def report(name: str, scores: list[float], rows: list[Row], cuts: tuple[int, ...]) -> None:
@@ -137,6 +145,7 @@ def _average_precision(labels: list[bool]) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("run", type=Path, help="A run directory under results/")
+    ap.add_argument("--model", default=None, help="Embedding model to try (default: as shipped)")
     ap.add_argument("--max-tokens", type=int, default=None, help="Truncation to try (default: as shipped)")
     ap.add_argument("--cuts", default="10,20,40,60", help="Where to imagine cutting the ranking")
     args = ap.parse_args()
@@ -155,8 +164,10 @@ def main() -> int:
         print("! every ranker scores well on candidates something else already kept.")
 
     rule = rule_scores(keywords, rows)
-    label = "as shipped (128 tokens)" if args.max_tokens is None else f"{args.max_tokens} tokens"
-    emb = embed_scores(goal_text, rows, args.max_tokens)
+    label = args.model or "as shipped"
+    if args.max_tokens is not None:
+        label += f", {args.max_tokens} tokens"
+    emb = embed_scores(goal_text, rows, args.model, args.max_tokens)
 
     # Split by whether the candidate brought its own text, because that
     # decides which factor set the rule ranker used and therefore what

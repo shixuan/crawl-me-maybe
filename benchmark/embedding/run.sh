@@ -65,13 +65,14 @@ fi
 
 [[ -f "$RUN/db/crawl.db" ]] || { echo "no database at $RUN/db/crawl.db" >&2; exit 1; }
 
-# Both settings over the same candidates, so the only thing that differs
-# is how much of each one the model was allowed to read.
+# Both models over the same candidates, so the only thing that differs
+# is the model.  The paraphrase model is what shipped before e5, and it
+# is here to keep the migration honest rather than remembered.
 echo
 echo "======== as shipped ========"
 python3 "$here/score.py" "$RUN"
 echo
-echo "======== at the model's real ceiling ========"
-python3 "$here/score.py" "$RUN" --max-tokens 512
+echo "======== the model this replaced ========"
+python3 "$here/score.py" "$RUN" --model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 echo
 echo "== scored: $RUN"

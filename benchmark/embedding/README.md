@@ -51,19 +51,20 @@ For each configuration, over the same candidates:
 Configurations compared:
 
 - **rule only** — the baseline the embedding stage has to beat
-- **embedding** at the model's real token ceiling and at the shipped one
-- **rule+embedding blend**, at the weights the pipeline uses
+- **embedding as shipped**, through `FastEmbedEmbedder` itself, so the
+  role prefixes and the character cap are inside what is measured
+- **embedding under `--model`**, for asking what another model is worth
 
-The token ceiling is worth its own column because it is not what it
-looks like: `_MAX_EMBED_CHARS` is measured in characters, the model
-truncates in tokens, and the shipped model's tokenizer cuts at 128 of
-them — about 447 characters. A 1,200-character caption reaches the model
-as its first third.
+Scoring goes through the production embedder rather than calling
+fastembed directly. That matters more than it sounds: the `query: ` /
+`passage: ` prefixes are worth 0.092 AP on their own, and a benchmark
+that reimplements the embedding path measures a system nobody runs.
 
-## What it found the first time it ran properly
+## What it found: two tasks, opposite answers
 
-On a 120-page `--recall` run over four release feeds, split the way the
-report splits it:
+**A literal task.** A 120-page `--recall` run over four release feeds —
+goal words like `release notes` and `changelog`, against entries titled
+"Python 3.13.9 is now available". Split the way the report splits it:
 
 | | candidates | relevant | rule AP | embedding AP |
 |---|---|---|---|---|
@@ -92,14 +93,27 @@ happened, so its rule score came from `text_match` alone. Runs made
 after 2026-08-22 carry it, and are not directly comparable to the table
 above.
 
-**And read the table as one task, not as a verdict.** "Release
-announcements" is a job keywords are unusually good at: the goal says
-`release notes`, `changelog`, `version`, and the relevant entries are
-titled "Python 3.13.9 is now available". Against 2,000 random orderings
-the rule ranker's 0.884 beat every one of them, so it is real -- but a
-goal whose words do not appear in the text it is looking for ("what is
-new at bubble tea shops", against a post titled "GRAPE News") is the
-case that would separate the two stages, and it has not been run yet.
+**A semantic task.** The case the literal one could not reach: 114
+Instagram candidates, a goal about new products and giveaways, against
+posts titled things like "GRAPE News". Nothing the goal says appears in
+the text it is looking for.
+
+| | AP | beats random |
+|---|---|---|
+| random ordering (median of 3,000) | 0.388 | — |
+| embedding, as it shipped before this | 0.382 | 44% |
+| embedding, as it ships now | **0.615** | **100%** |
+| rule only | 0.419 | 74% |
+
+The stage was **below random** on the task it exists for. That is what
+replaced the paraphrase model with E5; the reasoning, and what each
+change was worth, is in `docs/benchmarks.md`.
+
+**The lesson worth keeping is not "E5 is better".** It is that a single
+task cannot tell you whether this stage earns its place. Keywords win
+where the goal's words are in the text; a semantic model wins where they
+are not, and the two tasks disagree hard enough that either one alone
+would have sent the design the wrong way.
 
 ## Running it
 
@@ -117,7 +131,7 @@ crawl run "<prompt>" --seeds "..." --recall --page-budget 120
 
 # 2. Score every candidate in it, offline, no LLM, no re-crawl.
 python benchmark/embedding/score.py results/<run-id>
-python benchmark/embedding/score.py results/<run-id> --max-tokens 512
+python benchmark/embedding/score.py results/<run-id> --model <another-model>
 ```
 
 `score.py` re-embeds from the stored candidate text, so sweeping a
