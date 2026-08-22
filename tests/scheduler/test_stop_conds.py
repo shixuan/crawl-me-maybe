@@ -158,6 +158,16 @@ def test_diminishing_returns(window, fires):
     assert ("DIMINISHING_RETURNS" in _codes(check_stop(_task(), _frontier(), c))) is fires
 
 
+def test_recall_suppresses_diminishing_returns():
+    """A recall run reads its own rejects last, so a dry tail is the
+    point of the mode rather than a reason to stop."""
+    dry = [False] * 20
+    assert "DIMINISHING_RETURNS" in _codes(check_stop(_task(), _frontier(), _counters(relevance_window=dry)))
+    c = _counters(relevance_window=dry)
+    c.recall = True
+    assert "DIMINISHING_RETURNS" not in _codes(check_stop(_task(), _frontier(), c))
+
+
 def test_relevance_window_keeps_only_the_recent_slice():
     """A run longer than the window must not accumulate forever."""
     c = CrawlCounters()

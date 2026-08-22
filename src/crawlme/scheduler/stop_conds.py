@@ -179,6 +179,13 @@ def _diminishing_returns(
     _frontier: Frontier,
     c: CrawlCounters,
 ) -> StopReason | None:
+    # --recall means the run was asked to read the candidates the
+    # ranker rejected, and it reads them last.  A tail of misses is
+    # therefore the point of the mode, not evidence the crawl is
+    # finished, and stopping on it cuts off exactly the stretch the run
+    # was made to measure.
+    if c.recall:
+        return None
     window = c.relevance_window
     if len(window) >= RELEVANCE_WINDOW and sum(window) < _MIN_RELEVANT_IN_WINDOW:
         return StopReason("DIMINISHING_RETURNS", f"only {sum(window)} relevant in last {len(window)}")

@@ -112,6 +112,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.max_pages = 0
     elif args.max_pages is not None:
         goal.max_pages = args.max_pages
+    goal.recall = cfg.recall
     if args.max_relevant is not None:
         goal.max_relevant = args.max_relevant
     if args.max_tokens is not None:
