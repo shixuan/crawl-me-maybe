@@ -85,9 +85,12 @@ class PageHarvester:
         self._adapters = tuple(adapters)
 
     def harvest(self, page: Page, depth: int) -> Harvest:
+        # Read once and hand it around: one adapter answers from the
+        # host and never looks at it, the other can only answer from it.
+        document = _html_of(page) if self._adapters else ""
         for adapter in self._adapters:
-            if adapter.claims(page):
-                return self._from_adapter(adapter, page, depth)
+            if adapter.claims(page, document):
+                return self._from_adapter(adapter, page, document, depth)
         return self._from_links(page, depth)
 
     def _from_links(self, page: Page, depth: int) -> Harvest:
@@ -110,7 +113,7 @@ class PageHarvester:
         # a wall is just a page with no links on it.
         return Harvest(out)
 
-    def _from_adapter(self, adapter: FeedAdapter, page: Page, depth: int) -> Harvest:
+    def _from_adapter(self, adapter: FeedAdapter, page: Page, document: str, depth: int) -> Harvest:
         """A listing yields item permalinks; an item yields nothing.
 
         The asymmetry is the point, and it holds on every platform. A
@@ -124,7 +127,7 @@ class PageHarvester:
         is, while conflating the two would let one monitored account's
         results bleed into another's.
         """
-        html = _html_of(page)
+        html = document
         problem = adapter.problem(html)
         if problem is not None:
             # Not an empty page: a page that is not content at all. Saying

@@ -12,6 +12,7 @@ from typing import Any
 from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
+from crawlme.digest.feed import rss
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
 from crawlme.digest.harvest import Harvester, PageHarvester
 from crawlme.llm import TokenBudget
@@ -96,7 +97,14 @@ def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harves
     only starts to matter once a run carries more than one.
     """
     adapter = traversal_for(settings.source_kind).adapter
-    return PageHarvester(canonicalizer, adapters=[adapter] if adapter is not None else [])
+    # rss is always available: it claims a page by the document's root
+    # element, so it cannot mistake an HTML page for a feed, and a crawl
+    # that reaches a feed should read it as one whatever it was started
+    # for.  A platform adapter still has to be asked for by the run,
+    # because claiming by host would turn a graph crawl that reaches the
+    # platform into a feed crawl without anyone saying so.
+    chosen = [adapter] if adapter is not None else []
+    return PageHarvester(canonicalizer, adapters=[*chosen, rss])
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:

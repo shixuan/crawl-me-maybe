@@ -143,17 +143,21 @@ def test_missing_html_yields_nothing(tmp_path: Path) -> None:
 #: wiring ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("kind", "adapters"), [("links", 0), ("instagram", 1)])
-def test_factory_picks_the_adapters_from_settings(kind: str, adapters: int) -> None:
-    """One harvester now; what changes is which adapters it may use."""
+@pytest.mark.parametrize(("kind", "platforms"), [("links", []), ("instagram", ["instagram"])])
+def test_factory_picks_the_platform_adapters_from_settings(kind: str, platforms: list[str]) -> None:
+    """One harvester now; what changes is which platforms it may read."""
     h = _build_harvester(Settings(source_kind=kind), Canonicalizer())
-    assert len(h._adapters) == adapters
+    assert [a.PLATFORM for a in h._adapters if a.PLATFORM != "rss"] == platforms
 
 
-def test_a_link_graph_consults_no_adapter() -> None:
-    """Otherwise a graph crawl that reaches a platform would suddenly
-    read it as a feed, which is a different run than the one asked for."""
-    assert _build_harvester(Settings(), Canonicalizer())._adapters == ()
+def test_a_link_graph_reads_no_platform_but_still_reads_feeds() -> None:
+    """A platform claims by host, so asking for it unasked would turn a
+    graph crawl that reaches the platform into a feed crawl.  A feed
+    claims by the document's root element and cannot mistake anything,
+    so a crawl that reaches one should read it whatever it started as.
+    """
+    adapters = _build_harvester(Settings(), Canonicalizer())._adapters
+    assert [a.PLATFORM for a in adapters] == ["rss"]
 
 
 def test_an_unclaimed_page_is_read_as_a_page(tmp_path: Path) -> None:
@@ -189,7 +193,7 @@ def test_platform_check_reads_the_adapter(tmp_path: Path) -> None:
         parse_item = staticmethod(instagram.parse_item)
         parse_listing = staticmethod(instagram.parse_listing)
 
-        claims = staticmethod(lambda page: page.url.reg_domain == "elsewhere.example")
+        claims = staticmethod(lambda page, document: page.url.reg_domain == "elsewhere.example")
 
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     out = PageHarvester(Canonicalizer(), [_Elsewhere()]).harvest(page, depth=0)

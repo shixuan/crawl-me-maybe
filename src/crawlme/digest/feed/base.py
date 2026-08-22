@@ -164,8 +164,13 @@ class FeedAdapter(Protocol):
         """
         ...
 
-    def claims(self, page: Page) -> bool:
+    def claims(self, page: Page, document: str) -> bool:
         """Whether this page is one of ours.
+
+        Given both the page and the bytes it arrived as, because the two
+        adapters that exist answer from different halves: one knows its
+        host, the other knows its document's root element and nothing
+        about where it was served from.
 
         Asked of the adapter rather than decided outside it, because
         what makes a page a platform's page is exactly the kind of

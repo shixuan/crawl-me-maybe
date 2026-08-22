@@ -30,11 +30,12 @@ Semantic ranking is on by default. The first run downloads a local embedding mod
 The LLM stages turn on when `LLM_API_KEY` or `LLM_BASE_URL` is set. Without credentials they degrade away and the crawl still runs.
 
 ```bash
-# seeds from RSS feeds. A feed entry is not a bare link: it carries the
-# title, the publication time, and often the whole post, so the ranker
-# judges the text before anything is fetched.
+# a feed is a page like any other: it is fetched once, and whichever
+# adapter recognises the document reads it. An entry is not a bare link
+# -- it carries the title, the publication time, and often the whole
+# post -- so the ranker judges the text before anything else is fetched.
 crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
-  --seeds-rss "https://www.reddit.com/r/askTO/.rss,https://www.reddit.com/r/toronto/.rss"
+  --seeds "https://www.reddit.com/r/askTO/.rss,https://www.reddit.com/r/toronto/.rss"
 
 # seeds from a JSON file: ["https://a", "https://b"], or
 # {"seeds": [...], "allowed_domains": [...]}
@@ -86,7 +87,7 @@ naming the flag you typed and the one command that fixes it.
 |------|------|--------------|
 | `--seeds` | string | Comma-separated seed URLs |
 | `--seeds-file` | path | JSON file of seed URLs |
-| `--seeds-rss` | urls | Comma-separated RSS or Atom feeds; entries arrive with their text |
+| `--seeds-rss` | urls | Comma-separated RSS or Atom feeds (a feed URL is an ordinary seed) |
 | `--max-relevant` | int | Stop once this many pages are judged relevant (the goal) |
 | `--page-budget` | int | Pages this run may read; 0 means no limit (the cost) |
 | `--token-budget` | int | LLM tokens this run may spend (default: 500000) |

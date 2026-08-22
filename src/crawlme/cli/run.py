@@ -27,7 +27,6 @@ from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
-from crawlme.pioneer.sources.rss import RssSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.traversal import traversal_for
@@ -422,13 +421,16 @@ def _build_source(args: argparse.Namespace, user_agent: str = "") -> UrlSource:
     if args.seeds_file:
         return FileSource(args.seeds_file)
     if args.seeds_rss:
-        return RssSource(_split(args.seeds_rss), user_agent=user_agent)
+        # A feed URL is a seed like any other now: it is fetched once and
+        # the adapter reads its entries.  Out-of-band reading meant the
+        # crawl's politeness, robots and backoff never applied to it.
+        return ManualSource(_split(args.seeds_rss))
     if args.source in {"file", "rss"}:
         if not args.source_path:
             raise ValueError(f"--source {args.source} needs --source-path (or use --seeds-{args.source})")
         if args.source == "file":
             return FileSource(args.source_path)
-        return RssSource(_split(args.source_path), user_agent=user_agent)
+        return ManualSource(_split(args.source_path))
     return ManualSource(_split(args.seeds))
 
 

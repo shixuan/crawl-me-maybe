@@ -9,7 +9,7 @@ so a platform is added here and nowhere else, and the flag can never
 offer something the factory cannot build.
 """
 
-from crawlme.digest.feed import instagram
+from crawlme.digest.feed import instagram, rss
 from crawlme.digest.feed.base import FeedAdapter, FeedItem, Listing, PageProblem
 
 FEEDS: dict[str, FeedAdapter] = {instagram.PLATFORM: instagram}
@@ -18,6 +18,6 @@ FEEDS: dict[str, FeedAdapter] = {instagram.PLATFORM: instagram}
 #: Order is priority: the first to claim it does the reading.  One entry
 #: makes that moot, and stating it now is cheaper than discovering later
 #: that two adapters silently disagreed about the same page.
-ADAPTERS: tuple[FeedAdapter, ...] = (instagram,)
+ADAPTERS: tuple[FeedAdapter, ...] = (instagram, rss)
 
 __all__ = ["ADAPTERS", "FEEDS", "FeedAdapter", "FeedItem", "Listing", "PageProblem"]

@@ -71,7 +71,7 @@ def claims_url(url: str) -> bool:
     return host == DOMAIN or host.endswith("." + DOMAIN)
 
 
-def claims(page: Page) -> bool:
+def claims(page: Page, document: str) -> bool:
     """Ours by host.  A crawl wanders off a platform routinely: an
     analyzer endorses a shop's own site and that page arrives next."""
     return page.url.reg_domain == DOMAIN
