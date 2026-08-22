@@ -20,7 +20,6 @@ class CrawlGoal(BaseModel):
     # the rule stage falls back to bare tokenization of the prompt.
     keywords: list[str] = Field(default_factory=list)
     since: datetime.datetime | None = None
-    embedding: list[float] | None = None
     max_pages: int = 500
     # LLM token budget for the whole task (v0.2).  Sized so an
     # unspecified user can finish a typical crawl: a 300-page run

@@ -7,7 +7,7 @@ override it at runtime, so the effective priority is:
 
 Documentation discipline: `.env.example` advertises only the set-once
 knobs (secrets, timeouts, deep tuning).  The per-run knobs (result_dir,
-ignore_robots, embedding_*, log_level) also exist here so flags can
+ignore_robots, log_level) also exist here so flags can
 override them, but their env twins are deliberately undocumented.
 When both are given, the flag wins.
 """
@@ -35,10 +35,6 @@ class Settings(BaseSettings):
     # default because a link graph without a hard filter grows without
     # bound; a feed is finite, so the trade is available there.
     recall: bool = False
-    # "local" default: the full pipeline (rule + embedding) runs out of
-    # the box.  "" (--embedding off) = rule-only v0.1 behavior.
-    embedding_provider: str = "local"  # local | api | ""
-    embedding_model: str = ""  # "" = provider default
     # The analysis stage (page analyzer + the steering it feeds: run
     # signals + cross-task domain priors).  On by default, degrades
     # without credentials; --analysis off disables the whole subsystem
@@ -72,16 +68,6 @@ class Settings(BaseSettings):
     # rejected for not containing what was cut off.  Raise it for a model
     # with a larger context, lower it if a provider rejects the request.
     llm_max_batch_chars: int = 12_000
-
-    # -: Embedding ---
-    # Credentials for the api provider (--embedding api).  Keys are
-    # secrets: env vars only, never flags.
-    embedding_api_key: str = ""
-    embedding_base_url: str = ""
-    embedding_keep: int = 60
-    # Max texts per API request (api provider only); larger batches
-    # are split automatically.  Local inference has no such limit.
-    embedding_batch_size: int = 100
 
     # -: Fetch ---
     fetch_concurrency: int = 6

@@ -467,8 +467,6 @@ def test_summary_reports_run_statistics():
     sched._ctx.stats.candidates_ranked = 45
     sched._ctx.stats.fetch_errors = 2
     sched._ctx.stats.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
-    sched._ctx.stats.embedding_cache_hits = 4
-    sched._ctx.stats.embedding_cache_misses = 9
 
     summary = sched.summary()
 
@@ -478,8 +476,6 @@ def test_summary_reports_run_statistics():
     assert summary["candidates_ranked"] == 45
     assert summary["fetch_errors"] == 2
     assert summary["analyses"] == {"RELEVANT": 3, "IRRELEVANT": 1}
-    assert summary["embedding_cache_hits"] == 4
-    assert summary["embedding_cache_misses"] == 9
 
 
 def test_on_analysis_feeds_the_relevance_window():

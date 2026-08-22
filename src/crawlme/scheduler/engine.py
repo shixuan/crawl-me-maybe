@@ -43,6 +43,7 @@ from crawlme.schemas import (
     FrontierItem,
     FrontierSnapshot,
     Page,
+    RankDecision,
     RankHistorySummary,
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
@@ -127,7 +128,7 @@ class CrawlScheduler:
         extractor: Extractor,
         robots: RobotsPolicy,
         prefilter: PreFilter,
-        ranker: Ranker,
+        ranker: Ranker | None,
         canonicalizer: Canonicalizer,
         harvester: Harvester | None = None,
         steering: SteeringSystem | None = None,
@@ -350,18 +351,14 @@ class CrawlScheduler:
             await asyncio.gather(*still, return_exceptions=True)
 
     async def aclose(self) -> None:
-        """Release stage-owned resources (ranker cache, storage).
-
-        The embedding cache holds an aiosqlite connection whose worker
-        thread would otherwise keep the interpreter alive after the
-        crawl, so it must close before the process exits.
-        """
+        """Release stage-owned resources (ranker, storage)."""
         if self._steering is not None:
             # Close the analyzer's retry queue and flush this run's
             # domain-prior contributions to the global feedback DB
             # (hang-safe exit, see the aiosqlite worker-thread lesson).
             await self._steering.aclose()
-        await self._ranker.aclose()
+        if self._ranker is not None:
+            await self._ranker.aclose()
         await self._fetcher.aclose()
         await self._storage.close()
 
@@ -456,9 +453,6 @@ class CrawlScheduler:
             report["not_content"] = dict(stats.not_content)
         if counters.listings_seen:
             report["listings"] = [counters.listings_seen, counters.listings_empty]
-        if stats.embedding_cache_hits or stats.embedding_cache_misses:
-            report["embedding_cache_hits"] = stats.embedding_cache_hits
-            report["embedding_cache_misses"] = stats.embedding_cache_misses
         return report
 
     @property
@@ -952,7 +946,25 @@ class CrawlScheduler:
         )
         history.fetched = self._counters.pages_fetched
         assert self._goal is not None
-        decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
+        if self._ranker is None:
+            # Without credentials there is no ranker.  The frontier
+            # already hands candidates out a turn per seed, oldest
+            # first, so passing them through at one flat priority keeps
+            # that order rather than inventing one.
+            decisions = [
+                RankDecision(
+                    candidate_id=c.candidate_id,
+                    url_key=c.url.url_key,
+                    priority=0.5,
+                    dropped=False,
+                    ranker="none",
+                    rationale="no ranker configured",
+                    decided_at=_utcnow(),
+                )
+                for c in batch
+            ]
+        else:
+            decisions = await self._ranker.rank_batch(self._goal, batch, history, page_contexts=self._page_contexts)
 
         n_dropped = sum(1 for d in decisions if d.dropped)
         n_kept = len(decisions) - n_dropped

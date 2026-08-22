@@ -172,8 +172,6 @@ def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
             site,
             "--max-pages",
             "6",
-            "--embedding",
-            "off",
             "--analysis",
             "off",
             "--result-dir",
@@ -202,7 +200,10 @@ def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
     assert dict(links).get("BUFFERED", 0) > 0, f"no candidate survived the prefilter: {links}"
 
     decisions = asyncio.run(_rows(db, "SELECT ranker, count(*) FROM rank_decisions GROUP BY ranker"))
-    assert dict(decisions).get("rule", 0) > 0, f"the rule ranker never scored anything: {decisions}"
+    # No credentials in the smoke environment, so there is no ranker and
+    # every candidate passes through at one flat priority.  The rows
+    # still have to appear: without them nothing is enqueued.
+    assert dict(decisions).get("none", 0) > 0, f"nothing reached the frontier: {decisions}"
 
     events = {e[0] for e in asyncio.run(_rows(db, "SELECT DISTINCT type FROM events"))}
     assert {"FETCH_STARTED", "FETCH_COMPLETED", "PAGE_EXTRACTED"} <= events, events
@@ -283,7 +284,6 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(
         result_dir=str(tmp_path / "results"),
         fetch_concurrency=2,
-        embedding_provider="",
         ignore_robots=True,
         log_level="WARNING",
         # Pinned so a developer's .env can never turn this into a paid run.

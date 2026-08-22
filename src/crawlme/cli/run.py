@@ -78,13 +78,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.ignore_robots = True
     if args.recall:
         cfg.recall = True
-    if args.no_embedding:
-        # "" is the disabled provider: rule-only ranking, no model loaded.
-        cfg.embedding_provider = ""
-    elif args.embedding is not None:
-        cfg.embedding_provider = args.embedding if args.embedding != "off" else ""
-    if args.embedding_model is not None:
-        cfg.embedding_model = args.embedding_model
     if args.analysis == "off":
         cfg.analysis_enabled = False
     if args.analyzer_max_chars is not None:
@@ -391,11 +384,6 @@ def _format_summary(s: dict[str, Any]) -> str:
     if calls:
         tokens += f" ({s.get('tokens_in', 0)} in / {s.get('tokens_out', 0)} out), {calls} calls"
     lines.append(f"  tokens:     {tokens}")
-
-    if s.get("embedding_cache_hits") or s.get("embedding_cache_misses"):
-        lines.append(
-            f"  embeddings: {s.get('embedding_cache_hits', 0)} cache hits, {s.get('embedding_cache_misses', 0)} misses"
-        )
 
     lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
 

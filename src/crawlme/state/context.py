@@ -8,7 +8,7 @@ start of each run, so references held by stages never go stale.
   counters  : thresholds and live progress the stop conditions read
               (unchanged from its life as a standalone CrawlCounters)
   stats     : end-of-run report tallies (discovered, ranked, errors,
-              analyses, embedding cache activity)
+              analyses)
 
 The context is deliberately a plain dataclass of plain data: it has
 one implementation and no behavior to polymorph, so it needs no
@@ -103,8 +103,6 @@ class RunStats:
     # Reported because a run that read thirty accounts and found three
     # of them gone is a different run from one that found none gone.
     not_content: dict[str, int] = dataclasses.field(default_factory=dict)
-    embedding_cache_hits: int = 0
-    embedding_cache_misses: int = 0
 
     def reset(self) -> None:
         """Zero every field in place, so stage references stay valid."""
@@ -113,8 +111,6 @@ class RunStats:
         self.fetch_errors = 0
         self.analyses_by_class = {}
         self.not_content = {}
-        self.embedding_cache_hits = 0
-        self.embedding_cache_misses = 0
 
 
 @dataclasses.dataclass

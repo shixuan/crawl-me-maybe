@@ -96,10 +96,6 @@ def test_run_flags_override_settings(tmp_path):
         "test prompt",
         "--seeds",
         "https://example.com",
-        "--embedding",
-        "api",
-        "--embedding-model",
-        "jina-embeddings-v3",
         "--ignore-robots",
         "--domain-budget",
         "7",
@@ -122,8 +118,6 @@ def test_run_flags_override_settings(tmp_path):
     cfg = captured["cfg"]
     goal = captured["goal"]
     # Flags -> Settings
-    assert cfg.embedding_provider == "api"
-    assert cfg.embedding_model == "jina-embeddings-v3"
     assert cfg.ignore_robots is True
     assert str(cfg.result_dir) == str(fake_results)
     assert cfg.log_level == "WARNING"
@@ -153,7 +147,6 @@ def test_run_flags_left_off_keep_env_defaults(monkeypatch):
 
     cfg = captured["cfg"]
     goal = captured["goal"]
-    assert cfg.embedding_provider == "local"  # full pipeline by default
     assert cfg.ignore_robots is False
     assert str(cfg.result_dir) == "results"
     assert cfg.log_level == "INFO"
@@ -184,33 +177,6 @@ def test_run_applies_enhanced_goal(monkeypatch):
     goal = captured["goal"]
     assert goal.goal_statement == "Find ML papers"
     assert goal.keywords == ["ml", "papers"]
-
-
-def test_run_embedding_off_flag():
-    """--embedding off opts out of semantic ranking."""
-    captured: dict = {}
-    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--embedding", "off"]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["cfg"].embedding_provider == ""
-
-
-def test_run_flag_beats_env_twin(monkeypatch):
-    """When both env and flag are given for the same knob, the flag wins."""
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "api")
-    captured: dict = {}
-    argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--embedding", "off"]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["cfg"].embedding_provider == ""
 
 
 def test_run_session_flag_implies_a_browser(_installed, tmp_path):
@@ -321,8 +287,6 @@ def test_run_prints_end_of_run_summary(capsys):
             "fetch_errors": 1,
             "analyses": {"RELEVANT": 2, "IRRELEVANT": 1},
             "duration_sec": 7.5,
-            "embedding_cache_hits": 3,
-            "embedding_cache_misses": 2,
         }
         return sched
 
@@ -419,31 +383,6 @@ def test_recall_is_off_unless_asked(tmp_path):
             except SystemExit:
                 pass
     assert captured["cfg"].recall is False
-
-
-def test_no_embedding_skips_the_stage_for_one_run(tmp_path):
-    """Which backend and which model are setup; whether to run it is not."""
-    captured: dict = {}
-    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--no-embedding", "--result-dir", str(tmp_path)]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["cfg"].embedding_provider == ""
-
-
-def test_old_embedding_spelling_works(tmp_path):
-    captured: dict = {}
-    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--embedding", "off", "--result-dir", str(tmp_path)]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["cfg"].embedding_provider == ""
 
 
 def test_feed_run_defaults_to_no_ceiling(_installed, tmp_path):

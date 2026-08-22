@@ -52,16 +52,6 @@ class CrawlDb(Protocol):
     async def list_analyses(self, goal_id: str = "") -> list[dict[str, Any]]: ...
 
 
-class EmbeddingCache(Protocol):
-    """Contract for persistent vector storage."""
-
-    async def get_vectors(self, content_hashes: list[str]) -> dict[str, list[float]]: ...
-
-    async def put_vectors(self, entries: list[tuple[str, list[float]]], model: str) -> None: ...
-
-    async def close(self) -> None: ...
-
-
 class DomainPrior(Protocol):
     """Contract for cross-task per-domain reputation storage."""
 

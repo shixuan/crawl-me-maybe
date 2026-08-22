@@ -163,7 +163,7 @@ class LLMClient:
 
     @classmethod
     def from_settings_if_configured(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient | None:
-        """Default-on with graceful auto-off, mirroring the embedding
+        """Default-on with graceful auto-off, mirroring the analysis
         provider.  Without a key and without a custom endpoint there is
         no way to authenticate, so return None and let the caller skip
         the LLM stages instead of failing at runtime."""

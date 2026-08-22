@@ -5,7 +5,6 @@ Every concrete import lives here.  Engine itself depends only on Protocols.
 
 from __future__ import annotations
 
-import importlib.util
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,13 +20,7 @@ from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
-from crawlme.pioneer.ranker import HybridRanker, Ranker, RuleRanker
-from crawlme.pioneer.ranker.embedding import (
-    Embedder,
-    EmbeddingRanker,
-    FastEmbedEmbedder,
-    OpenAICompatibleEmbedder,
-)
+from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
@@ -35,7 +28,6 @@ from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.steering import InflightSignals, SteeringLoop, SteeringSystem
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 from crawlme.storage.sqlite.domain_prior import SqliteDomainPrior
-from crawlme.storage.sqlite.embedding_cache import SqliteEmbeddingCache
 
 
 def create_scheduler(
@@ -79,7 +71,7 @@ def create_scheduler(
         "extractor": TrafExtractor(),
         "robots": RobotsPolicy(ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
-        "ranker": _build_ranker(settings, llm=llm_ranker, stats=ctx.stats),
+        "ranker": _build_ranker(settings, llm=llm_ranker),
         "canonicalizer": canonicalizer,
         "harvester": _build_harvester(settings, canonicalizer),
         "steering": steering,
@@ -172,66 +164,14 @@ def _build_steering(settings: Settings, budget: TokenBudget | None = None) -> St
     return SteeringLoop(analyzer=analyzer, signals=InflightSignals(prior_store), prior_store=prior_store)
 
 
-_LOCAL_DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-_API_DEFAULT_MODEL = "text-embedding-3-small"
+def _build_ranker(settings: Settings, llm: Ranker | None = None) -> Ranker | None:
+    """The ranking stage, or None when there is nothing to rank with.
 
-
-def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats | None = None) -> HybridRanker:
-    """Wire the ranking pipeline according to settings.
-
-    embedding_provider "" (--embedding off): pure v0.1 rule-only
-    behavior (RuleRanker threshold 0.35 is the sole gate).  With an
-    *llm* stage the rule threshold relaxes to 0.25: the coarse filter
-    favors recall, because the LLM is the final gate and can correct
-    its mistakes.
-
-    Provider set (default local): rule stage stops dropping (threshold
-    0) and only orders; EmbeddingRanker becomes the gate via top-K
-    semantic selection.  Provider choice: local (fastembed ONNX) or
-    api (OpenAI-compatible).  embedding_model overrides the per-
-    provider default model.  Vectors persist model-scoped in a global
-    SQLite cache under result_dir (results/embedding_cache.db),
-    shared across tasks.  An *llm* stage fine-ranks the embedding
-    survivors.
+    One stage is left.  The rule and embedding stages were removed
+    after seven crawls measured them: neither ever dropped a candidate,
+    and neither ordered better than a coin flip on most tasks.  Without
+    LLM credentials there is now no ranker at all, and the engine
+    fetches in the order the frontier hands candidates out -- a turn
+    from each seed, oldest first.
     """
-    if not settings.embedding_provider:
-        if llm is not None:
-            return HybridRanker(rule=RuleRanker(threshold=0.25), llm=llm)
-        return HybridRanker()
-    model = settings.embedding_model or (
-        _LOCAL_DEFAULT_MODEL if settings.embedding_provider == "local" else _API_DEFAULT_MODEL
-    )
-    embedder: Embedder
-    if settings.embedding_provider == "local":
-        if importlib.util.find_spec("fastembed") is None:
-            raise RuntimeError(
-                "--embedding local requires the 'fastembed' package, which ships as a "
-                "core dependency: reinstall with `pip install -e .`"
-            )
-        embedder = FastEmbedEmbedder(model=model)
-    else:
-        if not settings.embedding_base_url and not settings.embedding_api_key:
-            raise RuntimeError(
-                "--embedding api requires EMBEDDING_API_KEY "
-                "(or set EMBEDDING_BASE_URL for a keyless endpoint such as a local Ollama)"
-            )
-        embedder = OpenAICompatibleEmbedder(
-            model=model,
-            api_key=settings.embedding_api_key,
-            base_url=settings.embedding_base_url,
-            max_batch=settings.embedding_batch_size,
-        )
-    return HybridRanker(
-        # A feed post has no anchor, no path shape and no position in a
-        # page, and every post shares one domain: the graph set would
-        # score five of its seven factors on constants.
-        rule=RuleRanker(threshold=0.0),
-        embedding=EmbeddingRanker(
-            embedder,
-            keep=settings.embedding_keep,
-            cache=SqliteEmbeddingCache(Path(settings.result_dir) / "embedding_cache.db"),
-            stats=stats,
-            demote_dropped=settings.recall,
-        ),
-        llm=llm,
-    )
+    return llm
