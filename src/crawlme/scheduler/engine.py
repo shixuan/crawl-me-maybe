@@ -72,6 +72,12 @@ _CHECKPOINT_INTERVAL = 10
 _RANK_BATCH_SIZE = 20
 _POP_SLEEP = 0.2
 
+#: How long a stopping run waits for the fetches already in the air.
+#: Each is bounded by the fetch and extract timeouts and by one analyzer
+#: call, so this is a backstop rather than the usual path: whatever is
+#: still running when it expires was never going to finish.
+_SETTLE_TIMEOUT = 120.0
+
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
@@ -166,6 +172,9 @@ class CrawlScheduler:
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
+        # Fetches in the air.  A set the tasks remove themselves from,
+        # so it holds exactly what is still running.
+        self._inflight: set[asyncio.Task[None]] = set()
         # Maps url_key -> {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
@@ -290,6 +299,7 @@ class CrawlScheduler:
             asyncio.create_task(self._rank_pump()),
         ]
         await asyncio.gather(*self._pump_tasks, return_exceptions=True)
+        await self._settle_inflight()
 
         task.state = "COMPLETED"
         task.end_at = _utcnow()
@@ -314,6 +324,30 @@ class CrawlScheduler:
         # pause() (which checkpoints through this storage) before its
         # own aclose(), so resources must still be open here.
         await self.aclose()
+
+    async def _settle_inflight(self) -> None:
+        """Let the fetches already in the air finish before anything closes.
+
+        The pumps returning is not the run being over: a fetch is its own
+        task, and each one still has a page to save and an analysis to
+        record.  One run stopped with seven of them running, closed the
+        storage and the analyzer underneath, and ended with seven pages
+        fetched, saved, and never analysed -- and with the analyzer's
+        retries for them still arriving in the log after the crawl had
+        reported itself complete.
+        """
+        if not self._inflight:
+            return
+        pending = set(self._inflight)
+        logger.info("task.settling in_flight=%d", len(pending))
+        _, still = await asyncio.wait(pending, timeout=_SETTLE_TIMEOUT)
+        if still:
+            # Past the backstop: whatever is left was not going to
+            # finish, and holding the process open for it is worse.
+            logger.warning("task.settle_timeout abandoned=%d", len(still))
+            for t in still:
+                t.cancel()
+            await asyncio.gather(*still, return_exceptions=True)
 
     async def aclose(self) -> None:
         """Release stage-owned resources (ranker cache, storage).
@@ -610,7 +644,12 @@ class CrawlScheduler:
                 continue
 
             self._counters.in_flight = self._counters.in_flight + 1
-            asyncio.create_task(self._handle_fetch(item))  # noqa: RUF006
+            # Held, not fired and forgotten.  Unheld, these outlived the
+            # run: the pumps returned, aclose() shut the storage and the
+            # analyzer, and seven tasks went on writing into both.
+            task = asyncio.create_task(self._handle_fetch(item))
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
 
         self._state = "STOPPING"
 

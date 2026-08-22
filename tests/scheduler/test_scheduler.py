@@ -724,3 +724,54 @@ async def test_refusal_stops_the_run():
 
     assert sched._ctx.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
     assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}
+
+
+#: shutdown ordering -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_in_the_air_finishes_before_anything_closes():
+    """The pumps returning is not the run being over.
+
+    A fetch is its own task with a page still to save and an analysis
+    still to record. One run stopped with seven of them running, closed
+    the storage and the analyzer underneath, and ended with seven pages
+    fetched, saved, and never analysed -- with the analyzer's retries
+    for them still arriving in the log after the crawl had reported
+    itself complete.
+    """
+    sched = _make_sched()
+    order: list[str] = []
+    released = asyncio.Event()
+
+    async def _slow_fetch():
+        await released.wait()
+        order.append("fetch")
+
+    sched._storage.close = AsyncMock(side_effect=lambda: order.append("close"))
+    task = asyncio.create_task(_slow_fetch())
+    sched._inflight.add(task)
+    task.add_done_callback(sched._inflight.discard)
+
+    settling = asyncio.create_task(sched._settle_inflight())
+    await asyncio.sleep(0)
+    assert not settling.done(), "it must wait, not walk past"
+    released.set()
+    await settling
+    await sched.aclose()
+    assert order == ["fetch", "close"]
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_that_never_finishes_is_abandoned(caplog, monkeypatch):
+    """A backstop, not a promise: the process must still be able to exit."""
+    sched = _make_sched()
+    stuck = asyncio.create_task(asyncio.sleep(3600))
+    sched._inflight.add(stuck)
+
+    monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.05)
+    with caplog.at_level(logging.WARNING):
+        await sched._settle_inflight()
+
+    assert stuck.cancelled() or stuck.done()
+    assert "settle_timeout" in caplog.text
