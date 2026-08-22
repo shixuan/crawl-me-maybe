@@ -213,7 +213,7 @@ def test_run_flag_beats_env_twin(monkeypatch):
     assert captured["cfg"].embedding_provider == ""
 
 
-def test_run_session_flag_implies_a_browser(tmp_path):
+def test_run_session_flag_implies_a_browser(_installed, tmp_path):
     """Asking to crawl as someone and getting plain httpx would crawl
     the logged-out site and report it as the site."""
     captured: dict = {}
@@ -446,7 +446,7 @@ def test_old_embedding_spelling_works(tmp_path):
     assert captured["cfg"].embedding_provider == ""
 
 
-def test_feed_run_defaults_to_no_ceiling(tmp_path):
+def test_feed_run_defaults_to_no_ceiling(_installed, tmp_path):
     """A session says this reads a platform, and there every candidate
     shares one host: a per-domain ceiling is a total."""
     captured: dict = {}
@@ -470,7 +470,7 @@ def test_feed_run_defaults_to_no_ceiling(tmp_path):
     assert captured["goal"].domain_budget == 0
 
 
-def test_asking_for_a_domain_budget_still_applies_it(tmp_path):
+def test_asking_for_a_domain_budget_still_applies_it(_installed, tmp_path):
     captured: dict = {}
     argv = [
         "crawl",
@@ -547,6 +547,19 @@ def _session(tmp_path) -> str:
     f = tmp_path / "session.json"
     f.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
     return str(f)
+
+
+@pytest.fixture
+def _installed():
+    """Say every optional extra is present, whatever this machine has.
+
+    A session implies a browser, and a browser is an optional install
+    that CI does not carry: without this, tests about flags reaching
+    Settings would fail on the extras check instead, several steps
+    before the thing they are about.
+    """
+    with patch("crawlme.cli.run.importlib.util.find_spec", return_value=object()):
+        yield
 
 
 #: the session preflight ---------------------------------------------------
