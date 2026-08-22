@@ -32,11 +32,18 @@ from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySumma
 logger = logging.getLogger(__name__)
 
 # Weight of the embedding stage in the blended final priority.
-# Tuned on the E5 sweep (benchmark/sweep_params.py): at keep=60 the
-# 0.8/0.2 blend keeps the same survivor set as pure sim but orders it
-# best (AP 0.994 vs 0.965).  More rule weight (0.6) drops a couple of
-# noise items at the cost of AP; less (0.9+) sinks semantic_hard items
-# to the bottom of the keep window.
+#
+# This only decides anything when no LLM stage follows, because the LLM
+# stage overwrites rather than blends, and it should: measured against
+# the same analyzer labels, it orders at AP 0.936 where the embedding
+# stage reaches 0.556 and the rule stage 0.450.  Nor does it decide who
+# survives -- the embedding stage picks its top-K on cosine alone,
+# before any blending.
+#
+# The 0.8 came from a sweep whose script no longer exists, over a set of
+# candidates something else had already kept.  Its headline number was
+# AP 0.994, which is what a survivor set looks like rather than what a
+# ranker is worth, so read the value as untested rather than tuned.
 _EMBEDDING_WEIGHT = 0.8
 
 
