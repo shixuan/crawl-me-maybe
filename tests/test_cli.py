@@ -673,3 +673,58 @@ def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "no session file" in err
     assert "crawl session" not in err
+
+
+#: optional installs -------------------------------------------------------
+
+
+def _extras_args(**kw):
+    base = {"seeds_rss": None, "source": None, "session": None, "feed": None}
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_a_feed_flag_without_feedparser_is_refused(capsys):
+    """It used to surface as an ImportError from inside seed discovery,
+    naming a package the user never asked for."""
+    from crawlme.cli.run import _check_extras
+    from crawlme.config import Settings
+
+    with patch("importlib.util.find_spec", return_value=None):
+        with pytest.raises(SystemExit):
+            _check_extras(Settings(), _extras_args(seeds_rss="https://x/.rss"))
+    err = capsys.readouterr().err
+    assert "--seeds-rss needs feedparser" in err
+    assert "crawl-me-maybe[rss]" in err
+
+
+def test_a_browser_run_without_playwright_is_refused(capsys):
+    """By the first fetch the run directory exists and the goal has
+    already cost an LLM call."""
+    from crawlme.cli.run import _check_extras
+    from crawlme.config import Settings
+
+    with patch("importlib.util.find_spec", return_value=None):
+        with pytest.raises(SystemExit):
+            _check_extras(Settings(fetcher="browser"), _extras_args(session="s.json"))
+    err = capsys.readouterr().err
+    assert "--session needs playwright" in err
+    assert "playwright install chromium" in err, "the package alone does not fetch a browser"
+
+
+def test_a_link_graph_run_needs_neither(capsys):
+    from crawlme.cli.run import _check_extras
+    from crawlme.config import Settings
+
+    with patch("importlib.util.find_spec", return_value=None):
+        _check_extras(Settings(), _extras_args())
+    assert capsys.readouterr().err == ""
+
+
+def test_an_installed_extra_is_not_complained_about(capsys):
+    from crawlme.cli.run import _check_extras
+    from crawlme.config import Settings
+
+    with patch("importlib.util.find_spec", return_value=object()):
+        _check_extras(Settings(fetcher="browser"), _extras_args(seeds_rss="https://x/.rss", session="s"))
+    assert capsys.readouterr().err == ""

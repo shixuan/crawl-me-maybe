@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40"]
+rss = ["feedparser>=6.0"]
 
 [project.scripts]
 crawl = "crawlme.cli:main"

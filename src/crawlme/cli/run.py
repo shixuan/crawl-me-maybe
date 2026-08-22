@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import logging
 import sys
 from pathlib import Path
@@ -98,6 +99,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.browser_storage_state = args.session
         cfg.fetcher = "browser"
     _check_session(args)
+    _check_extras(cfg, args)
     if args.log_level is not None:
         cfg.log_level = args.log_level
     # Reconfigure with the final settings: main() already configured once
@@ -135,7 +137,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # Before the run directory exists and before the enhancer spends a
     # call: bad arguments should cost nothing.
     try:
-        source = _build_source(args)
+        source = _build_source(args, user_agent=cfg.user_agents[0] if cfg.user_agents else "")
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -224,6 +226,48 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # loop-close debug records, all of which would otherwise print
     # after the report at DEBUG level.
     logging.getLogger().setLevel(logging.CRITICAL)
+
+
+#: What each optional install buys, and what asks for it.  Kept as data
+#: so the message names the flag the user actually typed rather than a
+#: package they have never heard of.
+_EXTRAS = {
+    "feedparser": ("rss", "reading feeds"),
+    "playwright": ("browser", "crawling with a browser"),
+}
+
+
+def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
+    """Refuse before the crawl when the run needs an install it lacks.
+
+    Both of these used to surface as an ImportError from inside the run:
+    the feed one at seed discovery, the browser one at the first fetch,
+    by which point the run directory exists and the goal has already
+    cost an LLM call.  Neither said which flag had asked for it.
+
+    Optional on purpose.  A browser is 135MB of package and another
+    650MB of Chromium that a link-graph crawl never touches, so making
+    every user carry it would be the worse trade -- but then the flags
+    that need it have to say so up front.
+    """
+    wanted: list[tuple[str, str]] = []
+    if args.seeds_rss or args.source == "rss":
+        wanted.append(("feedparser", "--seeds-rss"))
+    if cfg.fetcher == "browser":
+        # --session and --feed both resolve to a browser; name whichever
+        # the user actually typed.
+        flag = "--session" if args.session else ("--feed" if args.feed else "--fetcher browser")
+        wanted.append(("playwright", flag))
+    missing = [(m, flag) for m, flag in wanted if importlib.util.find_spec(m) is None]
+    if not missing:
+        return
+    for module, flag in missing:
+        extra, purpose = _EXTRAS[module]
+        print(f"Error: {flag} needs {module}, which is not installed.", file=sys.stderr)
+        print(f"  {purpose} is an optional extra:  pip install 'crawl-me-maybe[{extra}]'", file=sys.stderr)
+        if module == "playwright":
+            print("  then fetch the browser itself:  playwright install chromium", file=sys.stderr)
+    sys.exit(1)
 
 
 def _check_session(args: argparse.Namespace) -> None:
@@ -328,7 +372,7 @@ def _format_summary(s: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_source(args: argparse.Namespace) -> UrlSource:
+def _build_source(args: argparse.Namespace, user_agent: str = "") -> UrlSource:
     """Create a URL source from CLI arguments.
 
     Raises ValueError rather than falling back when the arguments do not
@@ -339,10 +383,16 @@ def _build_source(args: argparse.Namespace) -> UrlSource:
     if args.seeds_file:
         return FileSource(args.seeds_file)
     if args.seeds_rss:
-        return RssSource(args.seeds_rss)
+        return RssSource(_split(args.seeds_rss), user_agent=user_agent)
     if args.source in {"file", "rss"}:
         if not args.source_path:
             raise ValueError(f"--source {args.source} needs --source-path (or use --seeds-{args.source})")
-        return FileSource(args.source_path) if args.source == "file" else RssSource(args.source_path)
-    seeds = [s.strip() for s in (args.seeds or "").split(",") if s.strip()]
-    return ManualSource(seeds)
+        if args.source == "file":
+            return FileSource(args.source_path)
+        return RssSource(_split(args.source_path), user_agent=user_agent)
+    return ManualSource(_split(args.seeds))
+
+
+def _split(value: str | None) -> list[str]:
+    """Comma-separated, the way every list-shaped flag here is spelled."""
+    return [s.strip() for s in (value or "").split(",") if s.strip()]
