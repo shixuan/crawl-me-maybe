@@ -6,14 +6,16 @@ Every concrete import lives here.  Engine itself depends only on Protocols.
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
+from crawlme.digest.feed import ADAPTERS, FeedAdapter
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
-from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
+from crawlme.digest.harvest import Harvester, PageHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -28,7 +30,6 @@ from crawlme.pioneer.ranker.embedding import (
 )
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.steering import InflightSignals, SteeringLoop, SteeringSystem
@@ -88,12 +89,38 @@ def create_scheduler(
     return CrawlScheduler(**kwargs)
 
 
+def _payload_filter(settings: Settings) -> Callable[[str, str], bool] | None:
+    """Keep a response if any enabled adapter wants it.
+
+    Only the adapter knows which of a platform's own requests carries
+    the posts, and a run can have more than one adapter now.
+    """
+    adapters = [a for a in adapters_for(settings) if a.keeps_payload is not None]
+    if not adapters:
+        return None
+    return lambda url, ctype: any(a.keeps_payload(url, ctype) for a in adapters)
+
+
+def adapters_for(settings: Settings) -> list[FeedAdapter]:
+    """Which adapters this run may use, in the order they are asked.
+
+    An adapter that needs a session is left out when there is none, and
+    not to be tidy: without credentials it cannot read its platform, so
+    claiming a page would hand back a login wall, and one login wall
+    ends the whole run.  A link-graph crawl that merely touches such a
+    platform would be killed by it.
+
+    Everything else is always available.  A feed claims by the
+    document's root element, so it cannot mistake an HTML page for one,
+    and a crawl that reaches a feed should read it as a feed whatever it
+    was started for.
+    """
+    has_session = bool(settings.browser_storage_state)
+    return [a for a in ADAPTERS if has_session or not a.NEEDS_SESSION]
+
+
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
-    """What a page yields depends on the kind of source it came from."""
-    adapter = traversal_for(settings.source_kind).adapter
-    if adapter is not None:
-        return FeedHarvester(adapter, canonicalizer)
-    return LinkHarvester(canonicalizer)
+    return PageHarvester(canonicalizer, adapters=adapters_for(settings))
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:
@@ -109,14 +136,17 @@ def _build_fetcher(settings: Settings) -> Fetcher:
         # A feed adapter is the only thing that knows which of a page's
         # own requests carries the posts.  Without one, nothing is kept
         # and the browser behaves exactly as it did before.
-        t = traversal_for(settings.source_kind)
+        # However many the greediest enabled adapter asks for.  Nothing
+        # to scroll on a page nobody claims, and scrolling costs only the
+        # page's own next request.
+        scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)
         return PlaywrightFetcher(
             storage_state=settings.browser_storage_state or None,
             user_agents=list(settings.user_agents),
             timeout=settings.fetch_timeout_read,
-            keep_payload=t.adapter.keeps_payload if t.adapter is not None else None,
+            keep_payload=_payload_filter(settings),
             max_payload_bytes=settings.browser_max_payload_bytes,
-            scrolls=settings.feed_scrolls if t.scrolls else 0,
+            scrolls=settings.feed_scrolls if scrolls else 0,
         )
     return HttpFetcher(
         user_agents=list(settings.user_agents),
@@ -195,7 +225,7 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
         # A feed post has no anchor, no path shape and no position in a
         # page, and every post shares one domain: the graph set would
         # score five of its seven factors on constants.
-        rule=RuleRanker(threshold=0.0, factors=traversal_for(settings.source_kind).factors),
+        rule=RuleRanker(threshold=0.0),
         embedding=EmbeddingRanker(
             embedder,
             keep=settings.embedding_keep,

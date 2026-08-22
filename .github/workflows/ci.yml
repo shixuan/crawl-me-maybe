@@ -35,6 +35,19 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
+        # Both halves of the install matter. Without the extras, the
+        # flags that need them must refuse cleanly; with them, the code
+        # behind those flags must actually work. A test that silently
+        # depended on an optional install passed locally and failed here
+        # once already.
+        install: [bare, extras]
+        include:
+          # The cache key cannot hold a comma, so the combination is
+          # named by a label and the install string comes with it.
+          - install: bare
+            spec: "."
+          - install: extras
+            spec: ".[rss,browser]"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,9 +56,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-${{ matrix.python-version }}-
-      - run: pip install -e .
+          key: pip-${{ matrix.python-version }}-${{ matrix.install }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-${{ matrix.python-version }}-${{ matrix.install }}-
+      - run: pip install -e "${{ matrix.spec }}"
       - run: pip install pytest pytest-asyncio pytest-httpx pytest-cov
       # tests/smoke is its own job below, so a broken build is visible
       # on the run summary instead of buried in this job's log.

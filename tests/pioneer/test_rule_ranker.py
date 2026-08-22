@@ -217,10 +217,12 @@ def test_empty_factor_set_scores_zero():
     assert d.priority == 0.0
 
 
-def test_default_factor_set_is_the_graph_one():
-    from crawlme.pioneer.ranker.rule import GRAPH_FACTORS, RuleRanker
+def test_a_link_is_judged_on_the_graph_set():
+    """A candidate carrying no text has only its anchor, path and
+    position to be judged on, whatever kind of run it turned up in."""
+    from crawlme.pioneer.ranker.rule import GRAPH_FACTORS, factors_for
 
-    assert RuleRanker()._factors is GRAPH_FACTORS
+    assert factors_for(_candidate()) is GRAPH_FACTORS
     assert [f.name for f in GRAPH_FACTORS] == [
         "anchor_match",
         "snippet_match",

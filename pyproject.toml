@@ -11,6 +11,11 @@ dependencies = [
     "trafilatura",
     "beautifulsoup4",
     "lxml",
+    # lxml 6 moved html.clean into its own distribution, and trafilatura
+    # still imports it.  Without this a fresh install collects nothing:
+    # nine test modules fail on import.  Named here rather than taken
+    # via trafilatura[all], which pulls a dozen packages for one module.
+    "lxml_html_clean",
     "aiosqlite",
     "fastembed",
     "litellm>=1.40",
@@ -18,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40"]
+rss = ["feedparser>=6.0"]
 
 [project.scripts]
 crawl = "crawlme.cli:main"
