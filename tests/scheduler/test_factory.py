@@ -188,12 +188,27 @@ def test_create_scheduler_builds_steering_from_settings(tmp_path: Path, monkeypa
     assert Path(sched._steering._prior_store._db_path) == tmp_path / "feedback.db"
 
 
-def test_feed_run_uses_feed_factors():
-    """Five of the graph set's seven factors are constants for a post."""
-    ranker = _build_ranker(Settings(source_kind="instagram", embedding_provider="local"), llm=None, stats=None)
-    assert ranker._rule._factors == FEED_FACTORS
+def test_the_factor_set_follows_the_candidate_not_the_run():
+    """Five of the graph set's seven factors are constants for a post,
+    and all of the feed set's are silent about a bare link.
+
+    Declared per run, one crawl had to be wrong about half its
+    candidates: a feed run that endorsed a shop's own site went on
+    scoring its links on recency, and a graph crawl that reached a feed
+    scored posts on anchor text they do not have.
+    """
+    from crawlme.pioneer.ranker.rule import factors_for
+    from crawlme.schemas import URL, Candidate
+
+    url = URL(raw="https://x.com/a", canonical="https://x.com/a", url_key="k")
+    assert factors_for(Candidate(url=url, anchor="click here")) == GRAPH_FACTORS
+    assert factors_for(Candidate(url=url, text="free tea today")) == FEED_FACTORS
 
 
-def test_graph_run_uses_graph_factors():
-    ranker = _build_ranker(Settings(embedding_provider="local"), llm=None, stats=None)
-    assert ranker._rule._factors == GRAPH_FACTORS
+def test_the_ranker_is_built_without_a_declared_set():
+    """Nothing in the run says it any more, so nothing has to be asked."""
+    for settings in (
+        Settings(embedding_provider="local"),
+        Settings(source_kind="instagram", embedding_provider="local"),
+    ):
+        assert _build_ranker(settings, llm=None, stats=None)._rule._factors is None

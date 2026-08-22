@@ -226,6 +226,18 @@ GRAPH_FACTORS: tuple[Factor, ...] = (
 )
 
 
+def factors_for(c: Candidate) -> tuple[Factor, ...]:
+    """Which set can say anything about this candidate.
+
+    A candidate carrying its own text is judged on the text.  A link
+    carries none, and its anchor, path and position on the page are the
+    only evidence there is.  That is a property of the candidate, not of
+    the run: one crawl can hold both, and a run that declared a single
+    set up front had to be wrong about half of them.
+    """
+    return FEED_FACTORS if c.text else GRAPH_FACTORS
+
+
 def _score_one(
     c: Candidate,
     ctx: ScoreContext,
@@ -248,8 +260,11 @@ class RuleRanker:
     maker).  v0.2: 0.25 (relaxed: later stages can correct its mistakes).
     """
 
-    def __init__(self, threshold: float = 0.35, factors: tuple[Factor, ...] = GRAPH_FACTORS) -> None:
+    def __init__(self, threshold: float = 0.35, factors: tuple[Factor, ...] | None = None) -> None:
         self._threshold = threshold
+        # None means each candidate is judged on what it actually
+        # carries.  An explicit set overrides that, which is how a
+        # measurement pins one set against another.
         self._factors = factors
 
     async def rank_batch(
@@ -324,7 +339,10 @@ class RuleRanker:
         decisions: list[RankDecision] = []
 
         for c in candidates:
-            priority, factors = _score_one(c, ctx, self._factors)
+            # `is None`, not a truth test: an explicitly empty set is a
+            # set, and a caller who passes one means it.
+            chosen = factors_for(c) if self._factors is None else self._factors
+            priority, factors = _score_one(c, ctx, chosen)
             decisions.append(
                 RankDecision(
                     candidate_id=c.candidate_id,

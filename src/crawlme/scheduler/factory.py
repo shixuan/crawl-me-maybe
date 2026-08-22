@@ -206,7 +206,7 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
         # A feed post has no anchor, no path shape and no position in a
         # page, and every post shares one domain: the graph set would
         # score five of its seven factors on constants.
-        rule=RuleRanker(threshold=0.0, factors=traversal_for(settings.source_kind).factors),
+        rule=RuleRanker(threshold=0.0),
         embedding=EmbeddingRanker(
             embedder,
             keep=settings.embedding_keep,
