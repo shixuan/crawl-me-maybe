@@ -150,6 +150,29 @@ def test_save_and_get_link(storage):
     assert c["depth"] == 2
 
 
+def test_a_candidate_keeps_the_time_its_source_stated(storage):
+    """Ranking reads it live; without a column nothing can recompute it.
+
+    A quarter of the feed factor set is recency, and every offline
+    measurement of that factor set was missing it.
+    """
+    import datetime
+
+    when = datetime.datetime(2026, 8, 20, 3, 54, 30, tzinfo=datetime.timezone.utc)
+    storage.save_link(Candidate(candidate_id="c2", url=_url("dated"), posted_at=when))
+    _run(storage._write_queue.join())
+    c = _run(storage.get_link("c2"))
+    assert c is not None
+    assert c["posted_at"].startswith("2026-08-20T03:54:30")
+
+
+def test_a_link_that_states_no_time_stores_none(storage):
+    """A link carries no publication time, and empty has to stay empty."""
+    storage.save_link(Candidate(candidate_id="c3", url=_url("undated")))
+    _run(storage._write_queue.join())
+    assert _run(storage.get_link("c3"))["posted_at"] == ""
+
+
 def test_save_and_get_rank_decision(storage):
     storage.save_rank_decision(RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm"))
     _run(storage._write_queue.join())
