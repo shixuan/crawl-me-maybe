@@ -32,6 +32,11 @@ class CrawlGoal(BaseModel):
     # Stop once this many pages have been judged relevant.  0 means the
     # run has no target and stops only when a budget runs out.
     max_relevant: int = 0
+    # Diagnostic mode: nothing is discarded, the rejects are ranked
+    # last.  Carried on the goal because the run's stop conditions have
+    # to know: a run that deliberately reads its own rejects ends with a
+    # tail of misses, which is what DIMINISHING_RETURNS watches for.
+    recall: bool = False
     depth_limit: int = 5
     domain_budget: int = 50
     extraction_spec: dict[str, Any] | None = None
