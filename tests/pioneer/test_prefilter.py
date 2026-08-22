@@ -99,12 +99,12 @@ def test_drop_mailto(pf):
 
 def test_drop_jpg(pf):
     u = _url(raw="https://x.com/photo.jpg", url_key="k_jpg")
-    assert _drop(pf, _candidate(url=u), _ctx()) == "extension"
+    assert _drop(pf, _candidate(url=u, depth=1), _ctx()) == "extension"
 
 
 def test_drop_pdf(pf):
     u = _url(raw="https://x.com/doc.pdf", url_key="k_pdf")
-    assert _drop(pf, _candidate(url=u), _ctx()) == "extension"
+    assert _drop(pf, _candidate(url=u, depth=1), _ctx()) == "extension"
 
 
 def test_allow_html(pf):
@@ -200,3 +200,24 @@ def test_zero_domain_budget_means_no_ceiling():
         depth=1,
     )
     assert PreFilter().check(c, goal, ctx)[0] is Decision.ALLOW
+
+
+# -- a seed is not wandering -------------------------------------------------
+
+
+def test_a_seed_is_not_judged_by_its_extension(pf):
+    """Feeds are named exactly what this list refuses.
+
+    A run seeded with `feed.xml` lost it silently before anything was
+    fetched: four feeds given, three ingested, and the reason only ever
+    logged at DEBUG.
+    """
+    for raw in ("https://blog.rust-lang.org/feed.xml", "https://news.ycombinator.com/rss"):
+        _allow(pf, _candidate(url=_url(raw=raw, url_key=raw)), _ctx())
+
+
+def test_a_discovered_link_still_is(pf):
+    """The list guards against wandering into archives and documents,
+    which is what a link found on a page might be."""
+    u = _url(raw="https://x.com/manual.pdf", url_key="k_pdf2")
+    assert _drop(pf, _candidate(url=u, depth=1), _ctx()) == "extension"
