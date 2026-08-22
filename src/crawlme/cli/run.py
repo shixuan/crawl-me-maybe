@@ -365,6 +365,8 @@ def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudg
     summary["llm_calls"] = budget.calls
     summary["tokens_in"] = budget.input_tokens
     summary["tokens_out"] = budget.output_tokens
+    summary["tokens_cached"] = budget.cached_input_tokens
+    summary["tokens_thinking"] = budget.reasoning_tokens
     print(_format_summary(summary))
 
 
@@ -384,6 +386,22 @@ def _format_summary(s: dict[str, Any]) -> str:
     if calls:
         tokens += f" ({s.get('tokens_in', 0)} in / {s.get('tokens_out', 0)} out), {calls} calls"
     lines.append(f"  tokens:     {tokens}")
+    # Cached input costs about a tenth of fresh input, so the totals
+    # above are not a bill until this line is read next to them.  Zero
+    # against a large tokens_in means the provider reported nothing,
+    # not that nothing was cached.
+    cached = s.get("tokens_cached", 0)
+    if calls:
+        tin = s.get("tokens_in", 0)
+        share = f" ({cached / tin:.0%} of input)" if tin else ""
+        lines.append(f"  cached in:  {cached}{share}")
+    # Output spent thinking is billed and then thrown away, so a large
+    # share here is the cheapest thing in the run to argue with.
+    think = s.get("tokens_thinking", 0)
+    if calls:
+        tout = s.get("tokens_out", 0)
+        share = f" ({think / tout:.0%} of output)" if tout else ""
+        lines.append(f"  thinking:   {think}{share}")
 
     lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
 

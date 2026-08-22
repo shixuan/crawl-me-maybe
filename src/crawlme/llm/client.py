@@ -50,6 +50,55 @@ class LLMResponse:
     truncated: bool = False
 
 
+def _cached_input(usage: Any) -> int:
+    """Input tokens the provider served from its prefix cache.
+
+    Providers disagree on where they put this.  DeepSeek returns
+    ``prompt_cache_hit_tokens`` at the top level; the OpenAI shape nests
+    it under ``prompt_tokens_details.cached_tokens``.  A provider that
+    reports neither gets 0, which reads as "not measured" rather than
+    "nothing was cached" -- the distinction matters, because a run whose
+    fixed prompt is a third of its spend is a very different bill
+    depending on which is true.
+    """
+    direct = getattr(usage, "prompt_cache_hit_tokens", None)
+    if direct is not None:
+        return int(direct)
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        nested = getattr(details, "cached_tokens", None)
+        if nested is None and isinstance(details, dict):
+            nested = details.get("cached_tokens")
+        if nested is not None:
+            return int(nested)
+    if isinstance(usage, dict):
+        return int(usage.get("prompt_cache_hit_tokens") or 0)
+    return 0
+
+
+def _reasoning_output(resp: Any, usage: Any) -> int:
+    """Output tokens the model spent thinking rather than answering.
+
+    Billed as output, discarded on arrival: only the JSON that follows
+    is ever read.  Worth its own number because a stage whose answer is
+    one score and one clause can be spending most of its output on
+    working that answer out.
+    """
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is not None:
+        n = getattr(details, "reasoning_tokens", None)
+        if n is None and isinstance(details, dict):
+            n = details.get("reasoning_tokens")
+        if n is not None:
+            return int(n)
+    # No usage field: fall back to what the model sent us and we drop.
+    try:
+        text = resp.choices[0].message.reasoning_content or ""
+    except (AttributeError, IndexError):
+        return 0
+    return len(text) // 4
+
+
 async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
@@ -215,8 +264,10 @@ class LLMClient:
                     usage = resp.usage
                     input_tokens = getattr(usage, "prompt_tokens", 0) or 0
                     output_tokens = getattr(usage, "completion_tokens", 0) or 0
+                    cached_tokens = _cached_input(usage)
+                    thinking_tokens = _reasoning_output(resp, usage)
                     if self._budget is not None:
-                        self._budget.record(input_tokens, output_tokens)
+                        self._budget.record(input_tokens, output_tokens, cached_tokens, thinking_tokens)
                     truncated = output_tokens >= ceiling
                     if truncated:
                         logger.warning(

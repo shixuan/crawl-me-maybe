@@ -315,3 +315,64 @@ async def test_reply_under_the_ceiling_not_flagged(monkeypatch):
     monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("ok", out_tok=5)]))
     client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
     assert (await client.chat("hi")).truncated is False
+
+
+#: cached input ----------------------------------------------------------
+
+
+def test_cached_input_is_tallied_apart_from_the_rest():
+    """Cached input counts the same and costs about a tenth, so a total
+    that does not separate it is not a bill."""
+    budget = TokenBudget(limit=0)
+    budget.record(1000, 100, cached_tokens=800)
+    budget.record(1000, 100)
+
+    assert budget.input_tokens == 2000
+    assert budget.cached_input_tokens == 800
+    assert budget.used == 2200
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        (SimpleNamespace(prompt_cache_hit_tokens=512), 512),
+        (SimpleNamespace(prompt_tokens_details=SimpleNamespace(cached_tokens=384)), 384),
+        (SimpleNamespace(prompt_tokens_details={"cached_tokens": 256}), 256),
+        ({"prompt_cache_hit_tokens": 128}, 128),
+        (SimpleNamespace(prompt_tokens=900), 0),
+    ],
+)
+def test_cached_input_reads_whichever_shape_the_provider_used(usage, expected):
+    """Providers disagree on where they put it.  One that reports
+    nothing gives 0, which reads as "not measured" rather than "nothing
+    was cached" -- a distinction worth a third of the bill."""
+    assert llm_mod._cached_input(usage) == expected
+
+
+@pytest.mark.parametrize(
+    ("resp", "usage", "expected"),
+    [
+        (SimpleNamespace(), SimpleNamespace(completion_tokens_details=SimpleNamespace(reasoning_tokens=700)), 700),
+        (SimpleNamespace(), SimpleNamespace(completion_tokens_details={"reasoning_tokens": 512}), 512),
+        (
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(reasoning_content="x" * 400))]),
+            SimpleNamespace(completion_tokens=900),
+            100,
+        ),
+        (SimpleNamespace(), SimpleNamespace(completion_tokens=900), 0),
+    ],
+)
+def test_reasoning_output_reads_the_field_or_falls_back_to_the_text(resp, usage, expected):
+    """Thinking is billed as output and then dropped, so it is counted
+    from the usage field when there is one and from what arrived when
+    there is not."""
+    assert llm_mod._reasoning_output(resp, usage) == expected
+
+
+def test_thinking_is_tallied_apart_from_the_answer():
+    budget = TokenBudget(limit=0)
+    budget.record(100, 1000, cached_tokens=40, reasoning_tokens=800)
+
+    assert budget.output_tokens == 1000
+    assert budget.reasoning_tokens == 800
+    assert budget.cached_input_tokens == 40
