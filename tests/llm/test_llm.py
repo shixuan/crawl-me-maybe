@@ -376,3 +376,48 @@ def test_thinking_is_tallied_apart_from_the_answer():
     assert budget.output_tokens == 1000
     assert budget.reasoning_tokens == 800
     assert budget.cached_input_tokens == 40
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_sent_only_when_asked_for(monkeypatch):
+    """Empty means send nothing, which is the provider's default and
+    what every run before the setting existed paid for."""
+    sent: list[dict] = []
+
+    async def _fake(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            model="m",
+        )
+
+    monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
+
+    await LLMClient("m", api_key="k").chat("hi")
+    assert "reasoning_effort" not in sent[-1]
+
+    await LLMClient("m", api_key="k", reasoning_effort="minimal").chat("hi")
+    assert sent[-1]["reasoning_effort"] == "minimal"
+
+
+def test_the_ranking_stage_can_think_differently_from_the_rest(monkeypatch):
+    """One stage orders candidates for fetching and another decides what
+    the run returns, so they do not have to buy the same thinking."""
+    from crawlme.pioneer.ranker import LLMRanker
+
+    cfg = Settings(llm_api_key="k", llm_reasoning_effort="high", llm_rank_reasoning_effort="none")
+    ranker = LLMRanker.from_settings(cfg)
+    assert ranker is not None
+    assert ranker._client._reasoning_effort == "none"
+
+    assert LLMClient.from_settings(cfg)._reasoning_effort == "high"
+
+
+def test_the_ranking_stage_falls_back_to_the_general_setting():
+    from crawlme.pioneer.ranker import LLMRanker
+
+    cfg = Settings(llm_api_key="k", llm_reasoning_effort="high")
+    ranker = LLMRanker.from_settings(cfg)
+    assert ranker is not None
+    assert ranker._client._reasoning_effort == "high"

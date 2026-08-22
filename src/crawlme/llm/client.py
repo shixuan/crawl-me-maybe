@@ -186,6 +186,7 @@ class LLMClient:
         concurrency: int = 2,
         budget: TokenBudget | None = None,
         max_output_tokens: int = 8192,
+        reasoning_effort: str = "",
     ) -> None:
         self._model = model
         self._api_key = api_key
@@ -193,9 +194,12 @@ class LLMClient:
         self._sem = asyncio.Semaphore(concurrency)
         self._budget = budget
         self._max_output_tokens = max_output_tokens
+        self._reasoning_effort = reasoning_effort
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient:
+    def from_settings(
+        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str | None = None
+    ) -> LLMClient:
         """Build from Settings: llm_model, llm_api_key, llm_base_url,
         llm_concurrency.  An empty llm_model resolves to the provider
         default, so a key alone is enough to get a working client."""
@@ -208,10 +212,13 @@ class LLMClient:
             concurrency=settings.llm_concurrency,
             budget=budget,
             max_output_tokens=settings.llm_max_output_tokens,
+            reasoning_effort=(settings.llm_reasoning_effort if reasoning_effort is None else reasoning_effort),
         )
 
     @classmethod
-    def from_settings_if_configured(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient | None:
+    def from_settings_if_configured(
+        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str | None = None
+    ) -> LLMClient | None:
         """Default-on with graceful auto-off, mirroring the analysis
         provider.  Without a key and without a custom endpoint there is
         no way to authenticate, so return None and let the caller skip
@@ -219,7 +226,7 @@ class LLMClient:
         if not settings.llm_api_key and not settings.llm_base_url:
             logger.info("llm.auto_off no api key or base url configured")
             return None
-        return cls.from_settings(settings, budget=budget)
+        return cls.from_settings(settings, budget=budget, reasoning_effort=reasoning_effort)
 
     @property
     def configured(self) -> bool:
@@ -320,4 +327,6 @@ class LLMClient:
             kwargs["api_base"] = self._base_url
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
         return await litellm.acompletion(**kwargs)

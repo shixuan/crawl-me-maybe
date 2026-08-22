@@ -112,7 +112,15 @@ class LLMRanker:
         """Default-on with graceful auto-off: without credentials there
         is nothing to call, so the stage is skipped entirely.  *budget*
         is shared across all LLM consumers of the task."""
-        client = LLMClient.from_settings_if_configured(settings, budget=budget)
+        # The ranking stage takes its own reasoning setting when one is
+        # given: it orders candidates for fetching, and the analyzer
+        # judges every page again afterwards, so the trade here is not
+        # the trade the analyzer faces.
+        client = LLMClient.from_settings_if_configured(
+            settings,
+            budget=budget,
+            reasoning_effort=settings.llm_rank_reasoning_effort or settings.llm_reasoning_effort,
+        )
         if client is None:
             return None
         return cls(client, demote_dropped=settings.recall, max_batch_chars=settings.llm_max_batch_chars)
