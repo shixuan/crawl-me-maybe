@@ -61,8 +61,13 @@ def load(run: Path) -> tuple[str, list[str], list[Row]]:
             relevant=r["classification"] == "RELEVANT",
         )
         for r in con.execute(
+            # One row per candidate, not per discovery.  A candidate
+            # found on four pages has four rows in links, and without
+            # the grouping it is scored four times: one irrelevant post
+            # with four copies moved the measured AP by 0.05.
             "SELECT l.text, l.url_json, l.anchor, a.classification "
-            "FROM links l JOIN analyses a ON a.url_key = l.url_key"
+            "FROM links l JOIN analyses a ON a.url_key = l.url_key "
+            "GROUP BY l.url_key"
         )
     ]
     con.close()
