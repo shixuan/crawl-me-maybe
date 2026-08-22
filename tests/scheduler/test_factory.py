@@ -8,6 +8,7 @@ import pytest
 from crawlme.config import Settings
 from crawlme.pioneer.ranker import HybridRanker
 from crawlme.pioneer.ranker.embedding import (
+    _DEFAULT_LOCAL_MODEL,
     EmbeddingRanker,
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
@@ -54,9 +55,7 @@ def test_build_ranker_wires_local_embedding_stage(tmp_path: Path, monkeypatch):
     ranker = _build_ranker(cfg)
     assert isinstance(ranker._embedding, EmbeddingRanker)
     assert isinstance(ranker._embedding._embedder, FastEmbedEmbedder)
-    assert ranker._embedding._embedder.model_name.startswith(
-        "local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2@fastembed"
-    )
+    assert ranker._embedding._embedder.model_name.startswith(f"local/{_DEFAULT_LOCAL_MODEL}@fastembed")
     assert isinstance(ranker._embedding._cache, SqliteEmbeddingCache)
 
 

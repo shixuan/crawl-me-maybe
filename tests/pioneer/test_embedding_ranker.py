@@ -7,12 +7,15 @@ import httpx
 import pytest
 
 from crawlme.pioneer.ranker.embedding import (
+    _DEFAULT_LOCAL_MODEL,
+    _MAX_EMBED_CHARS,
     EmbeddingRanker,
     FastEmbedEmbedder,
     OpenAICompatibleEmbedder,
     _content_hash,
     _cosine,
     _normalize,
+    _role_prefixes,
     _text_for,
     _truncate,
 )
@@ -129,7 +132,7 @@ def test_text_for(kw, ctx, expected):
 
 def test_truncate():
     c = _candidate(anchor="word " * 500, snippet=None, parent_heading=None)  # 2500 chars
-    assert len(_text_for(c, None)) == 512
+    assert len(_text_for(c, None)) == _MAX_EMBED_CHARS
     assert _truncate("hello world") == "hello world"
 
 
@@ -203,6 +206,8 @@ async def test_goal_embedding_cached_across_batches():
 @pytest.mark.asyncio
 async def test_mismatched_vector_count_raises():
     class _ShortEmbedder:
+        model_name = "test/stub"
+
         async def embed(self, texts):
             return [[1.0]]
 
@@ -291,15 +296,15 @@ async def test_goal_embedding_truncated():
     """Very long goals are truncated before they reach the provider."""
     embedder = _StubEmbedder({})
     ranker = EmbeddingRanker(embedder, keep=10)
-    long_prompt = "x" * 1000
+    long_prompt = "x" * (_MAX_EMBED_CHARS * 2)
 
     await ranker.rank_batch(
         CrawlGoal(prompt=long_prompt),
         [_candidate("k1", anchor="a", snippet=None, parent_heading=None)],
         _history(),
     )
-    # The goal text the provider saw is capped at 512 chars.
-    assert all(len(t) <= 512 for t in embedder.calls[0])
+    # The goal text the provider saw is capped.
+    assert all(len(t) <= _MAX_EMBED_CHARS for t in embedder.calls[0])
 
 
 @pytest.mark.asyncio
@@ -324,9 +329,9 @@ async def test_cache_partial_hit_embeds_only_misses():
 
 
 def test_local_embedder_model_name():
-    e = FastEmbedEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    e = FastEmbedEmbedder()
     name = e.model_name
-    assert name.startswith("local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2@fastembed")
+    assert name.startswith(f"local/{_DEFAULT_LOCAL_MODEL}@fastembed")
     # Version-scoped: different fastembed releases must not share cache entries.
     e2 = FastEmbedEmbedder(model="BAAI/bge-small-en-v1.5")
     assert e2.model_name.startswith("local/BAAI/bge-small-en-v1.5@fastembed")
@@ -349,8 +354,12 @@ def test_local_embedder_missing_package_error(monkeypatch):
 def test_local_embedder_real_encode():
     """Integration: encode returns normalized vectors.
 
+    This is the only test that exercises the custom-model registration:
+    fastembed ships no card for e5, so a wrong dimension or pooling
+    setting shows up here and nowhere else.
+
     Skips unless CRAWLME_MODEL_TEST=1, since the default model download
-    (~220MB) doesn't belong in every test-suite run.
+    doesn't belong in every test-suite run.
     """
     import os
 
@@ -362,7 +371,9 @@ def test_local_embedder_real_encode():
     vecs = list(fm.embed(["hello world", "goodbye"]))
     assert len(vecs) == 2
     for v in vecs:
-        assert len(v) > 0
+        assert len(v) == 384
+    # 512 tokens, not the 128 the paraphrase model truncated at.
+    assert fm.model.tokenizer.truncation["max_length"] == 512
 
 
 @pytest.mark.parametrize(("raw", "expected"), [([3.0, 4.0], [0.6, 0.8]), ([0.0, 0.0], [0.0, 0.0])])
@@ -551,3 +562,43 @@ async def test_recall_turns_the_top_k_into_an_ordering():
 
     assert [d.dropped for d in decisions] == [False, False]
     assert decisions[0].candidate_id == c_close.candidate_id
+
+
+# -- role prefixes ------------------------------------------------------
+
+
+def test_role_prefixes_only_for_models_trained_with_them():
+    """E5 wants its two sides named; a paraphrase model never saw them."""
+    assert _role_prefixes("local/intfloat/multilingual-e5-small@fastembed0.8.0") == ("query: ", "passage: ")
+    assert _role_prefixes("local/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2") == ("", "")
+    assert _role_prefixes("text-embedding-3-small") == ("", "")
+
+
+@pytest.mark.asyncio
+async def test_ranker_prefixes_goal_and_candidates_asymmetrically():
+    """The goal goes in as a query, candidates as passages.
+
+    Same prefix on both sides would ask the model the symmetric
+    question, which is not the one it was trained to answer.
+    """
+
+    class _E5Stub(_StubEmbedder):
+        @property
+        def model_name(self) -> str:
+            return "local/intfloat/multilingual-e5-small@fastembed0.8.0"
+
+    embedder = _E5Stub({})
+    ranker = EmbeddingRanker(embedder=embedder, keep=1)
+    await ranker.rank_batch(_goal(), [_candidate()], _history())
+
+    goal_batch, candidate_batch = embedder.calls
+    assert goal_batch[0].startswith("query: ")
+    assert candidate_batch[0].startswith("passage: ")
+
+
+@pytest.mark.asyncio
+async def test_ranker_sends_bare_text_to_a_model_without_prefixes():
+    embedder = _StubEmbedder({})
+    ranker = EmbeddingRanker(embedder=embedder, keep=1)
+    await ranker.rank_batch(_goal(), [_candidate()], _history())
+    assert not any(t.startswith(("query: ", "passage: ")) for batch in embedder.calls for t in batch)

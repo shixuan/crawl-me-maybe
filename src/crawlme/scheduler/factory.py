@@ -23,6 +23,7 @@ from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import HybridRanker, Ranker, RuleRanker
 from crawlme.pioneer.ranker.embedding import (
+    _DEFAULT_LOCAL_MODEL,
     Embedder,
     EmbeddingRanker,
     FastEmbedEmbedder,
@@ -172,7 +173,6 @@ def _build_steering(settings: Settings, budget: TokenBudget | None = None) -> St
     return SteeringLoop(analyzer=analyzer, signals=InflightSignals(prior_store), prior_store=prior_store)
 
 
-_LOCAL_DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 _API_DEFAULT_MODEL = "text-embedding-3-small"
 
 
@@ -199,7 +199,7 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None, stats: RunStats
             return HybridRanker(rule=RuleRanker(threshold=0.25), llm=llm)
         return HybridRanker()
     model = settings.embedding_model or (
-        _LOCAL_DEFAULT_MODEL if settings.embedding_provider == "local" else _API_DEFAULT_MODEL
+        _DEFAULT_LOCAL_MODEL if settings.embedding_provider == "local" else _API_DEFAULT_MODEL
     )
     embedder: Embedder
     if settings.embedding_provider == "local":
