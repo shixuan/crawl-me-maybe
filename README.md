@@ -134,9 +134,8 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 
 | Flag | Values | Default | Meaning |
 |------|--------|---------|---------|
-| `--no-embedding` | flag | off | Skip semantic ranking for this run: rules only, no model loaded |
 | `--recall` | flag | off | Diagnostic. Nothing the ranker rejects is removed, only ranked last, so a finished run can be asked whether the rejections were right. Not for production: one measured run went from 87% to 37% hit rate |
-| `--analysis` | `on` \| `off` | `on` | Per-page analysis and the steering it feeds. `off` disables the whole subsystem |
+| `--analysis` | `on` \| `off` | `on` | Per-page analysis: one LLM call per page for a verdict and the goal's fields. `off` disables it |
 | `--analyzer-max-chars` | int | `3000` | Page text sent to the analyzer per page |
 
 **Everything else**
@@ -197,28 +196,31 @@ document's root element. Nobody claiming is the ordinary case and the graph's
 answer -- read the links. So one run can hold posts, feed entries and ordinary
 web pages, and adding a platform is one adapter, not a new mode.
 
-**A funnel, cheapest stage first.** Each layer costs more and keeps fewer:
+**Two stages, and only two.** A structural filter, then one that reads:
 
 ```
 ~200 links per page
   │
-  ▼  Pre-filter          pure rules, zero LLM      → 10-30 candidates
-  ▼  RuleRanker          weighted heuristics       → ordered
-  ▼  EmbeddingRanker     cosine on a local model   → top 60
-  ▼  LLMRanker           one batched call per 30   → final priority
+  ▼  Pre-filter   URL-level rules, zero LLM   → 10-30 candidates
+  ▼  LLMRanker    one batched call per 20     → priority, or dropped
 ```
 
-Which heuristics apply is decided per candidate, not per run: one carrying its
-own text is judged on the text, one carrying only a link is judged on its
-anchor, path and position. A feed entry arrives with the post already in it,
-so the funnel is judging content rather than guessing from a name tag.
+There were two cheap ranking stages between them, scoring keywords and cosine
+similarity. Measured over seven crawls against the analyzer's own verdicts,
+neither ever removed a candidate -- a top-K of 60 cannot cut a batch of 20 --
+and neither ordered better than a coin flip on most tasks. They were removed
+rather than tuned; the measurements are on the `archive/embedding-investigation`
+branch. Without LLM credentials there is now no ranking stage at all, and the
+crawl fetches in frontier order: a turn from each seed, oldest first.
 
 **Ranking predicts; analysis verifies.** Every fetched page gets one analyzer
 call: classification, summary, relevance, and the fields the goal asked for.
 Each extracted value is checked against the page text before it is stored, and
 a field the page does not state is simply absent -- there is no "unknown".
-Those judgments also steer the crawl in flight, through priority multipliers,
-endorsed links, and cross-run domain reputation.
+The analyzer also names the links on a page worth following, and those are
+injected directly. It is the only way a crawl leaves the platform it started
+on: a feed harvester only ever finds more of the same platform, so a merchant's
+own site is reachable only because the analyzer pointed at it.
 
 **Two loops, one meeting point.** `fetch_pump` downloads and harvests;
 `rank_pump` scores. They coordinate only through the Frontier, which owns both
@@ -256,8 +258,7 @@ See [`.env.example`](.env.example) for the full list.
 | Version | State | What it adds |
 |---------|-------|--------------|
 | v0.1 | ✅ | Full pipeline at zero LLM cost |
-| v0.1.1 | ✅ | EmbeddingRanker, semantic ranking on a local model |
-| v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis and steering, replay, inspect, time horizon |
+| v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
 | v0.3 | 🚧 | Playwright with login state, feed traversal, extracted fields with evidence |
 
 ---
