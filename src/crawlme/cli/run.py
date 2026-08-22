@@ -12,12 +12,14 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib.util
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.digest.feed import ADAPTERS, FEEDS
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
@@ -288,20 +290,57 @@ def _check_session(args: argparse.Namespace) -> None:
     the advice for making one is feed-shaped, so offering it to a graph
     crawl would point at a command that cannot serve it.
     """
+    walled = _walled_platform(args)
     if args.session:
         if Path(args.session).is_file():
             return
         print(f"Error: no session file at {args.session}", file=sys.stderr)
-        if args.feed:
-            print(f"  Make one with:  crawl session {args.session} --feed {args.feed}", file=sys.stderr)
+        if walled:
+            print(f"  Make one with:  crawl session {args.session} --feed {walled}", file=sys.stderr)
         sys.exit(1)
-    if not args.feed:
+    if not walled:
         return
-    print(f"Error: crawling {args.feed} needs a session.", file=sys.stderr)
+    print(f"Error: crawling {walled} needs a session.", file=sys.stderr)
     print("  Without one this is a logged-out visitor, and a login-walled", file=sys.stderr)
     print("  platform answers with its login page, not with nothing.", file=sys.stderr)
-    print(f"  Make one with:  crawl session ./{args.feed}-session.json --feed {args.feed}", file=sys.stderr)
+    print(f"  Make one with:  crawl session ./{walled}-session.json --feed {walled}", file=sys.stderr)
     sys.exit(1)
+
+
+def _walled_platform(args: argparse.Namespace) -> str:
+    """A platform this run will read that cannot be read logged out.
+
+    Read from the seeds rather than from --feed, because the flag was
+    never the thing that decided it: pasting profile URLs into --seeds
+    and forgetting --feed used to walk straight past this check and
+    fetch a few hundred login pages, each six hundred kilobytes of
+    markup holding nine characters of text.
+    """
+    if args.feed and (a := FEEDS.get(args.feed)) is not None and a.NEEDS_SESSION:
+        return str(args.feed)
+    for url in _declared_seeds(args):
+        for adapter in ADAPTERS:
+            if adapter.NEEDS_SESSION and adapter.claims_url(url):
+                return str(adapter.PLATFORM)
+    return ""
+
+
+def _declared_seeds(args: argparse.Namespace) -> list[str]:
+    """The seeds the command names, without asking the network.
+
+    A feed's entries are not here: reading them costs a request, and the
+    check has to happen before the run spends anything.  What a feed
+    lists is somebody else's platform anyway.
+    """
+    urls = _split(args.seeds)
+    path = args.seeds_file or (args.source_path if args.source == "file" else None)
+    if path:
+        try:
+            data = json.loads(Path(path).read_text())
+        except (OSError, json.JSONDecodeError):
+            return urls  # _build_source reports this properly a moment later
+        urls += data.get("seeds", []) if isinstance(data, dict) else [u for u in data if isinstance(u, str)]
+    return urls
 
 
 def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:

@@ -642,6 +642,46 @@ def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
     assert "crawl session" in err, "the message has to name the command that fixes it"
 
 
+def test_seeds_on_a_walled_platform_are_refused_without_a_session(tmp_path, capsys):
+    """The flag was never what decided this.
+
+    Pasting profile URLs into --seeds and forgetting --feed walked
+    straight past the old check and fetched login pages: six hundred
+    kilobytes of markup holding nine characters of text, judged
+    irrelevant, reported as a finished crawl of a quiet platform.
+    """
+    from crawlme.cli.run import _check_session
+
+    args = argparse.Namespace(
+        session=None, feed=None, seeds="https://www.instagram.com/cafe/", seeds_file=None, source=None, source_path=None
+    )
+    with pytest.raises(SystemExit):
+        _check_session(args)
+    assert "crawling instagram needs a session" in capsys.readouterr().err
+
+
+def test_seeds_in_a_file_are_read_for_the_same_check(tmp_path, capsys):
+    """A list in a file is the same list, so it gets the same answer."""
+    from crawlme.cli.run import _check_session
+
+    f = tmp_path / "seeds.json"
+    f.write_text('{"seeds": ["https://www.instagram.com/cafe/"]}')
+    args = argparse.Namespace(session=None, feed=None, seeds=None, seeds_file=str(f), source=None, source_path=None)
+    with pytest.raises(SystemExit):
+        _check_session(args)
+    assert "instagram" in capsys.readouterr().err
+
+
+def test_ordinary_seeds_are_not_bothered(tmp_path, capsys):
+    from crawlme.cli.run import _check_session
+
+    args = argparse.Namespace(
+        session=None, feed=None, seeds="https://example.com/a", seeds_file=None, source=None, source_path=None
+    )
+    _check_session(args)
+    assert capsys.readouterr().err == ""
+
+
 def test_a_feed_without_a_session_is_refused(capsys):
     """A warning here scrolls past, and the run spends a browser on it.
 
@@ -651,14 +691,20 @@ def test_a_feed_without_a_session_is_refused(capsys):
     from crawlme.cli.run import _check_session
 
     with pytest.raises(SystemExit):
-        _check_session(argparse.Namespace(session=None, feed="instagram"))
+        _check_session(
+            argparse.Namespace(
+                session=None, feed="instagram", seeds=None, seeds_file=None, source=None, source_path=None
+            )
+        )
     assert "crawl session" in capsys.readouterr().err
 
 
 def test_a_link_graph_without_a_session_says_nothing(capsys):
     from crawlme.cli.run import _check_session
 
-    _check_session(argparse.Namespace(session=None, feed=None))
+    _check_session(
+        argparse.Namespace(session=None, feed=None, seeds=None, seeds_file=None, source=None, source_path=None)
+    )
     assert capsys.readouterr().err == ""
 
 
@@ -669,7 +715,16 @@ def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
     from crawlme.cli.run import _check_session
 
     with pytest.raises(SystemExit):
-        _check_session(argparse.Namespace(session=str(tmp_path / "nope.json"), feed=None))
+        _check_session(
+            argparse.Namespace(
+                session=str(tmp_path / "nope.json"),
+                feed=None,
+                seeds=None,
+                seeds_file=None,
+                source=None,
+                source_path=None,
+            )
+        )
     err = capsys.readouterr().err
     assert "no session file" in err
     assert "crawl session" not in err

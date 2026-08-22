@@ -148,6 +148,22 @@ class FeedAdapter(Protocol):
     #: from anything a crawl wandered onto.
     DOMAIN: str
 
+    #: Whether reading this platform at all requires a logged-in
+    #: session.  A crawl of a walled platform without one fetches login
+    #: pages and reports them as a platform with nothing on it.
+    NEEDS_SESSION: bool
+
+    def claims_url(self, url: str) -> bool:
+        """Whether this URL is ours, judged before anything is fetched.
+
+        Weaker than claims() on purpose: some platforms are recognisable
+        from the address and some are not, and a run has to be refused
+        before it starts rather than after it has paid for a page.  An
+        adapter that cannot tell answers False, and is simply not
+        consulted at that point.
+        """
+        ...
+
     def claims(self, page: Page) -> bool:
         """Whether this page is one of ours.
 

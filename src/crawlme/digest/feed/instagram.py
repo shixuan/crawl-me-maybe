@@ -22,6 +22,7 @@ import html as html_module
 import json
 import logging
 import re
+from urllib.parse import urlsplit
 
 from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
 from crawlme.schemas import Page, Payload
@@ -57,6 +58,17 @@ _OG_DESCRIPTION = re.compile(r'<meta[^>]*property="og:description"[^>]*content="
 _TIME_TAG = re.compile(r'<time[^>]*datetime="([^"]+)"')
 #: `103 likes, 0 comments - handle on August 13, 2026: "caption`
 _POST_DESC = re.compile(r"([\d,]+)\s+likes?,\s*[\d,]+\s+comments?\s*-\s*([A-Za-z0-9_.]+)\s+on\s")
+
+
+#: Nothing here is readable logged out: the platform answers a stranger
+#: with its login page, whatever was asked for.
+NEEDS_SESSION = True
+
+
+def claims_url(url: str) -> bool:
+    """Ours by host, from the address alone."""
+    host = urlsplit(url).hostname or ""
+    return host == DOMAIN or host.endswith("." + DOMAIN)
 
 
 def claims(page: Page) -> bool:
