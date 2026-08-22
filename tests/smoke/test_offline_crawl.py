@@ -19,7 +19,7 @@ Two levels, because they fail differently:
      when that happens.
   2. The pipeline in-process with a scripted LLM. Covers the stages the
      first one skips: goal enhancement, LLM re-ranking, page analysis,
-     and the steering they feed. No tokens are spent because no real
+     and the analyses they produce. No tokens are spent because no real
      client is ever built.
 """
 
@@ -295,22 +295,21 @@ def _settings(tmp_path: Path) -> Settings:
 
 @pytest.mark.asyncio
 async def test_pipeline_with_scripted_llm_produces_analyses(site: str, tmp_path: Path) -> None:
-    """Analyzer, LLM ranker and steering all run, on scripted answers."""
+    """Analyzer and LLM ranker both run, on scripted answers."""
     from crawlme.analyzer import PageAnalyzer
     from crawlme.pioneer.ranker.llm import LLMRanker
-    from crawlme.steering import InflightSignals, SteeringLoop
 
     cfg = _settings(tmp_path)
     goal = CrawlGoal(prompt=_PROMPT, max_pages=5, domain_budget=20)
     task = CrawlTask(goal_id=goal.goal_id)
 
     client = _ScriptedLLM()
-    steering = SteeringLoop(analyzer=PageAnalyzer(client), signals=InflightSignals())  # type: ignore[arg-type]
+    analyzer = PageAnalyzer(client)  # type: ignore[arg-type]
     scheduler = create_scheduler(
         cfg,
         goal=goal,
         llm_ranker=LLMRanker(client),  # type: ignore[arg-type]
-        steering=steering,
+        analyzer=analyzer,
     )
 
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))

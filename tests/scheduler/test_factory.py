@@ -26,20 +26,19 @@ def test_create_scheduler_runs_without_a_ranker(tmp_path: Path):
     assert sched._ranker is None
 
 
-def test_create_scheduler_wires_steering_override(tmp_path: Path):
-    """A passed steering facade reaches the engine, which binds its sink."""
-    cfg = Settings(result_dir=tmp_path)
-    steering = MagicMock()
-    sched = create_scheduler(cfg, steering=steering)
-    assert sched._steering is steering
-    steering.bind_sink.assert_called_once()
+def test_create_scheduler_wires_analyzer_override(tmp_path: Path):
+    """A passed analyzer reaches the engine, which binds its sink."""
+    analyzer = MagicMock()
+    sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
+    assert sched._analyzer is analyzer
+    analyzer.bind_sink.assert_called_once()
 
 
 def test_create_scheduler_analysis_off_builds_nothing(tmp_path: Path):
     """analysis_enabled off: the engine runs with the subsystem absent."""
     cfg = Settings(result_dir=tmp_path, analysis_enabled=False)
     sched = create_scheduler(cfg)
-    assert sched._steering is None
+    assert sched._analyzer is None
 
 
 def test_create_scheduler_injects_context(tmp_path: Path):

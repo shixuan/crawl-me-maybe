@@ -6,10 +6,9 @@ Every concrete import lives here.  Engine itself depends only on Protocols.
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
-from crawlme.analyzer import PageAnalyzer
+from crawlme.analyzer import Analyzer, PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.feed import ADAPTERS, FeedAdapter
@@ -25,16 +24,14 @@ from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
-from crawlme.steering import InflightSignals, SteeringLoop, SteeringSystem
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
-from crawlme.storage.sqlite.domain_prior import SqliteDomainPrior
 
 
 def create_scheduler(
     settings: Settings,
     goal: CrawlGoal | None = None,
     llm_ranker: Ranker | None = None,
-    steering: SteeringSystem | None = None,
+    analyzer: Analyzer | None = None,
     budget: TokenBudget | None = None,
     **overrides: Any,
 ) -> CrawlScheduler:
@@ -42,7 +39,7 @@ def create_scheduler(
 
     *settings* holds every knob (env + flag overrides, see config.py);
     *goal* supplies the domain budget.  *llm_ranker* enables the v0.2
-    LLM fine-ranking stage.  *steering* is the optional steering half
+    LLM fine-ranking stage.  *analyzer* is the optional analysis stage
     of the feedback subsystem; None (the default) means "build it from
     settings", so it exists whenever analysis_enabled is on and
     degrades when no LLM credentials are configured.  Tests pass an
@@ -58,8 +55,8 @@ def create_scheduler(
     # out here stay valid for the scheduler's lifetime.
     ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
     canonicalizer = Canonicalizer()
-    if steering is None:
-        steering = _build_steering(settings, budget)
+    if analyzer is None and settings.analysis_enabled:
+        analyzer = PageAnalyzer.from_settings(settings, budget=budget)
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
@@ -74,7 +71,7 @@ def create_scheduler(
         "ranker": _build_ranker(settings, llm=llm_ranker),
         "canonicalizer": canonicalizer,
         "harvester": _build_harvester(settings, canonicalizer),
-        "steering": steering,
+        "analyzer": analyzer,
         "context": ctx,
     }
     kwargs.update(overrides)
@@ -146,22 +143,6 @@ def _build_fetcher(settings: Settings) -> Fetcher:
         read_timeout=settings.fetch_timeout_read,
         max_retries=settings.fetch_max_retries,
     )
-
-
-def _build_steering(settings: Settings, budget: TokenBudget | None = None) -> SteeringSystem | None:
-    """Wire the steering half of the feedback subsystem, or return None.
-
-    analysis_enabled off means nothing is built: the engine runs with
-    the whole subsystem absent, analyzer included.  Enabled but without
-    credentials, the analyzer degrades away while the prior store
-    stays, so past tasks' domain reputation still informs the rule
-    ranker's F4 factor.
-    """
-    if not settings.analysis_enabled:
-        return None
-    analyzer = PageAnalyzer.from_settings(settings, budget=budget)
-    prior_store = SqliteDomainPrior(Path(settings.result_dir) / "feedback.db")
-    return SteeringLoop(analyzer=analyzer, signals=InflightSignals(prior_store), prior_store=prior_store)
 
 
 def _build_ranker(settings: Settings, llm: Ranker | None = None) -> Ranker | None:

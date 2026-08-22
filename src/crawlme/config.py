@@ -35,11 +35,10 @@ class Settings(BaseSettings):
     # default because a link graph without a hard filter grows without
     # bound; a feed is finite, so the trade is available there.
     recall: bool = False
-    # The analysis stage (page analyzer + the steering it feeds: run
-    # signals + cross-task domain priors).  On by default, degrades
-    # without credentials; --analysis off disables the whole subsystem
-    # for a clean baseline (steering derives from analysis, so it goes
-    # with it).
+    # The analysis stage: one LLM call per fetched page, returning a
+    # verdict, the fields the goal asked for, and the evidence behind
+    # both.  On by default, degrades without credentials; --analysis
+    # off disables it for a clean baseline.
     analysis_enabled: bool = True
     # Page text sent to the analyzer per page, in characters.  The
     # dominant analyzer cost driver.  Set to 3000 by the 10-replicate

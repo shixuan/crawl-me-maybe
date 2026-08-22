@@ -16,11 +16,13 @@ See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
 from __future__ import annotations
 
 import asyncio
+import collections
 import datetime
 import logging
 import time
 from typing import Any
 
+from crawlme.analyzer import Analyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
 from crawlme.digest.feed.base import PageProblem
@@ -48,7 +50,6 @@ from crawlme.schemas import (
 )
 from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
 from crawlme.state.events import EventEmitter, EventType
-from crawlme.steering import SteeringSystem
 from crawlme.storage.contracts import CrawlDb
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ class CrawlScheduler:
         ranker: Ranker | None,
         canonicalizer: Canonicalizer,
         harvester: Harvester | None = None,
-        steering: SteeringSystem | None = None,
+        analyzer: Analyzer | None = None,
         context: CrawlContext | None = None,
     ) -> None:
         self._cfg = settings
@@ -148,19 +149,21 @@ class CrawlScheduler:
         # post permalinks. Defaults to links so a bare scheduler
         # behaves as it always did.
         self._harvester: Harvester = harvester or PageHarvester(canonicalizer)
-        # The optional steering half of the feedback loop (analyzer +
-        # run signals + cross-task priors), injected whole by the
-        # factory.  The engine only talks to the facade, so None
-        # disables the entire subsystem at once.
-        self._steering = steering
+        # The analyzer, or None when the subsystem is off.  It reads a
+        # fetched page and returns a verdict with the evidence behind
+        # it; the endorsed links it names are the only way a crawl
+        # leaves the platform it started on, so they are collected here
+        # and injected at the next enqueue.
+        self._analyzer = analyzer
+        self._endorsed: collections.deque[tuple[str, str]] = collections.deque()
         # The run context: one mutable object holding the stop-condition
         # counters and the report statistics.  The factory injects it;
         # a bare scheduler creates its own so tests stay cheap.
         self._ctx = context or CrawlContext(counters=CrawlCounters(), stats=RunStats())
-        if steering is not None:
+        if analyzer is not None:
             # Every successful analysis persists and counts here,
             # including ones that only succeeded on a background retry.
-            steering.bind_sink(self._on_analysis)
+            analyzer.bind_sink(self._on_analysis)
 
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
         self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
@@ -289,12 +292,6 @@ class CrawlScheduler:
         self._storage.save_goal(goal.model_dump(mode="json"))
         self._storage.save_task(task.model_dump(mode="json"))
 
-        if self._steering is not None:
-            # Cross-task domain reputation: seed the in-memory prior so
-            # the very first ranking of a fresh task already sees past
-            # tasks' learning.
-            await self._steering.load()
-
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
@@ -352,23 +349,23 @@ class CrawlScheduler:
 
     async def aclose(self) -> None:
         """Release stage-owned resources (ranker, storage)."""
-        if self._steering is not None:
-            # Close the analyzer's retry queue and flush this run's
-            # domain-prior contributions to the global feedback DB
-            # (hang-safe exit, see the aiosqlite worker-thread lesson).
-            await self._steering.aclose()
+        if self._analyzer is not None:
+            # Closes the analyzer's retry queue (hang-safe exit, see the
+            # aiosqlite worker-thread lesson).
+            await self._analyzer.aclose()
         if self._ranker is not None:
             await self._ranker.aclose()
         await self._fetcher.aclose()
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
-        """Analyzer sink: persist, tally, and feed the steering loop."""
+        """Analyzer sink: persist, tally, and keep the endorsed links."""
         self._storage.save_analysis(result.model_dump(mode="json"))
         by_class = self._ctx.stats.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
-        if self._steering is not None:
-            self._steering.update(result.feedback)
+        fb = result.feedback
+        if fb.endorsed_links and fb.url:
+            self._endorsed.extend((link, fb.url) for link in fb.endorsed_links)
         # Backfill the judgment into the source page's context so the LLM
         # ranker can tell a link off a RELEVANT article from a link off a
         # help page.  Retries land here through the same sink, so a late
@@ -655,9 +652,10 @@ class CrawlScheduler:
         prefilter (dedup, scope, robots, depth), so an endorsement can
         never override the crawler's hard rules.
         """
-        if self._steering is None or self._goal is None:
+        if self._goal is None or not self._endorsed:
             return
-        endorsed = self._steering.take_endorsed()
+        endorsed = list(self._endorsed)
+        self._endorsed.clear()
         if not endorsed:
             return
         ctx = self._frontier.get_prefilter_context(
@@ -767,7 +765,7 @@ class CrawlScheduler:
             result, page = fetched
 
             # One LLM call per page: classification, summary, and the
-            # feedback signals the steering system reads.  Failures park
+            # the fields it was asked to extract.  Failures park
             # on the analyzer's own retry queue and never block this loop.
             #
             # Deliberately outside the fetch slot.  Waiting on an LLM
@@ -778,9 +776,9 @@ class CrawlScheduler:
             # It stays ahead of link extraction, though: the ranker reads
             # this page's verdict out of the page context when it scores
             # the links found below (2.9).
-            if self._steering is not None:
+            if self._analyzer is not None:
                 assert self._goal is not None
-                await self._steering.analyze(page, self._goal)
+                await self._analyzer.analyze(page, self._goal)
             if self._events:
                 self._events.emit(
                     EventType.FETCH_COMPLETED,
@@ -823,9 +821,8 @@ class CrawlScheduler:
                 page.extraction_status,
             )
 
-            # Record page context for ranker (F3 title_match + F7
-            # position), plus the URL and depth the steering
-            # multipliers need at ranking time.
+            # Record page context for the ranker, plus the URL and
+            # depth an endorsed link is resolved against.
             self._record_page_context(
                 page.url_key,
                 {
@@ -892,23 +889,6 @@ class CrawlScheduler:
 
     #: rank loop --------------------------------------------------------
 
-    def _apply_steering(self, priority: float, candidate: Candidate | None) -> float:
-        """Fold the real-time steering multipliers into a ranked
-        priority (ranking.md 第 3 层).
-
-        Hub pages boost their own outlinks; domains with a consistent
-        recent record get boosted or penalized.  Without the steering
-        facade the priority passes through untouched.
-        """
-        if self._steering is None or candidate is None:
-            return priority
-        page = self._page_contexts.get(candidate.source_url_key or "", {})
-        source_url = str(page.get("url", ""))
-        multiplier = self._steering.hub_multiplier(source_url) * self._steering.domain_multiplier(
-            candidate.url.reg_domain
-        )
-        return round(priority * multiplier, 4)
-
     async def _rank_pump(self) -> None:
         ranked_total = 0
         while self._state == "RUNNING":
@@ -939,11 +919,7 @@ class CrawlScheduler:
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         """Score one drained batch and push what survives to the frontier."""
-        history = (
-            self._steering.summary()
-            if self._steering is not None
-            else RankHistorySummary(pages_seen=self._counters.pages_fetched)
-        )
+        history = RankHistorySummary(pages_seen=self._counters.pages_fetched)
         history.fetched = self._counters.pages_fetched
         assert self._goal is not None
         if self._ranker is None:
@@ -987,7 +963,7 @@ class CrawlScheduler:
                 FrontierItem(
                     url=c.url if c else URL(raw="", canonical="", url_key=d.url_key),
                     url_key=d.url_key,
-                    priority=self._apply_steering(d.priority, c),
+                    priority=d.priority,
                     score_source=d.ranker,
                     rationale=d.rationale,
                     depth=depth,
