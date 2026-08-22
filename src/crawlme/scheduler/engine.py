@@ -25,7 +25,7 @@ from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
 from crawlme.digest.feed.base import PageProblem
 from crawlme.digest.fetcher import Fetcher
-from crawlme.digest.harvest import Harvest, Harvester, LinkHarvester
+from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
@@ -141,7 +141,7 @@ class CrawlScheduler:
         # from: a link graph offers its links, a feed listing offers
         # post permalinks. Defaults to links so a bare scheduler
         # behaves as it always did.
-        self._harvester: Harvester = harvester or LinkHarvester(canonicalizer)
+        self._harvester: Harvester = harvester or PageHarvester(canonicalizer)
         # The optional steering half of the feedback loop (analyzer +
         # run signals + cross-task priors), injected whole by the
         # factory.  The engine only talks to the facade, so None

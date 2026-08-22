@@ -24,7 +24,7 @@ import logging
 import re
 
 from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
-from crawlme.schemas import Payload
+from crawlme.schemas import Page, Payload
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,12 @@ _OG_DESCRIPTION = re.compile(r'<meta[^>]*property="og:description"[^>]*content="
 _TIME_TAG = re.compile(r'<time[^>]*datetime="([^"]+)"')
 #: `103 likes, 0 comments - handle on August 13, 2026: "caption`
 _POST_DESC = re.compile(r"([\d,]+)\s+likes?,\s*[\d,]+\s+comments?\s*-\s*([A-Za-z0-9_.]+)\s+on\s")
+
+
+def claims(page: Page) -> bool:
+    """Ours by host.  A crawl wanders off a platform routinely: an
+    analyzer endorses a shop's own site and that page arrives next."""
+    return page.url.reg_domain == DOMAIN
 
 
 def problem(html: str) -> PageProblem | None:

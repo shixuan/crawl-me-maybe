@@ -24,7 +24,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from crawlme.schemas import URL, Candidate, Payload
+from crawlme.schemas import URL, Candidate, Page, Payload
 
 
 class PageProblem(str, enum.Enum):
@@ -147,6 +147,19 @@ class FeedAdapter(Protocol):
     #: Registrable domain the platform serves, used to tell its own pages
     #: from anything a crawl wandered onto.
     DOMAIN: str
+
+    def claims(self, page: Page) -> bool:
+        """Whether this page is one of ours.
+
+        Asked of the adapter rather than decided outside it, because
+        what makes a page a platform's page is exactly the kind of
+        knowledge an adapter exists to hold: a domain for one platform,
+        a document's root element for another.
+
+        A page nobody claims is not an error.  It is a page, and a page
+        with links on it is what a link graph reads.
+        """
+        ...
 
     def problem(self, html: str) -> PageProblem | None:
         """Why this page holds no content, or None if it does."""

@@ -13,7 +13,7 @@ from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import Fetcher, HttpFetcher
-from crawlme.digest.harvest import FeedHarvester, Harvester, LinkHarvester
+from crawlme.digest.harvest import Harvester, PageHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -89,11 +89,14 @@ def create_scheduler(
 
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
-    """What a page yields depends on the kind of source it came from."""
+    """Which adapters this run may use, in the order they are asked.
+
+    A run still names one, so a link-graph crawl that wanders onto a
+    platform reads it as a page rather than suddenly as a feed. Order
+    only starts to matter once a run carries more than one.
+    """
     adapter = traversal_for(settings.source_kind).adapter
-    if adapter is not None:
-        return FeedHarvester(adapter, canonicalizer)
-    return LinkHarvester(canonicalizer)
+    return PageHarvester(canonicalizer, adapters=[adapter] if adapter is not None else [])
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:
