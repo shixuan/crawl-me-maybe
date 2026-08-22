@@ -148,6 +148,11 @@ class FeedAdapter(Protocol):
     #: from anything a crawl wandered onto.
     DOMAIN: str
 
+    #: How many times to ask a listing for more of itself.  A listing
+    #: hands out one screen, so a window of weeks otherwise sees a dozen
+    #: posts.  Zero for anything that states everything at once.
+    SCROLLS: int
+
     #: Whether reading this platform at all requires a logged-in
     #: session.  A crawl of a walled platform without one fetches login
     #: pages and reports them as a platform with nothing on it.

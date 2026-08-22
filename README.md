@@ -37,18 +37,17 @@ The LLM stages turn on when `LLM_API_KEY` or `LLM_BASE_URL` is set. Without cred
 crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
   --seeds "https://www.reddit.com/r/askTO/.rss,https://www.reddit.com/r/toronto/.rss"
 
-# seeds from a JSON file: ["https://a", "https://b"], or
-# {"seeds": [...], "allowed_domains": [...]}
-crawl run "release notes" --seeds-file ./seeds.json
+# the same seeds, written down in a file
+crawl run "release notes" --seeds ./seeds.json
 
 # a feed: log in once, then read several accounts, taking a turn from each.
-# --feed without --session is refused: a logged-out crawl of a walled
-# platform fetches login pages and reports them as an empty platform.
+# Seeds on a walled platform without --session are refused: a logged-out
+# crawl of one fetches login pages and reports them as an empty platform.
 crawl session ./ig-state.json --feed instagram
 
 crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
-  --seeds-file ./seeds.json \
-  --feed instagram --session ./ig-state.json \
+  --seeds ./seeds.json \
+  --session ./ig-state.json \
   --max-relevant 40 --page-budget 150 \
   --since '2 weeks' --depth-limit 1 --ignore-robots
 
@@ -69,8 +68,8 @@ a run starts rather than failing partway through it.
 
 | Extra | Install | What it buys | Cost |
 |-------|---------|--------------|------|
-| `rss` | `pip install -e '.[rss]'` | `--seeds-rss`: read RSS/Atom feeds, entries arriving with their own text | feedparser, 0.3MB |
-| `browser` | `pip install -e '.[browser]'`<br>then `playwright install chromium` | `--fetcher browser`, `--feed`, `--session`, `crawl session`: JS-rendered and login-walled pages | 135MB package, ~650MB browser |
+| `rss` | `pip install -e '.[rss]'` | Reading a feed among the seeds; its entries arrive with their own text | feedparser, 0.3MB |
+| `browser` | `pip install -e '.[browser]'`<br>then `playwright install chromium` | `--fetcher browser`, `--session`, `crawl session`: JS-rendered and login-walled pages | 135MB package, ~650MB browser |
 
 Both together: `pip install -e '.[rss,browser]'`.
 
@@ -85,9 +84,8 @@ naming the flag you typed and the one command that fixes it.
 
 | Flag | Type | What it does |
 |------|------|--------------|
-| `--seeds` | string | Comma-separated seed URLs |
-| `--seeds-file` | path | JSON file of seed URLs |
-| `--seeds-rss` | urls | Comma-separated RSS or Atom feeds (a feed URL is an ordinary seed) |
+| `--seeds` | urls \| path | Comma-separated seed URLs, or a JSON file holding a list of them. A feed URL is an ordinary seed |
+| `--allowed-domains` | domains | Registrable domains the crawl may not leave |
 | `--max-relevant` | int | Stop once this many pages are judged relevant (the goal) |
 | `--page-budget` | int | Pages this run may read; 0 means no limit (the cost) |
 | `--token-budget` | int | LLM tokens this run may spend (default: 500000) |
@@ -98,8 +96,7 @@ naming the flag you typed and the one command that fixes it.
 | `--no-embedding` | flag | Skip semantic ranking this run (rules only) |
 | `--recall` | flag | Miss less, read more: nothing is discarded, only ranked last |
 | `--fetcher` | `http` \| `browser` | How to fetch; `browser` for JS-rendered or login-walled pages |
-| `--feed` | `instagram` | Read the source as a platform feed |
-| `--session` | path | Playwright storage_state, to crawl as a logged-in session |
+| `--session` | path | Playwright storage_state. Enables the platform adapters, implies a browser, and defaults `--depth-limit 1 --domain-budget 0` |
 | `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
 | `--analyzer-max-chars` | int | Page text per analyzer call (default: 3000) |
 | `--ignore-robots` | flag | Bypass robots.txt |

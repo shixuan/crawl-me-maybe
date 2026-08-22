@@ -143,10 +143,11 @@ def test_missing_html_yields_nothing(tmp_path: Path) -> None:
 #: wiring ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("kind", "platforms"), [("links", []), ("instagram", ["instagram"])])
-def test_factory_picks_the_platform_adapters_from_settings(kind: str, platforms: list[str]) -> None:
-    """One harvester now; what changes is which platforms it may read."""
-    h = _build_harvester(Settings(source_kind=kind), Canonicalizer())
+@pytest.mark.parametrize(("session", "platforms"), [("", []), ("./s.json", ["instagram"])])
+def test_the_session_decides_which_platforms_are_read(session: str, platforms: list[str]) -> None:
+    """One harvester now; what changes is which platforms it may read,
+    and having credentials for one is what makes reading it possible."""
+    h = _build_harvester(Settings(browser_storage_state=session), Canonicalizer())
     assert [a.PLATFORM for a in h._adapters if a.PLATFORM != "rss"] == platforms
 
 

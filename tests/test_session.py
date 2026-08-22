@@ -20,10 +20,10 @@ def test_login_url_comes_from_the_adapter():
     assert _login_url("instagram") == "https://www.instagram.com/"
 
 
-def test_a_link_graph_has_nothing_to_log_in_to():
-    """The traversal table answers this, so no platform list lives here."""
-    with pytest.raises(SessionError, match="not a feed"):
-        _login_url("links")
+def test_a_platform_that_needs_no_session_is_refused():
+    """The adapters answer this, so no platform list lives here."""
+    with pytest.raises(SessionError, match="needs no session"):
+        _login_url("rss")
 
 
 @pytest.mark.asyncio

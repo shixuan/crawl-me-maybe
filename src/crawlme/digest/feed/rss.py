@@ -37,6 +37,9 @@ PLATFORM = "rss"
 #: asks for it, and empty is the honest answer.
 DOMAIN = ""
 
+#: A feed states every entry it has in the document it hands over.
+SCROLLS = 0
+
 #: A feed is served to anyone; nothing here is behind a login.
 NEEDS_SESSION = False
 

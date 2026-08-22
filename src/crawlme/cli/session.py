@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-from crawlme.scheduler.traversal import feed_kinds, traversal_for
+from crawlme.digest.feed import FEEDS
 
 
 class SessionError(Exception):
@@ -41,10 +41,10 @@ def _login_url(feed: str) -> str:
     address can declare one when it turns up; the second instance is
     what earns the field.
     """
-    traversal = traversal_for(feed)
-    if traversal.adapter is None:
-        raise SessionError(f"{feed} is not a feed, so it has nothing to log in to")
-    return f"https://www.{traversal.adapter.DOMAIN}/"
+    adapter = FEEDS.get(feed)
+    if adapter is None or not adapter.NEEDS_SESSION:
+        raise SessionError(f"{feed} needs no session, so there is nothing to log in to")
+    return f"https://www.{adapter.DOMAIN}/"
 
 
 async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
@@ -120,6 +120,7 @@ def add_arguments(sub: Any) -> None:
     """Register the session subcommand on the top-level parser."""
     p = sub.add_parser("session", help="Log in through a browser and save the session for later runs")
     p.add_argument("path", help="Where to write the session file, e.g. ./ig-session.json")
-    p.add_argument("--feed", choices=feed_kinds(), default=(feed_kinds() or ["instagram"])[0], help="Which platform")
+    walled = sorted(n for n, a in FEEDS.items() if a.NEEDS_SESSION)
+    p.add_argument("--feed", choices=walled, default=(walled or ["instagram"])[0], help="Which platform")
     p.add_argument("--force", action="store_true", help="Replace an existing session file")
     p.add_argument("--timeout", type=int, default=600, help="Seconds to wait for the login (default: 600)")

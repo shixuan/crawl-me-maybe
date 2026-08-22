@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.digest.feed import ADAPTERS, FEEDS
+from crawlme.digest.feed import ADAPTERS
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
@@ -29,7 +29,6 @@ from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
@@ -92,8 +91,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
-    if args.feed is not None:
-        cfg.source_kind = args.feed
     if args.session is not None:
         # A session implies a browser: asking to crawl as someone and
         # getting plain httpx would silently crawl the logged-out site.
@@ -121,13 +118,21 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
-    # What a traversal decides, unless the run says otherwise.  Both of
-    # these used to be a link graph's answer inherited in silence: a
-    # per-domain ceiling that on one platform is a total, and a depth of
-    # five where a listing and its posts are two.
-    traversal = traversal_for(cfg.source_kind)
-    goal.depth_limit = args.depth_limit if args.depth_limit is not None else traversal.depth_limit
-    goal.domain_budget = args.domain_budget if args.domain_budget is not None else traversal.domain_budget
+    # A session says this run reads a platform, and a platform's answers
+    # differ from a link graph's on both counts: every candidate shares
+    # one host, so a per-domain ceiling is a total; and a listing and its
+    # posts are two levels with no third.  Stated out loud rather than
+    # left to a table, and overridable by either flag.
+    if args.session:
+        if args.depth_limit is None:
+            args.depth_limit = 1
+        if args.domain_budget is None:
+            args.domain_budget = 0
+        logger.info("run.platform depth_limit=%d domain_budget=%d", args.depth_limit, args.domain_budget)
+    if args.depth_limit is not None:
+        goal.depth_limit = args.depth_limit
+    if args.domain_budget is not None:
+        goal.domain_budget = args.domain_budget
     if args.since is not None:
         try:
             goal.since = _parse_since(args.since)
@@ -138,7 +143,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # Before the run directory exists and before the enhancer spends a
     # call: bad arguments should cost nothing.
     try:
-        source = _build_source(args, user_agent=cfg.user_agents[0] if cfg.user_agents else "")
+        source = _build_source(args)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -182,8 +187,10 @@ async def cmd_run(args: argparse.Namespace) -> None:
         )
 
     candidates = await source.discover(goal)
-    allowed_domains: set[str] | None = None
-    if hasattr(source, "allowed_domains"):
+    # The flag is the run stating its scope; a seeds file may also carry
+    # one, and the flag outranks it for the same reason --since does.
+    allowed_domains: set[str] | None = set(_split(args.allowed_domains)) or None
+    if allowed_domains is None and hasattr(source, "allowed_domains"):
         allowed_domains = source.allowed_domains
 
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
@@ -244,21 +251,18 @@ def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
     Both of these used to surface as an ImportError from inside the run:
     the feed one at seed discovery, the browser one at the first fetch,
     by which point the run directory exists and the goal has already
-    cost an LLM call.  Neither said which flag had asked for it.
+    cost an LLM call.  Neither said what had asked for it.
 
     Optional on purpose.  A browser is 135MB of package and another
     650MB of Chromium that a link-graph crawl never touches, so making
-    every user carry it would be the worse trade -- but then the flags
-    that need it have to say so up front.
+    every user carry it would be the worse trade -- but then whatever
+    needs it has to say so up front.
     """
     wanted: list[tuple[str, str]] = []
-    if args.seeds_rss or args.source == "rss":
-        wanted.append(("feedparser", "--seeds-rss"))
+    if any(_looks_like_a_feed(u) for u in _declared_seeds(args)):
+        wanted.append(("feedparser", "a feed among the seeds"))
     if cfg.fetcher == "browser":
-        # --session and --feed both resolve to a browser; name whichever
-        # the user actually typed.
-        flag = "--session" if args.session else ("--feed" if args.feed else "--fetcher browser")
-        wanted.append(("playwright", flag))
+        wanted.append(("playwright", "--session" if args.session else "--fetcher browser"))
     missing = [(m, flag) for m, flag in wanted if importlib.util.find_spec(m) is None]
     if not missing:
         return
@@ -306,17 +310,26 @@ def _check_session(args: argparse.Namespace) -> None:
     sys.exit(1)
 
 
+def _looks_like_a_feed(url: str) -> bool:
+    """Whether a seed is worth having feedparser for.
+
+    A guess, and knowingly so: no address says whether it serves a feed,
+    measured five wrong in seven.  Being wrong here costs a warning
+    nobody needed or an ImportError one page in, which is why the
+    adapter itself never guesses -- it reads the document.
+    """
+    return any(hint in url.lower() for hint in ("rss", "atom", "/feed", "feed.xml", "feeds/"))
+
+
 def _walled_platform(args: argparse.Namespace) -> str:
     """A platform this run will read that cannot be read logged out.
 
-    Read from the seeds rather than from --feed, because the flag was
-    never the thing that decided it: pasting profile URLs into --seeds
-    and forgetting --feed used to walk straight past this check and
-    fetch a few hundred login pages, each six hundred kilobytes of
-    markup holding nine characters of text.
+    Read from the seeds, which is the only thing that ever decided it.
+    A flag saying "this is a feed run" could be forgotten while the
+    seeds still pointed at the platform, and the run then fetched a few
+    hundred login pages, each six hundred kilobytes of markup holding
+    nine characters of text.
     """
-    if args.feed and (a := FEEDS.get(args.feed)) is not None and a.NEEDS_SESSION:
-        return str(args.feed)
     for url in _declared_seeds(args):
         for adapter in ADAPTERS:
             if adapter.NEEDS_SESSION and adapter.claims_url(url):
@@ -331,15 +344,16 @@ def _declared_seeds(args: argparse.Namespace) -> list[str]:
     check has to happen before the run spends anything.  What a feed
     lists is somebody else's platform anyway.
     """
-    urls = _split(args.seeds)
-    path = args.seeds_file or (args.source_path if args.source == "file" else None)
-    if path:
-        try:
-            data = json.loads(Path(path).read_text())
-        except (OSError, json.JSONDecodeError):
-            return urls  # _build_source reports this properly a moment later
-        urls += data.get("seeds", []) if isinstance(data, dict) else [u for u in data if isinstance(u, str)]
-    return urls
+    path = _seed_file(args.seeds)
+    if path is None:
+        return _split(args.seeds)
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []  # _build_source reports this properly a moment later
+    if isinstance(data, dict):
+        return [u for u in data.get("seeds", []) if isinstance(u, str)]
+    return [u for u in data if isinstance(u, str)]
 
 
 def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:
@@ -410,28 +424,30 @@ def _format_summary(s: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_source(args: argparse.Namespace, user_agent: str = "") -> UrlSource:
-    """Create a URL source from CLI arguments.
+def _build_source(args: argparse.Namespace) -> UrlSource:
+    """Seeds are URLs, wherever they are written down.
 
-    Raises ValueError rather than falling back when the arguments do not
-    name a source: the older pair let "--source file" without a path
-    become an empty manual list, so a typo produced a run that started,
-    found nothing, and reported COMPLETED.
+    A path and a list of addresses are the same information in two
+    containers, so they are one flag.  What is not the same is a feed:
+    that URL is a seed too, fetched once like any other, and read by
+    whichever adapter recognises the document it returns.
     """
-    if args.seeds_file:
-        return FileSource(args.seeds_file)
-    if args.seeds_rss:
-        # A feed URL is a seed like any other now: it is fetched once and
-        # the adapter reads its entries.  Out-of-band reading meant the
-        # crawl's politeness, robots and backoff never applied to it.
-        return ManualSource(_split(args.seeds_rss))
-    if args.source in {"file", "rss"}:
-        if not args.source_path:
-            raise ValueError(f"--source {args.source} needs --source-path (or use --seeds-{args.source})")
-        if args.source == "file":
-            return FileSource(args.source_path)
-        return ManualSource(_split(args.source_path))
-    return ManualSource(_split(args.seeds))
+    path = _seed_file(args.seeds)
+    return FileSource(path) if path is not None else ManualSource(_split(args.seeds))
+
+
+def _seed_file(value: str | None) -> str | None:
+    """The seeds as a path, or None when they are addresses.
+
+    One rule, in one place: anything that does not start with a scheme
+    is a file.  A list of addresses and a file holding the same list are
+    the same information, so they are the same flag; telling them apart
+    has to be done identically wherever it is done.
+    """
+    text = (value or "").strip()
+    if not text or text.lower().startswith(("http://", "https://")):
+        return None
+    return text
 
 
 def _split(value: str | None) -> list[str]:

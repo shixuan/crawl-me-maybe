@@ -33,7 +33,6 @@ from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.stop_conds import check_stop
-from crawlme.scheduler.traversal import traversal_for
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -268,11 +267,13 @@ class CrawlScheduler:
         self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
 
         self._ctx.reset(goal=goal, tokens_used_start=self._tokens_used_start)
-        # From the traversal, not the goal: whether this kind of source
-        # is ordered by time at all is a property of the source, and the
-        # same goal against a feed and against a link graph gets
-        # different answers.
-        self._counters.time_horizon_allowed = traversal_for(self._cfg.source_kind).time_horizon
+        # Whether "no recent content" may ever read as "no more content".
+        # A link graph's pages arrive in no order, so a streak means
+        # nothing there either -- but the streak is already gated on a
+        # single entry point, and one walk of one site is ordered often
+        # enough to be worth reading.  A platform run interleaves
+        # accounts, so it never is.
+        self._counters.time_horizon_allowed = not self._cfg.browser_storage_state
         # Persist goal (with its enhanced statement / keywords / since)
         # and task rows so replay and introspection have a record.
         self._storage.save_goal(goal.model_dump(mode="json"))

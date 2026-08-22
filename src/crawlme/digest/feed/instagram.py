@@ -60,6 +60,11 @@ _TIME_TAG = re.compile(r'<time[^>]*datetime="([^"]+)"')
 _POST_DESC = re.compile(r"([\d,]+)\s+likes?,\s*[\d,]+\s+comments?\s*-\s*([A-Za-z0-9_.]+)\s+on\s")
 
 
+#: A grid hands out one screen at a time, so a window of weeks sees a
+#: dozen posts without this.  Scrolling asks the page for its own next
+#: page; nothing is forged.
+SCROLLS = 4
+
 #: Nothing here is readable logged out: the platform answers a stranger
 #: with its login page, whatever was asked for.
 NEEDS_SESSION = True

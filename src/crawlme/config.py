@@ -107,11 +107,6 @@ class Settings(BaseSettings):
     # sees of the crawl.  Ignored outside feed mode: a link graph has
     # nothing below the fold worth waiting for.
     feed_scrolls: int = 4
-    # What a fetched page yields: "links" walks a graph, "instagram"
-    # reads a feed listing into post permalinks.  --feed is the
-    # documented entry: it changes what a run produces from the same URL,
-    # so it belongs in the command that describes the run.
-    source_kind: str = "links"
     user_agents: list[str] = [
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]
