@@ -26,6 +26,14 @@ class TokenBudget:
         self.used = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        # Input tokens the provider served from its prefix cache.  They
+        # count the same here and cost about a tenth as much, so a total
+        # that does not separate them is not a bill.  Our prompts put
+        # every fixed part first -- system, then goal, then fields --
+        # precisely so this number can be large.
+        self.cached_input_tokens = 0
+        # Output the model spent thinking, billed and then discarded.
+        self.reasoning_tokens = 0
         self.calls = 0
         self._sink = sink
 
@@ -42,18 +50,28 @@ class TokenBudget:
         if self.limit > 0 and self.used >= self.limit:
             raise TokenBudgetError(f"token budget exhausted: {self.used}/{self.limit}")
 
-    def record(self, input_tokens: int, output_tokens: int) -> None:
+    def record(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ) -> None:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
+        self.cached_input_tokens += cached_tokens
+        self.reasoning_tokens += reasoning_tokens
         self.used += input_tokens + output_tokens
         self.calls += 1
         if self._sink is not None:
             self._sink(self.used)
         logger.info(
-            "llm.tokens call=%d used=%d/%d (+%d in, +%d out)",
+            "llm.tokens call=%d used=%d/%d (+%d in, +%d out, %d cached, %d thinking)",
             self.calls,
             self.used,
             self.limit,
             input_tokens,
             output_tokens,
+            cached_tokens,
+            reasoning_tokens,
         )

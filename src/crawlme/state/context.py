@@ -8,7 +8,7 @@ start of each run, so references held by stages never go stale.
   counters  : thresholds and live progress the stop conditions read
               (unchanged from its life as a standalone CrawlCounters)
   stats     : end-of-run report tallies (discovered, ranked, errors,
-              analyses, embedding cache activity)
+              analyses)
 
 The context is deliberately a plain dataclass of plain data: it has
 one implementation and no behavior to polymorph, so it needs no
@@ -42,6 +42,13 @@ class CrawlCounters:
     max_tokens: int = 0
     max_duration_sec: int = 0
     relevance_threshold: float = 0.7
+    # Set by --recall.  The stop conditions read it: see _diminishing_returns.
+    recall: bool = False
+    # How many pages have been judged relevant so far, and how many the
+    # run was asked for.  Separate from the sliding window: that one
+    # answers "is this still working", this one answers "is this enough".
+    relevant_found: int = 0
+    max_relevant: int = 0
     pages_fetched: int = 0
     tokens_used: int = 0
     started_at: float = 0.0
@@ -53,6 +60,17 @@ class CrawlCounters:
         default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
     )
     fatal_error: str = ""
+    # The first page problem that was about the crawl rather than about
+    # one page, as its PageProblem value.  A block or a dead session
+    # makes every later request wasted, so one is enough to end the run;
+    # see _platform_refused.
+    refused_by: str = ""
+    # Listings that parsed as content and yielded no items at all.  A
+    # platform redesign shows up here first: the pages still arrive, the
+    # adapter still recognises them as pages, and it finds nothing on
+    # any of them.  See _adapter_empty.
+    listings_seen: int = 0
+    listings_empty: int = 0
     # Time horizon (2.8).  since=None keeps TIME_HORIZON dormant, which
     # is every run that does not ask for a window.  stale_streak counts
     # consecutive pages that stated a publication time older than the
@@ -60,6 +78,17 @@ class CrawlCounters:
     since: datetime.datetime | None = None
     stale_streak: int = 0
     max_stale_streak: int = 5
+    # How many entry points this run was given.  TIME_HORIZON reads it to
+    # decide whether "consecutive stale pages" means anything; see the
+    # check's own docstring for why anything but 1 leaves it dormant.
+    seed_count: int = 0
+    # Whether this traversal can ever read "no recent content" as "no
+    # more content".  Declared by the traversal rather than guessed from
+    # the run's shape: a feed listing is time-ordered per account and
+    # never as a whole, so the answer never depends on how a given run
+    # went.  The seed count still matters on top of it, for a different
+    # reason -- see the check itself.
+    time_horizon_allowed: bool = True
 
 
 @dataclasses.dataclass
@@ -70,8 +99,10 @@ class RunStats:
     candidates_ranked: int = 0
     fetch_errors: int = 0
     analyses_by_class: dict[str, int] = dataclasses.field(default_factory=dict)
-    embedding_cache_hits: int = 0
-    embedding_cache_misses: int = 0
+    # Pages that came back as something other than content, by kind.
+    # Reported because a run that read thirty accounts and found three
+    # of them gone is a different run from one that found none gone.
+    not_content: dict[str, int] = dataclasses.field(default_factory=dict)
 
     def reset(self) -> None:
         """Zero every field in place, so stage references stay valid."""
@@ -79,8 +110,7 @@ class RunStats:
         self.candidates_ranked = 0
         self.fetch_errors = 0
         self.analyses_by_class = {}
-        self.embedding_cache_hits = 0
-        self.embedding_cache_misses = 0
+        self.not_content = {}
 
 
 @dataclasses.dataclass
@@ -103,6 +133,8 @@ class CrawlContext:
             max_tokens=goal.max_tokens,
             max_duration_sec=goal.max_duration_sec,
             relevance_threshold=goal.relevance_threshold,
+            recall=goal.recall,
+            max_relevant=goal.max_relevant,
             started_at=time.monotonic(),
             tokens_used=tokens_used_start,
             since=goal.since,

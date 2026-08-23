@@ -27,7 +27,6 @@ def test_reset_zeroes_stats_in_place():
     ctx = _ctx()
     ctx.stats.links_discovered = 5
     ctx.stats.analyses_by_class = {"RELEVANT": 2}
-    ctx.stats.embedding_cache_hits = 3
     stats_id = id(ctx.stats)
 
     ctx.reset(goal=CrawlGoal(prompt="p"))
@@ -35,7 +34,6 @@ def test_reset_zeroes_stats_in_place():
     assert id(ctx.stats) == stats_id  # identity preserved, stage refs stay valid
     assert ctx.stats.links_discovered == 0
     assert ctx.stats.analyses_by_class == {}
-    assert ctx.stats.embedding_cache_hits == 0
 
 
 def test_reset_keeps_context_identity():

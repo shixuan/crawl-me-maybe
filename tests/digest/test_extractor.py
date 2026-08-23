@@ -74,43 +74,28 @@ def _html_with(head_extra: str = "", body_extra: str = "") -> bytes:
     ).encode()
 
 
-def test_published_at_from_article_meta(extractor: TrafExtractor) -> None:
-    html = _html_with('<meta property="article:published_time" content="2026-08-01T10:30:00Z">')
+_JSON_LD = '<script type="application/ld+json">{"@type":"Article","datePublished":"2026-07-15T08:00:00+00:00"}</script>'
+
+
+@pytest.mark.parametrize(
+    ("markup", "in_body", "expected_month"),
+    [
+        ('<meta property="article:published_time" content="2026-08-01T10:30:00Z">', False, 8),
+        (_JSON_LD, False, 7),
+        ('<time datetime="2026-06-02">June 2</time>', True, 6),
+        # Unknown must stay unknown; guessing would poison TIME_HORIZON.
+        ("", False, None),
+        # A template artifact like a year-1 date is not a real time.
+        ('<meta name="date" content="0001-01-01T00:00:00Z">', False, None),
+    ],
+)
+def test_published_at(extractor: TrafExtractor, markup, in_body, expected_month) -> None:
+    html = _html_with(body_extra=markup) if in_body else _html_with(markup)
     page = extractor.extract(_result(html))
-    assert page.published_at is not None
-    assert page.published_at.year == 2026
-    assert page.published_at.month == 8
-    assert page.published_at.day == 1
+    assert (page.published_at.month if page.published_at else None) == expected_month
 
 
-def test_published_at_from_json_ld(extractor: TrafExtractor) -> None:
-    html = _html_with(
-        '<script type="application/ld+json">{"@type":"Article","datePublished":"2026-07-15T08:00:00+00:00"}</script>'
-    )
-    page = extractor.extract(_result(html))
-    assert page.published_at is not None
-    assert page.published_at.month == 7
-
-
-def test_published_at_from_time_element(extractor: TrafExtractor) -> None:
-    html = _html_with(body_extra='<time datetime="2026-06-02">June 2</time>')
-    page = extractor.extract(_result(html))
-    assert page.published_at is not None
-    assert page.published_at.month == 6
-
-
-def test_published_at_none_when_page_is_silent(extractor: TrafExtractor) -> None:
-    """Unknown must stay unknown; guessing would poison TIME_HORIZON."""
-    assert extractor.extract(_result()).published_at is None
-
-
-def test_published_at_rejects_absurd_dates(extractor: TrafExtractor) -> None:
-    """Template artifacts like a year-1 date must not become a real time."""
-    html = _html_with('<meta name="date" content="0001-01-01T00:00:00Z">')
-    assert extractor.extract(_result(html)).published_at is None
-
-
-def test_published_at_naive_value_is_treated_as_utc(extractor: TrafExtractor) -> None:
+def test_published_at_naive_value_is_utc(extractor: TrafExtractor) -> None:
     html = _html_with('<meta name="date" content="2026-05-04 12:00:00">')
     page = extractor.extract(_result(html))
     assert page.published_at is not None

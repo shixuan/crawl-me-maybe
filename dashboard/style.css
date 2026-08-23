@@ -1,0 +1,397 @@
+/* crawl me maybe — local dashboard.
+   White page, white cards, separated by shadow alone.  The one colour
+   is the pink; change it here and the whole page follows. */
+
+:root {
+  --pink:       #ee96b6;  /* edges and light fills */
+  --pink-rgb:   238, 150, 182;
+  /* One rule, so the page stops drifting: anything filled solid with
+     white text on it is the deep pink, anything merely edged is the
+     light one.  The button that leaves the page sets the deep value. */
+  --pink-deep:  #e07ea4;
+  /* The same colour as numbers, so every accent shadow is tinted with
+     the accent instead of guessing at it. */
+  --pink-deep-rgb: 224, 126, 164;
+  --pink-wash:  #fdf3f7;  /* evidence blocks, chip fills */
+  --pink-edge:  #f7dde7;
+
+  --page:  #ffffff;
+  --card:  #ffffff;
+  --ink:   #24242a;
+  --muted: #8b8b93;
+  --line:  #eeeef1;
+
+  /* Two layers: a tight one for the edge, a wide soft one for lift.
+     With a white card on a white page this is the only separation. */
+  --shadow:       0 1px 2px rgba(20, 20, 30, .04), 0 6px 20px rgba(20, 20, 30, .06);
+  --shadow-hover: 0 2px 4px rgba(20, 20, 30, .06), 0 12px 32px rgba(20, 20, 30, .10);
+
+  --round:    18px;
+  --round-sm: 12px;
+
+  /* Rounded throughout: title, small headings, every control. */
+  --rounded: "Quicksand", "Varela Round", ui-rounded, "SF Pro Rounded",
+             "Segoe UI Rounded", "Hiragino Maru Gothic ProN", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 28px 72px;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* -- masthead ------------------------------------------------------- */
+
+.masthead { max-width: 1240px; margin: 0 auto; padding: 44px 4px 26px; }
+
+.wordmark {
+  margin: 0;
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: clamp(38px, 6vw, 60px);
+  letter-spacing: -0.015em;
+  color: var(--pink-deep);
+}
+
+.tagline {
+  margin: 6px 0 0;
+  font-family: var(--rounded);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* -- layout --------------------------------------------------------- */
+
+.layout {
+  max-width: 1240px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+@media (max-width: 940px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: static; }
+}
+
+.rail { position: sticky; top: 20px; }
+
+/* -- cards ---------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border-radius: var(--round);
+  box-shadow: var(--shadow);
+  padding: 20px 22px;
+}
+
+.card-title {
+  margin: 0 0 14px;
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: .01em;
+}
+
+/* -- run list ------------------------------------------------------- */
+
+.rail-card { max-height: calc(100vh - 130px); display: flex; flex-direction: column; }
+
+.runs {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.run {
+  font-family: var(--rounded);
+  font-weight: 600;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-radius: var(--round-sm);
+  padding: 9px 11px;
+  margin-bottom: 3px;
+  cursor: pointer;
+  color: var(--ink);
+  transition: background .12s ease, color .12s ease;
+}
+
+.run:hover { background: var(--pink-wash); }
+.run[aria-current="true"] { background: var(--pink-deep); color: #fff; }
+.run[aria-current="true"] .run-sub { color: rgba(255, 255, 255, .82); }
+
+.run-when { display: block; font-size: 13px; }
+.run-sub { display: block; font-size: 12px; font-weight: 500; color: var(--muted); }
+
+/* -- filters -------------------------------------------------------- */
+
+/* The run's own words, so the page never has to describe the goal.
+   Labelled, because unannounced prose at the top of a page reads as
+   the page talking rather than as something the reader once typed. */
+.goal-block { margin: 0 0 14px; }
+
+.goal-label {
+  display: block;
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+
+.goal-prompt {
+  margin: 1px 0 0;
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--pink-deep);
+}
+
+.filters { margin-bottom: 18px; }
+.filter-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+.filter-row + .filter-row { margin-top: 12px; }
+.meta-row { justify-content: flex-start; }
+
+.search {
+  flex: 1;
+  min-width: 220px;
+  font-family: var(--rounded);
+  font-weight: 500;
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--card);
+  border: 1.5px solid var(--pink);
+  border-radius: 999px;
+  padding: 10px 18px;
+  outline: none;
+  /* Lifted like the cards, in the accent rather than in grey: it is the
+     one control a reader reaches for first. */
+  box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .10), 0 4px 14px rgba(var(--pink-deep-rgb), .12);
+  transition: border-color .12s ease, box-shadow .16s ease;
+}
+
+.search::placeholder { color: var(--muted); }
+
+.search:hover { box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .12), 0 6px 18px rgba(var(--pink-deep-rgb), .16); }
+
+.search:focus {
+  border-color: var(--pink-deep);
+  box-shadow: 0 0 0 4px rgba(var(--pink-rgb), .18), 0 6px 20px rgba(var(--pink-deep-rgb), .18);
+}
+
+.select {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--card);
+  border: 1.5px solid var(--pink);
+  border-radius: 999px;
+  padding: 7px 14px;
+  cursor: pointer;
+  outline: none;
+  /* Same treatment as the search box, one size down: these are the
+     other two controls a reader actually operates. */
+  box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .10), 0 3px 10px rgba(var(--pink-deep-rgb), .10);
+  transition: border-color .12s ease, box-shadow .16s ease;
+}
+
+.select:hover { box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .12), 0 5px 14px rgba(var(--pink-deep-rgb), .16); }
+
+.select:focus {
+  border-color: var(--pink-deep);
+  box-shadow: 0 0 0 3px rgba(var(--pink-rgb), .18), 0 5px 16px rgba(var(--pink-deep-rgb), .16);
+}
+
+.chip {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 13px;
+  border: 1px solid var(--pink-edge);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: all .12s ease;
+}
+
+.chip:hover { border-color: var(--pink); color: var(--pink-deep); }
+.chip[aria-pressed="true"] { background: var(--pink-deep); border-color: var(--pink-deep); color: #fff; }
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-label {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.field input { accent-color: var(--pink); width: 15px; height: 15px; cursor: pointer; }
+
+.tally {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--pink-deep);
+  margin-right: auto;
+}
+
+/* -- result cards --------------------------------------------------- */
+
+.result {
+  background: var(--card);
+  border-radius: var(--round);
+  box-shadow: var(--shadow);
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  transition: box-shadow .16s ease, transform .16s ease;
+}
+
+.result:hover { box-shadow: var(--shadow-hover); transform: translateY(-1px); }
+
+.result-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+
+.result-title {
+  margin: 0;
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: 17px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.result-title a { color: inherit; text-decoration: none; }
+.result-title a:hover { color: var(--pink-deep); }
+
+.score {
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: 12px;
+  color: #fff;
+  background: var(--pink-deep);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.class-tag {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--pink-wash);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.result-sub {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* The one thing on a card that leaves the page, so it is the one thing
+   that looks pressable rather than written. */
+.open {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 12px;
+  color: #fff;
+  background: var(--pink-deep);
+  border-radius: 999px;
+  padding: 3px 12px;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .22);
+  transition: background .12s ease, box-shadow .16s ease, transform .12s ease;
+}
+
+.open:hover {
+  background: #d16d95;
+  box-shadow: 0 2px 8px rgba(var(--pink-deep-rgb), .34);
+  transform: translateY(-1px);
+}
+
+.open:active { transform: translateY(0); box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .28); }
+
+.summary { margin: 12px 0 0; color: #3d3d45; }
+
+/* Fields and the page text each one was checked against. */
+.fields { margin: 14px 0 0; display: grid; gap: 9px; }
+
+/* The same treatment as the filter bar: white, edged in the accent,
+   lifted in it too.  These hold the part of a result that was checked
+   against the page, so they read as things rather than as fill. */
+.field-row {
+  background: var(--card);
+  border: 1.5px solid var(--pink);
+  border-radius: var(--round-sm);
+  padding: 10px 13px;
+  box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .10), 0 3px 10px rgba(var(--pink-deep-rgb), .10);
+}
+
+.field-name {
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: .04em;
+  color: var(--pink-deep);
+}
+
+.field-value { margin-top: 1px; font-weight: 500; }
+
+.evidence {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--pink-edge);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tags { margin: 12px 0 0; display: flex; gap: 6px; flex-wrap: wrap; }
+
+.tag {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--pink-deep);
+  background: var(--card);
+  border: 1.5px solid var(--pink);
+  border-radius: 999px;
+  padding: 2px 10px;
+  box-shadow: 0 1px 2px rgba(var(--pink-deep-rgb), .10), 0 2px 8px rgba(var(--pink-deep-rgb), .10);
+}
+
+.empty, .loading {
+  font-family: var(--rounded);
+  font-weight: 600;
+  color: var(--muted);
+  text-align: center;
+  padding: 44px 0;
+}

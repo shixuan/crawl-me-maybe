@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     goal_statement TEXT DEFAULT '',
     keywords   TEXT DEFAULT '[]',
     since      TEXT,
-    embedding  TEXT,
     max_pages  INTEGER DEFAULT 500,
     max_tokens INTEGER DEFAULT 500000,
     max_duration_sec INTEGER DEFAULT 3600,
@@ -75,6 +74,11 @@ CREATE TABLE IF NOT EXISTS links (
     source_url_key  TEXT,
     depth           INTEGER DEFAULT 0,
     text            TEXT DEFAULT '',
+    -- When the source said this was published, if it said so at all.
+    -- Ranking reads it live, and without a column here nothing can be
+    -- recomputed afterwards: a quarter of the feed factor set was
+    -- missing from every offline measurement of it.
+    posted_at       TEXT DEFAULT '',
     signals_json    TEXT DEFAULT '{}',
     status          TEXT DEFAULT 'INGESTED',
     discovered_at   TEXT NOT NULL
@@ -100,10 +104,12 @@ CREATE TABLE IF NOT EXISTS analyses (
     relevance_score REAL DEFAULT 0.0,
     summary         TEXT,
     structured_data TEXT DEFAULT '{}',
+    extracted_json  TEXT DEFAULT '{}',
     tags_json       TEXT DEFAULT '[]',
     feedback_json   TEXT DEFAULT '{}',
     model           TEXT DEFAULT '',
     prompt_version  TEXT DEFAULT '',
+    spec_version    TEXT DEFAULT '',
     tokens_used     INTEGER DEFAULT 0,
     analyzed_at     TEXT NOT NULL
 );
@@ -243,21 +249,30 @@ class SqliteCrawlDb:
         path.write_bytes(content)
         return str(path)
 
+    def payload_path(self, url_key: str, fetch_id: str, index: int) -> str:
+        return str(self._raw_dir / url_key / f"{fetch_id}.payload.{index}")
+
+    def save_payload(self, url_key: str, fetch_id: str, index: int, content: bytes) -> str:
+        """Store one kept sub-response beside the page that fetched it."""
+        path = Path(self.payload_path(url_key, fetch_id, index))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return str(path)
+
     #: crawl_goals --------------------------------------------------------
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
-            "embedding, max_pages, max_tokens, max_duration_sec, "
+            "max_pages, max_tokens, max_duration_sec, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
                 goal_json.get("goal_statement", ""),
                 json.dumps(goal_json.get("keywords", [])),
                 goal_json.get("since"),
-                json.dumps(goal_json.get("embedding")),
                 goal_json.get("max_pages", 500),
                 goal_json.get("max_tokens", 500_000),
                 goal_json.get("max_duration_sec", 3600),
@@ -344,8 +359,8 @@ class SqliteCrawlDb:
         self._enqueue_write(
             "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, source_page_id, "
-            "source_url_key, depth, text, signals_json, status, discovered_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_url_key, depth, text, posted_at, signals_json, status, discovered_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 candidate.candidate_id,
                 candidate.url.url_key,
@@ -358,6 +373,7 @@ class SqliteCrawlDb:
                 candidate.source_url_key,
                 candidate.depth,
                 candidate.text,
+                candidate.posted_at.isoformat() if candidate.posted_at else "",
                 json.dumps(candidate.signals),
                 candidate.status,
                 candidate.discovered_at.isoformat() if candidate.discovered_at else "",
@@ -402,9 +418,9 @@ class SqliteCrawlDb:
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
-            "classification, relevance_score, summary, structured_data, tags_json, "
-            "feedback_json, model, prompt_version, tokens_used, analyzed_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "classification, relevance_score, summary, structured_data, extracted_json, "
+            "tags_json, feedback_json, model, prompt_version, spec_version, tokens_used, "
+            "analyzed_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_json["analysis_id"],
                 analysis_json.get("page_id", ""),
@@ -414,12 +430,14 @@ class SqliteCrawlDb:
                 analysis_json.get("relevance_score", 0.0),
                 analysis_json.get("summary"),
                 json.dumps(analysis_json.get("structured_data", {})),
+                json.dumps(analysis_json.get("extracted", {})),
                 json.dumps(analysis_json.get("tags", [])),
                 # The schema field is "feedback"; a plain model dump
                 # carries it under that key (never "feedback_json").
                 json.dumps(analysis_json.get("feedback", {})),
                 analysis_json.get("model", ""),
                 analysis_json.get("prompt_version", ""),
+                analysis_json.get("spec_version", ""),
                 analysis_json.get("tokens_used", 0),
                 analysis_json.get("analyzed_at", ""),
             ),
@@ -429,17 +447,26 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    async def has_analysis(self, url_key: str, goal_id: str, prompt_version: str, model: str = "") -> bool:
+    async def has_analysis(
+        self,
+        url_key: str,
+        goal_id: str,
+        prompt_version: str,
+        model: str = "",
+        spec_version: str = "",
+    ) -> bool:
         """Whether an analysis with this identity already exists.
 
-        The identity is (url_key, goal_id, prompt_version, model); the
-        model is only known after an LLM call, so callers that run the
-        provider default (no model configured) pass "" to match any
-        model instead.
+        The identity is (url_key, goal_id, prompt_version, spec_version,
+        model); the model is only known after an LLM call, so callers
+        that run the provider default (no model configured) pass "" to
+        match any model instead.  spec_version is "" for a goal that asks
+        for no fields, which matches every analysis written before there
+        were any.
         """
         cur = await self._execute_now(
-            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ?",
-            (url_key, goal_id, prompt_version),
+            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ? AND spec_version = ?",
+            (url_key, goal_id, prompt_version, spec_version),
         )
         rows = [dict(r) for r in await cur.fetchall()]
         if model == "":

@@ -36,7 +36,7 @@ from crawlme.config import Settings
 from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
+from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page, spec_version
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,7 @@ async def run_replay(
                     goal.goal_statement = enhanced.statement
                     goal.keywords = enhanced.keywords
                     goal.since = enhanced.since
+                    goal.extraction_spec = enhanced.extraction_spec
                 storage.save_goal(goal.model_dump(mode="json"))
             else:
                 if existing.get("prompt") != prompt:
@@ -180,7 +181,11 @@ async def run_replay(
                     empty += 1
                     continue
                 if not force and await storage.has_analysis(
-                    page.url_key, goal.goal_id, _PROMPT_VERSION, settings.llm_model
+                    page.url_key,
+                    goal.goal_id,
+                    _PROMPT_VERSION,
+                    settings.llm_model,
+                    spec_version(goal.extraction_spec),
                 ):
                     skipped += 1
                     continue
@@ -283,13 +288,12 @@ def print_replay_summary(r: ReplayReport) -> None:
 def _goal_from_row(row: dict[str, Any]) -> CrawlGoal:
     """Rebuild a CrawlGoal from a stored row.
 
-    save_goal stores the JSON-shaped fields (keywords, embedding,
+    save_goal stores the JSON-shaped fields (keywords,
     extraction_spec) as JSON text columns, so they must be decoded
     before validation.
     """
     data = dict(row)
     data["keywords"] = json.loads(data.get("keywords") or "[]")
-    data["embedding"] = json.loads(data["embedding"]) if data.get("embedding") else None
     data["extraction_spec"] = json.loads(data["extraction_spec"]) if data.get("extraction_spec") else None
     return CrawlGoal.model_validate(data)
 

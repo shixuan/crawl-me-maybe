@@ -8,8 +8,14 @@ __pycache__/
 dist/
 *.egg-info/
 .playwright/
-docs/
 results/*
 .coverage
 coverage.xml
 htmlcov/
+docs/*
+!docs/arch.md
+
+# Browser sessions: real login cookies, never commit
+*session*.json
+*cookies*.json
+.auth/

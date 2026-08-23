@@ -36,13 +36,23 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 30
 # Response cap: 30 rankings with short rationales fit comfortably, and
 # the headroom tolerates verbose models without truncation.
-_MAX_TOKENS = 4096
 # Link texts are truncated so the prompt size stays roughly
 # proportional to the batch size; the URL is what mostly matters.
 _MAX_FIELD_CHARS = 160
+# Room for a batch's texts.  Sixty real posts came to 40k characters in
+# total, so this holds a normal batch whole and splits an unusual one
+# into more calls rather than into fragments.  Each extra call repeats
+# only the system prompt, which is a rounding error next to the text.
+_MAX_BATCH_CHARS = 12_000
 # Priority for candidates the model did not mention at all: kept with a
 # neutral score (fail-open, see module docstring).
 _NEUTRAL_PRIORITY = 0.5
+# Below anything the model scores itself, so a rejection is read last
+# rather than not at all.  Not zero: a candidate nobody has an opinion
+# about should still outrank one the model argued against.
+_DEMOTED_PRIORITY = 0.01
+_DROP_TAG = "llm_drop"
+_DEMOTED_TAG = "llm_drop_demoted"
 # At most this many previously-relevant pages are shown to the model.
 _MAX_RELEVANT = 5
 
@@ -51,13 +61,17 @@ _SYSTEM = (
     "whether a link is relevant, but which link to click first under a limited budget. "
     "You see a batch of candidate links plus the crawl goal and what the crawl found "
     "so far, so compare the candidates against each other, not in isolation. Reply "
-    'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0, '
-    '"rationale": "..."}], "candidates_to_drop": ["<id>"], "new_search_suggestions": '
+    'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0}], '
+    '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}], '
+    '"new_search_suggestions": '
     '["..."]}. Include every candidate id exactly once, either in rankings or in '
     "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
-    "clicked earlier, so use the full 0.0 to 1.0 range. candidates_to_drop holds "
-    "clear junk under the goal. If the whole batch is junk, put every id in "
-    "candidates_to_drop. new_search_suggestions are optional new search directions "
+    "clicked earlier, so use the full 0.0 to 1.0 range, and no rationale: the "
+    "priority is the whole answer for something you are keeping. candidates_to_drop "
+    "holds clear junk under the goal, each with a short rationale saying what makes "
+    "it junk, because a rejection is the one a reader has to be able to argue with. "
+    "If the whole batch is junk, put every id in candidates_to_drop. "
+    "new_search_suggestions are optional new search directions "
     "you noticed while judging."
 )
 
@@ -78,17 +92,38 @@ class LLMRanker:
     never blocks on the LLM.
     """
 
-    def __init__(self, client: LLMClient, batch_size: int = _BATCH_SIZE) -> None:
+    def __init__(
+        self,
+        client: LLMClient,
+        batch_size: int = _BATCH_SIZE,
+        demote_dropped: bool = False,
+        max_batch_chars: int = _MAX_BATCH_CHARS,
+    ) -> None:
         self._client = client
         self._batch_size = batch_size
+        self._demote_dropped = demote_dropped
+        self._max_batch_chars = max_batch_chars
+        # Lowered whenever a reply runs out of room, so the cost of
+        # learning the right size is paid once rather than per batch.
+        self._cap = batch_size
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMRanker | None:
         """Default-on with graceful auto-off: without credentials there
         is nothing to call, so the stage is skipped entirely.  *budget*
         is shared across all LLM consumers of the task."""
-        client = LLMClient.from_settings_if_configured(settings, budget=budget)
-        return cls(client) if client is not None else None
+        # The ranking stage takes its own reasoning setting when one is
+        # given: it orders candidates for fetching, and the analyzer
+        # judges every page again afterwards, so the trade here is not
+        # the trade the analyzer faces.
+        client = LLMClient.from_settings_if_configured(
+            settings,
+            budget=budget,
+            reasoning_effort=settings.llm_rank_reasoning_effort,
+        )
+        if client is None:
+            return None
+        return cls(client, demote_dropped=settings.recall, max_batch_chars=settings.llm_max_batch_chars)
 
     async def rank_batch(
         self,
@@ -97,19 +132,57 @@ class LLMRanker:
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None = None,
     ) -> list[RankDecision]:
-        """Rank all candidates in chunks of _batch_size, one LLM call per chunk."""
+        """Rank every candidate, one LLM call per chunk."""
         if not candidates:
             return []
         decisions: list[RankDecision] = []
-        for start in range(0, len(candidates), self._batch_size):
-            chunk = candidates[start : start + self._batch_size]
+        for chunk in self._chunks(candidates):
             decisions.extend(await self._rank_chunk(goal, chunk, history, page_contexts))
         return decisions
+
+    def _chunks(self, candidates: list[Candidate]) -> list[list[Candidate]]:
+        """Split into calls by count and by how much text they carry.
+
+        A candidate is never split across the boundary, and never shown
+        in part: whatever it says, the model sees all of it or waits for
+        the next call.  Truncating each candidate instead is what a
+        char cap does, and it fails the same way at every size -- a post
+        whose one relevant line sits past the cut is rejected for not
+        containing what was cut off.  It cost a run three real results
+        at 160 characters, and would have cost fewer but not none at 800.
+
+        Chunking by text is what makes that affordable: one long post
+        takes room from its batch rather than from its own content.
+        """
+        out: list[list[Candidate]] = []
+        chunk: list[Candidate] = []
+        chars = 0
+        for c in candidates:
+            size = len(c.text)
+            if chunk and (len(chunk) >= min(self._batch_size, self._cap) or chars + size > self._max_batch_chars):
+                out.append(chunk)
+                chunk, chars = [], 0
+            chunk.append(c)
+            chars += size
+        if chunk:
+            out.append(chunk)
+        return out
 
     async def aclose(self) -> None:
         """The client pools nothing between calls; provider cleanup is
         the CLI's job at loop teardown."""
         return None
+
+    async def _halve_batches(self, overran: int) -> None:
+        """Remember the size that did not fit, for the batches after this.
+
+        Splitting recovers the batch in hand; without lowering the cap
+        the next one is cut to the same size and overruns the same way.
+        """
+        cap = max(1, min(self._cap, overran) // 2)
+        if cap < self._cap:
+            logger.warning("llm.rank batch cap %d -> %d after an overrun", self._cap, cap)
+            self._cap = cap
 
     async def _rank_chunk(
         self,
@@ -119,31 +192,50 @@ class LLMRanker:
         page_contexts: dict[str, dict[str, Any]] | None,
     ) -> list[RankDecision]:
         prompt = _build_prompt(goal, chunk, history, page_contexts)
-        resp = await self._client.chat(prompt, system=_SYSTEM, max_tokens=_MAX_TOKENS, json_mode=True)
+        resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
         data = _parse_response(resp.content)
         if data is None:
-            logger.warning(
-                "llm.rank unparseable json for %d candidates, retrying once with a stricter instruction",
-                len(chunk),
-            )
-            resp = await self._client.chat(
-                prompt + _REPAIR_SUFFIX,
-                system=_SYSTEM,
-                max_tokens=_MAX_TOKENS,
-                json_mode=True,
-            )
+            # A reply that used the whole ceiling was cut off mid-JSON.
+            # Raising the ceiling was the first answer and the wrong one:
+            # the reply has to be that long because the batch is that
+            # big, so a bigger ceiling buys another slow call that runs
+            # out too.  One run spent four of them, 33k wasted output
+            # tokens, and 284 seconds -- half its total time -- doubling
+            # its way through the same twenty-one candidates.
+            #
+            # The ceiling belongs to the model; the batch size is ours.
+            if resp.truncated and len(chunk) > 1:
+                await self._halve_batches(len(chunk))
+                mid = len(chunk) // 2
+                first = await self._rank_chunk(goal, chunk[:mid], history, page_contexts)
+                return first + await self._rank_chunk(goal, chunk[mid:], history, page_contexts)
+            if resp.truncated:
+                # One candidate that will not fit is the only case where
+                # more room is the answer, because there is nothing to
+                # split.
+                logger.warning("llm.rank one candidate overruns the ceiling, retrying with more room")
+                resp = await self._client.chat(
+                    prompt, system=_SYSTEM, max_tokens=resp.output_tokens * 2, json_mode=True
+                )
+            else:
+                logger.warning(
+                    "llm.rank unparseable json for %d candidates, retrying once with a stricter instruction",
+                    len(chunk),
+                )
+                resp = await self._client.chat(prompt + _REPAIR_SUFFIX, system=_SYSTEM, json_mode=True)
             data = _parse_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {len(chunk)} candidates after repair retry")
 
         tokens = resp.input_tokens + resp.output_tokens
-        decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow())
+        decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow(), demote_dropped=self._demote_dropped)
         kept = sum(1 for d in decisions if not d.dropped)
         logger.info(
-            "llm.rank batch=%d kept=%d dropped=%d model=%s tokens=+%d",
+            "llm.rank batch=%d kept=%d %s=%d model=%s tokens=+%d",
             len(chunk),
             kept,
-            len(chunk) - kept,
+            "demoted" if self._demote_dropped else "dropped",
+            sum(1 for d in decisions if (d.rationale or "").startswith(_DROP_TAG)),
             resp.model,
             tokens,
         )
@@ -167,7 +259,10 @@ def _build_prompt(
     for c in candidates:
         lines.append(f"{c.candidate_id}: {_trunc(c.url.canonical)}")
         if c.text:
-            lines.append(f"  text: {_trunc(c.text)}")
+            # Whole, not truncated: this is what the candidate says, and
+            # the batch is sized so it fits.  The cap below still guards
+            # the proxies a link carries, which are short by nature.
+            lines.append(f"  text: {c.text}")
         if c.anchor:
             lines.append(f"  anchor: {_trunc(c.anchor)}")
         if c.snippet:
@@ -230,12 +325,21 @@ def _to_decisions(
     *,
     tokens_used: int,
     now: datetime.datetime,
+    demote_dropped: bool = False,
 ) -> list[RankDecision]:
     """Turn the parsed response into one decision per candidate.
 
     Candidates in rankings are kept with the model's priority (clamped
     to [0, 1]); candidates in candidates_to_drop are dropped; ids the
     model did not mention are kept with a neutral priority.
+
+    Under *demote_dropped* a rejection becomes the lowest priority there
+    is instead of a removal. What the model would have discarded is then
+    read last and only if the page budget reaches it, so the run's own
+    limit decides where to stop rather than one model's yes or no. It
+    costs a fetch for everything the model doubted, which is the point:
+    a wrong keep is a page you skim, a wrong drop is a result you never
+    learn existed.
     """
     scored: dict[str, tuple[float, str]] = {}
     raw_rankings = data.get("rankings")
@@ -256,11 +360,23 @@ def _to_decisions(
             rationale = str(rationale).strip() if isinstance(rationale, str) else ""
             scored[cid] = (round(priority, 4), rationale)
 
-    drop_ids: set[str] = set()
+    # A rejection carries its reason, so a mistaken one can be read back
+    # rather than guessed at.  Bare ids stay valid: the older shape, and
+    # what a model returns when it ignores the instruction.
+    drops: dict[str, str] = {}
     raw_drops = data.get("candidates_to_drop")
     if isinstance(raw_drops, list):
-        drop_ids = {d for d in raw_drops if isinstance(d, str) and d}
-    drop_ids -= set(scored)  # rankings win when an id lands in both
+        for d in raw_drops:
+            if isinstance(d, str) and d:
+                drops[d] = ""
+            elif isinstance(d, dict):
+                did = d.get("id")
+                if isinstance(did, str) and did:
+                    why = d.get("rationale")
+                    drops[did] = str(why).strip() if isinstance(why, str) else ""
+    for cid in set(scored):
+        drops.pop(cid, None)  # rankings win when an id lands in both
+    drop_ids = set(drops)
 
     known_ids = {c.candidate_id for c in candidates}
     unknown = (set(scored) | drop_ids) - known_ids
@@ -281,7 +397,13 @@ def _to_decisions(
             if not rationale:
                 rationale = f"llm_priority={priority:.4f}"
         elif cid in drop_ids:
-            priority, dropped, rationale = 0.0, True, "llm_drop"
+            # The tag stays in front of the reason: it is what marks the
+            # decision as a rejection for anything counting them later,
+            # and the reason is what makes a mistaken one readable.
+            tag = _DEMOTED_TAG if demote_dropped else _DROP_TAG
+            why = drops[cid]
+            rationale = f"{tag}: {why}" if why else tag
+            priority, dropped = (_DEMOTED_PRIORITY, False) if demote_dropped else (0.0, True)
         else:
             priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
             missing += 1

@@ -7,7 +7,7 @@ override it at runtime, so the effective priority is:
 
 Documentation discipline: `.env.example` advertises only the set-once
 knobs (secrets, timeouts, deep tuning).  The per-run knobs (result_dir,
-ignore_robots, embedding_*, log_level) also exist here so flags can
+ignore_robots, log_level) also exist here so flags can
 override them, but their env twins are deliberately undocumented.
 When both are given, the flag wins.
 """
@@ -30,15 +30,15 @@ class Settings(BaseSettings):
     #    mechanically but are not advertised in .env.example) ---------
     result_dir: Path = Path("results")
     ignore_robots: bool = False
-    # "local" default: the full pipeline (rule + embedding) runs out of
-    # the box.  "" (--embedding off) = rule-only v0.1 behavior.
-    embedding_provider: str = "local"  # local | api | ""
-    embedding_model: str = ""  # "" = provider default
-    # The analysis stage (page analyzer + the steering it feeds: run
-    # signals + cross-task domain priors).  On by default, degrades
-    # without credentials; --analysis off disables the whole subsystem
-    # for a clean baseline (steering derives from analysis, so it goes
-    # with it).
+    # Trade tokens for coverage: no stage removes a candidate, it only
+    # ranks it last, and the page budget decides where to stop.  Off by
+    # default because a link graph without a hard filter grows without
+    # bound; a feed is finite, so the trade is available there.
+    recall: bool = False
+    # The analysis stage: one LLM call per fetched page, returning a
+    # verdict, the fields the goal asked for, and the evidence behind
+    # both.  On by default, degrades without credentials; --analysis
+    # off disables it for a clean baseline.
     analysis_enabled: bool = True
     # Page text sent to the analyzer per page, in characters.  The
     # dominant analyzer cost driver.  Set to 3000 by the 10-replicate
@@ -55,22 +55,56 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2
-
-    # -: Embedding ---
-    # Credentials for the api provider (--embedding api).  Keys are
-    # secrets: env vars only, never flags.
-    embedding_api_key: str = ""
-    embedding_base_url: str = ""
-    embedding_keep: int = 60
-    # Max texts per API request (api provider only); larger batches
-    # are split automatically.  Local inference has no such limit.
-    embedding_batch_size: int = 100
+    # Ceiling on one response, and on a reasoning model the thinking is
+    # spent out of it before any answer is written.  Too low and the
+    # reply comes back empty or half-finished, which reads like a broken
+    # parser rather than a budget.  A ceiling is not a cost: only tokens
+    # actually generated are billed, so headroom is free until used.
+    llm_max_output_tokens: int = 8192
+    # How much candidate text one ranking call may carry.  Candidates are
+    # never cut to fit: a batch that would exceed this is split into more
+    # calls, because a post whose only relevant line sits past a cut is
+    # rejected for not containing what was cut off.  Raise it for a model
+    # with a larger context, lower it if a provider rejects the request.
+    llm_max_batch_chars: int = 12_000
+    # How hard the model thinks before answering, for models that think.
+    # Empty sends nothing and takes the provider's default, which is what
+    # every run before this one paid for: measured on one crawl, 84% of
+    # output tokens were thinking, and thinking is billed as output and
+    # then discarded.  Values are the provider's ("minimal", "low",
+    # "medium", "high", and on some providers "none"), passed through
+    # rather than validated here, because the vocabulary is theirs.
+    # How hard the model thinks before answering, per stage, on models
+    # that think.  Empty sends nothing and takes the provider's default.
+    # Values are the provider's: minimal / low / medium / high, and on
+    # DeepSeek "none", the only value there that turns thinking off.
+    llm_rank_reasoning_effort: str = ""
+    llm_analyze_reasoning_effort: str = ""
 
     # -: Fetch ---
     fetch_concurrency: int = 6
     fetch_timeout_connect: float = 10.0
     fetch_timeout_read: float = 30.0
     fetch_max_retries: int = 3
+    # "http" is plain httpx; "browser" renders with Playwright, which is
+    # what a JS-built timeline or a login-walled platform needs.
+    fetcher: str = "http"
+    # Path to a storage_state JSON the user exports themselves.  Empty
+    # means an anonymous browser.  Secrets stay out of flags: this is a
+    # path, and the file itself never enters the repo.
+    browser_storage_state: str = ""
+    # Ceiling on what one page load may keep of its own sub-responses.
+    # They are held in memory before they reach disk, so this is the
+    # difference between a heavy page and an out-of-memory machine.
+    browser_max_payload_bytes: int = 8 * 1024 * 1024
+    # How many times a feed listing is asked for more of itself.  A
+    # listing hands out one screen, so a window measured in weeks is
+    # answered with the dozen most recent posts unless someone keeps
+    # asking.  Each scroll is one more request the page makes, so this is
+    # also the knob that trades coverage against how much a platform
+    # sees of the crawl.  Ignored outside feed mode: a link graph has
+    # nothing below the fold worth waiting for.
+    feed_scrolls: int = 4
     user_agents: list[str] = [
         "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
     ]
@@ -86,15 +120,6 @@ class Settings(BaseSettings):
 
     # -: Frontier ---
     candidate_buffer_size: int = 2_000
-    rank_batch_size: int = 100
-    rank_cooldown_sec: float = 30.0
-    checkpoint_interval: int = 10
-    priority_aging_window: float = 600.0
-
-    # -: Robots ---
-    robots_ttl_hours: int = 24
-    circuit_breaker_threshold: int = 5
-    circuit_breaker_cooldown_min: int = 10
 
     # -: Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF

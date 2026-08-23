@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime
+import json
 
 import pytest
 
-from crawlme.pioneer.frontier import PriorityFrontier
-from crawlme.schemas import URL, FrontierItem
+from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.pioneer.queue import PriorityQueue
+from crawlme.schemas import URL, FrontierItem, FrontierSnapshot
 
 
 def _item(url_key: str = "k1", priority: float = 0.5, domain: str = "example.com") -> FrontierItem:
@@ -18,8 +20,8 @@ def _item(url_key: str = "k1", priority: float = 0.5, domain: str = "example.com
 
 
 @pytest.fixture
-def frontier() -> PriorityFrontier:
-    return PriorityFrontier()
+def frontier() -> GatedFrontier:
+    return GatedFrontier()
 
 
 @pytest.mark.asyncio
@@ -45,7 +47,7 @@ async def test_pop_respects_domain_gate(frontier):
 
 @pytest.mark.asyncio
 async def test_domain_budget_exhausted(frontier):
-    f = PriorityFrontier(domain_budget=1)
+    f = GatedFrontier(domain_budget=1)
     items = [_item("k1", 0.5, "x.com"), _item("k2", 0.9, "x.com")]
     await f.push_batch(items)
 
@@ -97,7 +99,7 @@ async def test_snapshot_roundtrip(frontier):
     snap = frontier.snapshot(task_id="t1")
     assert len(snap.visited) == 1
 
-    f2 = PriorityFrontier()
+    f2 = GatedFrontier()
     f2.restore(snap)
     assert f2.contains("k1")
     assert f2.contains("k2")
@@ -113,12 +115,10 @@ async def test_snapshot_pending_gated_items(frontier):
     await frontier.pop_next()
 
     snap = frontier.snapshot()
-    assert len(snap.pending) == 1
-    assert snap.pending[0].url_key == "k1"
-
-    f2 = PriorityFrontier()
+    f2 = GatedFrontier()
     f2.restore(snap)
-    assert f2.size == 1
+    assert f2.size == 1, "an item waiting on a cooldown survived the round trip"
+    assert f2.get_prefilter_context().is_visited_or_queued("k1")
 
 
 @pytest.mark.asyncio
@@ -135,3 +135,106 @@ async def test_pending_items_retry_after_gate(frontier):
     popped = await frontier.pop_next(now=future + datetime.timedelta(seconds=1))
     assert popped is not None
     assert popped.url_key == "k1"
+
+
+@pytest.mark.asyncio
+async def test_page_in_flight_not_requeued():
+    """It is neither waiting nor finished, and dedup has to cover both.
+
+    Discovered again from another page mid-fetch, it would otherwise be
+    read twice and analysed twice.
+    """
+    f = GatedFrontier(domain_budget=0, source=PriorityQueue())
+    await f.push_batch([_item("dup", priority=0.9)])
+    taken = await f.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
+    assert taken is not None
+
+    await f.push_batch([_item("dup", priority=0.9)])
+    assert f.size == 0, "the same page came back while it was in flight"
+    assert f.get_prefilter_context().is_visited_or_queued("dup")
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_keeps_the_queue():
+    """The snapshot used to copy one ordering's internals by name.
+
+    With `heap` absent from a composed ordering's state, every
+    checkpoint stored an empty queue and every resume began with nothing
+    to fetch, without an error anywhere.
+    """
+    make = PriorityQueue
+    f = GatedFrontier(source=make())
+    await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
+    assert f.size == 2
+
+    restored = GatedFrontier(source=make())
+    restored.restore(f.snapshot())
+    assert restored.size == 2
+    assert restored.get_prefilter_context().is_visited_or_queued("a")
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_without_ordering_state_loads():
+    f = GatedFrontier()
+    await f.push_batch([_item("old", 0.7)])
+    snap = f.snapshot()
+    legacy = snap.model_copy(update={"ordering": {}, "heap": [_item("old", 0.7)]})
+
+    restored = GatedFrontier()
+    restored.restore(legacy)
+    assert restored.size == 1
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_survives_json():
+    """The path a real resume takes, which no test walked before.
+
+    In memory dump() and load() agreed because both spoke models; on
+    disk the state is data, and the first thing load() did with it was
+    read an attribute.
+    """
+    make = PriorityQueue
+    f = GatedFrontier(source=make())
+    await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
+
+    on_disk = json.loads(f.snapshot().model_dump_json())
+    restored = GatedFrontier(source=make())
+    restored.restore(FrontierSnapshot.model_validate(on_disk))
+
+    assert restored.size == 2
+    got = await restored.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
+    assert got is not None and got.url_key == "a", "priority survived too"
+
+
+@pytest.mark.asyncio
+async def test_cooling_item_counts_as_work(frontier):
+    """A pop that returns nothing does not mean there is nothing left.
+
+    The fetch pump reads this to tell a frontier that is empty from one
+    whose only item is waiting out a clock, and once read the two the
+    same way it ended a run at zero pages with its seed still queued.
+    """
+    item = _item("k1", 1.0)
+    item.next_available_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+    await frontier.push_batch([item])
+    assert await frontier.pop_next() is None
+
+    assert frontier.cooling == 1
+    assert frontier.size == 1
+
+
+@pytest.mark.asyncio
+async def test_refused_item_is_not_cooling(frontier):
+    """A spent budget refuses the same item forever, so nobody should wait.
+
+    Counting it as cooling would leave the pump asleep on an item that
+    is never coming, which is the opposite failure and just as quiet.
+    """
+    await frontier.push_batch([_item("k1", 1.0)])
+    first = await frontier.pop_next(global_budget=1)
+    await frontier.record_outcome(first, "COMPLETED")
+
+    await frontier.push_batch([_item("k2", 1.0)])
+    assert await frontier.pop_next(global_budget=1) is None, "the budget is spent"
+    assert frontier.size == 1
+    assert frontier.cooling == 0

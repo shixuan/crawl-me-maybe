@@ -1,0 +1,206 @@
+"""HTTP fetch worker.
+
+Takes a FrontierItem (essentially a URL) and downloads the page.  This is the
+only module in the system that touches the network, and it deliberately knows
+nothing about crawling strategy, ranking, or content analysis.
+
+Error handling
+--------------
+Responses are classified into three buckets:
+
+    Transient (retryable)
+        5xx server errors, connection timeouts, DNS failures, 429 rate
+        limits, and attempts that exceed the total deadline (below).
+        Exponential backoff: 2^attempt seconds, capped at 60s.  For 429
+        specifically, the Retry-After header is respected before retrying.
+
+    Permanent (fatal)
+        4xx client errors (except 429).  These raise FetchError immediately
+        without retrying: the page doesn't exist, we're forbidden, etc.
+
+    Success (2xx, 3xx)
+        Returned normally.  3xx redirects are followed manually (not via
+        httpx's follow_redirects) so we can record the full redirect chain
+        in FetchResult.redirects.
+
+Total deadline
+--------------
+Per-phase timeouts (connect/read) are not enough: a host that trickles a
+few bytes every couple of seconds resets the read timer forever.  Each
+attempt therefore runs under asyncio.wait_for with a hard total deadline
+(default: connect + read + 10s).  Hitting it counts as transient.
+
+_TransientError is an internal signal used in _do_fetch to tell the outer
+fetch() retry loop to back off and try again.  It never escapes the module.
+
+Redirect handling
+-----------------
+httpx's built-in follow_redirects discards the intermediate hops.  We need
+the full chain for canonicalization and link-graph tracking, so we follow
+manually: loop on 3xx, resolve Location relative to the current URL, append
+to redirects, and repeat until we land on a non-3xx response.  Chains are
+capped at 10 hops and cycles are detected (permanent FetchError, no retry).
+
+User-Agent rotation
+-------------------
+A UA is picked at random from the configured pool for each request to reduce
+the chance of being fingerprint-blocked.  The default pool is a single
+Chrome/Win UA; pass a longer list for production use."""
+
+from __future__ import annotations
+
+import asyncio
+import datetime
+import logging
+import random
+import time
+from urllib.parse import urljoin
+
+import httpx
+
+from crawlme.digest.fetcher.base import DEFAULT_UA, FetchError, with_retries
+from crawlme.schemas import URL, FetchResult, FrontierItem
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+# Hard cap on the manual redirect chain; loops are detected separately.
+_MAX_REDIRECTS = 10
+
+
+class HttpFetcher:
+    def __init__(
+        self,
+        user_agents: list[str] | None = None,
+        connect_timeout: float = 10.0,
+        read_timeout: float = 30.0,
+        max_retries: int = 3,
+        total_timeout: float | None = None,
+    ) -> None:
+        self._uas = user_agents if user_agents else [DEFAULT_UA]
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
+        self._max_retries = max_retries
+        # Hard deadline per attempt.  Per-phase timeouts (connect/read)
+        # are not enough: a host that trickles a few bytes every few
+        # seconds resets the read timer forever and hangs the fetch.
+        # Default: connect + read + 10s of slack.
+        self._total_timeout = total_timeout if total_timeout is not None else connect_timeout + read_timeout + 10.0
+        # One client for the whole run, built on first use because it
+        # binds to the running event loop.  A client per fetch threw the
+        # connection pool away every time and paid a fresh TCP and TLS
+        # handshake per request, which hurts most on the same-domain
+        # runs the domain budget encourages.
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._connect_timeout, read=self._read_timeout),
+                follow_redirects=False,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared client.  Safe to call more than once."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def fetch(self, item: FrontierItem) -> FetchResult:
+        async def attempt(n: int) -> FetchResult:
+            return await asyncio.wait_for(
+                self._do_fetch(item, n, time.monotonic()),
+                timeout=self._total_timeout,
+            )
+
+        return await with_retries(
+            attempt,
+            max_retries=self._max_retries,
+            is_transient=_is_transient,
+            label=f"url={item.url.canonical}",
+        )
+
+    async def _do_fetch(self, item: FrontierItem, attempt: int, started: float) -> FetchResult:
+        client = self._get_client()
+        # The UA rides on the request rather than the client, because the
+        # client outlives a single fetch now and rotation has to stay
+        # per-request.
+        headers = {"User-Agent": random.choice(self._uas)}  # noqa: S311
+        response = await client.get(item.url.canonical, headers=headers)
+
+        redirects: list[URL] = []
+        final_url_str = item.url.canonical
+        final_url_obj = item.url
+        seen: set[str] = {final_url_str}
+
+        while response.status_code in (301, 302, 303, 307, 308):
+            if len(redirects) >= _MAX_REDIRECTS:
+                raise FetchError(f"too many redirects (>{_MAX_REDIRECTS})")
+            location = response.headers.get("Location", "")
+            if not location:
+                break
+            final_url_str = urljoin(final_url_str, location)
+            if final_url_str in seen:
+                raise FetchError(f"redirect loop detected at {final_url_str}")
+            seen.add(final_url_str)
+            final_url_obj = URL(raw=final_url_str, canonical=final_url_str, url_key=final_url_str)
+            redirects.append(final_url_obj)
+            response = await client.get(final_url_str, headers=headers)
+
+        # 429: rate-limited: wait Retry-After seconds, then retry.
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "5")
+            try:
+                delay = int(retry_after)
+            except ValueError:
+                delay = 5
+            await asyncio.sleep(delay)
+            raise _TransientError("429 Too Many Requests")
+
+        # 5xx: transient server error: retry.
+        if response.status_code >= 500:
+            logger.warning("fetch.5xx url=%s status=%d", item.url.canonical, response.status_code)
+            raise _TransientError(f"Server error {response.status_code}")
+
+        # 4xx (non-429): permanent: do not retry.
+        if 400 <= response.status_code < 500:
+            logger.warning("fetch.4xx url=%s status=%d", item.url.canonical, response.status_code)
+            raise FetchError(f"Permanent HTTP error: {response.status_code}")
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.debug(
+            "fetch.ok url=%s status=%d bytes=%d duration=%dms",
+            item.url.canonical,
+            response.status_code,
+            len(response.content),
+            elapsed_ms,
+        )
+
+        return FetchResult(
+            item_id=item.item_id,
+            url_key=item.url_key,
+            url=item.url,
+            status_code=response.status_code,
+            final_url=final_url_obj,
+            redirects=redirects,
+            headers=dict(response.headers),
+            content_type=response.headers.get("Content-Type", ""),
+            raw=response.content,
+            fetch_duration_ms=elapsed_ms,
+            fetched_at=_utcnow(),
+            fetch_attempt=attempt,
+        )
+
+
+class _TransientError(Exception):
+    """Internal signal that a retryable error occurred."""
+
+
+def _is_transient(err: BaseException) -> bool:
+    """A total-deadline timeout and a 5xx/429 both deserve another try."""
+    return isinstance(err, asyncio.TimeoutError | _TransientError)

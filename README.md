@@ -1,5 +1,8 @@
 # Crawl me maybe
 
+[![ci](https://github.com/shixuan/crawl-me-maybe/actions/workflows/ci.yml/badge.svg)](https://github.com/shixuan/crawl-me-maybe/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-750014)](LICENSE)
+
 > Hey, I just met you,
 >
 > And this is crazy,
@@ -16,26 +19,77 @@ A goal-driven crawler. You say what you are looking for; it decides where to go,
 
 ```bash
 pip install -e .
-
-crawl run "recent funding news for AI startups" \
-  --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-pages 200
 ```
 
-Semantic ranking is on by default. The first run downloads a local embedding model (~220MB) once.
+Three kinds of run, one command. What changes is what the seeds point at.
 
-The LLM stages turn on when `LLM_API_KEY` or `LLM_BASE_URL` is set. Without credentials they degrade away and the crawl still runs.
+**A link graph.** Start anywhere, follow links, stop when you have enough.
 
 ```bash
-# seeds from an RSS feed
-crawl run "C++ backend job postings" --source rss --source-path "https://hnrss.org/newest"
-
-# seeds from a file
-crawl run "release notes" --source file --source-path ./urls.txt
-
-# ignore --max-pages, stop when the frontier runs dry
-crawl run "all press coverage" --seeds "..." --draining
+crawl run "recent funding news for AI startups" \
+  --seeds "https://news.ycombinator.com,https://techcrunch.com" \
+  --max-relevant 40 --page-budget 200
 ```
+
+**A feed.** A feed URL is an ordinary seed: it is fetched once, and whichever
+adapter recognises the document reads it. An entry is not a bare link -- it
+carries the title, the publication time, and usually the post itself -- so the
+ranker judges the text before anything else is fetched.
+
+```bash
+pip install -e '.[rss]'
+
+crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
+  --seeds "https://www.reddit.com/r/askTO/.rss,https://www.reddit.com/r/toronto/.rss" \
+  --max-relevant 20
+```
+
+**A login-walled platform.** Log in once by hand; the session file is what
+enables the platform adapters, and it also implies a browser, `--depth-limit 1`
+and `--domain-budget 0`. Seeds on such a platform without one are refused,
+because a logged-out crawl fetches login pages and reports them as an empty
+platform.
+
+```bash
+pip install -e '.[browser]' && playwright install chromium
+
+crawl session ./ig-session.json --feed instagram
+
+crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
+  --seeds ./accounts.json \
+  --session ./ig-session.json \
+  --max-relevant 40 --page-budget 150 \
+  --since '2 weeks' --ignore-robots
+```
+
+Then read what it found:
+
+```bash
+python dashboard/serve.py
+```
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--port` | int | `8765` | Bound on `127.0.0.1` only |
+| `--results-dir` | path | `results` | Where run directories live |
+
+---
+
+## Optional installs
+
+The base install crawls a link graph. Two paths cost more than every user
+should carry, so they are extras, and the flags that need them say so before
+a run starts rather than failing partway through it.
+
+| Extra | Install | What it buys | Cost |
+|-------|---------|--------------|------|
+| `rss` | `pip install -e '.[rss]'` | Reading a feed among the seeds; its entries arrive with their own text | feedparser, 0.3MB |
+| `browser` | `pip install -e '.[browser]'`<br>then `playwright install chromium` | `--fetcher browser`, `--session`, `crawl session`: JS-rendered and login-walled pages | 135MB package, ~650MB browser |
+
+Both together: `pip install -e '.[rss,browser]'`.
+
+Without them the crawl still runs; only the flags that need them are refused,
+naming the flag you typed and the one command that fixes it.
 
 ---
 
@@ -43,82 +97,162 @@ crawl run "all press coverage" --seeds "..." --draining
 
 ### `crawl run "<prompt>"`
 
-| Flag | Type | What it does |
-|------|------|--------------|
-| `--seeds` | string | Comma-separated seed URLs |
-| `--source` | `manual` \| `file` \| `rss` | Where seeds come from (default: `manual`) |
-| `--source-path` | path | File path or RSS feed URL |
-| `--max-pages` | int | Page budget; 0 means no limit |
-| `--max-tokens` | int | LLM token budget (default: 500000) |
-| `--max-duration` | int | Time budget, seconds |
-| `--depth-limit` | int | Max depth from seeds (default: 5) |
-| `--draining` | flag | Ignore `--max-pages`, stop when the frontier runs dry |
-| `--since` | `"1 week"` \| date | Time window. Stops on `TIME_HORIZON`; assumes the source is ordered newest first |
-| `--embedding` | `local` \| `api` \| `off` | Semantic ranking (default: `local`) |
-| `--embedding-model` | string | Overrides the provider default |
-| `--analysis` | `on` \| `off` | Per-page analysis and the steering it feeds |
-| `--analyzer-max-chars` | int | Page text per analyzer call (default: 3000) |
-| `--ignore-robots` | flag | Bypass robots.txt |
-| `--domain-budget` | int | Max pages per domain |
-| `--log-level` | `DEBUG` … `OFF` | Overrides env `LOG_LEVEL` |
-| `--result-dir` | path | Where results go (default: `results`) |
+The prompt is the goal, in your own words. Naming the fields you want ("with
+the shop, the offer and the deadline") is what makes the analyzer extract them.
+
+**Where to start**
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--seeds` | comma-separated URLs, or a path | *required in practice* | Where the crawl begins. Anything not starting with `http://` or `https://` is read as a JSON file: a list of URLs, or `{"seeds": [...], "allowed_domains": [...]}` |
+| `--allowed-domains` | comma-separated domains | none | Registrable domains the crawl may not leave. Outranks the same key in a seeds file |
+
+**How far to go**
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--depth-limit` | int | `5`, or `1` with `--session` | Hops from a seed. A post is a leaf, so a platform needs one level |
+| `--since` | `"2 weeks"`, `"3 days"`, `2026-08-01` | none | Time window. Candidates a listing dated before it are dropped; with a single seed, the run also stops once content ages out |
+| `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry. Mutually exclusive with `--page-budget` |
+
+**How to fetch**
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--fetcher` | `http` \| `browser` | `http` | `browser` renders JavaScript. Needed for pages that are empty without it |
+| `--session` | path | none | A Playwright `storage_state` file. Enables the platform adapters, implies `--fetcher browser`, and defaults `--depth-limit 1 --domain-budget 0` |
+| `--ignore-robots` | flag | off | Bypass robots.txt |
+
+**What to spend**
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--max-relevant` | int | `0` (no target) | Stop once this many pages are judged relevant. The only condition that states a goal rather than a ceiling |
+| `--page-budget` | int | `500` | Pages this run may read; `0` means no limit |
+| `--token-budget` | int | `500000` | LLM tokens across every stage |
+| `--time-budget` | int seconds | `3600` | Wall clock |
+| `--domain-budget` | int | `50`, or `0` with `--session` | Pages one registrable domain may contribute; `0` means no ceiling |
+
+**How to judge**
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--recall` | flag | off | Diagnostic. Nothing the ranker rejects is removed, only ranked last, so a finished run can be asked whether the rejections were right. Not for production: one measured run went from 87% to 37% hit rate |
+| `--analysis` | `on` \| `off` | `on` | Per-page analysis: one LLM call per page for a verdict and the goal's fields. `off` disables it |
+| `--analyzer-max-chars` | int | `3000` | Page text sent to the analyzer per page |
+
+**Everything else**
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--result-dir` | path | `results` | Where run directories go |
+| `--log-level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` \| `OFF` | `INFO` | Overrides env `LOG_LEVEL` |
+
+Flags left off fall back to the environment, then to the defaults above.
+
+### `crawl session <path>`
+
+Opens a real browser at the platform, waits while you log in, and saves the
+session. Your credentials are typed into the platform's own page and never
+reach this process; what lands on disk is the session that login produced.
+
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--feed` | `instagram` | the only walled platform | Which platform to open |
+| `--force` | flag | off | Replace an existing session file |
+| `--timeout` | int seconds | `600` | How long to wait for the login |
+
+A visible browser needs a desktop: WSLg on WSL, an X display over SSH.
 
 ### `crawl inspect <task-id>`
 
-Read-only summary of a finished task: goal, pages, analyses by classification, top relevant pages.
+Read-only look at a finished run: goals, pages, analyses by classification,
+the top relevant pages.
 
-| Flag | Type | What it does |
-|------|------|--------------|
-| `--goal` | string | Which goal's analyses to show |
-| `--export` | `json` \| `csv` | Dump the pages-and-analyses join to stdout |
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--goal` | goal id | the task's own goal | Which goal's analyses to show |
+| `--export` | `json` \| `csv` | none | Dump the pages-and-analyses join to stdout. `json` carries the extracted fields and their evidence; `csv` leaves them out, because every goal declares its own fields and there is no stable column set |
 
 ### `crawl replay <task-id>`
 
-Re-analyze a finished task's pages. No re-fetching: pages are a frozen corpus, and replay only appends to `analyses`. Replaying the same prompt is a no-op.
+Re-analyze a finished run's stored pages under a new prompt. No fetching, so
+a better prompt costs only the analyzer.
 
-| Flag | Type | What it does |
-|------|------|--------------|
-| `--prompt` | string | New goal; analyses land under a new goal row |
-| `--limit` | int | Re-analyze at most N pages |
-| `--max-tokens` | int | Token budget for this replay |
-| `--analyzer-max-chars` | int | Page text per analyzer call |
-| `--force` | flag | Re-analyze pages that already have an identical analysis |
+| Flag | Values | Default | Meaning |
+|------|--------|---------|---------|
+| `--prompt` | string | the original | New goal; its analyses land under a new goal row |
+| `--limit` | int | all | Re-analyze at most this many pages |
+| `--max-tokens` | int | `500000` | Token budget for the replay |
+| `--analyzer-max-chars` | int | `3000` | Page text per analyzer call |
+| `--force` | flag | off | Re-analyze pages that already have an identical analysis |
+| `--log-level` | as above | `INFO` | |
+
 
 ---
 
 ## How it works
 
-A funnel. Each layer costs more and keeps fewer:
+**A page is read by whoever claims it.** Each adapter is asked whether a
+fetched page is theirs: Instagram answers from the host, RSS from the
+document's root element. Nobody claiming is the ordinary case and the graph's
+answer -- read the links. So one run can hold posts, feed entries and ordinary
+web pages, and adding a platform is one adapter, not a new mode.
+
+**Two stages, and only two.** A structural filter, then one that reads:
 
 ```
 ~200 links per page
   │
-  ▼  Pre-filter          pure rules, zero LLM      → 10-30 links
-  ▼  RuleRanker          weighted heuristics       → ordered
-  ▼  EmbeddingRanker     cosine on a local model   → top 60
-  ▼  LLMRanker           one batched call per 30   → final priority
+  ▼  Pre-filter   URL-level rules, zero LLM   → 10-30 candidates
+  ▼  LLMRanker    one batched call per 20     → priority, or dropped
 ```
 
-Every fetched page also gets one analyzer call: classification, summary, relevance and hub scores, endorsed links. Those judgments land in `analyses` and steer the crawl in flight through priority multipliers, endorsed links, and cross-task domain reputation.
+There were two cheap ranking stages between them, scoring keywords and cosine
+similarity. Measured over seven crawls against the analyzer's own verdicts,
+neither ever removed a candidate -- a top-K of 60 cannot cut a batch of 20 --
+and neither ordered better than a coin flip on most tasks. They were removed
+rather than tuned; the measurements are on the `archive/embedding-investigation`
+branch. Without LLM credentials there is now no ranking stage at all, and the
+crawl fetches in frontier order: a turn from each seed, oldest first.
 
-Two async loops run side by side. `fetch_pump` downloads and discovers links; `rank_pump` scores them and pushes them into the frontier. They coordinate only through the Frontier and the Buffer.
+**Ranking predicts; analysis verifies.** Every fetched page gets one analyzer
+call: classification, summary, relevance, and the fields the goal asked for.
+Each extracted value is checked against the page text before it is stored, and
+a field the page does not state is simply absent -- there is no "unknown".
+The analyzer also names the links on a page worth following, and those are
+injected directly. It is the only way a crawl leaves the platform it started
+on: a feed harvester only ever finds more of the same platform, so a merchant's
+own site is reachable only because the analyzer pointed at it.
 
-Every stage's decision is recorded: which rule dropped a link, what each ranker scored it, which model and prompt version produced a judgment. Raw HTML is kept, so a better prompt can re-judge a finished run without re-crawling.
+**Two loops, one meeting point.** `fetch_pump` downloads and harvests;
+`rank_pump` scores. They coordinate only through the Frontier, which owns both
+halves: candidates waiting for a score, and scored candidates waiting for a
+fetch slot. Fairness lives upstream of the ranker -- a turn from each seed, so
+one loud account cannot spend the whole LLM budget -- and priority downstream,
+where the scarce thing is the page budget instead.
+
+**A run says why it stopped.** Budgets, a target met, diminishing returns, a
+drained frontier -- and the ones that exist because silence was the bug:
+`RATE_LIMITED` and `LOGIN_REQUIRED` when the platform refuses the crawl,
+`ADAPTER_EMPTY` when every listing parsed and held nothing, which is what a
+platform redesign looks like from inside. All of them are reported together,
+so "completed" never has to stand in for "found nothing and cannot say why".
+
+**Everything is recorded.** Which rule dropped a link, what each ranker scored
+it, which model and prompt version produced a judgment, and the sentence each
+extracted value came from. Raw HTML is kept, so a better prompt can re-judge a
+finished run without re-crawling.
 
 ---
 
 ## Configuration
 
-Flags are per-run choices. `.env` is for things you set once — secrets, timeouts, deep-tuning knobs. Everything has a default, so `.env` is optional. See [`.env.example`](.env.example).
+Flags say what this run is doing; `.env` says what this machine and account can
+do — credentials, endpoints, which model, how much memory to spend. Everything
+has a default, so `.env` is optional.
 
-```bash
-# .env
-LLM_API_KEY=sk-xxx
-LLM_MODEL=deepseek/deepseek-v4-flash   # default: openai/gpt-4o-mini
-LLM_BASE_URL=                          # for OpenAI-compatible endpoints
-EMBEDDING_API_KEY=jina_xxx             # only for --embedding api
-EMBEDDING_BASE_URL=https://api.jina.ai/v1
-```
+See [`.env.example`](.env.example) for the full list.
 
 ---
 
@@ -127,17 +261,8 @@ EMBEDDING_BASE_URL=https://api.jina.ai/v1
 | Version | State | What it adds |
 |---------|-------|--------------|
 | v0.1 | ✅ | Full pipeline at zero LLM cost |
-| v0.1.1 | ✅ | EmbeddingRanker, semantic ranking on a local model |
-| v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis and steering, replay, inspect, time horizon |
-| v0.3 | planned | Playwright with login state, feed traversal, weekly digests |
+| v0.1.1 | ❌ | (deprecated) EmbeddingRanker, semantic ranking on a local model. (see archive/embedding-investigation branch) |
+| v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
+| v0.3 | ✅ | Playwright with login state, feed traversal, extracted fields with evidence |
 
 ---
-
-## Design principles
-
-- **Each module does one thing.** Fetch downloads, Extractor extracts, Ranker ranks. They never call each other; CrawlScheduler wires them.
-- **The engine depends on Protocols.** `factory.py` is the only place that imports concrete classes.
-- **Cheap stages first.** Rules, then embeddings, then LLM. Every LLM stage degrades away without credentials instead of blocking a run.
-- **The corpus is frozen, judgments are append-only.** Old analyses are never overwritten.
-- **Nothing is guessed.** A publication date comes from what a page declares or is left empty.
-- **Crash-safe.** Checkpoints save frontier state; restore and keep going.

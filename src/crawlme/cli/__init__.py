@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import sys
 
+from crawlme.cli import session
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
@@ -31,22 +32,42 @@ def main() -> None:
     #: run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
-    run_p.add_argument("--max-pages", type=int, help="Page budget limit (0 = unlimited)")
-    run_p.add_argument("--max-tokens", type=int, help="Token budget limit")
-    run_p.add_argument("--max-duration", type=int, help="Time limit in seconds")
+    # Two families, and the names say which is which.  A page budget is
+    # what the run may spend; it says nothing about how many answers that
+    # buys, and reading it as a target is how "sixty pages" came to mean
+    # twenty-two results.
+    run_p.add_argument(
+        "--max-relevant",
+        type=int,
+        default=None,
+        help="Stop once this many pages have been judged relevant (0 = no target). "
+        "May overshoot slightly: analysis lags fetching",
+    )
+    run_p.add_argument(
+        "--page-budget", "--max-pages", type=int, dest="max_pages", help="Pages this run may read (0 = unlimited)"
+    )
+    run_p.add_argument(
+        "--token-budget", "--max-tokens", type=int, dest="max_tokens", help="LLM tokens this run may spend"
+    )
+    run_p.add_argument(
+        "--time-budget", "--max-duration", type=int, dest="max_duration", help="Seconds this run may take"
+    )
     run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
     run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
-    run_p.add_argument("--seeds", help="Comma-separated seed URLs")
-    run_p.add_argument("--source", choices=["manual", "file", "rss"], default="manual")
-    run_p.add_argument("--source-path", help="File path or RSS URL for seeds")
-    run_p.add_argument("--result-dir", help="Result directory (default: results)")
+    # Where the entry points come from.  One flag per kind, each carrying
+    # its own argument, so "I want a file" cannot be said without saying
+    # which file -- the older --source/--source-path pair could, and a
+    # missing path silently became an empty manual list.
     run_p.add_argument(
-        "--embedding",
-        choices=["local", "api", "off"],
-        default=None,
-        help="Semantic ranking provider (default: local; 'off' = rule-only)",
+        "--seeds",
+        help="Comma-separated seed URLs, or the path to a JSON file holding a list of them. "
+        "A feed URL is an ordinary seed: whichever adapter recognises the document reads it",
     )
-    run_p.add_argument("--embedding-model", default=None, help="Model id, overriding the provider default")
+    run_p.add_argument(
+        "--allowed-domains",
+        help="Comma-separated registrable domains the crawl may not leave",
+    )
+    run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
         "--analysis",
         choices=["on", "off"],
@@ -62,8 +83,29 @@ def main() -> None:
     run_p.add_argument(
         "--since",
         default=None,
-        help="Time window, e.g. '1 week' or '2026-08-01'. Stops on TIME_HORIZON once "
-        "content ages out; assumes the source is ordered newest first",
+        help="Time window, e.g. '1 week' or '2026-08-01'. Skips candidates already "
+        "dated outside it; with a single seed, also stops once content ages out",
+    )
+    run_p.add_argument(
+        "--fetcher",
+        choices=["http", "browser"],
+        default=None,
+        help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
+    )
+    run_p.add_argument(
+        "--session",
+        "--cookies",  # the name this shipped under
+        dest="session",
+        default=None,
+        help="Path to a Playwright storage_state JSON, for crawling as a logged-in session",
+    )
+    run_p.add_argument(
+        "--recall",
+        action="store_true",
+        help="Diagnostic: keep what the ranker rejected, ranked last, so a run can "
+        "measure whether the rejections were right. Spends the tail of the budget "
+        "on them, so leave it off when you want results rather than an answer "
+        "about the ranker",
     )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
@@ -107,6 +149,8 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
+    session.add_arguments(sub)
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -124,3 +168,5 @@ async def _dispatch(args: argparse.Namespace) -> None:
         await cmd_inspect(args)
     elif cmd == "replay":
         await cmd_replay(args)
+    elif cmd == "session":
+        await session.cmd_session(args)

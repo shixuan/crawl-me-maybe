@@ -1,7 +1,7 @@
 """Goal Enhancer: one LLM call per task, at task start.
 
 Turns the raw user prompt into three artifacts the pipeline can use:
-a full goal statement for the embedding stage (HyDE effect, bilingual
+a full goal statement (HyDE effect, bilingual
 for non-English prompts), a clean keyword list for the rule stage, and
 an optional time window for the future time-horizon condition.
 
@@ -16,16 +16,28 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 from dataclasses import dataclass
+from typing import Any
 
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, parse_json_response
-from crawlme.pioneer.ranker.rule import _extract_keywords
 from crawlme.schemas import CrawlGoal
 
 logger = logging.getLogger(__name__)
 
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _extract_keywords(prompt: str) -> list[str]:
+    """Bare tokenization, used when the model call fails."""
+    return list(dict.fromkeys(w.lower() for w in _WORD_RE.findall(prompt)))
+
+
 _MAX_KEYWORDS = 12
+_MAX_SPEC_FIELDS = 8
+_MAX_SPEC_DESC = 200
+_FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SINCE_MAX_AGE_DAYS = 3650
 
 # The model cannot know today's date on its own, and time-window goals
@@ -38,8 +50,13 @@ _SYSTEM = (
     "the same statement in the prompt's language, joined by ' / '), keywords "
     "(array of up to 12 clean content keywords, no stopwords), since (ISO date "
     "YYYY-MM-DD when the goal mentions a time window such as 'recent' or 'last "
-    "week', otherwise null). Keep every constraint of the original prompt: never "
-    "narrow the goal."
+    "week', otherwise null), and extraction_spec. "
+    "extraction_spec names the fields worth pulling out of every matching page, as "
+    '{"fields": {"<snake_case_name>": "<what it holds>"}}. Produce it only when the '
+    "goal asks for particular pieces of information out of each page; a goal that asks "
+    "to find pages on a subject gets null. Take the fields from the goal's own wording "
+    "and stay in its own domain. At most 8 fields. "
+    "Keep every constraint of the original prompt: never narrow the goal."
 )
 
 
@@ -50,6 +67,9 @@ class EnhancedGoal:
     statement: str
     keywords: list[str]
     since: datetime.datetime | None
+    # None means this goal asks to find pages, not to collect fields out
+    # of them, and the analyzer keeps its existing shape.
+    extraction_spec: dict[str, Any] | None = None
 
 
 class GoalEnhancer:
@@ -70,23 +90,33 @@ class GoalEnhancer:
         if self._client is None:
             return None
         try:
-            resp = await self._client.chat(goal.prompt, system=_SYSTEM, max_tokens=512, json_mode=True)
+            resp = await self._client.chat(goal.prompt, system=_SYSTEM, json_mode=True)
         except LLMError as e:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
+            return None
+        if not resp.content.strip():
+            # Distinct from unparseable: the model wrote nothing at all,
+            # which on a reasoning model means it used the whole budget
+            # thinking.  Saying so is the difference between a one-look
+            # diagnosis and a hunt.
+            # On a reasoning model an empty reply means the thinking
+            # used the whole ceiling.  Saying so is the difference
+            # between a one-look diagnosis and a hunt through the parser.
+            logger.warning("goal.enhance empty content (out=%d), using raw prompt", resp.output_tokens)
             return None
         parsed = self._parse(resp.content)
         if parsed is None:
             logger.warning("goal.enhance unparseable json, using raw prompt")
             return None
-        statement, keywords, since = parsed
+        statement, keywords, since, spec = parsed
         if not statement:
             logger.warning("goal.enhance empty statement, using raw prompt")
             return None
         if not keywords:
             keywords = _extract_keywords(goal.prompt)
-        return EnhancedGoal(statement=statement, keywords=keywords, since=since)
+        return EnhancedGoal(statement=statement, keywords=keywords, since=since, extraction_spec=spec)
 
-    def _parse(self, content: str) -> tuple[str, list[str], datetime.datetime | None] | None:
+    def _parse(self, content: str) -> tuple[str, list[str], datetime.datetime | None, dict[str, Any] | None] | None:
         """Parse the LLM's JSON, tolerating prose wrapped around it."""
         data = parse_json_response(content)
         if data is None:
@@ -102,7 +132,34 @@ class GoalEnhancer:
         else:
             keywords = []
         since = self._parse_since(data.get("since"))
-        return statement, keywords, since
+        spec = self._parse_spec(data.get("extraction_spec"))
+        return statement, keywords, since, spec
+
+    def _parse_spec(self, raw: object) -> dict[str, Any] | None:
+        """Validate the field list, or return None to extract nothing.
+
+        Field names become keys the whole downstream depends on, so they
+        are held to a shape rather than taken as written: anything the
+        model invents that is not a plain snake_case name is dropped
+        instead of travelling into the analyzer's prompt and out into
+        stored results.
+        """
+        if not isinstance(raw, dict):
+            return None
+        fields = raw.get("fields")
+        if not isinstance(fields, dict):
+            return None
+        clean: dict[str, str] = {}
+        for name, desc in fields.items():
+            if not isinstance(name, str) or not isinstance(desc, str):
+                continue
+            key = name.strip().lower()
+            if not _FIELD_NAME.match(key) or key in clean:
+                continue
+            clean[key] = desc.strip()[:_MAX_SPEC_DESC]
+            if len(clean) >= _MAX_SPEC_FIELDS:
+                break
+        return {"fields": clean} if clean else None
 
     def _parse_since(self, raw: object) -> datetime.datetime | None:
         if not isinstance(raw, str) or not raw.strip():

@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from crawlme.analyzer import PageAnalyzer
+from crawlme.analyzer.page_analyzer import _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -154,34 +155,23 @@ async def test_prose_wrapped_json_is_tolerated():
     assert result.classification == "RELEVANT"
 
 
+@pytest.mark.parametrize(
+    ("content", "classification", "relevance", "hub"),
+    [
+        # A label outside the vocabulary degrades rather than guesses.
+        ('{"classification": "totally-relevant", "relevance_score": 0.5}', "UNKNOWN", 0.5, 0.0),
+        ('{"classification": "HUB", "relevance_score": 1.7, "hub_score": -0.3}', "HUB", 1.0, 0.0),
+        # True is not a score, however happily JSON carries it.
+        ('{"classification": "HUB", "relevance_score": true, "hub_score": false}', "HUB", 0.0, 0.0),
+    ],
+)
 @pytest.mark.asyncio
-async def test_unknown_classification_degrades_to_unknown():
-    content = '{"classification": "totally-relevant", "relevance_score": 0.5}'
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
+async def test_field_coercion(content, classification, relevance, hub):
+    result = await _analyzer(_StubClient([_resp(content)])).analyze(_page(), _goal())
     assert result is not None
-    assert result.classification == "UNKNOWN"
-    assert result.feedback.classification == "UNKNOWN"
-
-
-@pytest.mark.asyncio
-async def test_scores_clamped_to_unit_interval():
-    content = '{"classification": "HUB", "relevance_score": 1.7, "hub_score": -0.3}'
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
-    assert result is not None
-    assert result.relevance_score == 1.0
-    assert result.feedback.hub_score == 0.0
-
-
-@pytest.mark.asyncio
-async def test_bool_score_rejected():
-    content = '{"classification": "HUB", "relevance_score": true, "hub_score": false}'
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
-    assert result is not None
-    assert result.relevance_score == 0.0
-    assert result.feedback.hub_score == 0.0
+    assert result.classification == classification
+    assert result.relevance_score == relevance
+    assert result.feedback.hub_score == hub
 
 
 @pytest.mark.asyncio
@@ -355,3 +345,161 @@ def test_from_settings_wires_max_page_chars():
     analyzer = PageAnalyzer.from_settings(cfg)
     assert analyzer is not None
     assert analyzer._max_page_chars == 3000
+
+
+#: extraction ------------------------------------------------------------
+
+_OFFER_PAGE = "Free sago topping for members at Union Square, until August 31 2026. Come by."
+
+
+def _spec_goal() -> CrawlGoal:
+    goal = _goal()
+    goal.extraction_spec = {"fields": {"offer": "what is given away", "deadline": "when it ends"}}
+    return goal
+
+
+def _extract_json(body: str) -> str:
+    return _valid_json()[:-1] + ', "extracted": ' + body + "}"
+
+
+async def test_declared_fields_carry_evidence():
+    client = _StubClient(
+        [
+            _resp(
+                _extract_json(
+                    '{"offer": {"value": "free sago topping", "evidence": "Free sago topping for members"}, '
+                    '"deadline": {"value": "2026-08-31", "evidence": "until August 31 2026"}}'
+                )
+            )
+        ]
+    )
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert result.extracted["offer"].value == "free sago topping"
+    assert result.extracted["deadline"].evidence == "until August 31 2026"
+
+
+async def test_field_without_evidence_dropped():
+    """The check is what separates acting on a result from trusting it."""
+    client = _StubClient(
+        [_resp(_extract_json('{"deadline": {"value": "2026-09-30", "evidence": "offer ends Sept 30"}}'))]
+    )
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert result.extracted == {}
+
+
+async def test_unstated_field_is_absent():
+    """Omission is the correct answer, and must not become a guess."""
+    client = _StubClient(
+        [_resp(_extract_json('{"offer": {"value": "free sago topping", "evidence": "Free sago topping for members"}}'))]
+    )
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert set(result.extracted) == {"offer"}
+
+
+async def test_fields_outside_the_spec_are_ignored():
+    client = _StubClient([_resp(_extract_json('{"phone": {"value": "555", "evidence": "Come by"}}'))])
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert result.extracted == {}
+
+
+async def test_evidence_match_ignores_case():
+    client = _StubClient([_resp(_extract_json('{"offer": {"value": "sago", "evidence": "FREE SAGO   TOPPING"}}'))])
+    result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    assert result is not None
+    assert "offer" in result.extracted
+
+
+async def test_no_spec_asks_nothing_extra():
+    """Every link-graph crawl: same prompt, same envelope as before."""
+    client = _StubClient([_resp(_valid_json())])
+    result = await _analyzer(client).analyze(_page(), _goal())
+    assert result is not None
+    assert result.extracted == {}
+    assert "## Extract" not in client.calls[0]["prompt"]
+    assert "evidence" not in client.calls[0]["system"]
+
+
+async def test_spec_fields_reach_the_prompt():
+    client = _StubClient([_resp(_valid_json())])
+    await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
+    prompt = client.calls[0]["prompt"]
+    assert "## Extract" in prompt
+    assert "- offer: what is given away" in prompt
+    assert "evidence" in client.calls[0]["system"]
+
+
+async def test_spec_is_part_of_analysis_identity():
+    """A different field list is a different reading of the page.
+
+    It does not belong in goal_id: that is sha256(prompt), which is what
+    replay idempotency and the goal embedding cache rest on, and a
+    model-inferred spec would make the same prompt keep becoming a new
+    goal.  It is recorded next to prompt_version and model instead.
+    """
+    client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
+    analyzer = _analyzer(client)
+    first = await analyzer.analyze(_page(_OFFER_PAGE), _spec_goal())
+
+    other = _spec_goal()
+    other.extraction_spec = {"fields": {"offer": "what is given away"}}
+    second = await analyzer.analyze(_page(_OFFER_PAGE), other)
+
+    assert first is not None and second is not None
+    assert first.goal_id == second.goal_id, "same prompt is still the same goal"
+    assert first.spec_version != second.spec_version
+    assert first.spec_version and second.spec_version
+
+
+async def test_no_spec_has_no_spec_version():
+    """So it matches every analysis written before specs existed."""
+    client = _StubClient([_resp(_valid_json())])
+    result = await _analyzer(client).analyze(_page(), _goal())
+    assert result is not None
+    assert result.spec_version == ""
+
+
+async def test_reworded_field_is_a_new_spec():
+    """The description steers the extraction, so it counts as identity."""
+    client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
+    analyzer = _analyzer(client)
+    a = await analyzer.analyze(_page(_OFFER_PAGE), _spec_goal())
+    reworded = _spec_goal()
+    reworded.extraction_spec = {"fields": {"offer": "the giveaway", "deadline": "when it ends"}}
+    b = await analyzer.analyze(_page(_OFFER_PAGE), reworded)
+    assert a is not None and b is not None
+    assert a.spec_version != b.spec_version
+
+
+def test_a_field_answering_no_is_dropped():
+    """A quote proves what a page says.  Nothing on a page proves an
+    absence, so "no" is a claim its evidence cannot support -- and the
+    field simply not being there already says it."""
+    goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"limited_edition": "whether it is limited"}})
+    page = _page("Lemon Pie or Matcha Cookies - only $5.80 all month!")
+
+    kept = _parse_extracted(
+        {"extracted": {"limited_edition": {"value": "no", "evidence": "only $5.80 all month!"}}},
+        page,
+        goal,
+    )
+
+    assert kept == {}
+
+
+def test_a_field_that_merely_contains_a_negation_survives():
+    """Only a bare negation is unprovable; "no-sugar option" is an
+    answer the page really does state."""
+    goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"variant": "which variant"}})
+    page = _page("Now with a no-sugar option at every store.")
+
+    kept = _parse_extracted(
+        {"extracted": {"variant": {"value": "no-sugar option", "evidence": "a no-sugar option"}}},
+        page,
+        goal,
+    )
+
+    assert kept["variant"].value == "no-sugar option"

@@ -27,12 +27,20 @@ from typing import Any, Protocol, cast
 
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError, parse_json_response
-from crawlme.schemas import AnalysisResult, AnalyzerFeedback, Classification, CrawlGoal, Page
+from crawlme.schemas import (
+    AnalysisResult,
+    AnalyzerFeedback,
+    Classification,
+    CrawlGoal,
+    ExtractedField,
+    Page,
+    spec_fields,
+    spec_version,
+)
 
 logger = logging.getLogger(__name__)
 
 # Response cap: a summary plus five short lists fit comfortably.
-_MAX_TOKENS = 1024
 # Default page-text cap sent to the model.  The 10-replicate
 # benchmark (benchmark/feedback/) picked 3000: the 6000-char window
 # misclassified long-form pages, while 3000 hits the intro zone and
@@ -44,7 +52,7 @@ _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0
 # Bump when the prompt changes in a way that changes outputs, so
 # stored analyses stay comparable across versions.
-_PROMPT_VERSION = "v2.4"
+_PROMPT_VERSION = "v2.5"
 
 _MAX_TAGS = 8
 _MAX_TOPICS = 10
@@ -69,6 +77,16 @@ _SYSTEM = (
     "subjects the page is about. entities are named things (projects, people, companies) "
     "that matter. endorsed_links are up to 5 URLs from the page text that you would "
     "click yourself."
+)
+
+
+_EXTRACT_SYSTEM = (
+    ' Also fill "extracted": {"<field>": {"value": "...", "evidence": "..."}} for the '
+    "fields listed under ## Extract. evidence must be copied verbatim from the page "
+    "text and must contain the value. Omit any field the page does not state: a field "
+    "you leave out is read as unknown, and that is the correct answer whenever the page "
+    "does not say. Never infer a value from what is likely, and never use the goal's "
+    "own wording as evidence."
 )
 
 
@@ -119,7 +137,9 @@ class PageAnalyzer:
         """Default-on with graceful auto-off, mirroring the other LLM
         stages: without credentials there is nothing to call.  *budget*
         is shared across all LLM consumers of the task."""
-        client = LLMClient.from_settings_if_configured(settings, budget=budget)
+        client = LLMClient.from_settings_if_configured(
+            settings, budget=budget, reasoning_effort=settings.llm_analyze_reasoning_effort
+        )
         if client is None:
             return None
         return cls(client, max_page_chars=settings.analyzer_max_chars)
@@ -190,7 +210,7 @@ class PageAnalyzer:
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
         prompt = _build_prompt(goal, page, text, self._max_page_chars)
-        resp = await self._client.chat(prompt, system=_SYSTEM, max_tokens=_MAX_TOKENS, json_mode=True)
+        resp = await self._client.chat(prompt, system=_system_for(goal), json_mode=True)
         data = parse_json_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {page.url_key}")
@@ -237,14 +257,100 @@ def _page_text(page: Page) -> str:
     return (page.plain_text or "").strip() or (page.markdown or "").strip()
 
 
+def _system_for(goal: CrawlGoal) -> str:
+    """The contract, widened when the goal declares fields to collect."""
+    return _SYSTEM + _EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _SYSTEM
+
+
 def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
-    """Assemble the user prompt: goal, page identity, page text."""
-    lines = ["## Goal", goal.goal_statement or goal.prompt, "## Page", page.url.canonical]
+    """Assemble the user prompt: goal, fields to collect, page, text."""
+    lines = ["## Goal", goal.goal_statement or goal.prompt]
+    fields = spec_fields(goal.extraction_spec)
+    if fields:
+        lines.append("## Extract")
+        lines.extend(f"- {name}: {desc}" for name, desc in fields.items())
+    lines.extend(["## Page", page.url.canonical])
     if page.title:
         lines.append(f"Title: {page.title}")
     lines.append("")
     lines.append(text[:max_chars])
     return "\n".join(lines)
+
+
+#: Values that assert an absence.  Kept as a set rather than a pattern
+#: because a field whose answer merely contains "no" ("no-sugar option")
+#: is a real answer; only a bare negation is the unprovable one.
+_NEGATIONS = frozenset(
+    {
+        "no",
+        "none",
+        "not",
+        "false",
+        "n/a",
+        "na",
+        "nil",
+        "null",
+        "unknown",
+        "unnamed",
+        "unspecified",
+        "not specified",
+        "not mentioned",
+        "not stated",
+        "not applicable",
+        "not limited",
+        "not a limited edition",
+        "否",
+        "无",
+        "没有",
+        "不是",
+        "未知",
+        "未说明",
+        "未提及",
+    }
+)
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, ExtractedField]:
+    """Keep the declared fields whose evidence is really in the page.
+
+    The check is what makes a result something to act on rather than
+    something to trust.  A model that paraphrases the page, or quotes the
+    goal back, produces evidence that is not there, and the field is
+    dropped instead of stored.
+    """
+    fields = spec_fields(goal.extraction_spec)
+    if not fields:
+        return {}
+    raw = data.get("extracted")
+    if not isinstance(raw, dict):
+        return {}
+    haystack = _normalize(page.plain_text or "")
+    out: dict[str, ExtractedField] = {}
+    for name in fields:
+        entry = raw.get(name)
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get("value", "")).strip()
+        evidence = str(entry.get("evidence", "")).strip()
+        if not value or not evidence:
+            continue
+        if _normalize(evidence) not in haystack:
+            logger.info("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
+            continue
+        if _normalize(value) in _NEGATIONS:
+            # A quote can only prove what a page says.  There is no
+            # sentence anywhere that proves an absence, so a field
+            # answering "no" is asserting something its evidence cannot
+            # support -- and absence is already sayable here, by the
+            # field not being present at all.
+            logger.info("analysis.negative_claim url_key=%s field=%s", page.url_key, name)
+            continue
+        out[name] = ExtractedField(value=value, evidence=evidence)
+    return out
 
 
 def _parse_analysis(
@@ -283,6 +389,8 @@ def _parse_analysis(
         relevance_score=relevance,
         summary=summary,
         structured_data=data,
+        extracted=_parse_extracted(data, page, goal),
+        spec_version=spec_version(goal.extraction_spec),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
