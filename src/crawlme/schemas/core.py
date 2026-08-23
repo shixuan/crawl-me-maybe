@@ -26,7 +26,7 @@ def _content_id(text: str) -> str:
     For entities whose identity IS their content — a goal is named by
     its prompt, so two runs (or replays) with the same prompt share
     the goal id, which is what makes same-prompt replay idempotent and
-    the cross-run goal embedding cache hit.
+    replay idempotent.
     """
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 

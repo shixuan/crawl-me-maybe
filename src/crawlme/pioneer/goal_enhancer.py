@@ -1,7 +1,7 @@
 """Goal Enhancer: one LLM call per task, at task start.
 
 Turns the raw user prompt into three artifacts the pipeline can use:
-a full goal statement for the embedding stage (HyDE effect, bilingual
+a full goal statement (HyDE effect, bilingual
 for non-English prompts), a clean keyword list for the rule stage, and
 an optional time window for the future time-horizon condition.
 
@@ -22,10 +22,17 @@ from typing import Any
 
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, parse_json_response
-from crawlme.pioneer.ranker.rule import _extract_keywords
 from crawlme.schemas import CrawlGoal
 
 logger = logging.getLogger(__name__)
+
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _extract_keywords(prompt: str) -> list[str]:
+    """Bare tokenization, used when the model call fails."""
+    return list(dict.fromkeys(w.lower() for w in _WORD_RE.findall(prompt)))
+
 
 _MAX_KEYWORDS = 12
 _MAX_SPEC_FIELDS = 8

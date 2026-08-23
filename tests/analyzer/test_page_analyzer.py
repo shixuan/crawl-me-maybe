@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from crawlme.analyzer import PageAnalyzer
+from crawlme.analyzer.page_analyzer import _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -471,3 +472,34 @@ async def test_reworded_field_is_a_new_spec():
     b = await analyzer.analyze(_page(_OFFER_PAGE), reworded)
     assert a is not None and b is not None
     assert a.spec_version != b.spec_version
+
+
+def test_a_field_answering_no_is_dropped():
+    """A quote proves what a page says.  Nothing on a page proves an
+    absence, so "no" is a claim its evidence cannot support -- and the
+    field simply not being there already says it."""
+    goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"limited_edition": "whether it is limited"}})
+    page = _page("Lemon Pie or Matcha Cookies - only $5.80 all month!")
+
+    kept = _parse_extracted(
+        {"extracted": {"limited_edition": {"value": "no", "evidence": "only $5.80 all month!"}}},
+        page,
+        goal,
+    )
+
+    assert kept == {}
+
+
+def test_a_field_that_merely_contains_a_negation_survives():
+    """Only a bare negation is unprovable; "no-sugar option" is an
+    answer the page really does state."""
+    goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"variant": "which variant"}})
+    page = _page("Now with a no-sugar option at every store.")
+
+    kept = _parse_extracted(
+        {"extracted": {"variant": {"value": "no-sugar option", "evidence": "a no-sugar option"}}},
+        page,
+        goal,
+    )
+
+    assert kept["variant"].value == "no-sugar option"

@@ -14,6 +14,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -348,3 +349,82 @@ async def test_concurrent_fetches_start_one_browser() -> None:
     fetcher._start_context = _count_start  # type: ignore[assignment]
     await asyncio.gather(*(fetcher._ensure_context() for _ in range(5)))
     assert starts == 1
+
+
+#: wait-condition timeouts ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_wait_timeout_keeps_the_page_that_rendered(monkeypatch) -> None:
+    """networkidle is a condition some pages never reach.
+
+    A platform that polls or throttles keeps a request open forever, so
+    the wait times out while the document is sitting there fully
+    rendered.  Discarding it threw away a page already paid for, and
+    then paid for it twice more on retry.
+    """
+    # Skipped rather than marked `browser`: this needs the exception
+    # class, not a browser, so it runs wherever playwright is installed
+    # and stays out of the way where it is not.
+    timeout_error = pytest.importorskip("playwright.async_api").TimeoutError
+
+    class _Page:
+        url = "https://example.com/p"
+
+        async def goto(self, url, wait_until=None):
+            raise timeout_error("Timeout 30000ms exceeded.")
+
+        async def content(self):
+            return "<html><body>the post is right here</body></html>"
+
+        async def close(self):
+            return None
+
+        def on(self, *_a):
+            return None
+
+    class _Context:
+        async def new_page(self):
+            return _Page()
+
+    fetcher = PlaywrightFetcher()
+    monkeypatch.setattr(fetcher, "_ensure_context", AsyncMock(return_value=_Context()))
+
+    result = await fetcher.fetch(_item("https://example.com/p"))
+
+    assert result.status_code == 200
+    assert b"the post is right here" in result.raw
+
+
+@pytest.mark.asyncio
+async def test_a_wait_timeout_with_nothing_rendered_is_still_a_failure(monkeypatch) -> None:
+    """An empty document means the fetch really did fail."""
+    # Skipped rather than marked `browser`: this needs the exception
+    # class, not a browser, so it runs wherever playwright is installed
+    # and stays out of the way where it is not.
+    timeout_error = pytest.importorskip("playwright.async_api").TimeoutError
+
+    class _Page:
+        url = "https://example.com/p"
+
+        async def goto(self, url, wait_until=None):
+            raise timeout_error("Timeout 30000ms exceeded.")
+
+        async def content(self):
+            return "   "
+
+        async def close(self):
+            return None
+
+        def on(self, *_a):
+            return None
+
+    class _Context:
+        async def new_page(self):
+            return _Page()
+
+    fetcher = PlaywrightFetcher()
+    monkeypatch.setattr(fetcher, "_ensure_context", AsyncMock(return_value=_Context()))
+
+    with pytest.raises(FetchError):
+        await fetcher.fetch(_item("https://example.com/p"))

@@ -19,7 +19,7 @@ Two levels, because they fail differently:
      when that happens.
   2. The pipeline in-process with a scripted LLM. Covers the stages the
      first one skips: goal enhancement, LLM re-ranking, page analysis,
-     and the steering they feed. No tokens are spent because no real
+     and the analyses they produce. No tokens are spent because no real
      client is ever built.
 """
 
@@ -172,8 +172,6 @@ def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
             site,
             "--max-pages",
             "6",
-            "--embedding",
-            "off",
             "--analysis",
             "off",
             "--result-dir",
@@ -202,7 +200,10 @@ def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
     assert dict(links).get("BUFFERED", 0) > 0, f"no candidate survived the prefilter: {links}"
 
     decisions = asyncio.run(_rows(db, "SELECT ranker, count(*) FROM rank_decisions GROUP BY ranker"))
-    assert dict(decisions).get("rule", 0) > 0, f"the rule ranker never scored anything: {decisions}"
+    # No credentials in the smoke environment, so there is no ranker and
+    # every candidate passes through at one flat priority.  The rows
+    # still have to appear: without them nothing is enqueued.
+    assert dict(decisions).get("none", 0) > 0, f"nothing reached the frontier: {decisions}"
 
     events = {e[0] for e in asyncio.run(_rows(db, "SELECT DISTINCT type FROM events"))}
     assert {"FETCH_STARTED", "FETCH_COMPLETED", "PAGE_EXTRACTED"} <= events, events
@@ -283,7 +284,6 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(
         result_dir=str(tmp_path / "results"),
         fetch_concurrency=2,
-        embedding_provider="",
         ignore_robots=True,
         log_level="WARNING",
         # Pinned so a developer's .env can never turn this into a paid run.
@@ -295,22 +295,21 @@ def _settings(tmp_path: Path) -> Settings:
 
 @pytest.mark.asyncio
 async def test_pipeline_with_scripted_llm_produces_analyses(site: str, tmp_path: Path) -> None:
-    """Analyzer, LLM ranker and steering all run, on scripted answers."""
+    """Analyzer and LLM ranker both run, on scripted answers."""
     from crawlme.analyzer import PageAnalyzer
     from crawlme.pioneer.ranker.llm import LLMRanker
-    from crawlme.steering import InflightSignals, SteeringLoop
 
     cfg = _settings(tmp_path)
     goal = CrawlGoal(prompt=_PROMPT, max_pages=5, domain_budget=20)
     task = CrawlTask(goal_id=goal.goal_id)
 
     client = _ScriptedLLM()
-    steering = SteeringLoop(analyzer=PageAnalyzer(client), signals=InflightSignals())  # type: ignore[arg-type]
+    analyzer = PageAnalyzer(client)  # type: ignore[arg-type]
     scheduler = create_scheduler(
         cfg,
         goal=goal,
         llm_ranker=LLMRanker(client),  # type: ignore[arg-type]
-        steering=steering,
+        analyzer=analyzer,
     )
 
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))

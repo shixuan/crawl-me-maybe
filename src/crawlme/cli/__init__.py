@@ -21,7 +21,6 @@ from crawlme.cli import session
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
-from crawlme.scheduler.traversal import feed_kinds
 
 
 def main() -> None:
@@ -59,27 +58,16 @@ def main() -> None:
     # its own argument, so "I want a file" cannot be said without saying
     # which file -- the older --source/--source-path pair could, and a
     # missing path silently became an empty manual list.
-    seeds = run_p.add_mutually_exclusive_group()
-    seeds.add_argument("--seeds", help="Comma-separated seed URLs")
-    seeds.add_argument("--seeds-file", help="JSON file of seed URLs: a list, or {seeds: [...], allowed_domains: [...]}")
-    seeds.add_argument("--seeds-rss", help="RSS or Atom feed URL to take seeds from")
-    # The spelling this shipped under.  --source-path is required when
-    # --source names anything but manual; run.py says so rather than
-    # falling back to an empty crawl.
-    seeds.add_argument("--source", choices=["manual", "file", "rss"], default=None, help=argparse.SUPPRESS)
-    run_p.add_argument("--source-path", help=argparse.SUPPRESS)
-    run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
-        "--no-embedding",
-        action="store_true",
-        help="Skip semantic ranking for this run: rules only, no model loaded",
+        "--seeds",
+        help="Comma-separated seed URLs, or the path to a JSON file holding a list of them. "
+        "A feed URL is an ordinary seed: whichever adapter recognises the document reads it",
     )
-    # Which backend serves embeddings, and which model it runs, follow
-    # from the machine and the account rather than from the run, so they
-    # live in EMBEDDING_PROVIDER and EMBEDDING_MODEL.  Kept as the
-    # spelling this shipped under.
-    run_p.add_argument("--embedding", choices=["local", "api", "off"], default=None, help=argparse.SUPPRESS)
-    run_p.add_argument("--embedding-model", default=None, help=argparse.SUPPRESS)
+    run_p.add_argument(
+        "--allowed-domains",
+        help="Comma-separated registrable domains the crawl may not leave",
+    )
+    run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
         "--analysis",
         choices=["on", "off"],
@@ -103,13 +91,6 @@ def main() -> None:
         choices=["http", "browser"],
         default=None,
         help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
-    )
-    run_p.add_argument(
-        "--feed",
-        choices=feed_kinds(),
-        default=None,
-        help="Read the source as a platform feed: a listing yields post permalinks "
-        "instead of the links on the page (default: crawl the link graph)",
     )
     run_p.add_argument(
         "--session",

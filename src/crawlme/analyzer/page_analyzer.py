@@ -137,7 +137,9 @@ class PageAnalyzer:
         """Default-on with graceful auto-off, mirroring the other LLM
         stages: without credentials there is nothing to call.  *budget*
         is shared across all LLM consumers of the task."""
-        client = LLMClient.from_settings_if_configured(settings, budget=budget)
+        client = LLMClient.from_settings_if_configured(
+            settings, budget=budget, reasoning_effort=settings.llm_analyze_reasoning_effort
+        )
         if client is None:
             return None
         return cls(client, max_page_chars=settings.analyzer_max_chars)
@@ -275,6 +277,39 @@ def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str
     return "\n".join(lines)
 
 
+#: Values that assert an absence.  Kept as a set rather than a pattern
+#: because a field whose answer merely contains "no" ("no-sugar option")
+#: is a real answer; only a bare negation is the unprovable one.
+_NEGATIONS = frozenset(
+    {
+        "no",
+        "none",
+        "not",
+        "false",
+        "n/a",
+        "na",
+        "nil",
+        "null",
+        "unknown",
+        "unnamed",
+        "unspecified",
+        "not specified",
+        "not mentioned",
+        "not stated",
+        "not applicable",
+        "not limited",
+        "not a limited edition",
+        "否",
+        "无",
+        "没有",
+        "不是",
+        "未知",
+        "未说明",
+        "未提及",
+    }
+)
+
+
 def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
@@ -305,6 +340,14 @@ def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[
             continue
         if _normalize(evidence) not in haystack:
             logger.info("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
+            continue
+        if _normalize(value) in _NEGATIONS:
+            # A quote can only prove what a page says.  There is no
+            # sentence anywhere that proves an absence, so a field
+            # answering "no" is asserting something its evidence cannot
+            # support -- and absence is already sayable here, by the
+            # field not being present at all.
+            logger.info("analysis.negative_claim url_key=%s field=%s", page.url_key, name)
             continue
         out[name] = ExtractedField(value=value, evidence=evidence)
     return out

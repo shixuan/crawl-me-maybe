@@ -179,6 +179,10 @@ class PlaywrightFetcher:
 
     async def _attempt(self, item: FrontierItem) -> FetchResult:
         started = time.monotonic()
+        # Imported here, not at module scope: playwright is optional and
+        # the rest of this module keeps it behind TYPE_CHECKING.
+        from playwright.async_api import TimeoutError as PlaywrightTimeout
+
         context = await self._ensure_context()
         payloads: list[Payload] = []
         async with self._lock:
@@ -189,7 +193,20 @@ class PlaywrightFetcher:
                     # would miss the requests that fill the first screen,
                     # which are exactly the ones carrying the content.
                     page.on("response", lambda resp: self._collect(resp, payloads))
-                response = await page.goto(item.url.canonical, wait_until=self._wait_until)
+                try:
+                    response = await page.goto(item.url.canonical, wait_until=self._wait_until)
+                except PlaywrightTimeout:
+                    # "networkidle" is a condition some pages never
+                    # reach: a platform that polls, streams, or throttles
+                    # keeps a request open forever.  Waiting it out still
+                    # rendered the page and still collected the payloads,
+                    # so the timeout says the condition failed, not that
+                    # the fetch did.  Take what is there and let the
+                    # downstream emptiness check decide -- discarding it
+                    # here threw away a page we had already paid for, and
+                    # then paid for it twice more on retry.
+                    logger.info("browser.wait_timeout url=%s taking what rendered", item.url.canonical)
+                    response = None
                 if self._scrolls:
                     await self._scroll_through(page)
                 html = await page.content()
@@ -197,7 +214,15 @@ class PlaywrightFetcher:
             finally:
                 await page.close()
 
-        status = response.status if response is not None else 0
+        if response is None:
+            # The wait condition timed out.  If something rendered, that
+            # is the page and the condition was simply unreachable; if
+            # nothing did, the fetch really failed and should retry.
+            if not html.strip():
+                raise FetchError("navigation timed out with an empty document")
+            status = 200
+        else:
+            status = response.status
         if status >= 400:
             # Same split as HttpFetcher: the browser has already followed
             # redirects, so anything left in the 4xx range is permanent.

@@ -50,6 +50,55 @@ class LLMResponse:
     truncated: bool = False
 
 
+def _cached_input(usage: Any) -> int:
+    """Input tokens the provider served from its prefix cache.
+
+    Providers disagree on where they put this.  DeepSeek returns
+    ``prompt_cache_hit_tokens`` at the top level; the OpenAI shape nests
+    it under ``prompt_tokens_details.cached_tokens``.  A provider that
+    reports neither gets 0, which reads as "not measured" rather than
+    "nothing was cached" -- the distinction matters, because a run whose
+    fixed prompt is a third of its spend is a very different bill
+    depending on which is true.
+    """
+    direct = getattr(usage, "prompt_cache_hit_tokens", None)
+    if direct is not None:
+        return int(direct)
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        nested = getattr(details, "cached_tokens", None)
+        if nested is None and isinstance(details, dict):
+            nested = details.get("cached_tokens")
+        if nested is not None:
+            return int(nested)
+    if isinstance(usage, dict):
+        return int(usage.get("prompt_cache_hit_tokens") or 0)
+    return 0
+
+
+def _reasoning_output(resp: Any, usage: Any) -> int:
+    """Output tokens the model spent thinking rather than answering.
+
+    Billed as output, discarded on arrival: only the JSON that follows
+    is ever read.  Worth its own number because a stage whose answer is
+    one score and one clause can be spending most of its output on
+    working that answer out.
+    """
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is not None:
+        n = getattr(details, "reasoning_tokens", None)
+        if n is None and isinstance(details, dict):
+            n = details.get("reasoning_tokens")
+        if n is not None:
+            return int(n)
+    # No usage field: fall back to what the model sent us and we drop.
+    try:
+        text = resp.choices[0].message.reasoning_content or ""
+    except (AttributeError, IndexError):
+        return 0
+    return len(text) // 4
+
+
 async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
@@ -137,6 +186,7 @@ class LLMClient:
         concurrency: int = 2,
         budget: TokenBudget | None = None,
         max_output_tokens: int = 8192,
+        reasoning_effort: str = "",
     ) -> None:
         self._model = model
         self._api_key = api_key
@@ -144,9 +194,12 @@ class LLMClient:
         self._sem = asyncio.Semaphore(concurrency)
         self._budget = budget
         self._max_output_tokens = max_output_tokens
+        self._reasoning_effort = reasoning_effort
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient:
+    def from_settings(
+        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str = ""
+    ) -> LLMClient:
         """Build from Settings: llm_model, llm_api_key, llm_base_url,
         llm_concurrency.  An empty llm_model resolves to the provider
         default, so a key alone is enough to get a working client."""
@@ -159,18 +212,21 @@ class LLMClient:
             concurrency=settings.llm_concurrency,
             budget=budget,
             max_output_tokens=settings.llm_max_output_tokens,
+            reasoning_effort=reasoning_effort,
         )
 
     @classmethod
-    def from_settings_if_configured(cls, settings: Settings, *, budget: TokenBudget | None = None) -> LLMClient | None:
-        """Default-on with graceful auto-off, mirroring the embedding
+    def from_settings_if_configured(
+        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str = ""
+    ) -> LLMClient | None:
+        """Default-on with graceful auto-off, mirroring the analysis
         provider.  Without a key and without a custom endpoint there is
         no way to authenticate, so return None and let the caller skip
         the LLM stages instead of failing at runtime."""
         if not settings.llm_api_key and not settings.llm_base_url:
             logger.info("llm.auto_off no api key or base url configured")
             return None
-        return cls.from_settings(settings, budget=budget)
+        return cls.from_settings(settings, budget=budget, reasoning_effort=reasoning_effort)
 
     @property
     def configured(self) -> bool:
@@ -215,8 +271,10 @@ class LLMClient:
                     usage = resp.usage
                     input_tokens = getattr(usage, "prompt_tokens", 0) or 0
                     output_tokens = getattr(usage, "completion_tokens", 0) or 0
+                    cached_tokens = _cached_input(usage)
+                    thinking_tokens = _reasoning_output(resp, usage)
                     if self._budget is not None:
-                        self._budget.record(input_tokens, output_tokens)
+                        self._budget.record(input_tokens, output_tokens, cached_tokens, thinking_tokens)
                     truncated = output_tokens >= ceiling
                     if truncated:
                         logger.warning(
@@ -269,4 +327,6 @@ class LLMClient:
             kwargs["api_base"] = self._base_url
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
         return await litellm.acompletion(**kwargs)

@@ -13,10 +13,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import warnings
 from typing import Protocol
 
 import trafilatura
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 from crawlme.digest.lxml import LXML_LOCK
 from crawlme.schemas import ExtractionStatus, FetchResult, Page
@@ -145,7 +146,12 @@ def _extract_head_meta(html_str: str) -> tuple[str | None, datetime.datetime | N
     twice would be paying twice for the same bytes.
     """
     try:
-        soup = BeautifulSoup(html_str, "lxml")
+        with warnings.catch_warnings():
+            # A crawl reaches XML routinely now that a feed is a page
+            # like any other.  The parser copes; its advice is for a
+            # caller who chose the document, and this one did not.
+            warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+            soup = BeautifulSoup(html_str, "lxml")
     except Exception:
         return None, None
     title_tag = soup.find("title")

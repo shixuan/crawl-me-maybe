@@ -10,6 +10,9 @@ dist/
 .playwright/
 docs/
 results/*
+# Benchmark output: written where the command was run, and swept by
+# git clean if it is neither tracked nor ignored.
+reasoning-review.*
 .coverage
 coverage.xml
 htmlcov/

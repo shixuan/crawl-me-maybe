@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 import crawlme.llm.client as llm_mod
+from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError
 
@@ -315,3 +316,112 @@ async def test_reply_under_the_ceiling_not_flagged(monkeypatch):
     monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("ok", out_tok=5)]))
     client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
     assert (await client.chat("hi")).truncated is False
+
+
+#: cached input ----------------------------------------------------------
+
+
+def test_cached_input_is_tallied_apart_from_the_rest():
+    """Cached input counts the same and costs about a tenth, so a total
+    that does not separate it is not a bill."""
+    budget = TokenBudget(limit=0)
+    budget.record(1000, 100, cached_tokens=800)
+    budget.record(1000, 100)
+
+    assert budget.input_tokens == 2000
+    assert budget.cached_input_tokens == 800
+    assert budget.used == 2200
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        (SimpleNamespace(prompt_cache_hit_tokens=512), 512),
+        (SimpleNamespace(prompt_tokens_details=SimpleNamespace(cached_tokens=384)), 384),
+        (SimpleNamespace(prompt_tokens_details={"cached_tokens": 256}), 256),
+        ({"prompt_cache_hit_tokens": 128}, 128),
+        (SimpleNamespace(prompt_tokens=900), 0),
+    ],
+)
+def test_cached_input_reads_whichever_shape_the_provider_used(usage, expected):
+    """Providers disagree on where they put it.  One that reports
+    nothing gives 0, which reads as "not measured" rather than "nothing
+    was cached" -- a distinction worth a third of the bill."""
+    assert llm_mod._cached_input(usage) == expected
+
+
+@pytest.mark.parametrize(
+    ("resp", "usage", "expected"),
+    [
+        (SimpleNamespace(), SimpleNamespace(completion_tokens_details=SimpleNamespace(reasoning_tokens=700)), 700),
+        (SimpleNamespace(), SimpleNamespace(completion_tokens_details={"reasoning_tokens": 512}), 512),
+        (
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(reasoning_content="x" * 400))]),
+            SimpleNamespace(completion_tokens=900),
+            100,
+        ),
+        (SimpleNamespace(), SimpleNamespace(completion_tokens=900), 0),
+    ],
+)
+def test_reasoning_output_reads_the_field_or_falls_back_to_the_text(resp, usage, expected):
+    """Thinking is billed as output and then dropped, so it is counted
+    from the usage field when there is one and from what arrived when
+    there is not."""
+    assert llm_mod._reasoning_output(resp, usage) == expected
+
+
+def test_thinking_is_tallied_apart_from_the_answer():
+    budget = TokenBudget(limit=0)
+    budget.record(100, 1000, cached_tokens=40, reasoning_tokens=800)
+
+    assert budget.output_tokens == 1000
+    assert budget.reasoning_tokens == 800
+    assert budget.cached_input_tokens == 40
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_sent_only_when_asked_for(monkeypatch):
+    """Empty means send nothing, which is the provider's default and
+    what every run before the setting existed paid for."""
+    sent: list[dict] = []
+
+    async def _fake(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            model="m",
+        )
+
+    monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
+
+    await LLMClient("m", api_key="k").chat("hi")
+    assert "reasoning_effort" not in sent[-1]
+
+    await LLMClient("m", api_key="k", reasoning_effort="minimal").chat("hi")
+    assert sent[-1]["reasoning_effort"] == "minimal"
+
+
+def test_the_ranking_stage_can_think_differently_from_the_rest(monkeypatch):
+    """One stage orders candidates for fetching and another decides what
+    the run returns, so they do not have to buy the same thinking."""
+    from crawlme.pioneer.ranker import LLMRanker
+
+    cfg = Settings(llm_api_key="k", llm_analyze_reasoning_effort="high", llm_rank_reasoning_effort="none")
+    ranker = LLMRanker.from_settings(cfg)
+    assert ranker is not None
+    assert ranker._client._reasoning_effort == "none"
+
+    assert PageAnalyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
+
+
+def test_a_stage_that_declares_nothing_sends_nothing():
+    """Empty means the provider's own default, not some value of ours."""
+    from crawlme.pioneer.ranker import LLMRanker
+
+    # Spelled out rather than left to the default: Settings reads the
+    # developer's own .env, so a test that says nothing about a field
+    # asserts whatever that machine happens to hold.
+    ranker = LLMRanker.from_settings(Settings(llm_api_key="k", llm_rank_reasoning_effort=""))
+    assert ranker is not None
+    assert ranker._client._reasoning_effort == ""

@@ -24,7 +24,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from crawlme.schemas import URL, Candidate, Payload
+from crawlme.schemas import URL, Candidate, Page, Payload
 
 
 class PageProblem(str, enum.Enum):
@@ -147,6 +147,45 @@ class FeedAdapter(Protocol):
     #: Registrable domain the platform serves, used to tell its own pages
     #: from anything a crawl wandered onto.
     DOMAIN: str
+
+    #: How many times to ask a listing for more of itself.  A listing
+    #: hands out one screen, so a window of weeks otherwise sees a dozen
+    #: posts.  Zero for anything that states everything at once.
+    SCROLLS: int
+
+    #: Whether reading this platform at all requires a logged-in
+    #: session.  A crawl of a walled platform without one fetches login
+    #: pages and reports them as a platform with nothing on it.
+    NEEDS_SESSION: bool
+
+    def claims_url(self, url: str) -> bool:
+        """Whether this URL is ours, judged before anything is fetched.
+
+        Weaker than claims() on purpose: some platforms are recognisable
+        from the address and some are not, and a run has to be refused
+        before it starts rather than after it has paid for a page.  An
+        adapter that cannot tell answers False, and is simply not
+        consulted at that point.
+        """
+        ...
+
+    def claims(self, page: Page, document: str) -> bool:
+        """Whether this page is one of ours.
+
+        Given both the page and the bytes it arrived as, because the two
+        adapters that exist answer from different halves: one knows its
+        host, the other knows its document's root element and nothing
+        about where it was served from.
+
+        Asked of the adapter rather than decided outside it, because
+        what makes a page a platform's page is exactly the kind of
+        knowledge an adapter exists to hold: a domain for one platform,
+        a document's root element for another.
+
+        A page nobody claims is not an error.  It is a page, and a page
+        with links on it is what a link graph reads.
+        """
+        ...
 
     def problem(self, html: str) -> PageProblem | None:
         """Why this page holds no content, or None if it does."""

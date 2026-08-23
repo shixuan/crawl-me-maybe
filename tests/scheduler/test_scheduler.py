@@ -16,7 +16,6 @@ from crawlme.schemas import (
     URL,
     AnalysisResult,
     AnalyzerFeedback,
-    Candidate,
     CrawlGoal,
     CrawlTask,
     FetchResult,
@@ -223,27 +222,23 @@ async def test_aclose():
     """Shutdown must release every stage-held resource.
 
     Each of these owns something that outlives the run: drain tasks and
-    caches in the ranker, a prior DB in the steering facade.  A leaked
+    caches in the ranker, a retry queue in the analyzer.  A leaked
     aiosqlite connection keeps its worker thread, and the process hangs
     instead of exiting.
     """
     ranker = MagicMock(aclose=AsyncMock())
     storage = MagicMock(close=AsyncMock())
-    steering = MagicMock(aclose=AsyncMock())
-    sched = _make_sched(ranker=ranker, storage=storage, steering=steering)
+    analyzer = MagicMock(aclose=AsyncMock())
+    sched = _make_sched(ranker=ranker, storage=storage, analyzer=analyzer)
     await sched.aclose()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
-    steering.aclose.assert_awaited_once()
+    analyzer.aclose.assert_awaited_once()
 
 
-def test_on_analysis_feeds_steering_loop():
-    """The analyzer sink is where analyses enter the steering loop."""
-    from crawlme.steering.loop import SteeringLoop
-    from crawlme.steering.signals import InflightSignals
-
-    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
-    sched = _make_sched(steering=steering)
+def test_on_analysis_keeps_the_links_it_endorsed():
+    """The analyzer sink is where endorsed links enter the crawl."""
+    sched = _make_sched()
     result = AnalysisResult(
         page_id="p1",
         url_key="k1",
@@ -253,14 +248,13 @@ def test_on_analysis_feeds_steering_loop():
             domain="example.com",
             url="https://example.com/x",
             title="X",
+            endorsed_links=("https://shop.example/promotions",),
         ),
     )
 
     sched._on_analysis(result)
 
-    summary = steering.summary()
-    assert summary.pages_seen == 1
-    assert summary.domain_priors["example.com"] == 0.9
+    assert list(sched._endorsed) == [("https://shop.example/promotions", "https://example.com/x")]
 
 
 def test_on_analysis_backfills_page_context():
@@ -332,52 +326,15 @@ def test_page_context_ignores_empty_url_key():
     assert "" not in sched._page_contexts
 
 
-def test_apply_steering_passes_through_without_store():
-    sched = _make_sched()
-    assert sched._apply_steering(0.5, None) == 0.5
-
-
-def test_apply_steering_multiplies_hub_and_domain():
-    """Hub pages boost their outlinks; a consistently relevant domain
-    boosts all of its candidates.  Both multipliers stack."""
-    from crawlme.steering.loop import SteeringLoop
-    from crawlme.steering.signals import InflightSignals
-
-    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
-    steering.update(
-        AnalyzerFeedback(
-            classification="AGGREGATOR",
-            hub_score=0.9,
-            domain="hub.com",
-            url="https://hub.com/front",
-        )
-    )
-    for _ in range(3):
-        steering.update(AnalyzerFeedback(classification="RELEVANT", relevance_score=0.8, domain="good.com"))
-
-    sched = _make_sched(steering=steering)
-    sched._page_contexts["src1"] = {"url": "https://hub.com/front"}
-    candidate = Candidate(
-        url=URL(raw="https://good.com/x", canonical="https://good.com/x", url_key="x", reg_domain="good.com"),
-        source_url_key="src1",
-    )
-
-    # 1.5 (hub) x 1.2 (domain) = 1.8
-    assert sched._apply_steering(0.5, candidate) == pytest.approx(0.9)
-
-
 @pytest.mark.asyncio
 async def test_inject_endorsed_pushes_priority_1_items():
     """Endorsed links skip ranking, resolve against their source page,
     and enter the frontier at full priority."""
     from crawlme.pioneer.canonicalizer import Canonicalizer
     from crawlme.pioneer.prefilter import Decision
-    from crawlme.steering.loop import SteeringLoop
-    from crawlme.steering.signals import InflightSignals
 
-    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
-    steering.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x", "/rel")))
-    sched = _make_sched(steering=steering, canonicalizer=Canonicalizer())
+    sched = _make_sched(canonicalizer=Canonicalizer())
+    sched._endorsed.extend([("https://a.com/x", "https://src.com/page"), ("/rel", "https://src.com/page")])
     sched._goal = _goal(max_pages=5)
     sched._page_contexts["src-key"] = {"depth": 2}
     sched._url_key_of["https://src.com/page"] = "src-key"
@@ -400,12 +357,9 @@ async def test_inject_endorsed_respects_prefilter():
     """An endorsement never overrides the prefilter's hard rules."""
     from crawlme.pioneer.canonicalizer import Canonicalizer
     from crawlme.pioneer.prefilter import Decision
-    from crawlme.steering.loop import SteeringLoop
-    from crawlme.steering.signals import InflightSignals
 
-    steering = SteeringLoop(analyzer=None, signals=InflightSignals())
-    steering.update(AnalyzerFeedback(url="https://src.com/page", endorsed_links=("https://a.com/x",)))
-    sched = _make_sched(steering=steering, canonicalizer=Canonicalizer())
+    sched = _make_sched(canonicalizer=Canonicalizer())
+    sched._endorsed.append(("https://a.com/x", "https://src.com/page"))
     sched._goal = _goal(max_pages=5)
     sched._prefilter.check = MagicMock(return_value=(Decision.DROP, "dedup"))
 
@@ -467,8 +421,6 @@ def test_summary_reports_run_statistics():
     sched._ctx.stats.candidates_ranked = 45
     sched._ctx.stats.fetch_errors = 2
     sched._ctx.stats.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
-    sched._ctx.stats.embedding_cache_hits = 4
-    sched._ctx.stats.embedding_cache_misses = 9
 
     summary = sched.summary()
 
@@ -478,8 +430,6 @@ def test_summary_reports_run_statistics():
     assert summary["candidates_ranked"] == 45
     assert summary["fetch_errors"] == 2
     assert summary["analyses"] == {"RELEVANT": 3, "IRRELEVANT": 1}
-    assert summary["embedding_cache_hits"] == 4
-    assert summary["embedding_cache_misses"] == 9
 
 
 def test_on_analysis_feeds_the_relevance_window():
@@ -526,7 +476,7 @@ async def test_analysis_runs_outside_the_fetch_slot(monkeypatch):
     async def _analyze(_page, _goal_arg):
         held["locked"] = sched._fetch_sem.locked()
 
-    sched._steering = MagicMock(analyze=AsyncMock(side_effect=_analyze))
+    sched._analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
     sched._fetch_and_extract = AsyncMock(return_value=(result, page))
     sched._frontier.record_outcome = AsyncMock()
     sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
@@ -724,3 +674,54 @@ async def test_refusal_stops_the_run():
 
     assert sched._ctx.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
     assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}
+
+
+#: shutdown ordering -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_in_the_air_finishes_before_anything_closes():
+    """The pumps returning is not the run being over.
+
+    A fetch is its own task with a page still to save and an analysis
+    still to record. One run stopped with seven of them running, closed
+    the storage and the analyzer underneath, and ended with seven pages
+    fetched, saved, and never analysed -- with the analyzer's retries
+    for them still arriving in the log after the crawl had reported
+    itself complete.
+    """
+    sched = _make_sched()
+    order: list[str] = []
+    released = asyncio.Event()
+
+    async def _slow_fetch():
+        await released.wait()
+        order.append("fetch")
+
+    sched._storage.close = AsyncMock(side_effect=lambda: order.append("close"))
+    task = asyncio.create_task(_slow_fetch())
+    sched._inflight.add(task)
+    task.add_done_callback(sched._inflight.discard)
+
+    settling = asyncio.create_task(sched._settle_inflight())
+    await asyncio.sleep(0)
+    assert not settling.done(), "it must wait, not walk past"
+    released.set()
+    await settling
+    await sched.aclose()
+    assert order == ["fetch", "close"]
+
+
+@pytest.mark.asyncio
+async def test_a_fetch_that_never_finishes_is_abandoned(caplog, monkeypatch):
+    """A backstop, not a promise: the process must still be able to exit."""
+    sched = _make_sched()
+    stuck = asyncio.create_task(asyncio.sleep(3600))
+    sched._inflight.add(stuck)
+
+    monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.05)
+    with caplog.at_level(logging.WARNING):
+        await sched._settle_inflight()
+
+    assert stuck.cancelled() or stuck.done()
+    assert "settle_timeout" in caplog.text

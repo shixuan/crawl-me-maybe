@@ -124,6 +124,16 @@ def protocol_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tupl
 
 
 def extension_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+    """Not every address is a page worth fetching -- except the ones asked for.
+
+    The list guards against a crawl wandering into archives, images and
+    documents it found on a page.  A seed is not wandering: somebody
+    typed it.  And feeds are named exactly what this list refuses --
+    `feed.xml`, `/rss` -- so a run seeded with one lost it silently
+    before it was ever fetched.
+    """
+    if c.depth == 0:
+        return None
     if _EXT_DENYLIST.search(c.url.canonical):
         return Decision.DROP, "extension"
     return None
