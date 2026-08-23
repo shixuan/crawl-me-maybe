@@ -419,6 +419,9 @@ def test_a_stage_that_declares_nothing_sends_nothing():
     """Empty means the provider's own default, not some value of ours."""
     from crawlme.pioneer.ranker import LLMRanker
 
-    ranker = LLMRanker.from_settings(Settings(llm_api_key="k"))
+    # Spelled out rather than left to the default: Settings reads the
+    # developer's own .env, so a test that says nothing about a field
+    # asserts whatever that machine happens to hold.
+    ranker = LLMRanker.from_settings(Settings(llm_api_key="k", llm_rank_reasoning_effort=""))
     assert ranker is not None
     assert ranker._client._reasoning_effort == ""

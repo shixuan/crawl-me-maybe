@@ -363,13 +363,16 @@ async def test_a_wait_timeout_keeps_the_page_that_rendered(monkeypatch) -> None:
     rendered.  Discarding it threw away a page already paid for, and
     then paid for it twice more on retry.
     """
-    from playwright.async_api import TimeoutError as PlaywrightTimeout
+    # Skipped rather than marked `browser`: this needs the exception
+    # class, not a browser, so it runs wherever playwright is installed
+    # and stays out of the way where it is not.
+    timeout_error = pytest.importorskip("playwright.async_api").TimeoutError
 
     class _Page:
         url = "https://example.com/p"
 
         async def goto(self, url, wait_until=None):
-            raise PlaywrightTimeout("Timeout 30000ms exceeded.")
+            raise timeout_error("Timeout 30000ms exceeded.")
 
         async def content(self):
             return "<html><body>the post is right here</body></html>"
@@ -396,13 +399,16 @@ async def test_a_wait_timeout_keeps_the_page_that_rendered(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_a_wait_timeout_with_nothing_rendered_is_still_a_failure(monkeypatch) -> None:
     """An empty document means the fetch really did fail."""
-    from playwright.async_api import TimeoutError as PlaywrightTimeout
+    # Skipped rather than marked `browser`: this needs the exception
+    # class, not a browser, so it runs wherever playwright is installed
+    # and stays out of the way where it is not.
+    timeout_error = pytest.importorskip("playwright.async_api").TimeoutError
 
     class _Page:
         url = "https://example.com/p"
 
         async def goto(self, url, wait_until=None):
-            raise PlaywrightTimeout("Timeout 30000ms exceeded.")
+            raise timeout_error("Timeout 30000ms exceeded.")
 
         async def content(self):
             return "   "
