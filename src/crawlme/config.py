@@ -74,14 +74,12 @@ class Settings(BaseSettings):
     # then discarded.  Values are the provider's ("minimal", "low",
     # "medium", "high", and on some providers "none"), passed through
     # rather than validated here, because the vocabulary is theirs.
-    llm_reasoning_effort: str = ""
-    # The same, for the ranking stage alone.  Empty falls back to the
-    # setting above.  It gets its own knob because it is the one stage
-    # the trade was measured on: over 114 candidates, thinking bought
-    # +0.069 AUC and cost nine times the output, and the value it landed
-    # on without thinking (0.903) is what the shipped ranker was already
-    # scoring with it (0.914).
+    # How hard the model thinks before answering, per stage, on models
+    # that think.  Empty sends nothing and takes the provider's default.
+    # Values are the provider's: minimal / low / medium / high, and on
+    # DeepSeek "none", the only value there that turns thinking off.
     llm_rank_reasoning_effort: str = ""
+    llm_analyze_reasoning_effort: str = ""
 
     # -: Fetch ---
     fetch_concurrency: int = 6

@@ -119,7 +119,7 @@ class LLMRanker:
         client = LLMClient.from_settings_if_configured(
             settings,
             budget=budget,
-            reasoning_effort=settings.llm_rank_reasoning_effort or settings.llm_reasoning_effort,
+            reasoning_effort=settings.llm_rank_reasoning_effort,
         )
         if client is None:
             return None

@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 import crawlme.llm.client as llm_mod
+from crawlme.analyzer import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError
 
@@ -406,18 +407,18 @@ def test_the_ranking_stage_can_think_differently_from_the_rest(monkeypatch):
     the run returns, so they do not have to buy the same thinking."""
     from crawlme.pioneer.ranker import LLMRanker
 
-    cfg = Settings(llm_api_key="k", llm_reasoning_effort="high", llm_rank_reasoning_effort="none")
+    cfg = Settings(llm_api_key="k", llm_analyze_reasoning_effort="high", llm_rank_reasoning_effort="none")
     ranker = LLMRanker.from_settings(cfg)
     assert ranker is not None
     assert ranker._client._reasoning_effort == "none"
 
-    assert LLMClient.from_settings(cfg)._reasoning_effort == "high"
+    assert PageAnalyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
 
 
-def test_the_ranking_stage_falls_back_to_the_general_setting():
+def test_a_stage_that_declares_nothing_sends_nothing():
+    """Empty means the provider's own default, not some value of ours."""
     from crawlme.pioneer.ranker import LLMRanker
 
-    cfg = Settings(llm_api_key="k", llm_reasoning_effort="high")
-    ranker = LLMRanker.from_settings(cfg)
+    ranker = LLMRanker.from_settings(Settings(llm_api_key="k"))
     assert ranker is not None
-    assert ranker._client._reasoning_effort == "high"
+    assert ranker._client._reasoning_effort == ""

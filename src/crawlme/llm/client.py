@@ -198,7 +198,7 @@ class LLMClient:
 
     @classmethod
     def from_settings(
-        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str | None = None
+        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str = ""
     ) -> LLMClient:
         """Build from Settings: llm_model, llm_api_key, llm_base_url,
         llm_concurrency.  An empty llm_model resolves to the provider
@@ -212,12 +212,12 @@ class LLMClient:
             concurrency=settings.llm_concurrency,
             budget=budget,
             max_output_tokens=settings.llm_max_output_tokens,
-            reasoning_effort=(settings.llm_reasoning_effort if reasoning_effort is None else reasoning_effort),
+            reasoning_effort=reasoning_effort,
         )
 
     @classmethod
     def from_settings_if_configured(
-        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str | None = None
+        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str = ""
     ) -> LLMClient | None:
         """Default-on with graceful auto-off, mirroring the analysis
         provider.  Without a key and without a custom endpoint there is
