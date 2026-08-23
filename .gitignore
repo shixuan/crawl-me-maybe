@@ -8,14 +8,12 @@ __pycache__/
 dist/
 *.egg-info/
 .playwright/
-docs/
 results/*
-# Benchmark output: written where the command was run, and swept by
-# git clean if it is neither tracked nor ignored.
-reasoning-review.*
 .coverage
 coverage.xml
 htmlcov/
+docs/*
+!docs/arch.md
 
 # Browser sessions: real login cookies, never commit
 *session*.json

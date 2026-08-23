@@ -1,5 +1,8 @@
 # Crawl me maybe
 
+[![ci](https://github.com/shixuan/crawl-me-maybe/actions/workflows/ci.yml/badge.svg)](https://github.com/shixuan/crawl-me-maybe/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-750014)](LICENSE)
+
 > Hey, I just met you,
 >
 > And this is crazy,
@@ -258,7 +261,8 @@ See [`.env.example`](.env.example) for the full list.
 | Version | State | What it adds |
 |---------|-------|--------------|
 | v0.1 | ✅ | Full pipeline at zero LLM cost |
+| v0.1.1 | ❌ | (deprecated) EmbeddingRanker, semantic ranking on a local model. (see archive/embedding-investigation branch) |
 | v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
-| v0.3 | 🚧 | Playwright with login state, feed traversal, extracted fields with evidence |
+| v0.3 | ✅ | Playwright with login state, feed traversal, extracted fields with evidence |
 
 ---
