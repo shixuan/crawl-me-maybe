@@ -25,7 +25,7 @@ from typing import Any
 from crawlme.analyzer import Analyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
-from crawlme.digest.feed.base import PageProblem
+from crawlme.digest.feed.base import FeedDependencyError, PageProblem
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
 from crawlme.logging import setup_logging
@@ -800,6 +800,13 @@ class CrawlScheduler:
             except asyncio.TimeoutError:
                 logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 harvest = Harvest([])
+            except FeedDependencyError as e:
+                # Not about this page: every later page of the same
+                # format fails identically, so carrying on would spend
+                # the whole budget producing nothing and report success.
+                logger.error("fetch.adapter_dependency url_key=%s: %s", item.url_key, e)
+                self._counters.fatal_error = str(e)
+                return
             candidates = harvest.candidates
             if harvest.problem is not None:
                 self._note_not_content(harvest.problem)

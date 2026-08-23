@@ -26,7 +26,7 @@ import logging
 import re
 from typing import Any
 
-from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
+from crawlme.digest.feed.base import FeedDependencyError, FeedItem, Listing, PageProblem
 from crawlme.schemas import Page, Payload
 
 logger = logging.getLogger(__name__)
@@ -97,9 +97,16 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     """Read the feed into its entries, each with what it already says."""
     try:
         import feedparser
-    except ImportError:  # pragma: no cover - depends on the install
-        logger.warning("rss.no_feedparser url=%s", url)
-        return Listing()
+    except ImportError as e:  # pragma: no cover - depends on the install
+        # Loud, not empty.  An empty listing is what a feed with nothing
+        # new in it also returns, so degrading quietly here makes a
+        # missing package indistinguishable from a quiet week -- and the
+        # run reports success having read nothing.  The seed-side
+        # preflight guesses from the URL and is knowingly wrong five
+        # times in seven, so this is the check that actually holds.
+        raise FeedDependencyError(
+            "reading a feed requires the 'feedparser' package: pip install 'crawl-me-maybe[rss]'"
+        ) from e
 
     feed = feedparser.parse(html)
     items: list[FeedItem] = []

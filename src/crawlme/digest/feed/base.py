@@ -27,6 +27,15 @@ from typing import Any, Protocol
 from crawlme.schemas import URL, Candidate, Page, Payload
 
 
+class FeedDependencyError(RuntimeError):
+    """An adapter cannot read its format because a package is missing.
+
+    Separate from PageProblem because it is not about the page at all:
+    every later page of that format fails identically, so it ends the
+    run rather than being counted alongside deleted accounts.
+    """
+
+
 class PageProblem(str, enum.Enum):
     """Why a fetched page holds no content.
 

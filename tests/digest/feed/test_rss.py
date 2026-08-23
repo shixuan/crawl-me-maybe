@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from crawlme.digest.feed import rss
+from crawlme.digest.feed.base import FeedDependencyError
 from crawlme.digest.harvest import PageHarvester
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.schemas import URL, Page
@@ -110,3 +111,24 @@ def test_an_html_page_falls_through_to_links(tmp_path: Path) -> None:
     out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _HTML), depth=0)
     assert not out.listing
     assert [c.url.canonical for c in out.candidates] == ["https://example.com/x"]
+
+
+def test_a_missing_feedparser_is_raised_not_swallowed(monkeypatch):
+    """An empty listing is also what a feed with nothing new returns.
+
+    Degrading quietly here made a missing package indistinguishable from
+    a quiet week, and the run reported success having read nothing.
+    """
+    import builtins
+
+    real = builtins.__import__
+
+    def _no_feedparser(name, *a, **k):
+        if name.split(".")[0] == "feedparser":
+            raise ImportError("No module named 'feedparser'")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_feedparser)
+
+    with pytest.raises(FeedDependencyError, match="crawl-me-maybe\\[rss\\]"):
+        rss.parse_listing(_RSS.decode(), "https://example.com/feed.xml", [])

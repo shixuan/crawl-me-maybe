@@ -725,3 +725,26 @@ async def test_a_fetch_that_never_finishes_is_abandoned(caplog, monkeypatch):
 
     assert stuck.cancelled() or stuck.done()
     assert "settle_timeout" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_missing_adapter_package_ends_the_run():
+    """It is not about this page: every later page of the same format
+    fails identically, so carrying on would spend the whole budget
+    producing nothing and then report success."""
+    from crawlme.digest.feed.base import FeedDependencyError
+
+    sched = _make_sched()
+    sched._goal = _goal(max_pages=5)
+    sched._harvester = MagicMock(harvest=MagicMock(side_effect=FeedDependencyError("install crawl-me-maybe[rss]")))
+    url = URL(raw="https://x.com/a", canonical="https://x.com/a", url_key="k1")
+    sched._fetch_and_extract = AsyncMock(
+        return_value=(MagicMock(item_id="i1", status_code=200, raw=b"x"), Page(url_key="k1", url=url))
+    )
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    await sched._handle_fetch(_item())
+
+    assert "crawl-me-maybe[rss]" in sched._counters.fatal_error
