@@ -17,7 +17,6 @@ dependencies = [
     # via trafilatura[all], which pulls a dozen packages for one module.
     "lxml_html_clean",
     "aiosqlite",
-    "fastembed",
     "litellm>=1.40",
 ]
 
