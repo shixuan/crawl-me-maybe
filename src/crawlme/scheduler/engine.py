@@ -72,6 +72,9 @@ _CHECKPOINT_INTERVAL = 10
 # to one of the ranker's own calls, which its character budget puts at
 # roughly twenty.
 _RANK_BATCH_SIZE = 20
+#: How many judged-relevant pages the ranker is reminded of.  Matches the
+#: ranker's own cap: keeping more here would only be sliced off there.
+_SEEN_SO_FAR = 5
 _POP_SLEEP = 0.2
 
 #: How long a stopping run waits for the fetches already in the air.
@@ -156,6 +159,11 @@ class CrawlScheduler:
         # and injected at the next enqueue.
         self._analyzer = analyzer
         self._endorsed: collections.deque[tuple[str, str]] = collections.deque()
+        # The pages judged relevant so far, newest last, for the ranker's
+        # "seen so far" section.  Bounded, because the prompt shows only
+        # the last few and an unbounded list would grow for a whole run
+        # to be sliced away every time.
+        self._relevant_pages: collections.deque[dict[str, Any]] = collections.deque(maxlen=_SEEN_SO_FAR)
         # The run context: one mutable object holding the stop-condition
         # counters and the report statistics.  The factory injects it;
         # a bare scheduler creates its own so tests stay cheap.
@@ -366,6 +374,20 @@ class CrawlScheduler:
         fb = result.feedback
         if fb.endorsed_links and fb.url:
             self._endorsed.extend((link, fb.url) for link in fb.endorsed_links)
+        # What the ranker is told about the run so far.  This is the
+        # analysis half of the loop: ranking predicts, analysis
+        # establishes, and what analysis established goes back into the
+        # next prediction.  It reached the prompt through the steering
+        # facade until v0.3.0 removed it, and the prompt kept reading a
+        # list nothing filled any more.
+        if result.classification == "RELEVANT":
+            self._relevant_pages.append(
+                {
+                    "url": fb.url,
+                    "title": fb.title,
+                    "relevance": round(result.relevance_score, 2),
+                }
+            )
         # Backfill the judgment into the source page's context so the LLM
         # ranker can tell a link off a RELEVANT article from a link off a
         # help page.  Retries land here through the same sink, so a late
@@ -467,11 +489,19 @@ class CrawlScheduler:
         self._ctx.counters = counters
 
     async def pause(self) -> None:
+        """Stop taking work and settle what is already in the air.
+
+        Settling is the same operation the normal exit performs, and for
+        the same reason: a fetch is its own task, holding a page to save
+        and an analysis to record.  Polling a counter used to stand in
+        for this, which works while the loop is healthy and does nothing
+        while it is being torn down -- an interrupted run left its
+        fetches pending, printed "Task was destroyed but it is pending",
+        and left its row in the database saying RUNNING for ever.
+        """
         logger.info("pause.requested inflight=%d", self._counters.in_flight)
         self._state = "PAUSING"
-        # Wait for in-flight fetches to finish.
-        while self._counters.in_flight > 0:
-            await asyncio.sleep(0.1)
+        await self._settle_inflight()
         self._state = "PAUSED"
         if self._task:
             self._task.state = "PAUSED"
@@ -926,8 +956,10 @@ class CrawlScheduler:
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         """Score one drained batch and push what survives to the frontier."""
-        history = RankHistorySummary(pages_seen=self._counters.pages_fetched)
-        history.fetched = self._counters.pages_fetched
+        history = RankHistorySummary(
+            goal=self._goal.prompt if self._goal else "",
+            relevant_pages=list(self._relevant_pages),
+        )
         assert self._goal is not None
         if self._ranker is None:
             # Without credentials there is no ranker.  The frontier

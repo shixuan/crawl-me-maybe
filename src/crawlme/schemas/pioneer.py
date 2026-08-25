@@ -85,16 +85,17 @@ class RankDecision(BaseModel):
 
 
 class RankHistorySummary(BaseModel):
+    """What the run has established, as the ranker is told it.
+
+    Everything here is read by the LLM ranker's prompt.  It used to
+    carry four more fields -- hub domains, topics, domain priors, page
+    counts -- filled by the steering subsystem and consumed by the rule
+    ranker's factors.  Both are gone, and a field nothing writes and
+    nothing reads is worse than no field: it reads as a working signal.
+    """
+
     goal: str = ""
     relevant_pages: list[dict[str, Any]] = Field(default_factory=list)
-    hub_domains: list[str] = Field(default_factory=list)
-    top_topics: list[str] = Field(default_factory=list)
-    # reg_domain -> average relevance across every analyzed page of that
-    # domain, accumulated across tasks by the feedback subsystem (2.5).
-    # RuleRanker's domain-prior factor (F4) consumes this.
-    domain_priors: dict[str, float] = Field(default_factory=dict)
-    pages_seen: int = 0
-    fetched: int = 0
 
 
 class FrontierSnapshot(BaseModel):

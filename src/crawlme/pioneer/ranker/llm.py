@@ -62,17 +62,14 @@ _SYSTEM = (
     "You see a batch of candidate links plus the crawl goal and what the crawl found "
     "so far, so compare the candidates against each other, not in isolation. Reply "
     'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0}], '
-    '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}], '
-    '"new_search_suggestions": '
-    '["..."]}. Include every candidate id exactly once, either in rankings or in '
+    '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]}. '
+    "Include every candidate id exactly once, either in rankings or in "
     "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
     "clicked earlier, so use the full 0.0 to 1.0 range, and no rationale: the "
     "priority is the whole answer for something you are keeping. candidates_to_drop "
     "holds clear junk under the goal, each with a short rationale saying what makes "
     "it junk, because a rejection is the one a reader has to be able to argue with. "
-    "If the whole batch is junk, put every id in candidates_to_drop. "
-    "new_search_suggestions are optional new search directions "
-    "you noticed while judging."
+    "If the whole batch is junk, put every id in candidates_to_drop."
 )
 
 _REPAIR_SUFFIX = (
@@ -382,10 +379,6 @@ def _to_decisions(
     unknown = (set(scored) | drop_ids) - known_ids
     if unknown:
         logger.warning("llm.rank unknown_ids=%s", sorted(unknown))
-
-    suggestions = data.get("new_search_suggestions")
-    if isinstance(suggestions, list) and suggestions:
-        logger.info("llm.rank suggestions=%s", suggestions)
 
     missing = 0
     decisions: list[RankDecision] = []

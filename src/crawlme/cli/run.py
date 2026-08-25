@@ -222,12 +222,34 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # log lines, and the report should be the final word on the
     # terminal, not buried between shutdown noise.
     _print_summary(scheduler, task, budget)
+    code = exit_code(task.stopping_reason)
     # The run is over: mute the whole logging tree.  Interpreter
     # teardown still fires litellm's atexit worker (which creates a
     # fresh event loop and logs about its empty queue) and asyncio's
     # loop-close debug records, all of which would otherwise print
     # after the report at DEBUG level.
     logging.getLogger().setLevel(logging.CRITICAL)
+    if code:
+        sys.exit(code)
+
+
+#: Stop reasons that mean the crawl was prevented rather than finished.
+_REFUSALS = frozenset({"LOGIN_REQUIRED", "RATE_LIMITED", "FATAL"})
+
+
+def exit_code(stopping_reason: str | None) -> int:
+    """0 when the crawl finished, 1 when something refused it.
+
+    A crawl the platform turned away is not a crawl that found nothing,
+    and a scheduled job cannot tell those apart from an exit code alone.
+    Run weekly, that is the difference between "no new posts this week"
+    and "the session expired a month ago".
+
+    Reasons combine, so this asks whether any of them is a refusal: a
+    run can exhaust its page budget *and* hit a login wall, and the wall
+    is the part worth waking up for.
+    """
+    return 1 if _REFUSALS.intersection((stopping_reason or "").split("+")) else 0
 
 
 #: What each optional install buys, and what asks for it.  Kept as data
