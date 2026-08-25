@@ -814,3 +814,29 @@ def test_the_seen_list_stays_bounded():
 
     assert len(sched._relevant_pages) == _SEEN_SO_FAR
     assert sched._relevant_pages[-1]["url"] == f"https://x/{_SEEN_SO_FAR + 3}"
+
+
+@pytest.mark.asyncio
+async def test_pause_settles_the_fetches_in_the_air():
+    """Polling a counter works while the loop is healthy and does
+    nothing while it is being torn down.  An interrupted run used to
+    leave its fetches pending, print "Task was destroyed but it is
+    pending", and leave its row saying RUNNING for ever."""
+    finished: list[str] = []
+
+    async def _slow() -> None:
+        await asyncio.sleep(0.05)
+        finished.append("done")
+
+    sched = _make_sched()
+    sched._task = _task()
+    sched._checkpoint = AsyncMock()
+    task = asyncio.create_task(_slow())
+    sched._inflight.add(task)
+    task.add_done_callback(sched._inflight.discard)
+
+    await sched.pause()
+
+    assert finished == ["done"], "pause returned before the fetch had finished"
+    assert task.done()
+    assert sched._state == "PAUSED"
