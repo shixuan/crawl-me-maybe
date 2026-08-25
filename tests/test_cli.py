@@ -654,3 +654,31 @@ def test_an_installed_extra_is_not_complained_about(capsys):
     with patch("importlib.util.find_spec", return_value=object()):
         _check_extras(Settings(fetcher="browser"), _extras_args(seeds="https://x/feed.xml", session="s"))
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("reason", "code"),
+    [
+        ("BUDGET_PAGES", 0),
+        ("FRONTIER_DRAINED", 0),
+        ("MAX_RELEVANT", 0),
+        ("DIMINISHING_RETURNS", 0),
+        ("LOGIN_REQUIRED", 1),
+        ("RATE_LIMITED", 1),
+        ("FATAL", 1),
+        ("FRONTIER_DRAINED+DOMAIN_BUDGET", 0),
+        ("BUDGET_PAGES+LOGIN_REQUIRED", 1),
+        (None, 0),
+        ("", 0),
+    ],
+)
+def test_a_refused_crawl_exits_non_zero(reason, code):
+    """A crawl the platform refused is not a crawl that found nothing.
+
+    A scheduled job cannot tell the two apart from a zero exit code, and
+    weekly that is the difference between "no new posts" and "the
+    session expired a month ago".
+    """
+    from crawlme.cli.run import exit_code
+
+    assert exit_code(reason) == code
