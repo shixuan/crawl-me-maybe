@@ -952,7 +952,6 @@ class CrawlScheduler:
             goal=self._goal.prompt if self._goal else "",
             relevant_pages=list(self._relevant_pages),
         )
-        history.fetched = self._counters.pages_fetched
         assert self._goal is not None
         if self._ranker is None:
             # Without credentials there is no ranker.  The frontier

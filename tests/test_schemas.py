@@ -117,8 +117,11 @@ def test_rank_decision_defaults():
 
 
 def test_rank_history_defaults():
+    """Only what the prompt reads.  A field nothing writes and nothing
+    reads is worse than no field: it reads as a working signal."""
     rhs = RankHistorySummary()
-    assert (rhs.pages_seen, rhs.hub_domains) == (0, [])
+    assert (rhs.goal, rhs.relevant_pages) == ("", [])
+    assert set(RankHistorySummary.model_fields) == {"goal", "relevant_pages"}
 
 
 def test_crawl_task_defaults():
