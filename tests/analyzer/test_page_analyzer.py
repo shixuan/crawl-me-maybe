@@ -91,8 +91,6 @@ async def test_analyze_builds_full_result():
     assert fb.classification == "RELEVANT"
     assert fb.hub_score == pytest.approx(0.3)
     assert fb.endorsed_links == ["https://example.com/next"]
-    assert fb.topics == ["borrow checking"]
-    assert fb.entities == ["rustc"]
     assert fb.domain == "example.com"
     # Page identity rides along so the feedback signals can build the
     # ranker's "seen so far" history without the Page itself.
@@ -199,8 +197,6 @@ async def test_lists_deduplicated_and_capped():
     result = await _analyzer(client).analyze(_page(), _goal())
     assert result is not None
     assert result.tags == ["a", "b", "c", "d", "e", "f", "g", "h"]  # 8 cap, deduped
-    assert result.feedback.topics == ["t"]  # 10 cap, deduped
-    assert len(result.feedback.entities) == 10
     assert result.feedback.endorsed_links == ["u1", "u2", "u3", "u4", "u5"]  # 5 cap, non-str dropped
 
 

@@ -1,15 +1,17 @@
-"""PageAnalyzer: one LLM call per fetched page, the v0.2 analysis stage.
+"""PageAnalyzer: one LLM call per fetched page.
 
-The analyzer is its own stage: the judgment it produces (classification,
-relevance, summary) is the product the user consumes, stored in the
-analyses table and revisited by replay and the benchmark judge.  The
-same call also yields the feedback signals (hub quality, endorsed
-links, topics, entities) that the steering half of the feedback loop
-turns into domain priors and priority multipliers, and the scheduler
-later feeds endorsed links back into the candidate buffer.
+The judgment it produces -- classification, relevance, summary, and the
+fields the goal declared with a quote behind each one -- is the product
+the user consumes.  It is stored in the analyses table and revisited by
+replay, which is why the row carries the prompt version and the model.
 
-The whole feedback subsystem, analyzer included, is optional: the
-factory only wires it when enabled and credentialed.
+Two things travel back into the crawl from the same call: the pages it
+judged relevant, which the ranker is reminded of when it scores the
+next batch, and the links it endorsed, which are the only way a run
+leaves the platform it started on.
+
+The stage is optional: the factory wires it only when analysis is
+enabled and there are credentials.
 
 Failure policy.  A failed analysis never blocks the crawl loop: the
 page is parked on an internal delayed re-analysis queue and retried a
@@ -55,8 +57,6 @@ _RETRY_DELAY_SEC = 30.0
 _PROMPT_VERSION = "v2.5"
 
 _MAX_TAGS = 8
-_MAX_TOPICS = 10
-_MAX_ENTITIES = 10
 _MAX_ENDORSED = 5
 
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
@@ -67,15 +67,14 @@ _SYSTEM = (
     "feedback signals the crawler's scheduler uses. Reply with JSON only, no prose. "
     'Format: {"classification": "<RELEVANT|HUB|AGGREGATOR|IRRELEVANT|NAVIGATION>", '
     '"relevance_score": 0.0, "hub_score": 0.0, "summary": "...", "tags": ["..."], '
-    '"topics": ["..."], "entities": ["..."], "endorsed_links": ["..."]}. '
+    '"endorsed_links": ["..."]}. '
     "classification: RELEVANT means the page directly satisfies the goal; HUB means the "
     "page itself is thin but links toward the goal; AGGREGATOR means a link aggregator "
     "like a Hacker News front page; IRRELEVANT means unrelated; NAVIGATION means menus, "
     "login pages, category indexes. relevance_score is how well the page satisfies the "
     "goal, hub_score is how good this page is as a link source for the goal, both 0.0 to "
-    "1.0. summary is one or two sentences. tags describe the content. topics are the "
-    "subjects the page is about. entities are named things (projects, people, companies) "
-    "that matter. endorsed_links are up to 5 URLs from the page text that you would "
+    "1.0. summary is one or two sentences. tags describe the content. "
+    "endorsed_links are up to 5 URLs from the page text that you would "
     "click yourself."
 )
 
@@ -377,8 +376,6 @@ def _parse_analysis(
     summary = str(summary).strip() if isinstance(summary, str) else ""
 
     tags = _str_list(data.get("tags"), _MAX_TAGS)
-    topics = _str_list(data.get("topics"), _MAX_TOPICS)
-    entities = _str_list(data.get("entities"), _MAX_ENTITIES)
     endorsed = _str_list(data.get("endorsed_links"), _MAX_ENDORSED)
 
     return AnalysisResult(
@@ -397,8 +394,6 @@ def _parse_analysis(
             relevance_score=relevance,
             hub_score=hub,
             endorsed_links=endorsed,
-            topics=topics,
-            entities=entities,
             domain=page.url.reg_domain,
             url=page.url.canonical,
             title=page.title or "",
