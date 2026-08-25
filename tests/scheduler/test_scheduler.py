@@ -16,6 +16,7 @@ from crawlme.schemas import (
     URL,
     AnalysisResult,
     AnalyzerFeedback,
+    Candidate,
     CrawlGoal,
     CrawlTask,
     FetchResult,
@@ -748,3 +749,68 @@ async def test_a_missing_adapter_package_ends_the_run():
     await sched._handle_fetch(_item())
 
     assert "crawl-me-maybe[rss]" in sched._counters.fatal_error
+
+
+@pytest.mark.asyncio
+async def test_what_analysis_established_reaches_the_next_ranking():
+    """Ranking predicts, analysis establishes, and what analysis
+    established goes back into the next prediction.
+
+    The prompt has read `relevant_pages` all along; between v0.3.0 and
+    this fix nothing filled it, so the section silently never appeared.
+    """
+    sched = _make_sched()
+    sched._goal = _goal(max_pages=5)
+
+    for i, cls in enumerate(("RELEVANT", "IRRELEVANT", "RELEVANT")):
+        sched._on_analysis(
+            AnalysisResult(
+                page_id=f"p{i}",
+                url_key=f"k{i}",
+                classification=cls,
+                relevance_score=0.9 if cls == "RELEVANT" else 0.1,
+                feedback=AnalyzerFeedback(
+                    classification=cls,
+                    relevance_score=0.9 if cls == "RELEVANT" else 0.1,
+                    url=f"https://example.com/{i}",
+                    title=f"Post {i}",
+                ),
+            )
+        )
+
+    seen = [p["url"] for p in sched._relevant_pages]
+    assert seen == ["https://example.com/0", "https://example.com/2"]
+
+    captured: dict = {}
+
+    async def _rank(goal, batch, history, page_contexts=None):
+        captured["history"] = history
+        return []
+
+    sched._ranker = MagicMock(rank_batch=AsyncMock(side_effect=_rank))
+    sched._frontier.push_batch = AsyncMock()
+    url = URL(raw="https://x.com/c", canonical="https://x.com/c", url_key="ck")
+    await sched._rank_and_enqueue([Candidate(url=url)])
+
+    assert [p["title"] for p in captured["history"].relevant_pages] == ["Post 0", "Post 2"]
+
+
+def test_the_seen_list_stays_bounded():
+    """Unbounded, it would grow for a whole run only to be sliced away
+    at the prompt every time."""
+    from crawlme.scheduler.engine import _SEEN_SO_FAR
+
+    sched = _make_sched()
+    for i in range(_SEEN_SO_FAR + 4):
+        sched._on_analysis(
+            AnalysisResult(
+                page_id=f"p{i}",
+                url_key=f"k{i}",
+                classification="RELEVANT",
+                relevance_score=0.9,
+                feedback=AnalyzerFeedback(classification="RELEVANT", relevance_score=0.9, url=f"https://x/{i}"),
+            )
+        )
+
+    assert len(sched._relevant_pages) == _SEEN_SO_FAR
+    assert sched._relevant_pages[-1]["url"] == f"https://x/{_SEEN_SO_FAR + 3}"
