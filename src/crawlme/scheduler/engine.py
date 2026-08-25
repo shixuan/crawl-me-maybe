@@ -489,11 +489,19 @@ class CrawlScheduler:
         self._ctx.counters = counters
 
     async def pause(self) -> None:
+        """Stop taking work and settle what is already in the air.
+
+        Settling is the same operation the normal exit performs, and for
+        the same reason: a fetch is its own task, holding a page to save
+        and an analysis to record.  Polling a counter used to stand in
+        for this, which works while the loop is healthy and does nothing
+        while it is being torn down -- an interrupted run left its
+        fetches pending, printed "Task was destroyed but it is pending",
+        and left its row in the database saying RUNNING for ever.
+        """
         logger.info("pause.requested inflight=%d", self._counters.in_flight)
         self._state = "PAUSING"
-        # Wait for in-flight fetches to finish.
-        while self._counters.in_flight > 0:
-            await asyncio.sleep(0.1)
+        await self._settle_inflight()
         self._state = "PAUSED"
         if self._task:
             self._task.state = "PAUSED"
