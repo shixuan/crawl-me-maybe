@@ -34,8 +34,6 @@ class AnalyzerFeedback(BaseModel):
     relevance_score: float = 0.0
     hub_score: float = 0.0
     endorsed_links: list[str] = Field(default_factory=list)
-    topics: list[str] = Field(default_factory=list)
-    entities: list[str] = Field(default_factory=list)
     domain: str = ""
     # Page identity the analyzer already holds at parse time.  The
     # signal aggregation needs the readable URL for the ranker's "seen
