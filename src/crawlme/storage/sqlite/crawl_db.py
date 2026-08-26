@@ -46,8 +46,7 @@ CREATE TABLE IF NOT EXISTS crawl_tasks (
     counters     TEXT DEFAULT '{}',
     start_at     TEXT NOT NULL,
     end_at       TEXT,
-    stopping_reason TEXT,
-    checkpoint_ref TEXT
+    stopping_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pages (
@@ -74,7 +73,6 @@ CREATE TABLE IF NOT EXISTS links (
     snippet         TEXT,
     parent_heading  TEXT,
     position        INTEGER DEFAULT 0,
-    source_page_id  TEXT,
     source_url_key  TEXT,
     depth           INTEGER DEFAULT 0,
     text            TEXT DEFAULT '',
@@ -306,8 +304,8 @@ class SqliteCrawlDb:
     def save_task(self, task_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_tasks(task_id, goal_id, state, counters, "
-            "start_at, end_at, stopping_reason, checkpoint_ref) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            "start_at, end_at, stopping_reason) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
             (
                 task_json["task_id"],
                 task_json.get("goal_id", ""),
@@ -316,7 +314,6 @@ class SqliteCrawlDb:
                 task_json.get("start_at", ""),
                 task_json.get("end_at"),
                 task_json.get("stopping_reason"),
-                task_json.get("checkpoint_ref"),
             ),
         )
 
@@ -370,9 +367,9 @@ class SqliteCrawlDb:
         """Persist one discovered link (the pre-fetch business card)."""
         self._enqueue_write(
             "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
-            "anchor, snippet, parent_heading, position, source_page_id, "
+            "anchor, snippet, parent_heading, position, "
             "source_url_key, depth, text, posted_at, signals_json, status, discovered_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 candidate.candidate_id,
                 candidate.url.url_key,
@@ -381,7 +378,6 @@ class SqliteCrawlDb:
                 candidate.snippet,
                 candidate.parent_heading,
                 candidate.position,
-                candidate.source_page_id,
                 candidate.source_url_key,
                 candidate.depth,
                 candidate.text,
