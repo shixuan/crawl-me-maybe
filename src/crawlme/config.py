@@ -18,6 +18,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from crawlme.digest.fetcher.base import DEFAULT_UA
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -105,9 +107,7 @@ class Settings(BaseSettings):
     # sees of the crawl.  Ignored outside feed mode: a link graph has
     # nothing below the fold worth waiting for.
     feed_scrolls: int = 4
-    user_agents: list[str] = [
-        "crawl-me-maybe/0.1 (research crawler; +https://github.com/crawl-me-maybe)",
-    ]
+    user_agents: list[str] = [DEFAULT_UA]
 
     # -: Extract ---
     # Timeout for trafilatura extraction + bs4 link parsing (per page).
