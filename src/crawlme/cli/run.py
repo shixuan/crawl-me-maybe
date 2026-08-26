@@ -90,6 +90,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.browser_storage_state = args.session
         cfg.fetcher = "browser"
     _check_session(args)
+    _check_fetcher(args)
     _check_extras(cfg, args)
     if args.log_level is not None:
         cfg.log_level = args.log_level
@@ -335,6 +336,30 @@ def _looks_like_a_feed(url: str) -> bool:
     adapter itself never guesses -- it reads the document.
     """
     return any(hint in url.lower() for hint in ("rss", "atom", "/feed", "feed.xml", "feeds/"))
+
+
+def _check_fetcher(args: argparse.Namespace) -> None:
+    """Refuse a platform that needs a browser before one page is spent.
+
+    Plain HTTP gets a shell from these, and a shell carries none of the
+    platform's own elements, so the adapter does not claim it, the page
+    is read as an ordinary one, and nothing is found.  Nothing found is
+    indistinguishable from a quiet week, which is why this is an error
+    and not a warning.
+
+    A session already implies a browser, so only the platforms that need
+    rendering without needing an account reach this.
+    """
+    if args.session or args.fetcher == "browser":
+        return
+    for url in _declared_seeds(args):
+        for adapter in ADAPTERS:
+            if adapter.NEEDS_RENDERING and adapter.claims_url(url):
+                print(f"Error: crawling {adapter.PLATFORM} needs a browser.", file=sys.stderr)
+                print("  Its pages arrive as a script that builds them, and plain", file=sys.stderr)
+                print("  HTTP gets the shell: no posts, no error, nothing to read.", file=sys.stderr)
+                print("  Add:  --fetcher browser", file=sys.stderr)
+                sys.exit(1)
 
 
 def _walled_platform(args: argparse.Namespace) -> str:

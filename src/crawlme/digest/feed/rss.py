@@ -43,6 +43,9 @@ SCROLLS = 0
 # A feed is served to anyone; nothing here is behind a login.
 NEEDS_SESSION = False
 
+# A feed is markup already.
+NEEDS_RENDERING = False
+
 # The document's root, which is the only reliable way to know one.
 # Looked for near the top so a mention of the word later in a page
 # cannot make an HTML document read as a feed.

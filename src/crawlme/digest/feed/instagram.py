@@ -69,6 +69,9 @@ SCROLLS = 4
 # with its login page, whatever was asked for.
 NEEDS_SESSION = True
 
+# A timeline is built by script, not served as markup.
+NEEDS_RENDERING = True
+
 
 def claims_url(url: str) -> bool:
     """Ours by host, from the address alone."""

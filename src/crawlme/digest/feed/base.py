@@ -162,6 +162,13 @@ class FeedAdapter(Protocol):
     # posts.  Zero for anything that states everything at once.
     SCROLLS: int
 
+    # Whether the platform's pages arrive as markup or as a script that
+    # builds it.  Separate from NEEDS_SESSION because the two are not
+    # the same requirement: Reddit is readable by anyone and still
+    # needs a browser, and plain HTTP gets an eight-kilobyte shell that
+    # carries none of the platform's own elements.
+    NEEDS_RENDERING: bool
+
     # Whether reading this platform at all requires a logged-in
     # session.  A crawl of a walled platform without one fetches login
     # pages and reports them as a platform with nothing on it.

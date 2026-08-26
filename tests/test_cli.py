@@ -682,3 +682,29 @@ def test_a_refused_crawl_exits_non_zero(reason, code):
     from crawlme.cli.run import exit_code
 
     assert exit_code(reason) == code
+
+
+@pytest.mark.parametrize(
+    ("seed", "session", "fetcher", "refused"),
+    [
+        ("https://www.reddit.com/r/Python/", None, None, True),
+        ("https://www.reddit.com/r/Python/", None, "browser", False),
+        ("https://www.reddit.com/r/Python/", "s.json", None, False),
+        ("https://blog.rust-lang.org/feed.xml", None, None, False),
+        ("https://example.com/", None, None, False),
+    ],
+)
+def test_a_platform_that_needs_a_browser_is_refused_without_one(seed, session, fetcher, refused):
+    """Plain HTTP gets a shell, the adapter does not claim it, and the
+    page is read as an ordinary one: nothing found, no error.  That is
+    indistinguishable from a quiet week, so it is refused up front."""
+    import argparse
+
+    from crawlme.cli.run import _check_fetcher
+
+    args = argparse.Namespace(session=session, fetcher=fetcher, seeds=seed)
+    if refused:
+        with pytest.raises(SystemExit):
+            _check_fetcher(args)
+    else:
+        _check_fetcher(args)
