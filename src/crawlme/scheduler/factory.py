@@ -12,7 +12,7 @@ from crawlme.analyzer import Analyzer, PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.feed import ADAPTERS, FeedAdapter
-from crawlme.digest.fetcher import Fetcher, HttpFetcher
+from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.digest.harvest import Harvester, PageHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import RoundRobinBuffer
@@ -113,35 +113,62 @@ def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harves
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:
-    """Plain HTTP unless the run asks for a browser.
+    """A browser where the run asked for one, and per candidate otherwise.
 
-    Playwright is imported inside the browser branch so an http run never
-    pays for the optional dependency, and so a missing install fails at
-    the point that wanted it.
+    Asking for one is a way to get it everywhere: a page belonging to no
+    platform can still need a script run before it says anything, and
+    only the person crawling it knows that.
+
+    Holding a session is not that answer.  Credentials belong to the
+    platform that issued them and mean nothing to the shop an analyser
+    endorsed halfway through the run -- putting that shop through a
+    browser buys a slower fetch of a page that would have answered a
+    plain request.  Dispatching keeps the cookies where they apply: the
+    platform's own addresses go through the browser that holds them.
+
+    Neither fetcher costs anything to hold.  The browser launches on
+    first use, so a crawl that never meets a platform never starts one.
     """
     if settings.fetcher == "browser":
-        from crawlme.digest.fetcher import PlaywrightFetcher
+        return _build_browser_fetcher(settings)
+    return DispatchingFetcher(
+        http=_build_http_fetcher(settings),
+        browser=_build_browser_fetcher(settings),
+        adapters=adapters_for(settings),
+    )
 
-        # A feed adapter is the only thing that knows which of a page's
-        # own requests carries the posts.  Without one, nothing is kept
-        # and the browser behaves exactly as it did before.
-        # However many the greediest enabled adapter asks for.  Nothing
-        # to scroll on a page nobody claims, and scrolling costs only the
-        # page's own next request.
-        scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)
-        return PlaywrightFetcher(
-            storage_state=settings.browser_storage_state or None,
-            user_agents=list(settings.user_agents),
-            timeout=settings.fetch_timeout_read,
-            keep_payload=_payload_filter(settings),
-            max_payload_bytes=settings.browser_max_payload_bytes,
-            scrolls=settings.feed_scrolls if scrolls else 0,
-        )
+
+def _build_http_fetcher(settings: Settings) -> Fetcher:
     return HttpFetcher(
         user_agents=list(settings.user_agents),
         connect_timeout=settings.fetch_timeout_connect,
         read_timeout=settings.fetch_timeout_read,
         max_retries=settings.fetch_max_retries,
+    )
+
+
+def _build_browser_fetcher(settings: Settings) -> Fetcher:
+    """Constructed, not started.  Playwright is imported inside the
+    fetcher's own first launch, so building one here costs nothing and
+    needs no install; a run that dispatches to it only on Reddit links
+    never pays unless it meets one.
+    """
+    from crawlme.digest.fetcher import PlaywrightFetcher
+
+    # A feed adapter is the only thing that knows which of a page's
+    # own requests carries the posts.  Without one, nothing is kept
+    # and the browser behaves exactly as it did before.
+    # However many the greediest enabled adapter asks for.  Nothing
+    # to scroll on a page nobody claims, and scrolling costs only the
+    # page's own next request.
+    scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)
+    return PlaywrightFetcher(
+        storage_state=settings.browser_storage_state or None,
+        user_agents=list(settings.user_agents),
+        timeout=settings.fetch_timeout_read,
+        keep_payload=_payload_filter(settings),
+        max_payload_bytes=settings.browser_max_payload_bytes,
+        scrolls=settings.feed_scrolls if scrolls else 0,
     )
 
 

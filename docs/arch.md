@@ -71,8 +71,8 @@ engine only knows as a Protocol, filled in by the factory.
     └───┬─────────────────────────────────────────▲────────────┘
         │ pop one                                 │ push_batch
         ▼                                         │
-    ② Fetcher*      httpx, or Playwright with a   │        digest/fetcher
-       │            logged-in session             │
+    ② Fetcher*      httpx, or Playwright where    │        digest/fetcher
+       │            the address needs rendering   │
        ▼                                          │
     ③ Extractor*    trafilatura → text            │        digest/
        │                                          │
@@ -157,7 +157,7 @@ is the only module that knows every implementation.
 | `pioneer/frontier.py` | `Frontier` | `GatedFrontier` | Everything discovered and unread, both halves |
 | `pioneer/buffer.py` | `Buffer` | `RoundRobinBuffer` | The unscored half, a turn per seed |
 | `pioneer/queue.py` | — | `PriorityQueue` | The scored half, heapq plus cooldowns |
-| `digest/fetcher.py` | `Fetcher` | `HttpFetcher` | Async HTTP over httpx |
+| `digest/fetcher/` | `Fetcher` | `DispatchingFetcher` | Picks per candidate: httpx, or Playwright where the platform needs rendering |
 | `digest/extractor.py` | `Extractor` | `TrafExtractor` | trafilatura extraction |
 | `pioneer/ranker/base.py` | `Ranker` | `LLMRanker` | The only ranking stage; `None` without credentials |
 | `pioneer/prefilter.py` | — | `PreFilter` | No Protocol, used directly |

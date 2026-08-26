@@ -46,22 +46,32 @@ crawl run "language features shipped this year, with the version that carries ea
 
 **A platform that needs a browser but no account.** Reddit builds its pages
 with a script, so plain HTTP gets the shell: no posts, no error, nothing to
-read. That is refused before a page is spent rather than reported as a quiet
-week. Reading it needs no session -- a subreddit is open to strangers -- so
-`--fetcher browser` is the whole difference.
+read. Nothing to pass, though -- the adapter says its pages need rendering, so
+those addresses go through a browser and everything else keeps taking the
+cheap route. A crawl that mixes the two pays for a browser only on the pages
+that need one, and one that never meets a platform never starts one.
+
+Reading Reddit needs no session: a subreddit is open to strangers.
 
 ```bash
 pip install -e '.[browser]' && playwright install chromium
 
 crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
   --seeds "https://www.reddit.com/r/askTO/" \
-  --fetcher browser \
   --max-relevant 20 --page-budget 60
 ```
 
+`--fetcher browser` still exists and still means *everything* through a
+browser. A page that is no platform at all can need a script run before it
+says anything, and only the person crawling it knows that.
+
 **A login-walled platform.** Log in once by hand; the session file is what
-enables the platform adapters, and it also implies a browser, `--depth-limit 1`
-and `--domain-budget 0`. Seeds on such a platform without one are refused,
+enables the platform adapters, and it also defaults `--domain-budget 0`, since
+every candidate on a platform shares one host and a per-domain ceiling would be
+a ceiling on the crawl. The platform is read through the browser context holding
+the cookies; a site the analyser endorses from there is not, because the
+credentials mean nothing to it. How deep to go is left to `--depth-limit`, which
+has to cover the way out as well as the platform. Seeds on such a platform without one are refused,
 because a logged-out crawl fetches login pages and reports them as an empty
 platform.
 
@@ -73,9 +83,15 @@ crawl session ./ig-session.json --feed instagram
 crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
   --seeds ./accounts.json \
   --session ./ig-session.json \
+  --depth-limit 2 \
   --max-relevant 40 --page-budget 150 \
   --since '2 weeks' --ignore-robots
 ```
+
+Two, because that is what this goal needs: an account, a post, and the shop's
+own site where the deadline is usually written. Leaving it at the default of 5
+is not wrong, only more expensive -- past the shop the crawl is on the open web,
+where a budget goes quickly.
 
 Then read what it found:
 
@@ -99,12 +115,14 @@ a run starts rather than failing partway through it.
 | Extra | Install | What it buys | Cost |
 |-------|---------|--------------|------|
 | `rss` | `pip install -e '.[rss]'` | Reading a feed among the seeds; its entries arrive with their own text | feedparser, 0.3MB |
-| `browser` | `pip install -e '.[browser]'`<br>then `playwright install chromium` | `--fetcher browser`, `--session`, `crawl session`: JS-rendered and login-walled pages | 135MB package, ~650MB browser |
+| `browser` | `pip install -e '.[browser]'`<br>then `playwright install chromium` | `--fetcher browser`, `--session`, `crawl session`, and any platform whose pages have to be rendered | 135MB package, ~650MB browser |
 
 Both together: `pip install -e '.[rss,browser]'`.
 
-Without them the crawl still runs; only the flags that need them are refused,
-naming the flag you typed and the one command that fixes it.
+Without them the crawl still runs; the flags that need them are refused,
+naming the flag you typed and the one command that fixes it. A platform met
+mid-crawl is the one case that is not refused: it degrades to plain HTTP and
+says so, because one unreachable link is not a reason to end a crawl.
 
 ---
 
@@ -126,7 +144,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 
 | Flag | Values | Default | Meaning |
 |------|--------|---------|---------|
-| `--depth-limit` | int | `5`, or `1` with `--session` | Hops from a seed. A post is a leaf, so a platform needs one level |
+| `--depth-limit` | int | `5` | Hops from a seed. A listing and its posts are two; a site an analyser endorsed off a post is three |
 | `--since` | `"2 weeks"`, `"3 days"`, `2026-08-01` | none | Time window. Candidates a listing dated before it are dropped; with a single seed, the run also stops once content ages out |
 | `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry. Mutually exclusive with `--page-budget` |
 
@@ -134,8 +152,8 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 
 | Flag | Values | Default | Meaning |
 |------|--------|---------|---------|
-| `--fetcher` | `http` \| `browser` | `http` | `browser` renders JavaScript. Needed for pages that are empty without it |
-| `--session` | path | none | A Playwright `storage_state` file. Enables the platform adapters, implies `--fetcher browser`, and defaults `--depth-limit 1 --domain-budget 0` |
+| `--fetcher` | `http` \| `browser` | per candidate | Left alone, each address takes the cheaper route its platform allows. `browser` forces one everywhere, for pages that are empty without a script run but belong to no platform |
+| `--session` | path | none | A Playwright `storage_state` file. Enables the platform adapters, sends their addresses through the browser context holding it, and defaults `--domain-budget 0` |
 | `--ignore-robots` | flag | off | Bypass robots.txt |
 
 **What to spend**

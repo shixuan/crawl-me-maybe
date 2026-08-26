@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from crawlme.config import Settings
-from crawlme.digest.fetcher import FetchError, HttpFetcher, PlaywrightFetcher
+from crawlme.digest.fetcher import DispatchingFetcher, FetchError, PlaywrightFetcher
 from crawlme.digest.fetcher.browser import _load_storage_state
 from crawlme.scheduler.factory import _build_fetcher
 from crawlme.schemas import URL, FrontierItem
@@ -62,12 +62,32 @@ def test_storage_state_fails_loudly(tmp_path: Path, content, match) -> None:
 # factory wiring --------------------------------------------------------
 
 
-def test_factory_builds_http_fetcher_by_default() -> None:
-    assert isinstance(_build_fetcher(Settings()), HttpFetcher)
+def test_factory_dispatches_per_candidate_by_default() -> None:
+    """Neither answer is right for a whole run: most pages want plain
+    HTTP and a few platforms cannot be read without a browser."""
+    assert isinstance(_build_fetcher(Settings()), DispatchingFetcher)
 
 
 def test_factory_builds_browser_fetcher_when_asked() -> None:
+    """Asking for one is still a way to get one everywhere.  A page
+    that is not a platform can need a script run to say anything, and
+    only the person crawling it knows that."""
     assert isinstance(_build_fetcher(Settings(fetcher="browser")), PlaywrightFetcher)
+
+
+def test_a_session_still_dispatches(tmp_path) -> None:
+    """A shop the analyser endorsed off a post has no use for the
+    platform's cookies, so it takes the cheap route."""
+    sess = tmp_path / "s.json"
+    sess.write_text('{"cookies": [], "origins": []}')
+    built = _build_fetcher(Settings(browser_storage_state=str(sess)))
+    assert isinstance(built, DispatchingFetcher)
+    # Routing, not install detection: without playwright the dispatcher
+    # deliberately degrades, and the bare CI lane has none.
+    built._can_render = True
+    assert built._browser._storage_state == str(sess)
+    assert isinstance(built._pick("https://www.instagram.com/someone/"), PlaywrightFetcher)
+    assert not isinstance(built._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
 def test_constructing_the_browser_fetcher_starts_nothing() -> None:
