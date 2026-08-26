@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +19,8 @@ import aiosqlite
 
 if TYPE_CHECKING:
     from crawlme.schemas import Candidate, Page, RankDecision
+
+logger = logging.getLogger(__name__)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS crawl_goals (
@@ -228,6 +232,14 @@ class SqliteCrawlDb:
                     if batch >= 200:
                         await self._conn.commit()
                         batch = 0
+            except sqlite3.Error:
+                # One bad statement must not take the loop down with it.
+                # Letting it propagate ends the task, and then nothing
+                # calls task_done again, so close() waits on join()
+                # forever: a schema mistake would surface as a run that
+                # hangs at the end with no error, which is the worst
+                # way to learn about it.  That write is lost; say so.
+                logger.exception("db.write_failed sql=%s", sql.split("(", 1)[0].strip())
             finally:
                 self._write_queue.task_done()
 
