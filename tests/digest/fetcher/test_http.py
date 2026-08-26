@@ -189,7 +189,7 @@ async def test_fetches_canonical_url_for_relative_href(fetcher, httpx_mock: HTTP
     assert result.status_code == 200
 
 
-#: client lifecycle ------------------------------------------------------
+# client lifecycle ------------------------------------------------------
 
 
 @pytest.mark.asyncio

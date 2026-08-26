@@ -29,7 +29,7 @@ from pathlib import Path
 from crawlme.digest.fetcher import PlaywrightFetcher
 from crawlme.schemas import URL, FrontierItem
 
-#: Signals that we got something other than the content we asked for.
+# Signals that we got something other than the content we asked for.
 _WALL_MARKERS = {
     "login": ("loginForm", "Log in to Instagram", "/accounts/login"),
     "challenge": ("challenge_required", "Suspicious Login", "checkpoint_required"),
@@ -82,9 +82,9 @@ def _captions(html: str) -> list[str]:
     return out
 
 
-#: Post permalinks come in two shapes: the bare /p/<code>/ and the
-#: profile-scoped /<user>/p/<code>/ the grid actually renders. Matching
-#: only the bare form reports zero posts on a page full of them.
+# Post permalinks come in two shapes: the bare /p/<code>/ and the
+# profile-scoped /<user>/p/<code>/ the grid actually renders. Matching
+# only the bare form reports zero posts on a page full of them.
 _POST_HREF = re.compile(r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/[A-Za-z0-9_-]+/?)"')
 
 

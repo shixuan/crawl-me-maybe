@@ -64,7 +64,7 @@ class Frontier(Protocol):
     @property
     def size(self) -> int: ...
 
-    #: the unscored half: candidates waiting for someone to score them.
+    # the unscored half: candidates waiting for someone to score them.
     async def push_candidates(self, candidates: list[Candidate]) -> None: ...
     async def take_for_ranking(self, n: int) -> list[Candidate]: ...
     def finish_ranking(self, n: int) -> None: ...
@@ -85,7 +85,7 @@ class Frontier(Protocol):
     @property
     def waiting_size(self) -> int: ...
 
-    #: the scored half.
+    # the scored half.
     async def push_batch(self, items: list[FrontierItem]) -> None: ...
 
     async def pop_next(
@@ -161,7 +161,7 @@ class GatedFrontier:
         self._domain_counters: dict[str, int] = {}
         self._global_counter: int = 0
 
-    #: the unscored half ------------------------------------------------
+    # the unscored half ------------------------------------------------
 
     async def push_candidates(self, candidates: list[Candidate]) -> None:
         """Hold candidates until something scores them.
@@ -208,7 +208,7 @@ class GatedFrontier:
     def waiting_size(self) -> int:
         return int(self._waiting.size)
 
-    #: the scored half ---------------------------------------------------
+    # the scored half ---------------------------------------------------
 
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:

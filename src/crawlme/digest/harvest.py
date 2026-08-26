@@ -46,11 +46,11 @@ class Harvest:
 
     candidates: list[Candidate]
     problem: PageProblem | None = None
-    #: Whether this came from a page that lists other pages.  Only a
-    #: listing can be judged empty or not: an item page yields nothing by
-    #: design, and a link graph has no listings at all.  Declared by the
-    #: harvester, which knows, rather than inferred by the caller, which
-    #: would be guessing from the shape of the candidates.
+    # Whether this came from a page that lists other pages.  Only a
+    # listing can be judged empty or not: an item page yields nothing by
+    # design, and a link graph has no listings at all.  Declared by the
+    # harvester, which knows, rather than inferred by the caller, which
+    # would be guessing from the shape of the candidates.
     listing: bool = False
 
 

@@ -305,7 +305,7 @@ def test_run_prints_end_of_run_summary(capsys):
     assert "7.5s" in out
 
 
-#: --since parsing (2.8) -------------------------------------------------
+# --since parsing (2.8) -------------------------------------------------
 
 
 def test_parse_since_relative_window() -> None:
@@ -337,7 +337,7 @@ def test_parse_since_rejects_garbage() -> None:
         _parse_since("whenever")
 
 
-#: where the entry points come from ---------------------------------------
+# where the entry points come from ---------------------------------------
 
 
 def _source_for(argv_tail: list[str], tmp_path):
@@ -501,7 +501,7 @@ def _installed():
         yield
 
 
-#: the session preflight ---------------------------------------------------
+# the session preflight ---------------------------------------------------
 
 
 def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
@@ -601,7 +601,7 @@ def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
     assert "crawl session" not in err
 
 
-#: optional installs -------------------------------------------------------
+# optional installs -------------------------------------------------------
 
 
 def _extras_args(**kw):

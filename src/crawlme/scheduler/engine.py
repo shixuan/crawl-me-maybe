@@ -72,15 +72,15 @@ _CHECKPOINT_INTERVAL = 10
 # to one of the ranker's own calls, which its character budget puts at
 # roughly twenty.
 _RANK_BATCH_SIZE = 20
-#: How many judged-relevant pages the ranker is reminded of.  Matches the
-#: ranker's own cap: keeping more here would only be sliced off there.
+# How many judged-relevant pages the ranker is reminded of.  Matches the
+# ranker's own cap: keeping more here would only be sliced off there.
 _SEEN_SO_FAR = 5
 _POP_SLEEP = 0.2
 
-#: How long a stopping run waits for the fetches already in the air.
-#: Each is bounded by the fetch and extract timeouts and by one analyzer
-#: call, so this is a backstop rather than the usual path: whatever is
-#: still running when it expires was never going to finish.
+# How long a stopping run waits for the fetches already in the air.
+# Each is bounded by the fetch and extract timeouts and by one analyzer
+# call, so this is a backstop rather than the usual path: whatever is
+# still running when it expires was never going to finish.
 _SETTLE_TIMEOUT = 120.0
 
 
@@ -201,7 +201,7 @@ class CrawlScheduler:
         self._seed_of: dict[str, str] = {}
         self._events: EventEmitter | None = None
 
-    #: seed ingestion --------------------------------------------------
+    # seed ingestion --------------------------------------------------
 
     async def ingest_seeds(
         self,
@@ -247,7 +247,7 @@ class CrawlScheduler:
         logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
         return n_ingested
 
-    #: public API -------------------------------------------------------
+    # public API -------------------------------------------------------
 
     def attach_log_file(self) -> None:
         """Start writing logs to the run dir's log file.
@@ -581,7 +581,7 @@ class CrawlScheduler:
         self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
         logger.info("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._counters.pages_fetched)
 
-    #: fetch loop -------------------------------------------------------
+    # fetch loop -------------------------------------------------------
 
     async def _fetch_pump(self) -> None:
         while self._state == "RUNNING":
@@ -924,7 +924,7 @@ class CrawlScheduler:
         finally:
             self._counters.in_flight = max(0, self._counters.in_flight - 1)
 
-    #: rank loop --------------------------------------------------------
+    # rank loop --------------------------------------------------------
 
     async def _rank_pump(self) -> None:
         ranked_total = 0
@@ -1017,7 +1017,7 @@ class CrawlScheduler:
                 {"count": len(items), "dropped": n_dropped},
             )
 
-    #: checkpoint -------------------------------------------------------
+    # checkpoint -------------------------------------------------------
 
     async def _checkpoint(self) -> None:
         if self._task is None:
@@ -1054,7 +1054,7 @@ class CrawlScheduler:
         return FrontierSnapshot(**snap_json)
 
 
-#: helpers -------------------------------------------------------------
+# helpers -------------------------------------------------------------
 
 
 def _extract_domain(raw_url: str) -> str:

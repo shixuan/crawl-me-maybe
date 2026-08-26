@@ -136,7 +136,7 @@ class RoundRobinBuffer:
         # size never gets a turn at all.
         self._next_seed: str = ""
 
-    #: write path -------------------------------------------------------
+    # write path -------------------------------------------------------
 
     async def add(self, candidates: list[Candidate]) -> None:
         """Add a batch of candidates.  Evicts low-quality ones when full."""
@@ -158,7 +158,7 @@ class RoundRobinBuffer:
             self._last_added_at = time.monotonic()
             self._cond.notify_all()
 
-    #: read / drain path ------------------------------------------------
+    # read / drain path ------------------------------------------------
 
     async def drain(self, n: int | None = None) -> list[Candidate]:
         """Remove and return up to *n* candidates, a turn from each seed.
@@ -197,7 +197,7 @@ class RoundRobinBuffer:
         async with self._cond:
             self._cond.notify_all()
 
-    #: properties -------------------------------------------------------
+    # properties -------------------------------------------------------
 
     def contains(self, url_key: str) -> bool:
         return url_key in self._seen
@@ -226,7 +226,7 @@ class RoundRobinBuffer:
     def seen_count(self) -> int:
         return len(self._seen)
 
-    #: internal ---------------------------------------------------------
+    # internal ---------------------------------------------------------
 
     def _worst_index(self) -> int:
         worst = 0

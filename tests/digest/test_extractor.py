@@ -63,7 +63,7 @@ def test_produces_content_on_valid_html(extractor, tmp_path):
     assert page.markdown or page.plain_text
 
 
-#: published_at (2.8) ----------------------------------------------------
+# published_at (2.8) ----------------------------------------------------
 
 
 def _html_with(head_extra: str = "", body_extra: str = "") -> bytes:
@@ -102,7 +102,7 @@ def test_published_at_naive_value_is_utc(extractor: TrafExtractor) -> None:
     assert page.published_at.tzinfo is not None
 
 
-#: boilerplate removal ---------------------------------------------------
+# boilerplate removal ---------------------------------------------------
 
 
 _NAV_HTML = b"""<!DOCTYPE html><html><head><title>Real Title</title></head><body>

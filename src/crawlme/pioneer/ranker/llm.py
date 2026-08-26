@@ -283,9 +283,9 @@ def _summarize_page(entry: dict[str, Any]) -> str:
     return _trunc(str(entry))
 
 
-#: How much of the source page's summary reaches the prompt.  Kept short
-#: on purpose: the verdict carries most of the signal and a full summary
-#: per candidate would bloat a 30-candidate batch for little gain.
+# How much of the source page's summary reaches the prompt.  Kept short
+# on purpose: the verdict carries most of the signal and a full summary
+# per candidate would bloat a 30-candidate batch for little gain.
 _SUMMARY_CHARS = 60
 
 

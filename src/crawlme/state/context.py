@@ -25,7 +25,7 @@ import time
 
 from crawlme.schemas import CrawlGoal
 
-#: How many recent analyzed pages the relevance window keeps.
+# How many recent analyzed pages the relevance window keeps.
 RELEVANCE_WINDOW = 20
 
 

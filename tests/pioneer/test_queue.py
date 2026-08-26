@@ -56,7 +56,7 @@ async def test_empty_source_yields_nothing():
     assert await PriorityQueue().take(_now(), _always(Gate.TAKE)) is None
 
 
-#: the four gate outcomes -------------------------------------------------
+# the four gate outcomes -------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_always_deferring_gate_terminates():
     assert src.size == 2
 
 
-#: aging and checkpoints --------------------------------------------------
+# aging and checkpoints --------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_discard_removes_a_key_from_the_index():
     assert src.keys() == set()
 
 
-#: what size means --------------------------------------------------------
+# what size means --------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -191,7 +191,7 @@ async def test_count_survives_a_discarded_item():
     assert src.size == 0
 
 
-#: what "already have it" means -------------------------------------------
+# what "already have it" means -------------------------------------------
 
 
 @pytest.mark.asyncio

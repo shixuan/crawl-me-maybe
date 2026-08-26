@@ -32,20 +32,20 @@ logger = logging.getLogger(__name__)
 PLATFORM = "instagram"
 DOMAIN = "instagram.com"
 
-#: A wrong handle renders a full, healthy-looking page rather than a 404.
+# A wrong handle renders a full, healthy-looking page rather than a 404.
 _UNAVAILABLE = ("sorry, this page", "isn't available", "page not found")
 _BLOCKED = ("challenge_required", "checkpoint_required", "please wait a few minutes")
 _LOGIN = ("loginform", "/accounts/login")
 
-#: The grid renders profile-scoped permalinks while the address bar shows
-#: the bare form. Matching only one reports zero posts on a full page.
+# The grid renders profile-scoped permalinks while the address bar shows
+# the bare form. Matching only one reports zero posts on a full page.
 _PERMALINK = re.compile(r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/([A-Za-z0-9_-]+)/?)"')
 
-#: A grid entry is an anchor wrapping an img whose alt Instagram
-#: generates: `Photo shared by NAME on August 13, 2026 tagging @x. May be
-#: an image of tea and text.` It names the author, the day and roughly
-#: what is pictured, but never what the post says. Window-bounded so a
-#: missing alt cannot swallow the next entry's.
+# A grid entry is an anchor wrapping an img whose alt Instagram
+# generates: `Photo shared by NAME on August 13, 2026 tagging @x. May be
+# an image of tea and text.` It names the author, the day and roughly
+# what is pictured, but never what the post says. Window-bounded so a
+# missing alt cannot swallow the next entry's.
 _GRID_ENTRY = re.compile(
     r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/[A-Za-z0-9_-]+/?)"(?:(?!href=").){0,600}?alt="([^"]*)"',
     re.S,
@@ -56,17 +56,17 @@ _SHORTCODE = re.compile(r"/(?:p|reel)/([A-Za-z0-9_-]+)")
 _CAPTION_JSON = re.compile(r'"caption"\s*:\s*\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _OG_DESCRIPTION = re.compile(r'<meta[^>]*property="og:description"[^>]*content="([^"]*)"', re.S)
 _TIME_TAG = re.compile(r'<time[^>]*datetime="([^"]+)"')
-#: `103 likes, 0 comments - handle on August 13, 2026: "caption`
+# `103 likes, 0 comments - handle on August 13, 2026: "caption`
 _POST_DESC = re.compile(r"([\d,]+)\s+likes?,\s*[\d,]+\s+comments?\s*-\s*([A-Za-z0-9_.]+)\s+on\s")
 
 
-#: A grid hands out one screen at a time, so a window of weeks sees a
-#: dozen posts without this.  Scrolling asks the page for its own next
-#: page; nothing is forged.
+# A grid hands out one screen at a time, so a window of weeks sees a
+# dozen posts without this.  Scrolling asks the page for its own next
+# page; nothing is forged.
 SCROLLS = 4
 
-#: Nothing here is readable logged out: the platform answers a stranger
-#: with its login page, whatever was asked for.
+# Nothing here is readable logged out: the platform answers a stranger
+# with its login page, whatever was asked for.
 NEEDS_SESSION = True
 
 
@@ -211,7 +211,7 @@ def parse_item(html: str, url: str = "") -> FeedItem | None:
     )
 
 
-#: helpers ---------------------------------------------------------------
+# helpers ---------------------------------------------------------------
 
 
 def _caption_from_json(html: str) -> str:
@@ -225,9 +225,9 @@ def _caption_from_json(html: str) -> str:
         return ""
 
 
-#: `... on August 13, 2026: "caption`. The gap between the colon and the
-#: quote is whatever the markup happened to wrap with, so it is matched
-#: loosely rather than as a literal `: "`.
+# `... on August 13, 2026: "caption`. The gap between the colon and the
+# quote is whatever the markup happened to wrap with, so it is matched
+# loosely rather than as a literal `: "`.
 _DESC_CAPTION = re.compile(r':\s*["\u201c](.*)', re.S)
 
 

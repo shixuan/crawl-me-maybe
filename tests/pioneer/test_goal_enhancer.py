@@ -132,7 +132,7 @@ async def test_since_rejects_future_and_ancient_dates():
         assert enhanced.since is None
 
 
-#: extraction spec --------------------------------------------------------
+# extraction spec --------------------------------------------------------
 
 
 def _spec_json(fields: str) -> str:

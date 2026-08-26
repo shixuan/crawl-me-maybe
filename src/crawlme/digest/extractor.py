@@ -120,7 +120,7 @@ class TrafExtractor:
         )
 
 
-#: Where pages claim their publication time, most trustworthy first.
+# Where pages claim their publication time, most trustworthy first.
 _DATE_META = (
     ("property", "article:published_time"),
     ("property", "og:published_time"),
@@ -133,7 +133,7 @@ _DATE_META = (
     ("itemprop", "datePublished"),
 )
 
-#: Formats seen in the wild that fromisoformat cannot take on 3.10.
+# Formats seen in the wild that fromisoformat cannot take on 3.10.
 _DATE_FORMATS = ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d %B %Y", "%B %d, %Y")
 
 

@@ -343,7 +343,7 @@ def test_from_settings_wires_max_page_chars():
     assert analyzer._max_page_chars == 3000
 
 
-#: extraction ------------------------------------------------------------
+# extraction ------------------------------------------------------------
 
 _OFFER_PAGE = "Free sago topping for members at Union Square, until August 31 2026. Come by."
 

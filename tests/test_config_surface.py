@@ -19,7 +19,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _ENV_EXAMPLE = _ROOT / ".env.example"
 _SRC = _ROOT / "src" / "crawlme"
 
-#: Read through the settings object rather than by field name.
+# Read through the settings object rather than by field name.
 _LOG_LEVEL_IS_A_DOCUMENTED_EXCEPTION = {"log_level"}
 
 

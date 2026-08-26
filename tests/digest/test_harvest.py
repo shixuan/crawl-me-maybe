@@ -30,8 +30,8 @@ _LISTING = b"""<html><body>
 <a href="/hellofoodbaby_/p/CCC333/">tagged</a>
 </body></html>"""
 
-#: A real profile whose grid holds no posts: an account that simply did
-#: not post, which must stay distinguishable from one that was refused.
+# A real profile whose grid holds no posts: an account that simply did
+# not post, which must stay distinguishable from one that was refused.
 _EMPTY_LISTING = b"""<html><body><main>no posts yet</main></body></html>"""
 
 _POST = b"""<html><head>
@@ -51,7 +51,7 @@ def _page(tmp_path: Path, html: bytes, url: str) -> Page:
     )
 
 
-#: link graph ------------------------------------------------------------
+# link graph ------------------------------------------------------------
 
 
 def test_links_become_candidates_with_resolved_urls(tmp_path: Path) -> None:
@@ -75,7 +75,7 @@ def test_links_carry_their_business_card(tmp_path: Path) -> None:
     assert first.text == "", "a link carries no content of its own"
 
 
-#: feed ------------------------------------------------------------------
+# feed ------------------------------------------------------------------
 
 
 def test_listing_yields_permalinks(tmp_path: Path) -> None:
@@ -140,7 +140,7 @@ def test_missing_html_yields_nothing(tmp_path: Path) -> None:
     assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
 
 
-#: wiring ----------------------------------------------------------------
+# wiring ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("session", "platforms"), [("", []), ("./s.json", ["instagram"])])

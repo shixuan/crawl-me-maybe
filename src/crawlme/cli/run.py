@@ -34,8 +34,8 @@ from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
 logger = logging.getLogger(__name__)
 
 
-#: Relative windows accepted by --since, in days.  Months and years are
-#: the calendar-free approximations a crawl budget can live with.
+# Relative windows accepted by --since, in days.  Months and years are
+# the calendar-free approximations a crawl budget can live with.
 _SINCE_UNITS = {
     "day": 1,
     "days": 1,
@@ -233,7 +233,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(code)
 
 
-#: Stop reasons that mean the crawl was prevented rather than finished.
+# Stop reasons that mean the crawl was prevented rather than finished.
 _REFUSALS = frozenset({"LOGIN_REQUIRED", "RATE_LIMITED", "FATAL"})
 
 
@@ -252,9 +252,9 @@ def exit_code(stopping_reason: str | None) -> int:
     return 1 if _REFUSALS.intersection((stopping_reason or "").split("+")) else 0
 
 
-#: What each optional install buys, and what asks for it.  Kept as data
-#: so the message names the flag the user actually typed rather than a
-#: package they have never heard of.
+# What each optional install buys, and what asks for it.  Kept as data
+# so the message names the flag the user actually typed rather than a
+# package they have never heard of.
 _EXTRAS = {
     "feedparser": ("rss", "reading feeds"),
     "playwright": ("browser", "crawling with a browser"),

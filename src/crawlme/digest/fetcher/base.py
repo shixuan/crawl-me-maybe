@@ -24,12 +24,12 @@ from crawlme.schemas import FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
 
-#: One Chrome/Win string.  Pass a longer pool in production: a request is
-#: fingerprinted on more than this, but a single UA across a whole crawl
-#: is the easiest signal to notice.
+# One Chrome/Win string.  Pass a longer pool in production: a request is
+# fingerprinted on more than this, but a single UA across a whole crawl
+# is the easiest signal to notice.
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
 
-#: Backoff is capped so a long retry cannot outlive the crawl itself.
+# Backoff is capped so a long retry cannot outlive the crawl itself.
 _MAX_BACKOFF_SECONDS = 60
 
 

@@ -14,10 +14,10 @@ from crawlme.digest.feed.base import FeedAdapter, FeedItem, Listing, PageProblem
 
 FEEDS: dict[str, FeedAdapter] = {instagram.PLATFORM: instagram}
 
-#: Every adapter, in the order they are asked whether a page is theirs.
-#: Order is priority: the first to claim it does the reading.  One entry
-#: makes that moot, and stating it now is cheaper than discovering later
-#: that two adapters silently disagreed about the same page.
+# Every adapter, in the order they are asked whether a page is theirs.
+# Order is priority: the first to claim it does the reading.  One entry
+# makes that moot, and stating it now is cheaper than discovering later
+# that two adapters silently disagreed about the same page.
 ADAPTERS: tuple[FeedAdapter, ...] = (instagram, rss)
 
 __all__ = ["ADAPTERS", "FEEDS", "FeedAdapter", "FeedItem", "Listing", "PageProblem"]
