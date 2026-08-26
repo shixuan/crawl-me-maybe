@@ -131,7 +131,7 @@ def test_against_real_captures():
         pytest.skip("captures held no post page")
 
 
-#: what the grid never shows ---------------------------------------------
+# what the grid never shows ---------------------------------------------
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "ig_timeline.json"
 

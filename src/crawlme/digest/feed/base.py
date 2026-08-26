@@ -151,20 +151,27 @@ class FeedAdapter(Protocol):
     what — stays in the harvester, written once.
     """
 
-    #: Platform name, stamped onto every candidate's signals.
+    # Platform name, stamped onto every candidate's signals.
     PLATFORM: str
-    #: Registrable domain the platform serves, used to tell its own pages
-    #: from anything a crawl wandered onto.
+    # Registrable domain the platform serves, used to tell its own pages
+    # from anything a crawl wandered onto.
     DOMAIN: str
 
-    #: How many times to ask a listing for more of itself.  A listing
-    #: hands out one screen, so a window of weeks otherwise sees a dozen
-    #: posts.  Zero for anything that states everything at once.
+    # How many times to ask a listing for more of itself.  A listing
+    # hands out one screen, so a window of weeks otherwise sees a dozen
+    # posts.  Zero for anything that states everything at once.
     SCROLLS: int
 
-    #: Whether reading this platform at all requires a logged-in
-    #: session.  A crawl of a walled platform without one fetches login
-    #: pages and reports them as a platform with nothing on it.
+    # Whether the platform's pages arrive as markup or as a script that
+    # builds it.  Separate from NEEDS_SESSION because the two are not
+    # the same requirement: Reddit is readable by anyone and still
+    # needs a browser, and plain HTTP gets an eight-kilobyte shell that
+    # carries none of the platform's own elements.
+    NEEDS_RENDERING: bool
+
+    # Whether reading this platform at all requires a logged-in
+    # session.  A crawl of a walled platform without one fetches login
+    # pages and reports them as a platform with nothing on it.
     NEEDS_SESSION: bool
 
     def claims_url(self, url: str) -> bool:

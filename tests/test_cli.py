@@ -305,7 +305,7 @@ def test_run_prints_end_of_run_summary(capsys):
     assert "7.5s" in out
 
 
-#: --since parsing (2.8) -------------------------------------------------
+# --since parsing (2.8) -------------------------------------------------
 
 
 def test_parse_since_relative_window() -> None:
@@ -337,7 +337,7 @@ def test_parse_since_rejects_garbage() -> None:
         _parse_since("whenever")
 
 
-#: where the entry points come from ---------------------------------------
+# where the entry points come from ---------------------------------------
 
 
 def _source_for(argv_tail: list[str], tmp_path):
@@ -501,7 +501,7 @@ def _installed():
         yield
 
 
-#: the session preflight ---------------------------------------------------
+# the session preflight ---------------------------------------------------
 
 
 def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
@@ -601,7 +601,7 @@ def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
     assert "crawl session" not in err
 
 
-#: optional installs -------------------------------------------------------
+# optional installs -------------------------------------------------------
 
 
 def _extras_args(**kw):
@@ -682,3 +682,29 @@ def test_a_refused_crawl_exits_non_zero(reason, code):
     from crawlme.cli.run import exit_code
 
     assert exit_code(reason) == code
+
+
+@pytest.mark.parametrize(
+    ("seed", "session", "fetcher", "refused"),
+    [
+        ("https://www.reddit.com/r/Python/", None, None, True),
+        ("https://www.reddit.com/r/Python/", None, "browser", False),
+        ("https://www.reddit.com/r/Python/", "s.json", None, False),
+        ("https://blog.rust-lang.org/feed.xml", None, None, False),
+        ("https://example.com/", None, None, False),
+    ],
+)
+def test_a_platform_that_needs_a_browser_is_refused_without_one(seed, session, fetcher, refused):
+    """Plain HTTP gets a shell, the adapter does not claim it, and the
+    page is read as an ordinary one: nothing found, no error.  That is
+    indistinguishable from a quiet week, so it is refused up front."""
+    import argparse
+
+    from crawlme.cli.run import _check_fetcher
+
+    args = argparse.Namespace(session=session, fetcher=fetcher, seeds=seed)
+    if refused:
+        with pytest.raises(SystemExit):
+            _check_fetcher(args)
+    else:
+        _check_fetcher(args)

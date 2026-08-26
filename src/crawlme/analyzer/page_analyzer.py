@@ -276,9 +276,9 @@ def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str
     return "\n".join(lines)
 
 
-#: Values that assert an absence.  Kept as a set rather than a pattern
-#: because a field whose answer merely contains "no" ("no-sugar option")
-#: is a real answer; only a bare negation is the unprovable one.
+# Values that assert an absence.  Kept as a set rather than a pattern
+# because a field whose answer merely contains "no" ("no-sugar option")
+# is a real answer; only a bare negation is the unprovable one.
 _NEGATIONS = frozenset(
     {
         "no",

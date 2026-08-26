@@ -88,7 +88,7 @@ _NEGATIVE_ANCHOR = re.compile(
 )
 
 
-#: rules ----------------------------------------------------------------
+# rules ----------------------------------------------------------------
 
 
 def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:

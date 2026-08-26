@@ -30,8 +30,8 @@ _LISTING = b"""<html><body>
 <a href="/hellofoodbaby_/p/CCC333/">tagged</a>
 </body></html>"""
 
-#: A real profile whose grid holds no posts: an account that simply did
-#: not post, which must stay distinguishable from one that was refused.
+# A real profile whose grid holds no posts: an account that simply did
+# not post, which must stay distinguishable from one that was refused.
 _EMPTY_LISTING = b"""<html><body><main>no posts yet</main></body></html>"""
 
 _POST = b"""<html><head>
@@ -51,7 +51,7 @@ def _page(tmp_path: Path, html: bytes, url: str) -> Page:
     )
 
 
-#: link graph ------------------------------------------------------------
+# link graph ------------------------------------------------------------
 
 
 def test_links_become_candidates_with_resolved_urls(tmp_path: Path) -> None:
@@ -75,7 +75,7 @@ def test_links_carry_their_business_card(tmp_path: Path) -> None:
     assert first.text == "", "a link carries no content of its own"
 
 
-#: feed ------------------------------------------------------------------
+# feed ------------------------------------------------------------------
 
 
 def test_listing_yields_permalinks(tmp_path: Path) -> None:
@@ -140,25 +140,36 @@ def test_missing_html_yields_nothing(tmp_path: Path) -> None:
     assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
 
 
-#: wiring ----------------------------------------------------------------
+# wiring ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("session", "platforms"), [("", []), ("./s.json", ["instagram"])])
 def test_the_session_decides_which_platforms_are_read(session: str, platforms: list[str]) -> None:
     """One harvester now; what changes is which platforms it may read,
-    and having credentials for one is what makes reading it possible."""
+    and having credentials for one is what makes reading it possible.
+
+    Asked of NEEDS_SESSION rather than by naming the platforms that do
+    not: every session-free adapter is always available, so listing the
+    exceptions means this breaks each time one is added.
+    """
     h = _build_harvester(Settings(browser_storage_state=session), Canonicalizer())
-    assert [a.PLATFORM for a in h._adapters if a.PLATFORM != "rss"] == platforms
+    assert [a.PLATFORM for a in h._adapters if a.NEEDS_SESSION] == platforms
 
 
-def test_a_link_graph_reads_no_platform_but_still_reads_feeds() -> None:
-    """A platform claims by host, so asking for it unasked would turn a
-    graph crawl that reaches the platform into a feed crawl.  A feed
-    claims by the document's root element and cannot mistake anything,
-    so a crawl that reaches one should read it whatever it started as.
+def test_an_adapter_read_unasked_never_claims_on_the_address_alone(tmp_path: Path) -> None:
+    """A graph crawl gets every session-free adapter without asking for
+    one, so any of them may meet its own host mid-crawl.  Claiming there
+    on the address alone would silently turn that crawl into a feed
+    crawl, and worse, would claim the shell a platform serves when
+    nothing rendered it: no posts, no error, a quiet week every week.
+    So the document decides, and the address only narrows.
     """
     adapters = _build_harvester(Settings(), Canonicalizer())._adapters
-    assert [a.PLATFORM for a in adapters] == ["rss"]
+    assert [a.PLATFORM for a in adapters] == ["reddit", "rss"]
+    for adapter in adapters:
+        url = f"https://{adapter.DOMAIN or 'example.com'}/anything"
+        page = _page(tmp_path, b"<html><body>not it</body></html>", url)
+        assert not adapter.claims(page, "<html><body>not it</body></html>")
 
 
 def test_an_unclaimed_page_is_read_as_a_page(tmp_path: Path) -> None:

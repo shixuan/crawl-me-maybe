@@ -315,7 +315,7 @@ async def test_malformed_reply_retries_stricter():
     assert retry["prompt"] != client.calls[0]["prompt"]
 
 
-#: recall mode ------------------------------------------------------------
+# recall mode ------------------------------------------------------------
 
 
 async def test_recall_demotes_instead_of_dropping():
@@ -384,7 +384,7 @@ async def test_demoted_rejection_keeps_its_reason():
     assert decisions[0].dropped is False
 
 
-#: whole candidates, split batches -----------------------------------------
+# whole candidates, split batches -----------------------------------------
 
 
 async def test_candidate_never_truncated():

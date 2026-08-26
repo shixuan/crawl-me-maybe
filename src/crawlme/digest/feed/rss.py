@@ -33,25 +33,28 @@ logger = logging.getLogger(__name__)
 
 PLATFORM = "rss"
 
-#: No single host serves this: any site can. Kept because the contract
-#: asks for it, and empty is the honest answer.
+# No single host serves this: any site can. Kept because the contract
+# asks for it, and empty is the honest answer.
 DOMAIN = ""
 
-#: A feed states every entry it has in the document it hands over.
+# A feed states every entry it has in the document it hands over.
 SCROLLS = 0
 
-#: A feed is served to anyone; nothing here is behind a login.
+# A feed is served to anyone; nothing here is behind a login.
 NEEDS_SESSION = False
 
-#: The document's root, which is the only reliable way to know one.
-#: Looked for near the top so a mention of the word later in a page
-#: cannot make an HTML document read as a feed.
+# A feed is markup already.
+NEEDS_RENDERING = False
+
+# The document's root, which is the only reliable way to know one.
+# Looked for near the top so a mention of the word later in a page
+# cannot make an HTML document read as a feed.
 _ROOT = re.compile(r"<\s*(rss|feed|rdf:RDF)\b", re.I)
 _HEAD_CHARS = 2000
 
-#: Bodies shorter than this are the feed's own boilerplate rather than
-#: the author's words: a link post reads "submitted by /u/name [link]
-#: [comments]" and keeps its content at the far end of the link.
+# Bodies shorter than this are the feed's own boilerplate rather than
+# the author's words: a link post reads "submitted by /u/name [link]
+# [comments]" and keeps its content at the far end of the link.
 _MIN_BODY_CHARS = 80
 
 _TAGS = re.compile(r"<[^>]+>")

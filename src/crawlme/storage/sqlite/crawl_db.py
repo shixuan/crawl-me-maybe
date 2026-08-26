@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +19,8 @@ import aiosqlite
 
 if TYPE_CHECKING:
     from crawlme.schemas import Candidate, Page, RankDecision
+
+logger = logging.getLogger(__name__)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS crawl_goals (
@@ -228,6 +232,14 @@ class SqliteCrawlDb:
                     if batch >= 200:
                         await self._conn.commit()
                         batch = 0
+            except sqlite3.Error:
+                # One bad statement must not take the loop down with it.
+                # Letting it propagate ends the task, and then nothing
+                # calls task_done again, so close() waits on join()
+                # forever: a schema mistake would surface as a run that
+                # hangs at the end with no error, which is the worst
+                # way to learn about it.  That write is lost; say so.
+                logger.exception("db.write_failed sql=%s", sql.split("(", 1)[0].strip())
             finally:
                 self._write_queue.task_done()
 
@@ -238,7 +250,7 @@ class SqliteCrawlDb:
         assert self._conn is not None
         return await self._conn.execute(sql, params)
 
-    #: raw HTML -----------------------------------------------------------
+    # raw HTML -----------------------------------------------------------
 
     def raw_html_path(self, url_key: str, fetch_id: str) -> str:
         return str(self._raw_dir / url_key / f"{fetch_id}.html")
@@ -259,7 +271,7 @@ class SqliteCrawlDb:
         path.write_bytes(content)
         return str(path)
 
-    #: crawl_goals --------------------------------------------------------
+    # crawl_goals --------------------------------------------------------
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -289,7 +301,7 @@ class SqliteCrawlDb:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    #: crawl_tasks --------------------------------------------------------
+    # crawl_tasks --------------------------------------------------------
 
     def save_task(self, task_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -313,7 +325,7 @@ class SqliteCrawlDb:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    #: pages --------------------------------------------------------------
+    # pages --------------------------------------------------------------
 
     def save_page(self, page: Page) -> None:
         self._enqueue_write(
@@ -352,7 +364,7 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM pages ORDER BY extracted_at, page_id")
         return [dict(r) for r in await cur.fetchall()]
 
-    #: links --------------------------------------------------------------
+    # links --------------------------------------------------------------
 
     def save_link(self, candidate: Candidate) -> None:
         """Persist one discovered link (the pre-fetch business card)."""
@@ -385,7 +397,7 @@ class SqliteCrawlDb:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    #: rank_decisions -----------------------------------------------------
+    # rank_decisions -----------------------------------------------------
 
     def save_rank_decision(self, rd: RankDecision) -> None:
         self._enqueue_write(
@@ -413,7 +425,7 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM rank_decisions WHERE url_key = ? ORDER BY decided_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    #: analyses -----------------------------------------------------------
+    # analyses -----------------------------------------------------------
 
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -486,7 +498,7 @@ class SqliteCrawlDb:
             cur = await self._execute_now("SELECT * FROM analyses ORDER BY analyzed_at")
         return [dict(r) for r in await cur.fetchall()]
 
-    #: frontier_snapshots -------------------------------------------------
+    # frontier_snapshots -------------------------------------------------
 
     def save_snapshot(self, snapshot_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -505,7 +517,7 @@ class SqliteCrawlDb:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    #: events -------------------------------------------------------------
+    # events -------------------------------------------------------------
 
     def save_event(self, event_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -525,7 +537,7 @@ class SqliteCrawlDb:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    #: errors -------------------------------------------------------------
+    # errors -------------------------------------------------------------
 
     def save_error(self, error_json: dict[str, Any]) -> None:
         self._enqueue_write(
@@ -550,7 +562,7 @@ class SqliteCrawlDb:
         cur = await self._execute_now("SELECT * FROM errors WHERE url_key = ? ORDER BY id", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    #: robots_cache -------------------------------------------------------
+    # robots_cache -------------------------------------------------------
 
     def save_robots(self, robots_json: dict[str, Any]) -> None:
         self._enqueue_write(

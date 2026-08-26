@@ -161,7 +161,7 @@ async def test_seen_count(buf):
     assert buf.seen_count == 3  # preserved
 
 
-#: which candidates get scored at all --------------------------------------
+# which candidates get scored at all --------------------------------------
 
 
 def _seeded(key: str, seed: str) -> Candidate:

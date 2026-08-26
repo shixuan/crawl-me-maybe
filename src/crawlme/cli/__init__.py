@@ -29,7 +29,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="crawl", description="LLM-driven goal-directed crawler")
     sub = parser.add_subparsers(dest="command")
 
-    #: run -------------------------------------------------------------
+    # run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
     # Two families, and the names say which is which.  A page budget is
@@ -116,7 +116,7 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
-    #: inspect ---------------------------------------------------------
+    # inspect ---------------------------------------------------------
     inspect_p = sub.add_parser("inspect", help="Inspect a task's results")
     inspect_p.add_argument("task_id", help="Task ID")
     inspect_p.add_argument(
@@ -125,7 +125,7 @@ def main() -> None:
     )
     inspect_p.add_argument("--export", choices=["json", "csv"], help="Dump the pages-and-analyses join to stdout")
 
-    #: replay ---------------------------------------------------------
+    # replay ---------------------------------------------------------
     replay_p = sub.add_parser("replay", help="Re-analyze a completed task's pages")
     replay_p.add_argument("task_id", help="Task ID")
     replay_p.add_argument("--prompt", help="New goal statement; analyses are stored under a new goal row")

@@ -42,11 +42,11 @@ from crawlme.llm import LLMResponse
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import URL, Candidate, CrawlGoal, CrawlTask
 
-#: A small site shaped like a real focused crawl: a topical hub that
-#: links to on-topic articles, one page the prefilter must drop, and one
-#: extension the prefilter must drop. The vocabulary deliberately overlaps
-#: the goal prompt, because that is what a hub reached from a good seed
-#: looks like; unrelated wording would just measure the rule threshold.
+# A small site shaped like a real focused crawl: a topical hub that
+# links to on-topic articles, one page the prefilter must drop, and one
+# extension the prefilter must drop. The vocabulary deliberately overlaps
+# the goal prompt, because that is what a hub reached from a good seed
+# looks like; unrelated wording would just measure the rule threshold.
 _PROMPT = "memory safety and compiler tooling"
 
 _ARTICLES = {
@@ -149,7 +149,7 @@ def _only_run_db(result_dir: Path) -> Path:
     return dbs[0]
 
 
-#: 1. the real CLI, in a real process ------------------------------------
+# 1. the real CLI, in a real process ------------------------------------
 
 
 def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
@@ -239,7 +239,7 @@ def test_cli_rejects_a_bad_since_value(site: str, tmp_path: Path) -> None:
     assert "--since" in proc.stderr
 
 
-#: 2. the LLM stages, with a scripted client ------------------------------
+# 2. the LLM stages, with a scripted client ------------------------------
 
 
 class _ScriptedLLM:

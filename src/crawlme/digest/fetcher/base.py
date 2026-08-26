@@ -24,12 +24,20 @@ from crawlme.schemas import FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
 
-#: One Chrome/Win string.  Pass a longer pool in production: a request is
-#: fingerprinted on more than this, but a single UA across a whole crawl
-#: is the easiest signal to notice.
-DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36"
+# How the crawler names itself when nothing else was configured.  It
+# says what it is and where to find whoever ran it, which is the only
+# thing a User-Agent is good for from the far end.  Claiming to be a
+# browser instead would contradict the rest of the project, and the
+# platforms that turn crawlers away are not fooled by the string alone.
+#
+# No version: nothing in the code reads one, so it would be a number
+# kept in step by hand with the one in pyproject, and it was already
+# four releases behind.  The address is the part that does the work.
+#
+# The settings default reads this, so the name is stated once here.
+DEFAULT_UA = "crawl-me-maybe (research crawler; +https://github.com/crawl-me-maybe)"
 
-#: Backoff is capped so a long retry cannot outlive the crawl itself.
+# Backoff is capped so a long retry cannot outlive the crawl itself.
 _MAX_BACKOFF_SECONDS = 60
 
 

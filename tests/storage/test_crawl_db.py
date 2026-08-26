@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 
 import pytest
 
@@ -330,3 +331,19 @@ def test_save_and_get_robots(storage):
 def test_get_nonexistent(storage):
     assert _run(storage.get_goal("noexist")) is None
     assert _run(storage.get_page("noexist")) is None
+
+
+async def test_a_bad_statement_does_not_hang_the_close(tmp_path, caplog):
+    """A write that fails must not take the writer down with it.
+
+    Letting it propagate ends the task, so nothing calls task_done
+    again and close() waits on join() forever: the run would hang at
+    the very end having reported everything fine, which is how a
+    column added to one INSERT and not another stayed hidden.
+    """
+    db = SqliteCrawlDb.create(str(tmp_path))
+    await db.start()
+    db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("x",))
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(db.close(), timeout=5)
+    assert any("db.write_failed" in r.message for r in caplog.records)

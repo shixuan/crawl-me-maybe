@@ -153,7 +153,7 @@ def test_allow_under_budget(pf):
     _allow(pf, _candidate(), ctx)
 
 
-#: time window -----------------------------------------------------------
+# time window -----------------------------------------------------------
 
 
 def _dated(posted_at: datetime.datetime | None) -> Candidate:

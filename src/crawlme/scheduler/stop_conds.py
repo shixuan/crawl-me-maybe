@@ -20,8 +20,8 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.schemas import CrawlTask
 from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
 
-#: Fewer than this many relevant pages in a full window means the crawl
-#: has stopped finding anything worth the budget.
+# Fewer than this many relevant pages in a full window means the crawl
+# has stopped finding anything worth the budget.
 _MIN_RELEVANT_IN_WINDOW = 2
 
 
@@ -31,14 +31,14 @@ class StopReason:
     detail: str = ""
 
 
-#: individual checks ---------------------------------------------------
+# individual checks ---------------------------------------------------
 
 # All checks share the same signature so _CHECKS is a flat list.
 _CheckFunc = Callable[[CrawlTask, Frontier, CrawlCounters], StopReason | None]
 
 
-#: Listings a run must have read before "all of them were empty" means
-#: anything.  One or two quiet accounts is a normal week.
+# Listings a run must have read before "all of them were empty" means
+# anything.  One or two quiet accounts is a normal week.
 _EMPTY_LISTING_FLOOR = 3
 
 
@@ -258,7 +258,7 @@ def _fatal(
     return None
 
 
-#: main entry ----------------------------------------------------------
+# main entry ----------------------------------------------------------
 
 _CHECKS: list[_CheckFunc] = [
     _budget_pages,

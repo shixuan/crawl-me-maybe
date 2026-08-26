@@ -13,6 +13,7 @@
 const $ = (sel) => document.querySelector(sel);
 
 const TITLE_KEY = " title"; // not a legal field name, so it cannot collide
+const ANY_FIELD = " any"; // same trick: cannot collide with a real field
 
 const state = {
   runs: [],
@@ -22,7 +23,9 @@ const state = {
   fields: [],
   classes: new Set(), // empty means every class
   query: "",
-  onlyExtracted: false,
+  // "" = no requirement, ANY_FIELD = at least one field, otherwise the
+  // name of the one field a result has to carry.
+  hasField: "",
   headline: TITLE_KEY,
   sort: "relevance",
 };
@@ -103,28 +106,46 @@ function renderChips() {
   }
 }
 
-function renderHeadlineChoices() {
-  // Which field leads a card is the reader's call, not a guess made
-  // here: one goal declares the name of a thing first, another declares
-  // a date. The spec's own order is the default, and nothing more is
-  // assumed about what any of those fields mean.
-  const sel = $("#headline");
-  const options = [{ key: TITLE_KEY, label: "page title" }];
+function renderFieldChoices() {
+  // Two selects over the same list of declared fields, answering two
+  // different questions: which field leads a card, and which field a
+  // result has to carry to be shown at all.
+  fillFieldSelect($("#headline"), [{ key: TITLE_KEY, label: "page title" }], state.headline);
+  fillFieldSelect(
+    $("#has-field"),
+    [
+      { key: "", label: "anything" },
+      { key: ANY_FIELD, label: "any field" },
+    ],
+    state.hasField,
+  );
+}
+
+function fillFieldSelect(sel, leading, current) {
+  const options = [...leading];
   for (const f of state.fields) options.push({ key: f, label: f.replace(/_/g, " ") });
   sel.innerHTML = options
     .map((o) => {
-      const on = o.key === state.headline ? " selected" : "";
+      const on = o.key === current ? " selected" : "";
       return `<option value="${escape(o.key)}"${on}>${escape(o.label)}</option>`;
     })
     .join("");
-  sel.closest(".field").hidden = options.length < 2;
+  // Nothing to choose between when the goal declared no fields.
+  sel.closest(".field").hidden = options.length <= leading.length;
 }
 
 function visible() {
   const q = state.query.trim().toLowerCase();
   let rows = state.rows;
   if (state.classes.size) rows = rows.filter((r) => state.classes.has(r.classification));
-  if (state.onlyExtracted) rows = rows.filter((r) => Object.keys(r.extracted || {}).length);
+  if (state.hasField === ANY_FIELD) {
+    rows = rows.filter((r) => Object.keys(r.extracted || {}).length);
+  } else if (state.hasField) {
+    // A field is present when it survived the evidence check, which is
+    // what makes "only the ones with a launch date" a claim about the
+    // pages rather than about the model's willingness to guess.
+    rows = rows.filter((r) => valueOf((r.extracted || {})[state.hasField]));
+  }
   if (q) {
     rows = rows.filter((r) => {
       const hay = [
@@ -213,7 +234,7 @@ function adopt(data) {
   $("#goal-prompt").textContent = goal.prompt || "";
   $("#goal-block").hidden = !goal.prompt;
   state.classes.clear();
-  renderHeadlineChoices();
+  renderFieldChoices();
   renderChips();
   renderCards();
 }
@@ -245,7 +266,7 @@ async function loadRun(run, goalId) {
 
 async function boot() {
   $("#q").oninput = (e) => { state.query = e.target.value; renderCards(); };
-  $("#only-extracted").onchange = (e) => { state.onlyExtracted = e.target.checked; renderCards(); };
+  $("#has-field").onchange = (e) => { state.hasField = e.target.value; renderCards(); };
   $("#sort").onchange = (e) => { state.sort = e.target.value; renderCards(); };
   $("#headline").onchange = (e) => { state.headline = e.target.value; renderCards(); };
   $("#only-with-results").onchange = renderRuns;

@@ -529,7 +529,7 @@ async def test_fetch_pump_quiet_while_ranking(caplog):
     assert "waking_rank" not in caplog.text
 
 
-#: endorsed links ---------------------------------------------------------
+# endorsed links ---------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -556,7 +556,7 @@ def test_endorsement_that_is_not_a_link_dropped(link):
     assert _endorsed_href(link) is None
 
 
-#: end-of-run accounting ---------------------------------------------------
+# end-of-run accounting ---------------------------------------------------
 
 
 def test_unfinished_run_says_so(caplog):
@@ -677,7 +677,7 @@ async def test_refusal_stops_the_run():
     assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}
 
 
-#: shutdown ordering -------------------------------------------------------
+# shutdown ordering -------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -36,15 +36,15 @@ from crawlme.schemas import URL, FetchResult, FrontierItem, Payload
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Playwright
 
-#: What "loaded" means.  networkidle waits for the XHR that a
-#: JS-built timeline needs; load would return an empty shell.
+# What "loaded" means.  networkidle waits for the XHR that a
+# JS-built timeline needs; load would return an empty shell.
 WaitUntil = Literal["commit", "domcontentloaded", "load", "networkidle"]
 
 logger = logging.getLogger(__name__)
 
-#: Time for a lazily-built page to answer one scroll.  Long enough for a
-#: request to come back on a slow connection, short enough that a page
-#: with nothing left costs little.
+# Time for a lazily-built page to answer one scroll.  Long enough for a
+# request to come back on a slow connection, short enough that a page
+# with nothing left costs little.
 _SCROLL_SETTLE_MS = 1500
 
 _INSTALL_HINT = (
@@ -106,7 +106,7 @@ class PlaywrightFetcher:
         # produces one browser rather than one each.
         self._start_lock = asyncio.Lock()
 
-    #: lifecycle --------------------------------------------------------
+    # lifecycle --------------------------------------------------------
 
     async def _ensure_context(self) -> BrowserContext:
         """Start the browser on first use and reuse it afterwards.
@@ -167,7 +167,7 @@ class PlaywrightFetcher:
         self._browser = None
         self._pw = None
 
-    #: fetch ------------------------------------------------------------
+    # fetch ------------------------------------------------------------
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
         return await with_retries(

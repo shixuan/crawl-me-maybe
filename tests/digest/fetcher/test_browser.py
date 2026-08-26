@@ -29,7 +29,7 @@ def _item(url: str) -> FrontierItem:
     return FrontierItem(url=URL(raw=url, canonical=url, url_key="k1"), url_key="k1")
 
 
-#: session file ----------------------------------------------------------
+# session file ----------------------------------------------------------
 
 
 def test_storage_state_loads(tmp_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_storage_state_fails_loudly(tmp_path: Path, content, match) -> None:
         _load_storage_state(str(p))
 
 
-#: factory wiring --------------------------------------------------------
+# factory wiring --------------------------------------------------------
 
 
 def test_factory_builds_http_fetcher_by_default() -> None:
@@ -82,7 +82,7 @@ async def test_aclose_before_any_fetch_is_a_noop() -> None:
     await PlaywrightFetcher().aclose()
 
 
-#: one real browser ------------------------------------------------------
+# one real browser ------------------------------------------------------
 
 _JS_PAGE = b"""<html><head><title>Feed</title></head><body>
 <div id="posts">loading...</div>
@@ -195,7 +195,7 @@ async def test_permanent_browser_error_not_retried(monkeypatch):
     assert calls == [1], "a 404 does not become a 200 by asking again"
 
 
-#: what the page fetched for itself --------------------------------------
+# what the page fetched for itself --------------------------------------
 
 
 @pytest.mark.browser
@@ -351,7 +351,7 @@ async def test_concurrent_fetches_start_one_browser() -> None:
     assert starts == 1
 
 
-#: wait-condition timeouts ------------------------------------------------
+# wait-condition timeouts ------------------------------------------------
 
 
 @pytest.mark.asyncio

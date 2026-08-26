@@ -56,7 +56,7 @@ class Gate(enum.Enum):
     STOP = "stop"
 
 
-#: Called with (item, now) while the source scans its own ordering.
+# Called with (item, now) while the source scans its own ordering.
 GateFn = Callable[[FrontierItem, datetime.datetime], Gate]
 
 

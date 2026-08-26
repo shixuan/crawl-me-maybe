@@ -84,7 +84,7 @@ engine only knows as a Protocol, filled in by the factory.
     ⑤ Harvester*    listing → post permalinks     │        digest/
        │            ordinary page → outlinks      │
        │            whichever FeedAdapter* claims │
-       │            it (instagram · rss · none)   │
+       │            it (instagram · reddit · rss) │
        │                                          │
        └──► back to ⑥ ──► ⑦ PreFilter ──► Ranker* ┘        pioneer/
                           10 URL-level   20 per batch,
@@ -153,7 +153,7 @@ is the only module that knows every implementation.
 |--------|----------|----------------|------------|
 | `storage/contracts.py` + `storage/sqlite/crawl_db.py` | `CrawlDb` | `SqliteCrawlDb` | Per-run crawl state (SQLite + an async write queue) |
 | `analyzer/page_analyzer.py` | `Analyzer` | `PageAnalyzer` | One LLM analysis per page |
-| `digest/feed/base.py` | `FeedAdapter` | `instagram` / `rss` | Whoever claims the page parses it |
+| `digest/feed/base.py` | `FeedAdapter` | `instagram` / `reddit` / `rss` | Whoever claims the page parses it |
 | `pioneer/frontier.py` | `Frontier` | `GatedFrontier` | Everything discovered and unread, both halves |
 | `pioneer/buffer.py` | `Buffer` | `RoundRobinBuffer` | The unscored half, a turn per seed |
 | `pioneer/queue.py` | — | `PriorityQueue` | The scored half, heapq plus cooldowns |

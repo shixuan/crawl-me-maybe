@@ -20,7 +20,7 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-#: event type constants ------------------------------------------------
+# event type constants ------------------------------------------------
 
 
 class EventType:
@@ -44,7 +44,7 @@ class EventType:
     STOPPED = "STOPPED"
 
 
-#: emitter ------------------------------------------------------------
+# emitter ------------------------------------------------------------
 
 
 class EventEmitter:

@@ -318,7 +318,7 @@ async def test_reply_under_the_ceiling_not_flagged(monkeypatch):
     assert (await client.chat("hi")).truncated is False
 
 
-#: cached input ----------------------------------------------------------
+# cached input ----------------------------------------------------------
 
 
 def test_cached_input_is_tallied_apart_from_the_rest():
