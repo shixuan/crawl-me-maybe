@@ -21,7 +21,7 @@ A goal-driven crawler. You say what you are looking for; it decides where to go,
 pip install -e .
 ```
 
-Three kinds of run, one command. What changes is what the seeds point at.
+Four kinds of run, one command. What changes is what the seeds point at.
 
 **A link graph.** Start anywhere, follow links, stop when you have enough.
 
@@ -39,9 +39,24 @@ ranker judges the text before anything else is fetched.
 ```bash
 pip install -e '.[rss]'
 
-crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
-  --seeds "https://www.reddit.com/r/askTO/.rss,https://www.reddit.com/r/toronto/.rss" \
+crawl run "language features shipped this year, with the version that carries each" \
+  --seeds "https://blog.rust-lang.org/feed.xml,https://go.dev/blog/feed.atom" \
   --max-relevant 20
+```
+
+**A platform that needs a browser but no account.** Reddit builds its pages
+with a script, so plain HTTP gets the shell: no posts, no error, nothing to
+read. That is refused before a page is spent rather than reported as a quiet
+week. Reading it needs no session -- a subreddit is open to strangers -- so
+`--fetcher browser` is the whole difference.
+
+```bash
+pip install -e '.[browser]' && playwright install chromium
+
+crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
+  --seeds "https://www.reddit.com/r/askTO/" \
+  --fetcher browser \
+  --max-relevant 20 --page-budget 60
 ```
 
 **A login-walled platform.** Log in once by hand; the session file is what
