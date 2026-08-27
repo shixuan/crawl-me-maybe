@@ -115,19 +115,9 @@ def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harves
 def _build_fetcher(settings: Settings) -> Fetcher:
     """A browser where the run asked for one, and per candidate otherwise.
 
-    Asking for one is a way to get it everywhere: a page belonging to no
-    platform can still need a script run before it says anything, and
-    only the person crawling it knows that.
-
-    Holding a session is not that answer.  Credentials belong to the
-    platform that issued them and mean nothing to the shop an analyser
-    endorsed halfway through the run -- putting that shop through a
-    browser buys a slower fetch of a page that would have answered a
-    plain request.  Dispatching keeps the cookies where they apply: the
-    platform's own addresses go through the browser that holds them.
-
-    Neither fetcher costs anything to hold.  The browser launches on
-    first use, so a crawl that never meets a platform never starts one.
+    Asking for one gets it everywhere: a page belonging to no platform
+    can still need a script run, and only the user knows that. A session
+    is not that answer -- its cookies mean nothing off the platform.
     """
     if settings.fetcher == "browser":
         return _build_browser_fetcher(settings)
@@ -148,10 +138,8 @@ def _build_http_fetcher(settings: Settings) -> Fetcher:
 
 
 def _build_browser_fetcher(settings: Settings) -> Fetcher:
-    """Constructed, not started.  Playwright is imported inside the
-    fetcher's own first launch, so building one here costs nothing and
-    needs no install; a run that dispatches to it only on Reddit links
-    never pays unless it meets one.
+    """Constructed, not started: playwright is imported at first launch,
+    so building one costs nothing and needs no install.
     """
     from crawlme.digest.fetcher import PlaywrightFetcher
 

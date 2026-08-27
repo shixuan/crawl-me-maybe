@@ -266,12 +266,30 @@ def _build_prompt(
             lines.append(f"  snippet: {_trunc(c.snippet)}")
         if c.parent_heading:
             lines.append(f"  heading: {_trunc(c.parent_heading)}")
+        if c.posted_at:
+            lines.append(f"  posted: {_age_of(c.posted_at)}")
         src = pc.get(c.source_url_key or "", {})
         source_title = src.get("title", "")
         if source_title:
             lines.append(f"  source page: {_build_source_line(src, str(source_title))}")
         lines.append(f"  depth: {c.depth}")
     return "\n".join(lines)
+
+
+def _age_of(posted_at: datetime.datetime) -> str:
+    """How long ago, relative: the model is comparing candidates, not dates."""
+    # Naive dates read as UTC, as everywhere else. Subtracting one raises,
+    # and that would lose the whole batch over an advisory field.
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=datetime.timezone.utc)
+    seconds = (_utcnow() - posted_at).total_seconds()
+    if seconds < 0:
+        return "just now"
+    hours = seconds / 3600
+    if hours < 48:
+        return f"{hours:.0f}h ago"
+    days = hours / 24
+    return f"{days:.0f}d ago" if days < 90 else f"{days / 30:.0f}mo ago"
 
 
 def _summarize_page(entry: dict[str, Any]) -> str:

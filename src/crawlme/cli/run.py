@@ -85,12 +85,9 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
     if args.session is not None:
-        # The session alone.  It says which browser context the platform
-        # is read through, not that everything must go through one:
-        # credentials belong to the platform that issued them, and the
-        # shop an analyser endorses halfway through the run has no use
-        # for them.  Dispatching sends the platform's own addresses to
-        # the context holding the cookies and leaves the rest cheap.
+        # The session alone: it says which context the platform is read
+        # through, not that everything must be. Credentials mean nothing
+        # to the shop an analyser endorses off it.
         cfg.browser_storage_state = args.session
     _check_session(args)
     _check_extras(cfg, args)
@@ -115,12 +112,9 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
-    # A platform run's candidates share one host, so a per-domain ceiling
-    # would be a ceiling on the whole crawl.  Depth is not set here any
-    # more: two levels held only while a run could not leave the platform,
-    # and it can now -- a listing, its posts, and whatever an analyser
-    # endorsed off it is already three.  Where to stop is the user's to
-    # say, and unsaid means the ordinary default.
+    # A platform's candidates share one host, so a per-domain ceiling
+    # would cap the whole crawl. Depth is the user's to set: a run can
+    # leave the platform now, and the way out is already three levels.
     if args.session and args.domain_budget is None:
         args.domain_budget = 0
         logger.info("run.platform domain_budget=%d", args.domain_budget)
@@ -278,10 +272,8 @@ def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
     wanted: list[tuple[str, str]] = []
     if any(_looks_like_a_feed(u) for u in _declared_seeds(args)):
         wanted.append(("feedparser", "a feed among the seeds"))
-    # Only when the whole run goes through a browser.  Under per-candidate
-    # dispatch a missing install costs the platform pages and nothing
-    # else, and the dispatcher says so when it happens -- refusing the
-    # run there would turn one unreachable link into a dead crawl.
+    # Only when the whole run needs one. Under dispatch a missing install
+    # costs the platform pages alone, and the dispatcher says so.
     if cfg.fetcher == "browser" or args.session:
         wanted.append(("playwright", "--session" if args.session else "--fetcher browser"))
     missing = [(m, flag) for m, flag in wanted if importlib.util.find_spec(m) is None]

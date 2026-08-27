@@ -20,7 +20,6 @@ import datetime
 import html as html_mod
 import logging
 import re
-from typing import Any
 from urllib.parse import urlparse
 
 from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
@@ -126,10 +125,6 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
                 author=attrs.get("author", ""),
                 text=_unescape(attrs.get("post-title", "")),
                 published_at=_timestamp(attrs.get("created-timestamp")),
-                signals={
-                    "score": _int(attrs.get("score")),
-                    "comment_count": _int(attrs.get("comment-count")),
-                },
             ),
         )
     # Anything the cards missed still counts as a post: the href shape
@@ -174,13 +169,6 @@ def keeps_payload(url: str, content_type: str) -> bool:
 def _text_of(fragment: str) -> str:
     """Visible text of one markup fragment, whitespace collapsed."""
     return " ".join(html_mod.unescape(re.sub(r"(?s)<[^>]+>", " ", fragment)).split())
-
-
-def _int(raw: Any) -> int:
-    try:
-        return int(str(raw))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _unescape(raw: str) -> str:

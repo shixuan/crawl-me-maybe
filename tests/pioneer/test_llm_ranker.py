@@ -6,11 +6,13 @@ interface, so the client is faked with a scripted responder.
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget
-from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.pioneer.ranker.llm import LLMRanker, _build_prompt
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
 
 
@@ -444,3 +446,33 @@ async def test_prompt_asks_rationale_on_drops_only():
     system = client.calls[0]["system"]
     assert '"rankings": [{"id": "<id>", "priority": 0.0}]' in system
     assert '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]' in system
+
+
+def _hours_ago(h: float):
+    return _utcnow_for_test() - datetime.timedelta(hours=h)
+
+
+def _utcnow_for_test():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def test_a_candidate_states_how_old_it_is() -> None:
+    """Without it a post from an hour ago and one from three years ago
+    differ only in their title."""
+    c = _candidate("c1", posted_at=_hours_ago(3))
+    prompt = _build_prompt(CrawlGoal(prompt="recent events"), [c], RankHistorySummary(), {})
+    assert "posted: 3h ago" in prompt
+
+
+def test_a_candidate_without_a_date_gains_no_line() -> None:
+    """Most of the web is links on a page."""
+    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    assert "posted:" not in prompt
+
+
+def test_a_date_without_a_timezone_does_not_take_the_batch_down() -> None:
+    """Subtracting a naive datetime raises, and that would cost the
+    other nineteen candidates."""
+    c = _candidate("c1", posted_at=datetime.datetime(2026, 1, 1, 12, 0))
+    prompt = _build_prompt(CrawlGoal(prompt="g"), [c], RankHistorySummary(), {})
+    assert "posted:" in prompt

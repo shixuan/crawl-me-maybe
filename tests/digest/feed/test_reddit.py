@@ -109,10 +109,7 @@ def test_rendering_is_required_and_a_session_is_not():
 
 
 def test_a_listing_carries_what_each_card_states():
-    """A permalink alone leaves the ranker reading a URL slug.  The
-    page already says the title, the score, how many replies it drew
-    and when it appeared, and that is what decides whether the post is
-    worth a request of its own."""
+    """A permalink alone leaves the ranker reading a URL slug."""
     items = reddit.parse_listing(_LISTING, _LISTING_URL, []).own
     assert items
     titled = [i for i in items if i.text]
@@ -121,8 +118,6 @@ def test_a_listing_carries_what_each_card_states():
     assert first.permalink.startswith("https://www.reddit.com/r/")
     assert first.item_id.startswith("t3_")
     assert first.author
-    assert "score" in first.signals
-    assert "comment_count" in first.signals
 
 
 def test_a_card_without_a_colon_in_its_offset_is_still_dated():

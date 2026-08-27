@@ -1,21 +1,12 @@
 """One fetcher that picks another, per candidate.
 
-A crawl reaches more than one kind of page.  Most of the web answers a
-plain HTTP request with the page itself; a few platforms answer with a
-script that builds it, and to those a plain request gets an empty shell.
-Choosing once for the whole run means paying the browser's price on
-every ordinary page, or getting shells from the platforms -- and a shell
-is the worse half, because nothing errors: the adapter does not claim
-it, the page is read as an ordinary one, and the run reports a quiet
-week.
+A platform serves a shell to a plain request, and a shell errors on
+nothing: the adapter does not claim it and the run reports a quiet
+week. Choosing once for the whole run means either that or paying the
+browser on every ordinary page.
 
-The adapters already state which they are (`NEEDS_RENDERING`), and
-`claims_url` answers from the address alone, which is what makes the
-decision possible before the fetch rather than after it.
-
-Nothing here starts a browser.  The browser fetcher launches on first
-use, so a run that never meets a platform never pays for one, and the
-pair can be built unconditionally.
+Nothing here starts a browser; the browser fetcher launches on first
+use, so both can be built unconditionally.
 """
 
 from __future__ import annotations
@@ -33,11 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class DispatchingFetcher:
-    """Plain HTTP, except for the addresses a platform has to render.
-
-    Satisfies the same contract as either half, so the scheduler is
-    unaware there are two.
-    """
+    """Plain HTTP, except for the addresses a platform has to render."""
 
     def __init__(
         self,
@@ -49,9 +36,7 @@ class DispatchingFetcher:
         self._http = http
         self._browser = browser
         self._rendered = [a for a in adapters if a.NEEDS_RENDERING]
-        # Asked once.  A run either has the install or does not, and
-        # answering per fetch would put a filesystem search on the path
-        # of every candidate.
+        # Asked once: a filesystem search per candidate buys nothing.
         self._can_render = importlib.util.find_spec("playwright") is not None
         self._warned: set[str] = set()
 
@@ -59,11 +44,7 @@ class DispatchingFetcher:
         return await self._pick(item.url.canonical or item.url.raw).fetch(item)
 
     async def aclose(self) -> None:
-        """Both, and in the order they are cheap to lose.
-
-        The browser one is a no-op when nothing ever started it, which
-        is the common case for a link-graph crawl.
-        """
+        """Both. The browser one is a no-op when nothing started it."""
         await self._http.aclose()
         await self._browser.aclose()
 
@@ -72,10 +53,8 @@ class DispatchingFetcher:
         if adapter is None:
             return self._http
         if not self._can_render:
-            # Degraded rather than fatal: this is one candidate out of
-            # hundreds, and killing the run over it costs more than the
-            # page is worth.  Loud, though -- what follows is a page
-            # that looks empty for a reason nothing else would state.
+            # Degraded rather than fatal: one candidate is not worth the
+            # run. Loud, though -- what follows looks like an empty page.
             if adapter.PLATFORM not in self._warned:
                 self._warned.add(adapter.PLATFORM)
                 logger.warning(
@@ -89,12 +68,10 @@ class DispatchingFetcher:
         return self._browser
 
     def _claimant(self, url: str) -> FeedAdapter | None:
-        """The adapter that says this address is its platform's, if any.
+        """The adapter that claims this address, if any.
 
-        By address, not by document: the document is what the fetch is
-        for.  An adapter that cannot tell from a URL answers no, which
-        is why a feed -- recognised by its root element -- correctly
-        lands on plain HTTP here.
+        By address, not document: the document is what the fetch is for.
+        A feed answers no here and correctly lands on plain HTTP.
         """
         for adapter in self._rendered:
             if adapter.claims_url(url):
