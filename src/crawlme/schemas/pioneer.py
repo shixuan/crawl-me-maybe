@@ -19,7 +19,6 @@ class Candidate(BaseModel):
     snippet: str | None = None
     parent_heading: str | None = None
     position: int = 0
-    source_page_id: str | None = None
     source_url_key: str | None = None
     # The seed at the top of this candidate's chain, inherited from the
     # page it was found on.  Empty until the engine, which alone knows
@@ -118,5 +117,4 @@ class FrontierSnapshot(BaseModel):
     visited: set[str] = Field(default_factory=set)
     budgets: dict[str, Any] = Field(default_factory=dict[str, Any])
     counters: dict[str, Any] = Field(default_factory=dict[str, Any])
-    feedback_agg: dict[str, Any] = Field(default_factory=dict[str, Any])
     created_at: datetime.datetime = Field(default_factory=_utcnow)

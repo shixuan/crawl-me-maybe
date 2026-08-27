@@ -85,12 +85,11 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
     if args.session is not None:
-        # A session implies a browser: asking to crawl as someone and
-        # getting plain httpx would silently crawl the logged-out site.
+        # The session alone: it says which context the platform is read
+        # through, not that everything must be. Credentials mean nothing
+        # to the shop an analyser endorses off it.
         cfg.browser_storage_state = args.session
-        cfg.fetcher = "browser"
     _check_session(args)
-    _check_fetcher(args)
     _check_extras(cfg, args)
     if args.log_level is not None:
         cfg.log_level = args.log_level
@@ -113,17 +112,12 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.max_tokens = args.max_tokens
     if args.max_duration is not None:
         goal.max_duration_sec = args.max_duration
-    # A session says this run reads a platform, and a platform's answers
-    # differ from a link graph's on both counts: every candidate shares
-    # one host, so a per-domain ceiling is a total; and a listing and its
-    # posts are two levels with no third.  Stated out loud rather than
-    # left to a table, and overridable by either flag.
-    if args.session:
-        if args.depth_limit is None:
-            args.depth_limit = 1
-        if args.domain_budget is None:
-            args.domain_budget = 0
-        logger.info("run.platform depth_limit=%d domain_budget=%d", args.depth_limit, args.domain_budget)
+    # A platform's candidates share one host, so a per-domain ceiling
+    # would cap the whole crawl. Depth is the user's to set: a run can
+    # leave the platform now, and the way out is already three levels.
+    if args.session and args.domain_budget is None:
+        args.domain_budget = 0
+        logger.info("run.platform domain_budget=%d", args.domain_budget)
     if args.depth_limit is not None:
         goal.depth_limit = args.depth_limit
     if args.domain_budget is not None:
@@ -278,7 +272,9 @@ def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
     wanted: list[tuple[str, str]] = []
     if any(_looks_like_a_feed(u) for u in _declared_seeds(args)):
         wanted.append(("feedparser", "a feed among the seeds"))
-    if cfg.fetcher == "browser":
+    # Only when the whole run needs one. Under dispatch a missing install
+    # costs the platform pages alone, and the dispatcher says so.
+    if cfg.fetcher == "browser" or args.session:
         wanted.append(("playwright", "--session" if args.session else "--fetcher browser"))
     missing = [(m, flag) for m, flag in wanted if importlib.util.find_spec(m) is None]
     if not missing:
@@ -336,30 +332,6 @@ def _looks_like_a_feed(url: str) -> bool:
     adapter itself never guesses -- it reads the document.
     """
     return any(hint in url.lower() for hint in ("rss", "atom", "/feed", "feed.xml", "feeds/"))
-
-
-def _check_fetcher(args: argparse.Namespace) -> None:
-    """Refuse a platform that needs a browser before one page is spent.
-
-    Plain HTTP gets a shell from these, and a shell carries none of the
-    platform's own elements, so the adapter does not claim it, the page
-    is read as an ordinary one, and nothing is found.  Nothing found is
-    indistinguishable from a quiet week, which is why this is an error
-    and not a warning.
-
-    A session already implies a browser, so only the platforms that need
-    rendering without needing an account reach this.
-    """
-    if args.session or args.fetcher == "browser":
-        return
-    for url in _declared_seeds(args):
-        for adapter in ADAPTERS:
-            if adapter.NEEDS_RENDERING and adapter.claims_url(url):
-                print(f"Error: crawling {adapter.PLATFORM} needs a browser.", file=sys.stderr)
-                print("  Its pages arrive as a script that builds them, and plain", file=sys.stderr)
-                print("  HTTP gets the shell: no posts, no error, nothing to read.", file=sys.stderr)
-                print("  Add:  --fetcher browser", file=sys.stderr)
-                sys.exit(1)
 
 
 def _walled_platform(args: argparse.Namespace) -> str:

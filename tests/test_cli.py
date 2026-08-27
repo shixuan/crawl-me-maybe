@@ -179,9 +179,14 @@ def test_run_applies_enhanced_goal(monkeypatch):
     assert goal.keywords == ["ml", "papers"]
 
 
-def test_run_session_flag_implies_a_browser(_installed, tmp_path):
+def test_run_session_flag_reads_the_platform_through_the_browser(_installed, tmp_path):
     """Asking to crawl as someone and getting plain httpx would crawl
-    the logged-out site and report it as the site."""
+    the logged-out site and report it as the site.
+
+    Asserted on where a candidate lands rather than on a settings
+    value: the run is free to fetch a shop the analyser endorsed with
+    plain HTTP, and does, because the cookies mean nothing there.
+    """
     captured: dict = {}
     # A real file: the run refuses to start without one, deliberately.
     session = tmp_path / "state.json"
@@ -194,8 +199,16 @@ def test_run_session_flag_implies_a_browser(_installed, tmp_path):
                 main()
             except SystemExit:
                 pass
-    assert captured["cfg"].browser_storage_state == state
-    assert captured["cfg"].fetcher == "browser"
+    from crawlme.digest.fetcher import PlaywrightFetcher
+    from crawlme.scheduler.factory import _build_fetcher
+
+    cfg = captured["cfg"]
+    assert cfg.browser_storage_state == state
+    fetcher = _build_fetcher(cfg)
+    platform = fetcher._pick("https://www.instagram.com/someone/")
+    assert isinstance(platform, PlaywrightFetcher)
+    assert platform._storage_state == state
+    assert not isinstance(fetcher._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
 def test_run_wires_llm_ranker_into_factory(monkeypatch):
@@ -685,26 +698,55 @@ def test_a_refused_crawl_exits_non_zero(reason, code):
 
 
 @pytest.mark.parametrize(
-    ("seed", "session", "fetcher", "refused"),
+    ("flags", "expected_depth"),
     [
-        ("https://www.reddit.com/r/Python/", None, None, True),
-        ("https://www.reddit.com/r/Python/", None, "browser", False),
-        ("https://www.reddit.com/r/Python/", "s.json", None, False),
-        ("https://blog.rust-lang.org/feed.xml", None, None, False),
-        ("https://example.com/", None, None, False),
+        ([], 5),
+        (["--depth-limit", "1"], 1),
+        (["--depth-limit", "3"], 3),
     ],
 )
-def test_a_platform_that_needs_a_browser_is_refused_without_one(seed, session, fetcher, refused):
-    """Plain HTTP gets a shell, the adapter does not claim it, and the
-    page is read as an ordinary one: nothing found, no error.  That is
-    indistinguishable from a quiet week, so it is refused up front."""
-    import argparse
+def test_a_session_does_not_decide_how_deep_to_go(_installed, tmp_path, flags, expected_depth):
+    """Two levels held only while a platform run could not leave the
+    platform.  It can now -- a listing, its posts, and a site an
+    analyser endorsed off one is already three -- so a depth of 1 would
+    drop the endorsement that is the whole way out.
 
-    from crawlme.cli.run import _check_fetcher
+    Where to stop is the user's to say, and unsaid means the ordinary
+    default rather than a number the session picked for them.
+    """
+    session = tmp_path / "state.json"
+    session.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
+    captured: dict = {}
+    argv = [
+        "crawl",
+        "run",
+        "test prompt",
+        "--seeds",
+        "https://example.com",
+        "--session",
+        str(session),
+        *flags,
+    ]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].depth_limit == expected_depth
 
-    args = argparse.Namespace(session=session, fetcher=fetcher, seeds=seed)
-    if refused:
-        with pytest.raises(SystemExit):
-            _check_fetcher(args)
-    else:
-        _check_fetcher(args)
+
+def test_a_session_still_lifts_the_per_domain_ceiling(_installed, tmp_path):
+    """Every candidate on a platform shares one host, so a per-domain
+    ceiling would be a ceiling on the whole crawl."""
+    session = tmp_path / "state.json"
+    session.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
+    captured: dict = {}
+    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--session", str(session)]
+    with patch("sys.argv", argv):
+        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+            try:
+                main()
+            except SystemExit:
+                pass
+    assert captured["goal"].domain_budget == 0

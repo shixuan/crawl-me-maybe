@@ -65,7 +65,6 @@ class CrawlTask(BaseModel):
     start_at: datetime.datetime = Field(default_factory=_utcnow)
     end_at: datetime.datetime | None = None
     stopping_reason: str | None = None
-    checkpoint_ref: str | None = None
 
 
 def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:

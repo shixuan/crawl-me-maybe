@@ -173,8 +173,10 @@ class CrawlScheduler:
             # including ones that only succeeded on a background retry.
             analyzer.bind_sink(self._on_analysis)
 
+        # Fetching only.  llm_concurrency is enforced by the client that
+        # makes the calls; a second semaphore here was never awaited and
+        # read as though the engine were the one limiting them.
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
-        self._llm_sem = asyncio.Semaphore(settings.llm_concurrency)
 
         self._state: str = "CREATED"
         # LLM usage that landed before run() recreated the counters

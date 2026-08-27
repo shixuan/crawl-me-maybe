@@ -90,7 +90,10 @@ def main() -> None:
         "--fetcher",
         choices=["http", "browser"],
         default=None,
-        help="How to fetch: 'http' (default) or 'browser' for JS-rendered or login-walled pages",
+        help=(
+            "Force one way of fetching. Left alone, each address takes the cheaper "
+            "route its platform allows; 'browser' puts the whole run through one"
+        ),
     )
     run_p.add_argument(
         "--session",
