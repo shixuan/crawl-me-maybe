@@ -66,7 +66,7 @@ def create_scheduler(
         ),
         "fetcher": _build_fetcher(settings),
         "extractor": TrafExtractor(),
-        "robots": RobotsPolicy(ignore=settings.ignore_robots),
+        "robots": RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
         "ranker": _build_ranker(settings, llm=llm_ranker),
         "canonicalizer": canonicalizer,
@@ -76,6 +76,18 @@ def create_scheduler(
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
+
+
+def _agent_name(settings: Settings) -> str:
+    """The token robots.txt would name us by.
+
+    The product name, not the whole string: a robots.txt section is
+    matched on a prefix of the User-Agent, and the version and contact
+    address that follow are not part of what an operator writes down.
+    The pool's first entry, since every entry names the same crawler.
+    """
+    first = next(iter(settings.user_agents), "")
+    return first.split("/")[0].split()[0] or "*"
 
 
 def _payload_filter(settings: Settings) -> Callable[[str, str], bool] | None:

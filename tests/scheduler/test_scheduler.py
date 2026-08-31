@@ -26,6 +26,10 @@ from crawlme.schemas import (
 from crawlme.state.context import CrawlCounters
 
 
+def _utcnow():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
 def _goal(**kw) -> CrawlGoal:
     defaults: dict = dict(prompt="test", max_pages=5)
     defaults.update(kw)
@@ -57,9 +61,14 @@ def _make_sched(**overrides) -> CrawlScheduler:
     frontier_mock.scoring = 0
     frontier_mock.cooling = 0
 
+    storage = MagicMock()
+    # Async in the protocol, and the fetch path awaits it before every
+    # first request to a domain.
+    storage.get_robots = AsyncMock(return_value=None)
+
     kwargs: dict = {
         "settings": Settings(),
-        "storage": MagicMock(),
+        "storage": storage,
         "frontier": frontier_mock,
         "fetcher": MagicMock(aclose=AsyncMock()),
         "extractor": MagicMock(),
@@ -920,3 +929,76 @@ async def test_a_next_page_the_prefilter_rejects_is_not_counted():
     await sched._enqueue_next_page("https://www.reddit.com/r/x/?after=t3_a", item, MagicMock(), "seed")
     frontier.push_batch.assert_not_awaited()
     assert sched._pages_of_listing.get("seed", 0) == 0
+
+
+def _robots_sched(raw: str, *, cached=None):
+    """A scheduler whose fetcher answers robots.txt with *raw*."""
+    from crawlme.pioneer.robots import RobotsPolicy
+
+    storage = MagicMock()
+    storage.get_robots = AsyncMock(return_value=cached)
+    fetcher = MagicMock(aclose=AsyncMock())
+    fetcher.fetch = AsyncMock(
+        side_effect=lambda it: FetchResult(
+            item_id=it.item_id, url=it.url, url_key=it.url_key, status=200, raw=raw.encode()
+        )
+    )
+    frontier = MagicMock()
+    frontier.record_outcome = AsyncMock()
+    sched = _make_sched(
+        storage=storage,
+        fetcher=fetcher,
+        frontier=frontier,
+        robots=RobotsPolicy(agent="crawl-me-maybe"),
+    )
+    sched._goal = _goal(max_pages=5)
+    return sched, storage, fetcher
+
+
+@pytest.mark.asyncio
+async def test_a_disallowed_url_is_never_fetched():
+    """robots.txt was fetched by nothing and enforced on nothing: the
+    cache table was empty on every run and allow_fetch always said yes."""
+    sched, _, fetcher = _robots_sched("User-agent: *\nDisallow: /\n")
+    item = FrontierItem(url=_url("https://x.com/page"), url_key="k", reg_domain="x.com")
+    assert await sched._fetch_and_extract(item) is None
+    # The only fetch was robots.txt itself.
+    assert [c.args[0].url.canonical for c in fetcher.fetch.await_args_list] == ["https://x.com/robots.txt"]
+    assert sched._ctx.stats.robots_blocked == 1
+
+
+@pytest.mark.asyncio
+async def test_a_domain_is_read_once_not_once_per_page():
+    """Every page of a crawl on one host would otherwise pay for it."""
+    sched, _, fetcher = _robots_sched("User-agent: *\nDisallow: /\n")
+    for i in range(3):
+        item = FrontierItem(url=_url(f"https://x.com/p{i}"), url_key=f"k{i}", reg_domain="x.com")
+        await sched._fetch_and_extract(item)
+    robots_calls = [c for c in fetcher.fetch.await_args_list if c.args[0].url.canonical.endswith("robots.txt")]
+    assert len(robots_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stored_robots_is_used_instead_of_fetching_again():
+    """It survives the run it was read in, which is the point of a TTL."""
+    cached = {"raw": "User-agent: *\nDisallow: /\n", "fetched_at": _utcnow().isoformat(), "ttl": 86400}
+    sched, _, fetcher = _robots_sched("User-agent: *\nDisallow:\n", cached=cached)
+    item = FrontierItem(url=_url("https://x.com/page"), url_key="k", reg_domain="x.com")
+    assert await sched._fetch_and_extract(item) is None
+    fetcher.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_site_with_no_robots_is_not_treated_as_forbidden():
+    """A 404 states no policy, and a site briefly down must not have its
+    whole domain closed off."""
+    from crawlme.pioneer.robots import RobotsPolicy
+
+    storage = MagicMock()
+    storage.get_robots = AsyncMock(return_value=None)
+    fetcher = MagicMock(aclose=AsyncMock())
+    fetcher.fetch = AsyncMock(side_effect=OSError("connection refused"))
+    sched = _make_sched(storage=storage, fetcher=fetcher, robots=RobotsPolicy(agent="a"))
+    sched._goal = _goal(max_pages=5)
+    await sched._ensure_robots("x.com")
+    assert sched._robots.allow_fetch("https://x.com/anything")

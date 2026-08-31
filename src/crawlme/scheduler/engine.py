@@ -82,6 +82,10 @@ _POP_SLEEP = 0.2
 # else would stop one seed from taking the whole run.
 _MAX_LISTING_PAGES = 5
 
+# How long a fetched robots.txt is trusted, and how long we wait for it.
+_ROBOTS_TTL_SECONDS = 86_400
+_ROBOTS_TIMEOUT = 15.0
+
 # Where the next page of a listing enters. Below anything the ranker
 # thought well of, above what it demoted.
 _LISTING_PAGE_PRIORITY = 0.5
@@ -687,6 +691,48 @@ class CrawlScheduler:
 
         self._state = "STOPPING"
 
+    async def _ensure_robots(self, domain: str) -> None:
+        """Read the domain's robots.txt once, before anything is asked of it.
+
+        Here because it is the only place both async and ahead of a
+        request. The prefilter's check runs when a candidate is found,
+        which can be long before its domain is first reached, so it
+        answers "allowed" for a domain nothing has read yet.
+        """
+        if not domain or not self._robots.is_cache_stale(domain):
+            return
+        cached = await self._storage.get_robots(domain)
+        if cached and not _robots_expired(cached):
+            self._robots.load_robots_txt(domain, str(cached.get("raw", "")))
+            return
+        raw = await self._fetch_robots(domain)
+        self._robots.load_robots_txt(domain, raw)
+        self._storage.save_robots(
+            {"domain": domain, "raw": raw, "fetched_at": _utcnow().isoformat(), "ttl": _ROBOTS_TTL_SECONDS}
+        )
+
+    async def _fetch_robots(self, domain: str) -> str:
+        """The file, or "" when it cannot be had.
+
+        Empty parses to no rules, which allows everything. A 404 states
+        no policy, and a site briefly down must not have its whole
+        domain treated as forbidden.
+        """
+        url = f"https://{domain}/robots.txt"
+        item = FrontierItem(
+            url=URL(raw=url, canonical=url, url_key=url, reg_domain=domain),
+            url_key=url,
+            reg_domain=domain,
+        )
+        try:
+            result = await asyncio.wait_for(self._fetcher.fetch(item), timeout=_ROBOTS_TIMEOUT)
+        except Exception as e:
+            logger.debug("robots.unreadable domain=%s error=%s", domain, e)
+            return ""
+        if result.status_code >= 400:
+            return ""
+        return result.raw.decode("utf-8", errors="replace")
+
     async def _enqueue_next_page(
         self,
         next_url: str,
@@ -789,11 +835,20 @@ class CrawlScheduler:
         and nothing else.  Returns None when the item is finished with,
         either because it failed or because extraction timed out.
         """
+        domain = item.url.reg_domain or _extract_domain(item.url.canonical)
+        # robots.txt is served per host, and a host can differ from its
+        # registrable domain in both the file and the rules. Keyed by
+        # host so the lookup finds what the fetch stored.
+        await self._ensure_robots(_extract_domain(item.url.canonical))
+        if not self._robots.allow_fetch(item.url.canonical):
+            logger.info("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
+            self._ctx.stats.robots_blocked += 1
+            await self._frontier.record_outcome(item, "SKIPPED")
+            return None
         async with self._fetch_sem:
             try:
                 result = await self._fetcher.fetch(item)
-                domain = item.url.reg_domain or _extract_domain(item.url.canonical)
-                self._robots.record_response(domain, result.status_code)
+                self._robots.record_response(domain, result.status_code, self._robots.crawl_delay(domain))
             except Exception as e:
                 logger.warning("fetch.failed url_key=%s domain=%s depth=%d", item.url_key, item.reg_domain, item.depth)
                 if self._events:
@@ -1118,6 +1173,18 @@ class CrawlScheduler:
 
 
 # helpers -------------------------------------------------------------
+
+
+def _robots_expired(cached: dict[str, Any]) -> bool:
+    """Whether a stored robots.txt has outlived the TTL it was saved with."""
+    try:
+        fetched = datetime.datetime.fromisoformat(str(cached.get("fetched_at", "")))
+    except ValueError:
+        return True
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=datetime.timezone.utc)
+    ttl = float(cached.get("ttl") or _ROBOTS_TTL_SECONDS)
+    return (_utcnow() - fetched).total_seconds() > ttl
 
 
 def _extract_domain(raw_url: str) -> str:

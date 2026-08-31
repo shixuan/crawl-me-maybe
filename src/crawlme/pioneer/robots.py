@@ -4,8 +4,10 @@ Well, you definitely don't wanna get banned right?
 
 Three mechanisms work together to avoid overloading target servers:
 
-1. robots.txt cache: fetched once per domain, cached for TTL (default 24h).
-   `allow_fetch(url)` checks the cached rules before every request.
+1. robots.txt cache: fetched once per host before the first request to it,
+   cached for TTL (default 24h), and read from the section written for this
+   crawler by name rather than the wildcard, which may be looser or stricter.
+   The engine loads it; this class only holds and answers.
 
 2. crawl-delay: after a successful fetch, the domain is gated until
    `now + crawl_delay`.  The delay is the max of robots.txt Crawl-delay and
@@ -27,11 +29,17 @@ class RobotsPolicy:
     def __init__(
         self,
         *,
+        agent: str = "*",
         ignore: bool = False,
         cache_ttl: datetime.timedelta = datetime.timedelta(days=1),
         circuit_threshold: int = 5,
         circuit_cooldown: datetime.timedelta = datetime.timedelta(minutes=10),
     ) -> None:
+        # The name to look up in robots.txt. A crawler that states one
+        # and then reads only the wildcard section ignores whatever was
+        # written for it, which may be looser or stricter than the
+        # wildcard, and is wrong either way.
+        self._agent = agent
         self._ignore = ignore
         self._cache_ttl = cache_ttl
         self._circuit_threshold = circuit_threshold
@@ -62,7 +70,27 @@ class RobotsPolicy:
         rp = self._parsers.get(domain)
         if rp is None:
             return True
-        return rp.can_fetch("*", url)
+        return rp.can_fetch(self._agent, url)
+
+    def crawl_delay(self, domain: str) -> float:
+        """Seconds this domain asked to be left alone between requests.
+
+        Read from robots.txt rather than taken on trust from the caller,
+        which passed nothing and left every stated delay unobserved
+        while the module said it honoured them.
+        """
+        if self._ignore:
+            return 0.0
+        rp = self._parsers.get(domain)
+        if rp is None:
+            return 0.0
+        stated = rp.crawl_delay(self._agent)
+        if stated is None:
+            return 0.0
+        try:
+            return max(0.0, float(stated))
+        except ValueError:
+            return 0.0
 
     def next_allowed_at(self, domain: str) -> datetime.datetime:
         # Return epoch for unknown domains so the "allowed_at > now" gate
