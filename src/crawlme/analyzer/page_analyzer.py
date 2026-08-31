@@ -264,6 +264,10 @@ def _system_for(goal: CrawlGoal) -> str:
 def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
     """Assemble the user prompt: goal, fields to collect, page, text."""
     lines = ["## Goal", goal.goal_statement or goal.prompt]
+    if goal.since is not None:
+        # The statement is the user's wording and can disagree with the
+        # window the run is actually enforcing.
+        lines.append(f"Anything published before {goal.since:%Y-%m-%d} is out of scope.")
     fields = spec_fields(goal.extraction_spec)
     if fields:
         lines.append("## Extract")

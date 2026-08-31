@@ -247,6 +247,7 @@ def _build_prompt(
 ) -> str:
     """Assemble the user prompt: goal, prior findings, candidate batch."""
     lines = ["## Goal", goal.prompt]
+    lines.extend(_window_lines(goal))
     if history.relevant_pages:
         lines.append("## Seen so far")
         for entry in history.relevant_pages[:_MAX_RELEVANT]:
@@ -274,6 +275,18 @@ def _build_prompt(
             lines.append(f"  source page: {_build_source_line(src, str(source_title))}")
         lines.append(f"  depth: {c.depth}")
     return "\n".join(lines)
+
+
+def _window_lines(goal: CrawlGoal) -> list[str]:
+    """The window actually in force, said out loud.
+
+    The prompt is the user's own words and can disagree with it: asked
+    for "this month" with --since "1 week", the model ranked three-week
+    old posts highly and the filter had already dropped them.
+    """
+    if goal.since is None:
+        return []
+    return ["## Window", f"Anything published before {goal.since:%Y-%m-%d} is out of scope."]
 
 
 def _age_of(posted_at: datetime.datetime) -> str:

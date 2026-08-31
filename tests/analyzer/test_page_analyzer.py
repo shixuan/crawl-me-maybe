@@ -7,11 +7,12 @@ interface, so the client is faked with a scripted responder.
 from __future__ import annotations
 
 import asyncio
+import datetime
 
 import pytest
 
 from crawlme.analyzer import PageAnalyzer
-from crawlme.analyzer.page_analyzer import _parse_extracted
+from crawlme.analyzer.page_analyzer import _build_prompt, _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -499,3 +500,17 @@ def test_a_field_that_merely_contains_a_negation_survives():
     )
 
     assert kept["variant"].value == "no-sugar option"
+
+
+def test_the_analyzer_is_told_the_window_too() -> None:
+    """It judges relevance against the statement, which is the user's
+    wording and need not match the window being enforced."""
+    goal = CrawlGoal(prompt="events this month")
+    goal.since = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
+    prompt = _build_prompt(goal, _page(), "body", 3000)
+    assert "2026-08-20" in prompt
+
+
+def test_no_window_adds_no_line_for_the_analyzer() -> None:
+    prompt = _build_prompt(CrawlGoal(prompt="g"), _page(), "body", 3000)
+    assert "out of scope" not in prompt

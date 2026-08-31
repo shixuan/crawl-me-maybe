@@ -476,3 +476,20 @@ def test_a_date_without_a_timezone_does_not_take_the_batch_down() -> None:
     c = _candidate("c1", posted_at=datetime.datetime(2026, 1, 1, 12, 0))
     prompt = _build_prompt(CrawlGoal(prompt="g"), [c], RankHistorySummary(), {})
     assert "posted:" in prompt
+
+
+def test_the_window_in_force_is_stated() -> None:
+    """The prompt is the user's own words and can disagree with it:
+    asked for "this month" with --since "1 week", the model ranked
+    three-week-old posts highly and the filter had already dropped
+    them."""
+    goal = CrawlGoal(prompt="public events this month")
+    goal.since = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert "2026-08-20" in prompt
+
+
+def test_no_window_says_nothing() -> None:
+    """Most goals have none, and an empty heading is a line per call."""
+    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    assert "Window" not in prompt
