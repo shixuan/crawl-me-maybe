@@ -32,7 +32,7 @@ def _no_real_sleeping(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_first_attempt_not_retried():
+async def test_first_try_ok():
     calls = []
 
     async def attempt(n):
@@ -44,7 +44,7 @@ async def test_first_attempt_not_retried():
 
 
 @pytest.mark.asyncio
-async def test_transient_failure_retried():
+async def test_transient_retry():
     calls = []
 
     async def attempt(n):
@@ -58,7 +58,7 @@ async def test_transient_failure_retried():
 
 
 @pytest.mark.asyncio
-async def test_exhausting_the_retries_raises_a_permanent_error():
+async def test_retries_spent():
     async def attempt(n):
         raise TimeoutError("always slow")
 
@@ -67,7 +67,7 @@ async def test_exhausting_the_retries_raises_a_permanent_error():
 
 
 @pytest.mark.asyncio
-async def test_permanent_error_not_retried():
+async def test_permanent_not_retried():
     """A 404 does not become a 200 by asking again."""
     calls = []
 
@@ -81,7 +81,7 @@ async def test_permanent_error_not_retried():
 
 
 @pytest.mark.asyncio
-async def test_classification_belongs_to_the_caller():
+async def test_caller_decides():
     """Each fetcher decides what transient means in its own vocabulary."""
     calls = []
 
@@ -95,7 +95,7 @@ async def test_classification_belongs_to_the_caller():
 
 
 @pytest.mark.asyncio
-async def test_original_failure_kept_as_cause():
+async def test_cause_kept():
     async def attempt(n):
         raise TimeoutError("the real reason")
 
@@ -105,7 +105,7 @@ async def test_original_failure_kept_as_cause():
 
 
 @pytest.mark.asyncio
-async def test_single_attempt_runs_once():
+async def test_single_attempt():
     calls = []
 
     async def attempt(n):

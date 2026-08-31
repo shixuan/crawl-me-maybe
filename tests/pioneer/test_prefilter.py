@@ -45,13 +45,13 @@ def _allow(pf, c, ctx) -> None:
 # -- scope ------------------------------------------------------------------
 
 
-def test_drop_outside_scope(pf):
+def test_drop_offscope(pf):
     ctx = _ctx(allowed_domains={"github.com"})
     u = _url(reg_domain="example.com")
     assert _drop(pf, _candidate(url=u), ctx) == "scope"
 
 
-def test_allow_inside_scope(pf):
+def test_allow_inscope(pf):
     ctx = _ctx(allowed_domains={"example.com"})
     _allow(pf, _candidate(), ctx)
 
@@ -77,7 +77,7 @@ def test_drop_disallowed(pf):
     assert _drop(pf, _candidate(), ctx) == "robots"
 
 
-def test_allow_when_no_policy(pf):
+def test_allow_nopolicy(pf):
     _allow(pf, _candidate(), _ctx())
 
 
@@ -148,7 +148,7 @@ def test_drop_exhausted(pf):
     assert "domain_budget" in reason
 
 
-def test_allow_under_budget(pf):
+def test_allow_budget(pf):
     ctx = _ctx(domain_counters={"example.com": 30})
     _allow(pf, _candidate(), ctx)
 
@@ -164,7 +164,7 @@ def _dated(posted_at: datetime.datetime | None) -> Candidate:
     )
 
 
-def test_stale_candidate_dropped():
+def test_stale_dropped():
     """The saving that makes a funnel worth having on a feed."""
     goal = CrawlGoal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
     stale = datetime.datetime(2026, 7, 20, tzinfo=datetime.timezone.utc)
@@ -172,20 +172,20 @@ def test_stale_candidate_dropped():
     assert (decision, rule) == (Decision.DROP, "stale")
 
 
-def test_undated_candidate_kept():
+def test_undated_kept():
     """Unknown is not old. Platforms omit the date often enough to matter."""
     goal = CrawlGoal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
     assert PreFilter().check(_dated(None), goal, PreFilterContext())[0] is Decision.ALLOW
 
 
-def test_window_off_without_a_goal_setting():
+def test_window_off():
     assert (
         PreFilter().check(_dated("2020-01-01T00:00:00+00:00"), CrawlGoal(prompt="test"), PreFilterContext())[0]
         is Decision.ALLOW
     )
 
 
-def test_zero_domain_budget_means_no_ceiling():
+def test_zero_no_cap():
     """Every post on a platform shares its domain, so a per-domain cap
     becomes a total one wearing the wrong name."""
     goal = CrawlGoal(prompt="test", domain_budget=0)
@@ -205,7 +205,7 @@ def test_zero_domain_budget_means_no_ceiling():
 # -- a seed is not wandering -------------------------------------------------
 
 
-def test_a_seed_is_not_judged_by_its_extension(pf):
+def test_seed_any_ext(pf):
     """Feeds are named exactly what this list refuses.
 
     A run seeded with `feed.xml` lost it silently before anything was
@@ -216,7 +216,7 @@ def test_a_seed_is_not_judged_by_its_extension(pf):
         _allow(pf, _candidate(url=_url(raw=raw, url_key=raw)), _ctx())
 
 
-def test_a_discovered_link_still_is(pf):
+def test_link_ext_judged(pf):
     """The list guards against wandering into archives and documents,
     which is what a link found on a page might be."""
     u = _url(raw="https://x.com/manual.pdf", url_key="k_pdf2")

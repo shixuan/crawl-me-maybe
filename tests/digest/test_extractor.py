@@ -35,29 +35,29 @@ def test_extracts_title(extractor, tmp_path):
     assert page.title == "Test Page"
 
 
-def test_extracts_content(extractor, tmp_path):
+def test_extracts(extractor, tmp_path):
     page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
     assert "Hello World" in (page.markdown or "")
     assert "main content" in (page.plain_text or "")
 
 
-def test_strips_nav_and_footer(extractor, tmp_path):
+def test_strips_chrome(extractor, tmp_path):
     page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
     assert "Hello World" in (page.markdown or "")
 
 
-def test_sets_raw_html_path(extractor, tmp_path):
+def test_raw_path(extractor, tmp_path):
     path = str(tmp_path / "raw/k1/1.html")
     page = extractor.extract(_result(), path)
     assert page.raw_html_path == path
 
 
-def test_degraded_on_broken_html(extractor, tmp_path):
+def test_broken_degrades(extractor, tmp_path):
     page = extractor.extract(_result(b"not valid html <xyz>"), str(tmp_path / "x"))
     assert page.extraction_status in ("DEGRADED", "FAILED")
 
 
-def test_produces_content_on_valid_html(extractor, tmp_path):
+def test_valid_content(extractor, tmp_path):
     page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
     assert page.text_len > 0
     assert page.markdown or page.plain_text
@@ -95,7 +95,7 @@ def test_published_at(extractor: TrafExtractor, markup, in_body, expected_month)
     assert (page.published_at.month if page.published_at else None) == expected_month
 
 
-def test_published_at_naive_value_is_utc(extractor: TrafExtractor) -> None:
+def test_naive_is_utc(extractor: TrafExtractor) -> None:
     html = _html_with('<meta name="date" content="2026-05-04 12:00:00">')
     page = extractor.extract(_result(html))
     assert page.published_at is not None
@@ -113,7 +113,7 @@ _NAV_HTML = b"""<!DOCTYPE html><html><head><title>Real Title</title></head><body
 <footer>Privacy policy</footer></body></html>"""
 
 
-def test_extraction_status_is_ok_for_a_normal_page(extractor: TrafExtractor) -> None:
+def test_status_ok(extractor: TrafExtractor) -> None:
     """Regression: an invalid output_format made every page DEGRADED.
 
     trafilatura calls the plain-text format "txt"; "text" raises, which
@@ -123,7 +123,7 @@ def test_extraction_status_is_ok_for_a_normal_page(extractor: TrafExtractor) -> 
     assert extractor.extract(_result(_NAV_HTML)).extraction_status == "OK"
 
 
-def test_plain_text_drops_navigation_boilerplate(extractor: TrafExtractor) -> None:
+def test_text_no_chrome(extractor: TrafExtractor) -> None:
     """plain_text feeds the analyzer, so boilerplate here costs tokens
     and dilutes every judgement made from it."""
     text = extractor.extract(_result(_NAV_HTML)).plain_text or ""
@@ -132,7 +132,7 @@ def test_plain_text_drops_navigation_boilerplate(extractor: TrafExtractor) -> No
     assert "Main menu" not in text
 
 
-def test_title_comes_from_the_declared_title_tag(extractor: TrafExtractor) -> None:
+def test_title_tag(extractor: TrafExtractor) -> None:
     """Regression: the primary path never set a title.
 
     It called .find() on trafilatura's XML *string*, so str.find returned
@@ -146,6 +146,6 @@ def test_title_comes_from_the_declared_title_tag(extractor: TrafExtractor) -> No
     assert page.extraction_status == "OK"
 
 
-def test_title_falls_back_to_the_url_when_undeclared(extractor: TrafExtractor) -> None:
+def test_title_from_url(extractor: TrafExtractor) -> None:
     page = extractor.extract(_result(b"<html><body><p>No title here at all, just prose.</p></body></html>"))
     assert page.title == "https://example.com/page"

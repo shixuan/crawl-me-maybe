@@ -54,7 +54,7 @@ def _page(tmp_path: Path, html: bytes, url: str) -> Page:
 # link graph ------------------------------------------------------------
 
 
-def test_links_become_candidates_with_resolved_urls(tmp_path: Path) -> None:
+def test_links_resolved(tmp_path: Path) -> None:
     page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
     out = PageHarvester(Canonicalizer()).harvest(page, depth=2).candidates
     assert len(out) == 3
@@ -67,7 +67,7 @@ def test_links_become_candidates_with_resolved_urls(tmp_path: Path) -> None:
     }
 
 
-def test_links_carry_their_business_card(tmp_path: Path) -> None:
+def test_links_meta(tmp_path: Path) -> None:
     """A link has no text of its own, so the proxies are all there is."""
     page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
     first = PageHarvester(Canonicalizer()).harvest(page, depth=0).candidates[0]
@@ -78,7 +78,7 @@ def test_links_carry_their_business_card(tmp_path: Path) -> None:
 # feed ------------------------------------------------------------------
 
 
-def test_listing_yields_permalinks(tmp_path: Path) -> None:
+def test_listing_links(tmp_path: Path) -> None:
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates
     assert len(out) == 3
@@ -87,7 +87,7 @@ def test_listing_yields_permalinks(tmp_path: Path) -> None:
     assert all(len(c.url.url_key) == 16 for c in out), "same key shape as every other source"
 
 
-def test_listing_marks_tagged_only_posts(tmp_path: Path) -> None:
+def test_tagged_marked(tmp_path: Path) -> None:
     """Kept, but distinguishable: a reviewer's post is not the shop's."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates
@@ -96,13 +96,13 @@ def test_listing_marks_tagged_only_posts(tmp_path: Path) -> None:
     assert tagged["https://www.instagram.com/hellofoodbaby_/p/CCC333/"] is True
 
 
-def test_post_yields_nothing(tmp_path: Path) -> None:
+def test_post_is_leaf(tmp_path: Path) -> None:
     """A post is a leaf: its caption is the product, not a pointer on."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
     assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
 
 
-def test_not_content_says_why(tmp_path: Path) -> None:
+def test_problem_named(tmp_path: Path) -> None:
     """A renamed account must not read as an account with a quiet week.
 
     Empty was the only answer available before, so the two were the same
@@ -115,7 +115,7 @@ def test_not_content_says_why(tmp_path: Path) -> None:
     assert not out.problem.refuses_the_run, "one gone account must not end a thirty-account run"
 
 
-def test_quiet_account_is_not_a_problem(tmp_path: Path) -> None:
+def test_quiet_is_ok(tmp_path: Path) -> None:
     """Empty and refused have to stay distinguishable in both directions."""
     page = _page(tmp_path, _EMPTY_LISTING, "https://www.instagram.com/quiet/")
     out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
@@ -123,7 +123,7 @@ def test_quiet_account_is_not_a_problem(tmp_path: Path) -> None:
     assert out.problem is None
 
 
-def test_block_refuses_the_crawl(tmp_path: Path) -> None:
+def test_block_refuses(tmp_path: Path) -> None:
     """Rate limiting and a dead session settle every request that follows."""
     for html, expected in (
         (b"<html>Please wait a few minutes before you try again.</html>", PageProblem.BLOCKED),
@@ -135,7 +135,7 @@ def test_block_refuses_the_crawl(tmp_path: Path) -> None:
         assert out.problem.refuses_the_run
 
 
-def test_missing_html_yields_nothing(tmp_path: Path) -> None:
+def test_no_html_empty(tmp_path: Path) -> None:
     page = Page(url_key="k", url=URL(raw="https://x/", canonical="https://x/", url_key="k"))
     assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
 
@@ -144,7 +144,7 @@ def test_missing_html_yields_nothing(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(("session", "platforms"), [("", []), ("./s.json", ["instagram"])])
-def test_the_session_decides_which_platforms_are_read(session: str, platforms: list[str]) -> None:
+def test_session_picks(session: str, platforms: list[str]) -> None:
     """One harvester now; what changes is which platforms it may read,
     and having credentials for one is what makes reading it possible.
 
@@ -156,7 +156,7 @@ def test_the_session_decides_which_platforms_are_read(session: str, platforms: l
     assert [a.PLATFORM for a in h._adapters if a.NEEDS_SESSION] == platforms
 
 
-def test_an_adapter_read_unasked_never_claims_on_the_address_alone(tmp_path: Path) -> None:
+def test_needs_document(tmp_path: Path) -> None:
     """A graph crawl gets every session-free adapter without asking for
     one, so any of them may meet its own host mid-crawl.  Claiming there
     on the address alone would silently turn that crawl into a feed
@@ -172,7 +172,7 @@ def test_an_adapter_read_unasked_never_claims_on_the_address_alone(tmp_path: Pat
         assert not adapter.claims(page, "<html><body>not it</body></html>")
 
 
-def test_an_unclaimed_page_is_read_as_a_page(tmp_path: Path) -> None:
+def test_unclaimed_graph(tmp_path: Path) -> None:
     """A crawl wanders off: an analyzer endorses the shop's own site.
 
     The adapter is not consulted there, so a site that happens to use the
@@ -194,7 +194,7 @@ def test_an_unclaimed_page_is_read_as_a_page(tmp_path: Path) -> None:
     ]
 
 
-def test_platform_check_reads_the_adapter(tmp_path: Path) -> None:
+def test_platform_check(tmp_path: Path) -> None:
     """Swapping the adapter swaps which pages are ours, with no edit here."""
 
     class _Elsewhere:
@@ -212,13 +212,13 @@ def test_platform_check_reads_the_adapter(tmp_path: Path) -> None:
     assert not out.listing, "this adapter does not claim instagram, so nothing parsed it as a feed"
 
 
-def test_a_listing_says_it_was_one(tmp_path: Path) -> None:
+def test_listing_flagged(tmp_path: Path) -> None:
     """Only a listing can be judged empty, so only a listing says so."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
     assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).listing
 
 
-def test_a_post_is_not_a_listing(tmp_path: Path) -> None:
+def test_post_no_list(tmp_path: Path) -> None:
     """An item yields nothing by design and must never read as broken."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
     out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
@@ -226,7 +226,7 @@ def test_a_post_is_not_a_listing(tmp_path: Path) -> None:
     assert not out.listing
 
 
-def test_a_link_graph_page_is_not_a_listing(tmp_path: Path) -> None:
+def test_graph_no_list(tmp_path: Path) -> None:
     """A page with no links is ordinary; the graph has no listings."""
     page = _page(tmp_path, b"<html><body>no links here</body></html>", "https://example.com/")
     out = PageHarvester(Canonicalizer()).harvest(page, depth=0)

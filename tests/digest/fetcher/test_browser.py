@@ -32,7 +32,7 @@ def _item(url: str) -> FrontierItem:
 # session file ----------------------------------------------------------
 
 
-def test_storage_state_loads(tmp_path: Path) -> None:
+def test_state_loads(tmp_path: Path) -> None:
     p = tmp_path / "session.json"
     p.write_text(json.dumps({"cookies": [{"name": "sessionid", "value": "x"}], "origins": []}))
     assert _load_storage_state(str(p))["cookies"][0]["name"] == "sessionid"
@@ -46,7 +46,7 @@ def test_storage_state_loads(tmp_path: Path) -> None:
         (json.dumps({"cookies": [], "origins": []}), "no cookies"),
     ],
 )
-def test_storage_state_fails_loudly(tmp_path: Path, content, match) -> None:
+def test_state_bad_path(tmp_path: Path, content, match) -> None:
     """Silently falling back to anonymous would crawl a login wall.
 
     On a login-walled platform that means a few hundred fetches of the
@@ -62,20 +62,20 @@ def test_storage_state_fails_loudly(tmp_path: Path, content, match) -> None:
 # factory wiring --------------------------------------------------------
 
 
-def test_factory_dispatches_per_candidate_by_default() -> None:
+def test_factory_default() -> None:
     """Neither answer is right for a whole run: most pages want plain
     HTTP and a few platforms cannot be read without a browser."""
     assert isinstance(_build_fetcher(Settings()), DispatchingFetcher)
 
 
-def test_factory_builds_browser_fetcher_when_asked() -> None:
+def test_factory_browser() -> None:
     """Asking for one is still a way to get one everywhere.  A page
     that is not a platform can need a script run to say anything, and
     only the person crawling it knows that."""
     assert isinstance(_build_fetcher(Settings(fetcher="browser")), PlaywrightFetcher)
 
 
-def test_a_session_still_dispatches(tmp_path) -> None:
+def test_session_splits(tmp_path) -> None:
     """A shop the analyser endorsed off a post has no use for the
     platform's cookies, so it takes the cheap route."""
     sess = tmp_path / "s.json"
@@ -90,7 +90,7 @@ def test_a_session_still_dispatches(tmp_path) -> None:
     assert not isinstance(built._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
-def test_constructing_the_browser_fetcher_starts_nothing() -> None:
+def test_lazy_launch() -> None:
     """Building a scheduler must not launch a browser."""
     f = PlaywrightFetcher(storage_state="/nonexistent/session.json")
     assert f._context is None
@@ -98,7 +98,7 @@ def test_constructing_the_browser_fetcher_starts_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_aclose_before_any_fetch_is_a_noop() -> None:
+async def test_aclose_unused() -> None:
     await PlaywrightFetcher().aclose()
 
 
@@ -155,7 +155,7 @@ def js_site() -> object:
 
 @pytest.mark.browser
 @pytest.mark.asyncio
-async def test_renders_javascript_and_reuses_the_browser(js_site: str) -> None:
+async def test_renders_reuse(js_site: str) -> None:
     """The reason this fetcher exists: content that HTTP alone cannot see."""
     pytest.importorskip("playwright")
     fetcher = PlaywrightFetcher()
@@ -175,7 +175,7 @@ async def test_renders_javascript_and_reuses_the_browser(js_site: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_transient_navigation_retried(monkeypatch):
+async def test_nav_retried(monkeypatch):
     """Regression: the browser fetcher had no retry at all.
 
     Rendering fails transiently more often than an HTTP GET does, so the
@@ -201,7 +201,7 @@ async def test_transient_navigation_retried(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_permanent_browser_error_not_retried(monkeypatch):
+async def test_permanent_nav_error(monkeypatch):
     fetcher = PlaywrightFetcher(max_retries=3)
     calls = []
 
@@ -220,7 +220,7 @@ async def test_permanent_browser_error_not_retried(monkeypatch):
 
 @pytest.mark.browser
 @pytest.mark.asyncio
-async def test_keeps_the_answer_the_page_built_itself_from(js_site: str) -> None:
+async def test_keeps_payload(js_site: str) -> None:
     """The text a listing shows nobody still arrives over the wire.
 
     Keeping it costs no request: the page already asked for it, and only
@@ -240,7 +240,7 @@ async def test_keeps_the_answer_the_page_built_itself_from(js_site: str) -> None
 
 @pytest.mark.browser
 @pytest.mark.asyncio
-async def test_nothing_is_kept_unless_something_asks(js_site: str) -> None:
+async def test_no_payload_ask(js_site: str) -> None:
     """A link-graph crawl has no use for it and must pay nothing."""
     pytest.importorskip("playwright")
     fetcher = PlaywrightFetcher()
@@ -252,7 +252,7 @@ async def test_nothing_is_kept_unless_something_asks(js_site: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_payloads_stop_at_the_size_cap() -> None:
+async def test_payload_cap() -> None:
     """One page can download tens of megabytes; memory is not free."""
 
     class _Resp:
@@ -270,7 +270,7 @@ async def test_payloads_stop_at_the_size_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_body_is_not_an_error() -> None:
+async def test_body_gone_ok() -> None:
     """A missing payload is a weaker crawl, never a failed one."""
 
     class _Gone:
@@ -285,13 +285,13 @@ async def test_missing_body_is_not_an_error() -> None:
     assert kept == []
 
 
-def test_scrolling_is_off_unless_asked() -> None:
+def test_scroll_default() -> None:
     """A link graph has nothing below the fold worth waiting for."""
     assert PlaywrightFetcher()._scrolls == 0
 
 
 @pytest.mark.asyncio
-async def test_scrolling_stops_when_the_page_stops_growing() -> None:
+async def test_scroll_stops() -> None:
     """A short account must not cost every scroll it was allowed."""
 
     class _Page:
@@ -320,7 +320,7 @@ async def test_scrolling_stops_when_the_page_stops_growing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scrolling_keeps_asking_while_the_page_grows() -> None:
+async def test_scroll_grows() -> None:
     class _Page:
         url = "https://x/"
 
@@ -348,7 +348,7 @@ async def test_scrolling_keeps_asking_while_the_page_grows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_fetches_start_one_browser() -> None:
+async def test_one_browser() -> None:
     """The pump pops several seeds at once and they all arrive here.
 
     Unguarded, every one of them found no context and launched a
@@ -375,7 +375,7 @@ async def test_concurrent_fetches_start_one_browser() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_wait_timeout_keeps_the_page_that_rendered(monkeypatch) -> None:
+async def test_timeout_keeps(monkeypatch) -> None:
     """networkidle is a condition some pages never reach.
 
     A platform that polls or throttles keeps a request open forever, so
@@ -417,7 +417,7 @@ async def test_a_wait_timeout_keeps_the_page_that_rendered(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_wait_timeout_with_nothing_rendered_is_still_a_failure(monkeypatch) -> None:
+async def test_timeout_empty(monkeypatch) -> None:
     """An empty document means the fetch really did fail."""
     # Skipped rather than marked `browser`: this needs the exception
     # class, not a browser, so it runs wherever playwright is installed

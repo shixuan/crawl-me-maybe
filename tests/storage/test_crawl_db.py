@@ -32,7 +32,7 @@ def storage(tmp_path):
     loop.close()
 
 
-def test_init_creates_all_tables(storage):
+def test_tables_created(storage):
     tables = [
         "crawl_goals",
         "crawl_tasks",
@@ -51,7 +51,7 @@ def test_init_creates_all_tables(storage):
         assert row is not None, f"Table {t} missing"
 
 
-def test_save_and_get_goal(storage):
+def test_goal_roundtrip(storage):
     storage.save_goal(
         {
             "goal_id": "g1",
@@ -67,7 +67,7 @@ def test_save_and_get_goal(storage):
     assert g["max_pages"] == 10
 
 
-def test_save_goal_roundtrips_enhanced_fields(storage):
+def test_enhanced_goal_saved(storage):
     """The Goal Enhancer's keywords and since survive persistence."""
     storage.save_goal(
         {
@@ -87,7 +87,7 @@ def test_save_goal_roundtrips_enhanced_fields(storage):
     assert g["since"] == "2026-02-13T00:00:00+00:00"
 
 
-def test_save_and_get_task(storage):
+def test_task_roundtrip(storage):
     storage.save_task(
         {
             "task_id": "t1",
@@ -103,7 +103,7 @@ def test_save_and_get_task(storage):
     assert t["state"] == "RUNNING"
 
 
-def test_save_and_get_page(storage):
+def test_page_roundtrip(storage):
     url = _url("abc")
     storage.save_page(Page(page_id="p1", url_key="abc", url=url, title="Test Page"))
     _run(storage._write_queue.join())
@@ -112,7 +112,7 @@ def test_save_and_get_page(storage):
     assert p["title"] == "Test Page"
 
 
-def test_get_pages_by_url_key(storage):
+def test_pages_by_key(storage):
     url = _url("abc")
     for i in range(3):
         storage.save_page(Page(page_id=f"p{i}", url_key="abc", url=url, title=f"Page {i}"))
@@ -121,7 +121,7 @@ def test_get_pages_by_url_key(storage):
     assert len(pages) == 3
 
 
-def test_list_pages_returns_all_in_fetch_order(storage):
+def test_pages_in_order(storage):
     for i in (2, 0, 1):
         storage.save_page(
             Page(
@@ -143,7 +143,7 @@ def test_save_raw_html(storage):
         assert "hello" in f.read()
 
 
-def test_save_and_get_link(storage):
+def test_link_roundtrip(storage):
     storage.save_link(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
     _run(storage._write_queue.join())
     c = _run(storage.get_link("c1"))
@@ -151,7 +151,7 @@ def test_save_and_get_link(storage):
     assert c["depth"] == 2
 
 
-def test_a_candidate_keeps_the_time_its_source_stated(storage):
+def test_link_keeps_time(storage):
     """Ranking reads it live; without a column nothing can recompute it.
 
     A quarter of the feed factor set is recency, and every offline
@@ -167,14 +167,14 @@ def test_a_candidate_keeps_the_time_its_source_stated(storage):
     assert c["posted_at"].startswith("2026-08-20T03:54:30")
 
 
-def test_a_link_that_states_no_time_stores_none(storage):
+def test_link_undated(storage):
     """A link carries no publication time, and empty has to stay empty."""
     storage.save_link(Candidate(candidate_id="c3", url=_url("undated")))
     _run(storage._write_queue.join())
     assert _run(storage.get_link("c3"))["posted_at"] == ""
 
 
-def test_save_and_get_rank_decision(storage):
+def test_rank_roundtrip(storage):
     storage.save_rank_decision(RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm"))
     _run(storage._write_queue.join())
     rd = _run(storage.get_rank_decision("c1"))
@@ -183,7 +183,7 @@ def test_save_and_get_rank_decision(storage):
     assert rd["ranker"] == "llm"
 
 
-def test_get_rank_decisions_by_url_key(storage):
+def test_ranks_by_key(storage):
     for i in range(2):
         storage.save_rank_decision(RankDecision(candidate_id=f"c{i}", url_key="abc", priority=0.5 + i * 0.1))
     _run(storage._write_queue.join())
@@ -191,7 +191,7 @@ def test_get_rank_decisions_by_url_key(storage):
     assert len(rds) == 2
 
 
-def test_save_and_get_analyses(storage):
+def test_analysis_roundtrip(storage):
     storage.save_analysis(
         {
             "analysis_id": "a1",
@@ -211,7 +211,7 @@ def test_save_and_get_analyses(storage):
     assert "https://x.com/y" in results[0]["feedback_json"]
 
 
-def test_has_analysis_matches_identity(storage):
+def test_has_analysis(storage):
     storage.save_analysis(
         {
             "analysis_id": "a1",
@@ -232,7 +232,7 @@ def test_has_analysis_matches_identity(storage):
     assert not _run(storage.has_analysis("other", "g1", "v1"))
 
 
-def test_has_analysis_separates_field_lists(storage):
+def test_has_by_fields(storage):
     """A page read for a different field list has not been read yet.
 
     The goal is the same in both cases, so goal_id cannot tell them
@@ -256,7 +256,7 @@ def test_has_analysis_separates_field_lists(storage):
     assert not _run(storage.has_analysis("abc", "g1", "v1", "m1")), "a goal asking for no fields is not the same read"
 
 
-def test_save_and_get_snapshot(storage):
+def test_snapshot_saved(storage):
     storage.save_snapshot(
         {
             "snapshot_id": "s1",
@@ -270,7 +270,7 @@ def test_save_and_get_snapshot(storage):
     assert snap is not None
 
 
-def test_save_and_get_events(storage):
+def test_event_roundtrip(storage):
     storage.save_event(
         {
             "ts": "2026-01-01T00:00:00Z",
@@ -293,7 +293,7 @@ def test_save_and_get_events(storage):
     assert events[0]["type"] == "PAGE_FETCHED"
 
 
-def test_save_and_get_errors(storage):
+def test_error_roundtrip(storage):
     storage.save_error(
         {
             "task_id": "t1",
@@ -314,7 +314,7 @@ def test_save_and_get_errors(storage):
     assert len(by_url) == 1
 
 
-def test_save_and_get_robots(storage):
+def test_robots_roundtrip(storage):
     storage.save_robots(
         {
             "domain": "example.com",
@@ -333,7 +333,7 @@ def test_get_nonexistent(storage):
     assert _run(storage.get_page("noexist")) is None
 
 
-async def test_a_bad_statement_does_not_hang_the_close(tmp_path, caplog):
+async def test_bad_sql_no_hang(tmp_path, caplog):
     """A write that fails must not take the writer down with it.
 
     Letting it propagate ends the task, so nothing calls task_done

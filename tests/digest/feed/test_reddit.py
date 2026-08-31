@@ -43,7 +43,7 @@ def test_claims_by_host(url, mine):
     assert reddit.claims_url(url) is mine
 
 
-def test_a_listing_is_not_an_item():
+def test_listing_no_item():
     """A subreddit carries a <shreddit-post> element per card, so asking
     the markup answers yes for both kinds of page -- and a listing read
     as an item is a leaf, which means every subreddit yields nothing
@@ -52,7 +52,7 @@ def test_a_listing_is_not_an_item():
     assert reddit.parse_item(_POST, _POST_URL) is not None
 
 
-def test_a_listing_yields_its_permalinks():
+def test_listing_links():
     listing = reddit.parse_listing(_LISTING, _LISTING_URL, [])
     assert listing.all, "no permalinks found"
     assert all(i.permalink.startswith("https://www.reddit.com/r/") for i in listing.all)
@@ -61,7 +61,7 @@ def test_a_listing_yields_its_permalinks():
     assert not listing.others, "a subreddit shows only its own posts"
 
 
-def test_an_item_carries_the_post_body():
+def test_item_has_body():
     item = reddit.parse_item(_POST, _POST_URL)
     assert item is not None
     assert len(item.text or "") > 40
@@ -77,21 +77,21 @@ def test_an_item_carries_the_post_body():
         ("<html>this community is private</html>", PageProblem.UNAVAILABLE),
     ],
 )
-def test_refusals_are_told_apart(html, expected):
+def test_refusals_apart(html, expected):
     assert reddit.problem(html) is expected
 
 
-def test_a_real_page_is_not_a_refusal():
+def test_real_page_ok():
     assert reddit.problem(_POST) is None
     assert reddit.problem(_LISTING) is None
 
 
-def test_reading_needs_no_session():
+def test_no_session():
     """Unlike Instagram: this is what lets a Reddit run go without one."""
     assert reddit.NEEDS_SESSION is False
 
 
-def test_an_unrendered_shell_is_not_claimed():
+def test_shell_unclaimed():
     """Reddit serves 8KB of script to anything without a browser, and
     that shell carries none of these elements.  Claiming it anyway would
     mean a subreddit fetched over plain HTTP reports a quiet week --
@@ -101,14 +101,14 @@ def test_an_unrendered_shell_is_not_claimed():
     assert reddit.claims(_page(_LISTING_URL), _LISTING) is True
 
 
-def test_rendering_is_required_and_a_session_is_not():
+def test_needs_render():
     """Two different requirements: anyone may read Reddit, but not
     without a browser."""
     assert reddit.NEEDS_RENDERING is True
     assert reddit.NEEDS_SESSION is False
 
 
-def test_a_listing_carries_what_each_card_states():
+def test_card_fields():
     """A permalink alone leaves the ranker reading a URL slug."""
     items = reddit.parse_listing(_LISTING, _LISTING_URL, []).own
     assert items
@@ -120,7 +120,7 @@ def test_a_listing_carries_what_each_card_states():
     assert first.author
 
 
-def test_a_card_without_a_colon_in_its_offset_is_still_dated():
+def test_offset_no_colon():
     """Reddit writes +0000, which fromisoformat rejects before 3.11.
     Unhandled, every candidate arrives undated and is ranked as though
     it had no date rather than as something recent."""
@@ -130,9 +130,33 @@ def test_a_card_without_a_colon_in_its_offset_is_still_dated():
     assert stamped[0].published_at.tzinfo is not None
 
 
-def test_a_permalink_the_cards_missed_is_still_a_candidate():
+def test_bare_permalink():
     """The href shape is the older signal and holds when the markup
     moves on, so it stays as the floor under the card reader."""
     html = '<a href="/r/Python/comments/abc123/some_slug/">x</a>'
     items = reddit.parse_listing(html, _LISTING_URL, []).own
     assert [i.permalink for i in items] == ["https://www.reddit.com/r/Python/comments/abc123/some_slug/"]
+
+
+def test_has_next_page():
+    """Scrolling cannot reach it: a rendered feed unmounts what scrolls
+    past, so sixteen scrolls returned fewer posts than two."""
+    nxt = reddit.next_page(_LISTING, _LISTING_URL)
+    assert nxt.startswith(_LISTING_URL.split("?")[0] + "?after=t3_")
+
+
+def test_cursor_replaced():
+    """Appending would grow the URL every page and dedup would stop
+    seeing them as the same listing."""
+    once = reddit.next_page(_LISTING, _LISTING_URL)
+    twice = reddit.next_page(_LISTING, once)
+    assert twice.count("after=") == 1
+    assert twice == once
+
+
+def test_post_no_next():
+    assert reddit.next_page(_POST, _POST_URL) == ""
+
+
+def test_no_cards_no_next_page():
+    assert reddit.next_page("<html><body>nothing</body></html>", _LISTING_URL) == ""

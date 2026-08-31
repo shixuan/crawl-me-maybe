@@ -10,7 +10,7 @@ def _ctx() -> CrawlContext:
     return CrawlContext(counters=CrawlCounters(), stats=RunStats())
 
 
-def test_reset_rebuilds_counters_from_goal():
+def test_reset_counters():
     ctx = _ctx()
     goal = CrawlGoal(prompt="p", max_pages=7, max_tokens=123, max_duration_sec=60)
     ctx.reset(goal=goal, tokens_used_start=42)
@@ -23,7 +23,7 @@ def test_reset_rebuilds_counters_from_goal():
     assert ctx.counters.pages_fetched == 0
 
 
-def test_reset_zeroes_stats_in_place():
+def test_reset_stats():
     ctx = _ctx()
     ctx.stats.links_discovered = 5
     ctx.stats.analyses_by_class = {"RELEVANT": 2}
@@ -36,7 +36,7 @@ def test_reset_zeroes_stats_in_place():
     assert ctx.stats.analyses_by_class == {}
 
 
-def test_reset_keeps_context_identity():
+def test_reset_identity():
     """The engine replaces fields, never the context object itself."""
     ctx = _ctx()
     ctx_id = id(ctx)

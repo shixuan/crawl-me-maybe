@@ -103,6 +103,9 @@ class RunStats:
     # Reported because a run that read thirty accounts and found three
     # of them gone is a different run from one that found none gone.
     not_content: dict[str, int] = dataclasses.field(default_factory=dict)
+    # URLs robots.txt refused. Reported because a run that found nothing
+    # because it was not allowed to look is not a quiet week.
+    robots_blocked: int = 0
 
     def reset(self) -> None:
         """Zero every field in place, so stage references stay valid."""
@@ -111,6 +114,7 @@ class RunStats:
         self.fetch_errors = 0
         self.analyses_by_class = {}
         self.not_content = {}
+        self.robots_blocked = 0
 
 
 @dataclasses.dataclass

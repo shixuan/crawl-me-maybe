@@ -53,7 +53,7 @@ def _pair(adapters=ADAPTERS, *, can_render: bool = True):
         ("https://news.ycombinator.com", "http"),
     ],
 )
-async def test_a_candidate_goes_to_the_fetcher_its_platform_needs(url, expected):
+async def test_plat_browser(url, expected):
     """Decided from the address, because the document is what the fetch
     is for.  A feed is recognised by its root element and so answers no
     to claims_url -- which is why it correctly lands on plain HTTP."""
@@ -63,7 +63,7 @@ async def test_a_candidate_goes_to_the_fetcher_its_platform_needs(url, expected)
     assert (http.urls if expected == "browser" else browser.urls) == []
 
 
-async def test_the_ordinary_web_never_starts_a_browser():
+async def test_plain_http():
     """The point of dispatching: a link-graph crawl pays nothing."""
     d, http, browser = _pair()
     for url in ("https://a.com/", "https://b.org/x", "https://c.net/y?z=1"):
@@ -72,7 +72,7 @@ async def test_the_ordinary_web_never_starts_a_browser():
     assert browser.urls == []
 
 
-async def test_an_adapter_that_does_not_need_rendering_is_not_consulted():
+async def test_rss_no_route():
     """RSS never claims a URL, so a run with only RSS enabled has
     nothing that could route to a browser."""
     d, http, browser = _pair([rss])
@@ -81,7 +81,7 @@ async def test_an_adapter_that_does_not_need_rendering_is_not_consulted():
     assert browser.urls == []
 
 
-async def test_without_playwright_the_page_still_gets_fetched(caplog):
+async def test_no_playwright_degrades(caplog):
     """One candidate out of hundreds.  Refusing the run over it costs
     more than the page is worth, but silence would leave a page that
     looks empty for a reason nothing else states."""
@@ -93,7 +93,7 @@ async def test_without_playwright_the_page_still_gets_fetched(caplog):
     assert any("fetch.cannot_render" in r.message for r in caplog.records)
 
 
-async def test_the_warning_is_said_once_per_platform(caplog):
+async def test_warns_once(caplog):
     """A subreddit yields fifty links; fifty identical warnings would
     bury whatever else the run had to say."""
     d, _, _ = _pair(can_render=False)
@@ -103,7 +103,7 @@ async def test_the_warning_is_said_once_per_platform(caplog):
     assert sum("fetch.cannot_render" in r.message for r in caplog.records) == 1
 
 
-async def test_closing_closes_both():
+async def test_closes_both():
     """The browser one is a no-op when nothing started it, which is the
     common case -- but a run that did start one must not leave the
     process tree behind."""
@@ -112,7 +112,7 @@ async def test_closing_closes_both():
     assert http.closed and browser.closed
 
 
-def test_every_rendered_adapter_can_answer_from_a_url():
+def test_claim_by_url():
     """A platform that needs rendering but cannot recognise its own
     addresses would be routed to plain HTTP forever, and the shell it
     got back would read as an empty week."""
@@ -120,14 +120,14 @@ def test_every_rendered_adapter_can_answer_from_a_url():
         assert adapter.claims_url(f"https://www.{adapter.DOMAIN}/anything")
 
 
-def test_the_two_platforms_do_not_claim_each_other():
+def test_no_cross_claim():
     """Both need a browser, so a mix-up would not show up as a failed
     fetch -- it would show up as the wrong parser finding nothing."""
     assert not reddit.claims_url("https://www.instagram.com/someone/")
     assert not instagram.claims_url("https://www.reddit.com/r/Python/")
 
 
-def test_a_walled_platform_without_a_session_is_not_routed_to_a_browser():
+def test_walled_skipped():
     """Spending one there buys a login page.  The adapter is already
     left out of a session-less run, so the dispatcher never hears about
     the platform and the address travels as any other would.

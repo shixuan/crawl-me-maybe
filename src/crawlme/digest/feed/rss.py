@@ -86,6 +86,11 @@ def problem(html: str) -> PageProblem | None:
     return None
 
 
+def next_page(html: str, url: str) -> str:
+    """None: a feed hands over every entry it has in one document."""
+    return ""
+
+
 def keeps_payload(url: str, content_type: str) -> bool:
     """Nothing: a feed states its posts in the document it hands over."""
     return False

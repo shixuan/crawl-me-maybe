@@ -37,14 +37,14 @@ async def test_add_batch(buf):
 
 
 @pytest.mark.asyncio
-async def test_dedup_skips_seen_url_key(buf):
+async def test_dedup_seen(buf):
     await buf.add([_candidate("k1")])
     await buf.add([_candidate("k1")])
     assert buf.size == 1
 
 
 @pytest.mark.asyncio
-async def test_eviction_when_full(buf):
+async def test_evict_full(buf):
     small = RoundRobinBuffer(capacity=2)
     # Add 2 good candidates (shallow depth, early position).
     await small.add([_candidate("k1", depth=0, position=1), _candidate("k2", depth=0, position=2)])
@@ -56,7 +56,7 @@ async def test_eviction_when_full(buf):
 
 
 @pytest.mark.asyncio
-async def test_eviction_keeps_better_quality(buf):
+async def test_evict_worst(buf):
     small = RoundRobinBuffer(capacity=2)
     await small.add([_candidate("deep", depth=5, position=50)])
     await small.add([_candidate("good", depth=0, position=1)])
@@ -70,7 +70,7 @@ async def test_eviction_keeps_better_quality(buf):
 
 
 @pytest.mark.asyncio
-async def test_add_sets_buffered_status(buf):
+async def test_add_status(buf):
     await buf.add([_candidate("k1")])
     batch = await buf.drain()
     assert batch[0].status == "BUFFERED"
@@ -80,7 +80,7 @@ async def test_add_sets_buffered_status(buf):
 
 
 @pytest.mark.asyncio
-async def test_drain_returns_all_by_default(buf):
+async def test_drain_all(buf):
     await buf.add(_batch(5))
     batch = await buf.drain()
     assert len(batch) == 5
@@ -96,7 +96,7 @@ async def test_drain_n_limited(buf):
 
 
 @pytest.mark.asyncio
-async def test_drain_preserves_seen(buf):
+async def test_drain_seen(buf):
     await buf.add([_candidate("k1")])
     await buf.drain()
     await buf.add([_candidate("k1")])
@@ -107,21 +107,21 @@ async def test_drain_preserves_seen(buf):
 
 
 @pytest.mark.asyncio
-async def test_ready_when_size_reaches_100(buf):
+async def test_ready_size(buf):
     big = RoundRobinBuffer(capacity=200)
     await big.add([_candidate(f"k{i}") for i in range(100)])
     assert big.ready()
 
 
 @pytest.mark.asyncio
-async def test_not_ready_when_small_and_fresh(buf):
+async def test_not_ready_yet(buf):
     assert not buf.ready()
     await buf.add(_batch(5))
     assert not buf.ready()  # <100 and just added
 
 
 @pytest.mark.asyncio
-async def test_ready_when_frontier_hungry(buf):
+async def test_ready_hungry(buf):
     await buf.add([_candidate("k1")])
     assert buf.ready(frontier_hungry=True)
 
@@ -130,7 +130,7 @@ async def test_ready_when_frontier_hungry(buf):
 
 
 @pytest.mark.asyncio
-async def test_wait_until_wakes_on_add():
+async def test_wait_wakes():
     buf = RoundRobinBuffer(capacity=200)
 
     async def delayed_add():
@@ -170,7 +170,7 @@ def _seeded(key: str, seed: str) -> Candidate:
 
 
 @pytest.mark.asyncio
-async def test_drain_takes_a_turn_per_seed():
+async def test_turn_per_seed():
     """This is the gate that binds: what leaves here is what gets scored.
 
     First-come-first-served let one account's listing fill the queue, and
@@ -187,7 +187,7 @@ async def test_drain_takes_a_turn_per_seed():
 
 
 @pytest.mark.asyncio
-async def test_within_one_seed_the_oldest_goes_first():
+async def test_oldest_first():
     """None of them are scored yet, so there is nothing else to prefer."""
     buf = RoundRobinBuffer()
     await buf.add([_seeded("first", "a"), _seeded("second", "a")])
@@ -195,7 +195,7 @@ async def test_within_one_seed_the_oldest_goes_first():
 
 
 @pytest.mark.asyncio
-async def test_exhausted_seed_gives_up_its_turns():
+async def test_seed_spent():
     buf = RoundRobinBuffer()
     await buf.add([_seeded("only_a", "a")])
     await buf.add([_seeded(f"b{i}", "b") for i in range(3)])
@@ -203,7 +203,7 @@ async def test_exhausted_seed_gives_up_its_turns():
 
 
 @pytest.mark.asyncio
-async def test_draining_everything_needs_no_turns():
+async def test_drain_no_turns():
     buf = RoundRobinBuffer()
     await buf.add([_seeded("a1", "a"), _seeded("b1", "b")])
     assert len(await buf.drain()) == 2
@@ -211,7 +211,7 @@ async def test_draining_everything_needs_no_turns():
 
 
 @pytest.mark.asyncio
-async def test_candidates_without_a_seed_share_one_turn():
+async def test_seedless_share():
     """A link graph before seeds are threaded through still behaves."""
     buf = RoundRobinBuffer()
     await buf.add(
@@ -221,7 +221,7 @@ async def test_candidates_without_a_seed_share_one_turn():
 
 
 @pytest.mark.asyncio
-async def test_more_seeds_than_a_batch():
+async def test_seeds_overflow():
     """A batch is often smaller than the seed list.
 
     Restarting the rotation at the front each time would let the first
@@ -241,7 +241,7 @@ async def test_more_seeds_than_a_batch():
 
 
 @pytest.mark.asyncio
-async def test_rotation_resumes_where_it_stopped():
+async def test_rotation_resume():
     buf = RoundRobinBuffer()
     await buf.add([_seeded(f"{s}1", s) for s in ("a", "b", "c")])
     await buf.add([_seeded(f"{s}2", s) for s in ("a", "b", "c")])

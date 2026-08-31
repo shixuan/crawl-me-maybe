@@ -152,7 +152,7 @@ def _only_run_db(result_dir: Path) -> Path:
 # 1. the real CLI, in a real process ------------------------------------
 
 
-def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
+def test_cli_clean_exit(site: str, tmp_path: Path) -> None:
     """The assembled binary crawls a site and the process actually exits.
 
     Asserting on the exit code rather than on stdout is the point: a
@@ -213,7 +213,7 @@ def test_cli_run_completes_and_exits_clean(site: str, tmp_path: Path) -> None:
     assert reason[1], "the task recorded no stopping reason"
 
 
-def test_cli_rejects_a_bad_since_value(site: str, tmp_path: Path) -> None:
+def test_cli_bad_since(site: str, tmp_path: Path) -> None:
     """Argument validation fails before any crawling happens."""
     # Args are literals plus sys.executable: nothing here is untrusted.
     proc = subprocess.run(  # noqa: S603
@@ -294,7 +294,7 @@ def _settings(tmp_path: Path) -> Settings:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_with_scripted_llm_produces_analyses(site: str, tmp_path: Path) -> None:
+async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     """Analyzer and LLM ranker both run, on scripted answers."""
     from crawlme.analyzer import PageAnalyzer
     from crawlme.pioneer.ranker.llm import LLMRanker
@@ -332,7 +332,7 @@ async def test_pipeline_with_scripted_llm_produces_analyses(site: str, tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_degrades_without_llm_credentials(site: str, tmp_path: Path) -> None:
+async def test_no_creds(site: str, tmp_path: Path) -> None:
     """No credentials is a supported configuration, not a failure.
 
     The crawl still has to complete and still has to store pages and rule

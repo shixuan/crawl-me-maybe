@@ -23,12 +23,18 @@ pip install -e .
 
 Four kinds of run, one command. What changes is what the seeds point at.
 
+Every example below carries `--ignore-robots`, because without it most of them
+fetch nothing. robots.txt is obeyed by default and read from the section
+written for this crawler by name, and plenty of sites -- Reddit among them --
+tell it not to read them. Whether to go anyway is a decision the flag makes you
+state, and it is yours to make.
+
 **A link graph.** Start anywhere, follow links, stop when you have enough.
 
 ```bash
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-relevant 40 --page-budget 200
+  --max-relevant 40 --page-budget 200 --ignore-robots
 ```
 
 **A feed.** A feed URL is an ordinary seed: it is fetched once, and whichever
@@ -41,7 +47,7 @@ pip install -e '.[rss]'
 
 crawl run "language features shipped this year, with the version that carries each" \
   --seeds "https://blog.rust-lang.org/feed.xml,https://go.dev/blog/feed.atom" \
-  --max-relevant 20
+  --max-relevant 20 --ignore-robots
 ```
 
 **A platform that needs a browser but no account.** Reddit builds its pages
@@ -58,7 +64,7 @@ pip install -e '.[browser]' && playwright install chromium
 
 crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
   --seeds "https://www.reddit.com/r/askTO/" \
-  --max-relevant 20 --page-budget 60
+  --max-relevant 20 --page-budget 60 --ignore-robots
 ```
 
 `--fetcher browser` still exists and still means *everything* through a
@@ -154,7 +160,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 |------|--------|---------|---------|
 | `--fetcher` | `http` \| `browser` | per candidate | Left alone, each address takes the cheaper route its platform allows. `browser` forces one everywhere, for pages that are empty without a script run but belong to no platform |
 | `--session` | path | none | A Playwright `storage_state` file. Enables the platform adapters, sends their addresses through the browser context holding it, and defaults `--domain-budget 0` |
-| `--ignore-robots` | flag | off | Bypass robots.txt |
+| `--ignore-robots` | flag | off | Read the sites robots.txt asks this crawler not to read, and drop the delays it asks for. Reddit is one of them |
 
 **What to spend**
 

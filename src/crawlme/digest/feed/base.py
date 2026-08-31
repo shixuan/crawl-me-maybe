@@ -124,6 +124,11 @@ class Listing:
 
     own: list[FeedItem] = field(default_factory=list)
     others: list[FeedItem] = field(default_factory=list)
+    # Where the rest of this listing is, if the platform pages. Scrolling
+    # does not reach it: a rendered feed unmounts what scrolls past, so
+    # the DOM holds a sliding window and asking for more of it loses as
+    # much as it gains.
+    next_url: str = ""
 
     @property
     def all(self) -> list[FeedItem]:
@@ -173,6 +178,15 @@ class FeedAdapter(Protocol):
     # session.  A crawl of a walled platform without one fetches login
     # pages and reports them as a platform with nothing on it.
     NEEDS_SESSION: bool
+
+    def next_page(self, html: str, url: str) -> str:
+        """The rest of this listing, or "" when there is no more.
+
+        Only the platform knows how it pages, and the answer has to come
+        from the page just fetched because a cursor names a position in
+        it.
+        """
+        ...
 
     def claims_url(self, url: str) -> bool:
         """Whether this URL is ours, judged before anything is fetched.

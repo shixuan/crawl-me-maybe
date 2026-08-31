@@ -23,11 +23,11 @@ def test_level_standard():
     assert _level("ERROR") == logging.ERROR
 
 
-def test_level_unknown_defaults_to_info():
+def test_level_unknown():
     assert _level("garbage") == logging.INFO
 
 
-def test_off_adds_no_handler():
+def test_off_no_handler():
     """With log_level=OFF, no handler should be added."""
     root = logging.getLogger()
     root.handlers.clear()
@@ -37,7 +37,7 @@ def test_off_adds_no_handler():
     assert root.level >= _OFF
 
 
-def test_console_adds_handler():
+def test_console_handler():
     """Normal log level should add a handler."""
     root = logging.getLogger()
     setup_logging(Settings(log_level="DEBUG", log_format="console"), force=True)
@@ -45,7 +45,7 @@ def test_console_adds_handler():
     assert root.level == logging.DEBUG
 
 
-def test_setup_is_idempotent():
+def test_setup_idempotent():
     """Second call without force should be a no-op."""
     root = logging.getLogger()
     setup_logging(Settings(log_level="INFO"), force=True)

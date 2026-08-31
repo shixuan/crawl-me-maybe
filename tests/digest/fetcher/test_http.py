@@ -31,7 +31,7 @@ async def test_success(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_records_redirect_chain(fetcher, httpx_mock: HTTPXMock):
+async def test_redirect_chain(fetcher, httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         url="https://example.com/page",
         status_code=301,
@@ -56,7 +56,7 @@ async def test_retry_on_5xx(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_raises_after_max_retries(fetcher, httpx_mock: HTTPXMock):
+async def test_retries_exhausted(fetcher, httpx_mock: HTTPXMock):
     httpx_mock.add_response(url="https://example.com/page", status_code=503, is_reusable=True)
 
     with pytest.raises(FetchError):
@@ -64,7 +64,7 @@ async def test_raises_after_max_retries(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_permanent_4xx_no_retry(fetcher, httpx_mock: HTTPXMock):
+async def test_4xx_no_retry(fetcher, httpx_mock: HTTPXMock):
     httpx_mock.add_response(url="https://example.com/page", status_code=404)
 
     with pytest.raises(FetchError):
@@ -72,7 +72,7 @@ async def test_permanent_4xx_no_retry(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_429_triggers_delay(fetcher, httpx_mock: HTTPXMock):
+async def test_429_delay(fetcher, httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         url="https://example.com/page",
         status_code=429,
@@ -88,7 +88,7 @@ async def test_429_triggers_delay(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_total_timeout_caps_hung_fetch():
+async def test_hung_capped():
     """A trickle-feed host that never finishes is cut off by the deadline.
 
     Per-phase timeouts can't catch this: bytes arriving every few
@@ -104,7 +104,7 @@ async def test_total_timeout_caps_hung_fetch():
 
 
 @pytest.mark.asyncio
-async def test_total_timeout_retries_then_succeeds(monkeypatch):
+async def test_timeout_retry(monkeypatch):
     """A timed-out attempt is transient: the next attempt may win."""
     calls: list[int] = []
 
@@ -132,7 +132,7 @@ async def test_total_timeout_retries_then_succeeds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_redirect_loop_detected(fetcher, httpx_mock: HTTPXMock):
+async def test_redirect_loop(fetcher, httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         url="https://example.com/page",
         status_code=302,
@@ -151,7 +151,7 @@ async def test_redirect_loop_detected(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_too_many_redirects(fetcher, httpx_mock: HTTPXMock):
+async def test_redirect_many(fetcher, httpx_mock: HTTPXMock):
     # 11 hops: page -> r0 -> ... -> r9.  The 10th follow is rejected
     # before the next request fires, so register exactly what is fetched.
     httpx_mock.add_response(
@@ -171,7 +171,7 @@ async def test_too_many_redirects(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_fetches_canonical_url_for_relative_href(fetcher, httpx_mock: HTTPXMock):
+async def test_relative_href(fetcher, httpx_mock: HTTPXMock):
     """A site-relative href (raw) must be requested through its resolved
     canonical URL.  Fetching raw directly is what produced a wall of
     UnsupportedProtocol errors on HN-style relative links."""
@@ -193,7 +193,7 @@ async def test_fetches_canonical_url_for_relative_href(fetcher, httpx_mock: HTTP
 
 
 @pytest.mark.asyncio
-async def test_client_is_reused_across_fetches(fetcher, httpx_mock: HTTPXMock):
+async def test_client_reused(fetcher, httpx_mock: HTTPXMock):
     """One client per run, so the connection pool actually gets used."""
     httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
     await fetcher.fetch(_item())
@@ -204,7 +204,7 @@ async def test_client_is_reused_across_fetches(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_aclose_is_idempotent(fetcher, httpx_mock: HTTPXMock):
+async def test_aclose_idempotent(fetcher, httpx_mock: HTTPXMock):
     httpx_mock.add_response(url="https://example.com/page", content=b"a")
     await fetcher.fetch(_item())
     await fetcher.aclose()
@@ -212,7 +212,7 @@ async def test_aclose_is_idempotent(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_client_rebuilt_after_aclose(fetcher, httpx_mock: HTTPXMock):
+async def test_client_rebuilt(fetcher, httpx_mock: HTTPXMock):
     """A closed client must not be handed out again."""
     httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
     await fetcher.fetch(_item())
@@ -224,7 +224,7 @@ async def test_client_rebuilt_after_aclose(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_user_agent_rotates_per_request(httpx_mock: HTTPXMock):
+async def test_ua_rotates(httpx_mock: HTTPXMock):
     """UA moved onto the request when the client started outliving fetches."""
     f = HttpFetcher(user_agents=["UA-one"], max_retries=1)
     httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)

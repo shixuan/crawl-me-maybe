@@ -76,7 +76,7 @@ def _cfg(tmp_path: Path) -> Settings:
 
 
 @pytest.mark.asyncio
-async def test_inspect_selects_the_original_goal_by_default(tmp_path):
+async def test_goal_default(tmp_path):
     await _write_run(tmp_path, "20260101_000001")
     data = await inspect_task(_cfg(tmp_path), "task1")
 
@@ -90,7 +90,7 @@ async def test_inspect_selects_the_original_goal_by_default(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_inspect_goal_flag_selects_a_replay_goal(tmp_path):
+async def test_goal_flag(tmp_path):
     await _write_run(tmp_path, "20260101_000001")
     others = [g for g in (await inspect_task(_cfg(tmp_path), "task1")).goals]
     replay_goal = next(g["goal_id"] for g in others if g["prompt"] != "find rust posts")
@@ -103,20 +103,20 @@ async def test_inspect_goal_flag_selects_a_replay_goal(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_inspect_unknown_goal_raises(tmp_path):
+async def test_goal_unknown(tmp_path):
     await _write_run(tmp_path, "20260101_000001")
     with pytest.raises(InspectError, match="not found"):
         await inspect_task(_cfg(tmp_path), "task1", goal_id="nope")
 
 
 @pytest.mark.asyncio
-async def test_inspect_missing_task_raises(tmp_path):
+async def test_task_missing(tmp_path):
     with pytest.raises(Exception, match="task1"):
         await inspect_task(_cfg(tmp_path), "task1")
 
 
 @pytest.mark.asyncio
-async def test_cmd_inspect_prints_summary(tmp_path, monkeypatch, capsys):
+async def test_cmd_summary(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
@@ -131,7 +131,7 @@ async def test_cmd_inspect_prints_summary(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_cmd_inspect_labels_goal_roles(tmp_path, monkeypatch, capsys):
+async def test_cmd_goal_roles(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
@@ -143,7 +143,7 @@ async def test_cmd_inspect_labels_goal_roles(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_cmd_inspect_exports_json(tmp_path, monkeypatch, capsys):
+async def test_cmd_json(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
@@ -158,7 +158,7 @@ async def test_cmd_inspect_exports_json(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_cmd_inspect_exports_csv(tmp_path, monkeypatch, capsys):
+async def test_cmd_csv(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
@@ -172,7 +172,7 @@ async def test_cmd_inspect_exports_csv(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_json_export_carries_evidence(tmp_path, monkeypatch, capsys):
+async def test_json_evidence(tmp_path, monkeypatch, capsys):
     """The json form is what something other than a person reads.
 
     A value without the page text behind it is a claim; with it, whoever
@@ -210,7 +210,7 @@ async def test_json_export_carries_evidence(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_csv_export_leaves_the_extracted_fields_out(tmp_path, monkeypatch, capsys):
+async def test_csv_no_fields(tmp_path, monkeypatch, capsys):
     """Every goal declares its own fields, so there is no stable column
     set; inventing one per export would make two exports disagree."""
     await _write_run(tmp_path, "20260101_000001")

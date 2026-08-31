@@ -168,12 +168,26 @@ async def cmd_run(args: argparse.Namespace) -> None:
             goal.since = enhanced.since
         goal.extraction_spec = enhanced.extraction_spec
         logger.info(
-            "goal.enhanced statement_len=%d keywords=%d since=%s fields=%s",
+            "goal.enhanced statement_len=%d keywords=%d fields=%s",
             len(enhanced.statement),
             len(enhanced.keywords),
-            enhanced.since.isoformat() if enhanced.since else "none",
             ",".join(spec_fields(enhanced.extraction_spec)) or "none",
         )
+        # The window in force, not the one that lost. Logging the model's
+        # guess while the flag overrode it reported a month for a run
+        # that fetched a week, and nothing said otherwise.
+        if args.since is not None and enhanced.since and enhanced.since != goal.since:
+            logger.info(
+                "goal.window flag=%s inferred=%s using=flag",
+                goal.since.isoformat() if goal.since else "none",
+                enhanced.since.isoformat(),
+            )
+        else:
+            logger.info(
+                "goal.window using=%s since=%s",
+                "flag" if args.since is not None else ("prompt" if goal.since else "none"),
+                goal.since.isoformat() if goal.since else "unlimited",
+            )
 
     candidates = await source.discover(goal)
     # The flag is the run stating its scope; a seeds file may also carry

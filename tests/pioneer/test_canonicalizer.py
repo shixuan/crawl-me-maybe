@@ -18,33 +18,33 @@ def test_scheme_lower(c):
     assert url.canonical.startswith("https://example.com")
 
 
-def test_default_port_removed(c):
+def test_port_removed(c):
     url = c.canonicalize("https://example.com:443/a", "http://x.com")
     assert ":443" not in url.canonical
 
 
-def test_fragment_removed(c):
+def test_frag_removed(c):
     url = c.canonicalize("https://x.com/a#section", "http://x.com")
     assert "#" not in url.canonical
 
 
-def test_tracking_params_removed(c):
+def test_utm_removed(c):
     url = c.canonicalize("https://x.com/a?utm_source=fb&b=2", "http://x.com")
     assert "utm_source" not in url.canonical
     assert "b=2" in url.canonical
 
 
-def test_empty_query_cleared(c):
+def test_query_cleared(c):
     url = c.canonicalize("https://x.com/a?", "http://x.com")
     assert "?" not in url.canonical
 
 
-def test_duplicate_slashes_collapsed(c):
+def test_slashes_dedup(c):
     url = c.canonicalize("https://x.com//a//b", "http://x.com")
     assert "//" not in url.canonical.split("://")[1]
 
 
-def test_relative_url_resolved(c):
+def test_relative_url(c):
     url = c.canonicalize("/page?x=1", "https://base.com/blog/")
     assert url.canonical == "https://base.com/page?x=1"
 
@@ -55,13 +55,13 @@ def test_url_key_stable(c):
     assert u1.url_key == u2.url_key
 
 
-def test_url_key_different(c):
+def test_url_key_differs(c):
     u1 = c.canonicalize("https://x.com/a", "http://x.com")
     u2 = c.canonicalize("https://x.com/b", "http://x.com")
     assert u1.url_key != u2.url_key
 
 
-def test_javascript_skipped(c):
+def test_js_skipped(c):
     url = c.canonicalize("javascript:void(0)", "http://x.com")
     assert url.canonical.startswith("javascript:")
 
@@ -72,7 +72,7 @@ def test_fbclid_removed(c):
     assert "keep=1" in url.canonical
 
 
-def test_query_params_sorted(c):
+def test_query_sorted(c):
     url = c.canonicalize("https://x.com/a?b=2&a=1", "http://x.com")
     assert url.canonical == "https://x.com/a?a=1&b=2"
 
@@ -85,7 +85,7 @@ def test_raw_preserved(c):
     assert url.raw == "https://X.com/a"
 
 
-def test_scheme_populated(c):
+def test_scheme_set(c):
     url = c.canonicalize("https://x.com/a", "http://x.com")
     assert url.scheme == "https"
 
@@ -105,7 +105,7 @@ def test_query_populated(c):
     assert url.query == "key=val"
 
 
-def test_reg_domain_strips_www(c):
+def test_www_stripped(c):
     url = c.canonicalize("https://www.example.com/a", "http://x.com")
     assert url.reg_domain == "example.com"
 
