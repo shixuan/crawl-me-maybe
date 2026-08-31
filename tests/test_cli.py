@@ -42,7 +42,7 @@ def test_run_help(capsys):
     assert "usage" in captured.out or "usage" in captured.err
 
 
-def test_run_prints_prompt(caplog):
+def test_prints_prompt(caplog):
     """crawl run <prompt> should log task info via logging."""
     import logging
 
@@ -85,7 +85,7 @@ def _capturing_factory(captured: dict):
     return _capture
 
 
-def test_run_flags_override_settings(tmp_path):
+def test_flags_win(tmp_path):
     """Per-run flags override Settings; goal budgets land in CrawlGoal."""
     captured: dict = {}
     fake_results = tmp_path / "fake-results"
@@ -127,7 +127,7 @@ def test_run_flags_override_settings(tmp_path):
     assert goal.domain_budget == 7
 
 
-def test_run_flags_left_off_keep_env_defaults(monkeypatch):
+def test_env_defaults(monkeypatch):
     """Without flags, defaults apply. Embedding is ON (local) out of the box.
 
     Env vars are pinned explicitly: they outrank the developer's .env
@@ -154,7 +154,7 @@ def test_run_flags_left_off_keep_env_defaults(monkeypatch):
     assert goal.domain_budget == 50
 
 
-def test_run_applies_enhanced_goal(monkeypatch):
+def test_goal_enhanced(monkeypatch):
     """When the enhancer produces fields, they land on the goal."""
     captured: dict = {}
 
@@ -179,7 +179,7 @@ def test_run_applies_enhanced_goal(monkeypatch):
     assert goal.keywords == ["ml", "papers"]
 
 
-def test_run_session_flag_reads_the_platform_through_the_browser(_installed, tmp_path):
+def test_session_browser(_installed, tmp_path):
     """Asking to crawl as someone and getting plain httpx would crawl
     the logged-out site and report it as the site.
 
@@ -211,7 +211,7 @@ def test_run_session_flag_reads_the_platform_through_the_browser(_installed, tmp
     assert not isinstance(fetcher._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
-def test_run_wires_llm_ranker_into_factory(monkeypatch):
+def test_wires_ranker(monkeypatch):
     """A configured LLM ranker is passed to the scheduler factory."""
     captured: dict = {}
     sentinel = object()
@@ -232,7 +232,7 @@ def test_run_wires_llm_ranker_into_factory(monkeypatch):
     assert captured["overrides"]["llm_ranker"] is sentinel
 
 
-def test_run_analysis_off_flag():
+def test_analysis_off():
     """--analysis off disables the whole subsystem via Settings."""
     captured: dict = {}
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--analysis", "off"]
@@ -245,7 +245,7 @@ def test_run_analysis_off_flag():
     assert captured["cfg"].analysis_enabled is False
 
 
-def test_run_analysis_defaults_on():
+def test_analysis_on():
     """Without the flag the subsystem stays enabled (default True)."""
     captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
@@ -257,7 +257,7 @@ def test_run_analysis_defaults_on():
     assert captured["cfg"].analysis_enabled is True
 
 
-def test_run_binds_budget_sink_to_scheduler(monkeypatch):
+def test_binds_budget(monkeypatch):
     """The shared token budget's sink reaches the scheduler, which is
     what makes the BUDGET_TOKENS stop condition see LLM usage."""
     from crawlme.llm import TokenBudget
@@ -284,7 +284,7 @@ def test_run_binds_budget_sink_to_scheduler(monkeypatch):
     assert recorded == [note]
 
 
-def test_run_prints_end_of_run_summary(capsys):
+def test_prints_summary(capsys):
     """After a run, the terminal report shows the numbers that matter."""
 
     def _capture(cfg, goal=None, **overrides):
@@ -321,7 +321,7 @@ def test_run_prints_end_of_run_summary(capsys):
 # --since parsing (2.8) -------------------------------------------------
 
 
-def test_parse_since_relative_window() -> None:
+def test_since_relative() -> None:
     from crawlme.cli.run import _parse_since
 
     cutoff = _parse_since("1 week")
@@ -329,7 +329,7 @@ def test_parse_since_relative_window() -> None:
     assert 6.9 < delta.days + delta.seconds / 86400 < 7.1
 
 
-def test_parse_since_absolute_date_is_utc_aware() -> None:
+def test_since_absolute() -> None:
     from crawlme.cli.run import _parse_since
 
     cutoff = _parse_since("2026-08-01")
@@ -337,13 +337,13 @@ def test_parse_since_absolute_date_is_utc_aware() -> None:
     assert (cutoff.year, cutoff.month, cutoff.day) == (2026, 8, 1)
 
 
-def test_parse_since_plural_and_singular_agree() -> None:
+def test_since_plural() -> None:
     from crawlme.cli.run import _parse_since
 
     assert (_parse_since("1 day") - _parse_since("1 days")).total_seconds() < 1
 
 
-def test_parse_since_rejects_garbage() -> None:
+def test_since_garbage() -> None:
     from crawlme.cli.run import _parse_since
 
     with pytest.raises(ValueError):
@@ -366,14 +366,14 @@ def _source_for(argv_tail: list[str], tmp_path):
     return 0, spy
 
 
-def test_seeds_file_needs_no_mode_flag(tmp_path):
+def test_seeds_file(tmp_path):
     seeds = tmp_path / "seeds.json"
     seeds.write_text('["https://example.com/a"]')
     code, _ = _source_for(["--seeds", str(seeds)], tmp_path)
     assert code in (0, None)
 
 
-def test_recall_flag_reaches_settings(tmp_path):
+def test_recall_flag(tmp_path):
     """Trading tokens for coverage is a per-run choice, so it is a flag."""
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--recall", "--result-dir", str(tmp_path)]
@@ -386,7 +386,7 @@ def test_recall_flag_reaches_settings(tmp_path):
     assert captured["cfg"].recall is True
 
 
-def test_recall_is_off_unless_asked(tmp_path):
+def test_recall_default(tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
     with patch("sys.argv", argv):
@@ -398,7 +398,7 @@ def test_recall_is_off_unless_asked(tmp_path):
     assert captured["cfg"].recall is False
 
 
-def test_feed_run_defaults_to_no_ceiling(_installed, tmp_path):
+def test_feed_no_ceiling(_installed, tmp_path):
     """A session says this reads a platform, and there every candidate
     shares one host: a per-domain ceiling is a total."""
     captured: dict = {}
@@ -422,7 +422,7 @@ def test_feed_run_defaults_to_no_ceiling(_installed, tmp_path):
     assert captured["goal"].domain_budget == 0
 
 
-def test_asking_for_a_domain_budget_still_applies_it(_installed, tmp_path):
+def test_budget_explicit(_installed, tmp_path):
     captured: dict = {}
     argv = [
         "crawl",
@@ -446,7 +446,7 @@ def test_asking_for_a_domain_budget_still_applies_it(_installed, tmp_path):
     assert captured["goal"].domain_budget == 5
 
 
-def test_link_graph_keeps_its_ceiling(tmp_path):
+def test_graph_ceiling(tmp_path):
     """One site can otherwise absorb a whole graph crawl."""
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
@@ -459,7 +459,7 @@ def test_link_graph_keeps_its_ceiling(tmp_path):
     assert captured["goal"].domain_budget == 50
 
 
-def test_result_target_reaches_the_goal(tmp_path):
+def test_result_dir(tmp_path):
     captured: dict = {}
     argv = [
         "crawl",
@@ -481,7 +481,7 @@ def test_result_target_reaches_the_goal(tmp_path):
     assert captured["goal"].max_relevant == 50
 
 
-def test_budgets_keep_their_older_spelling(tmp_path):
+def test_budget_aliases(tmp_path):
     """--max-pages is in every command line already written."""
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--max-pages", "7", "--result-dir", str(tmp_path)]
@@ -517,7 +517,7 @@ def _installed():
 # the session preflight ---------------------------------------------------
 
 
-def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
+def test_session_missing(tmp_path, capsys):
     """It used to raise inside the fetcher, several hundred pages in."""
     argv = [
         "crawl",
@@ -536,7 +536,7 @@ def test_a_missing_session_file_stops_before_the_crawl(tmp_path, capsys):
     assert "crawl session" in err, "the message has to name the command that fixes it"
 
 
-def test_seeds_on_a_walled_platform_are_refused_without_a_session(tmp_path, capsys):
+def test_walled_refused(tmp_path, capsys):
     """The flag was never what decided this.
 
     Pasting profile URLs into --seeds and forgetting --feed walked
@@ -552,7 +552,7 @@ def test_seeds_on_a_walled_platform_are_refused_without_a_session(tmp_path, caps
     assert "crawling instagram needs a session" in capsys.readouterr().err
 
 
-def test_seeds_in_a_file_are_read_for_the_same_check(tmp_path, capsys):
+def test_walled_in_file(tmp_path, capsys):
     """A list in a file is the same list, so it gets the same answer."""
     from crawlme.cli.run import _check_session
 
@@ -564,7 +564,7 @@ def test_seeds_in_a_file_are_read_for_the_same_check(tmp_path, capsys):
     assert "instagram" in capsys.readouterr().err
 
 
-def test_ordinary_seeds_are_not_bothered(tmp_path, capsys):
+def test_plain_seeds_ok(tmp_path, capsys):
     from crawlme.cli.run import _check_session
 
     args = argparse.Namespace(session=None, seeds="https://example.com/a")
@@ -572,7 +572,7 @@ def test_ordinary_seeds_are_not_bothered(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_a_feed_without_a_session_is_refused(capsys):
+def test_feed_needs_session(capsys):
     """A warning here scrolls past, and the run spends a browser on it.
 
     Every fetch would land on the platform's login page, which reads as
@@ -585,14 +585,14 @@ def test_a_feed_without_a_session_is_refused(capsys):
     assert "crawl session" in capsys.readouterr().err
 
 
-def test_a_link_graph_without_a_session_says_nothing(capsys):
+def test_graph_no_login(capsys):
     from crawlme.cli.run import _check_session
 
     _check_session(argparse.Namespace(session=None, seeds=None))
     assert capsys.readouterr().err == ""
 
 
-def test_a_link_graph_is_not_told_to_make_a_feed_session(tmp_path, capsys):
+def test_graph_no_hint(tmp_path, capsys):
     """It asked for a session and named a file that is not there, which
     is worth saying. The advice for making one is feed-shaped, so
     offering it here would point at a command that cannot serve it."""
@@ -623,7 +623,7 @@ def _extras_args(**kw):
     return argparse.Namespace(**base)
 
 
-def test_a_feed_flag_without_feedparser_is_refused(capsys):
+def test_no_feedparser(capsys):
     """It used to surface as an ImportError from inside seed discovery,
     naming a package the user never asked for."""
     from crawlme.cli.run import _check_extras
@@ -637,7 +637,7 @@ def test_a_feed_flag_without_feedparser_is_refused(capsys):
     assert "crawl-me-maybe[rss]" in err
 
 
-def test_a_browser_run_without_playwright_is_refused(capsys):
+def test_no_playwright(capsys):
     """By the first fetch the run directory exists and the goal has
     already cost an LLM call."""
     from crawlme.cli.run import _check_extras
@@ -651,7 +651,7 @@ def test_a_browser_run_without_playwright_is_refused(capsys):
     assert "playwright install chromium" in err, "the package alone does not fetch a browser"
 
 
-def test_a_link_graph_run_needs_neither(capsys):
+def test_graph_no_extras(capsys):
     from crawlme.cli.run import _check_extras
     from crawlme.config import Settings
 
@@ -660,7 +660,7 @@ def test_a_link_graph_run_needs_neither(capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_an_installed_extra_is_not_complained_about(capsys):
+def test_extra_present(capsys):
     from crawlme.cli.run import _check_extras
     from crawlme.config import Settings
 
@@ -685,7 +685,7 @@ def test_an_installed_extra_is_not_complained_about(capsys):
         ("", 0),
     ],
 )
-def test_a_refused_crawl_exits_non_zero(reason, code):
+def test_refused_exits_one(reason, code):
     """A crawl the platform refused is not a crawl that found nothing.
 
     A scheduled job cannot tell the two apart from a zero exit code, and
@@ -705,7 +705,7 @@ def test_a_refused_crawl_exits_non_zero(reason, code):
         (["--depth-limit", "3"], 3),
     ],
 )
-def test_a_session_does_not_decide_how_deep_to_go(_installed, tmp_path, flags, expected_depth):
+def test_session_sets_no_depth(_installed, tmp_path, flags, expected_depth):
     """Two levels held only while a platform run could not leave the
     platform.  It can now -- a listing, its posts, and a site an
     analyser endorsed off one is already three -- so a depth of 1 would
@@ -736,7 +736,7 @@ def test_a_session_does_not_decide_how_deep_to_go(_installed, tmp_path, flags, e
     assert captured["goal"].depth_limit == expected_depth
 
 
-def test_a_session_still_lifts_the_per_domain_ceiling(_installed, tmp_path):
+def test_session_ceiling(_installed, tmp_path):
     """Every candidate on a platform shares one host, so a per-domain
     ceiling would be a ceiling on the whole crawl."""
     session = tmp_path / "state.json"

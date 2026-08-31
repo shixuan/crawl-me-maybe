@@ -35,7 +35,7 @@ def _utcnow() -> str:
 
 
 @pytest.mark.asyncio
-async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
+async def test_wiki_basic(e2e_settings):
     """Full pipeline: seed Wikipedia Rust page, crawl up to 10 pages.
 
     Verifies:
@@ -145,7 +145,7 @@ async def test_wiki_rust_rewrite_basic_crawl(e2e_settings):
 
 
 @pytest.mark.asyncio
-async def test_wiki_rust_small_budget_stops_early(e2e_settings):
+async def test_wiki_budget(e2e_settings):
     """With max_pages=2 the crawl should stop after exactly 2 fetched pages."""
     cfg = e2e_settings
     setup_logging(cfg, force=True)
@@ -211,7 +211,7 @@ _DRAINING_TIMEOUT = 600
 
 
 @pytest.mark.asyncio
-async def test_wiki_rust_draining_multi_seed(e2e_settings):
+async def test_wiki_draining(e2e_settings):
     """Draining mode: 15 seeds, depth=3, no page limit. Crawls until frontier drained.
 
     Verifies:

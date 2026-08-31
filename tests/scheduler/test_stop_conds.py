@@ -117,13 +117,13 @@ def test_budget_time(max_duration_sec, elapsed, fires):
         ({"size": 0, "scoring": 11}, 0, False),
     ],
 )
-def test_frontier_drained(frontier_kw, in_flight, fires):
+def test_drained(frontier_kw, in_flight, fires):
     reasons = check_stop(_task(), _frontier(**frontier_kw), _counters(in_flight=in_flight))
     assert ("FRONTIER_DRAINED" in _codes(reasons)) is fires
 
 
 @pytest.mark.parametrize("blocked", [7, 0])
-def test_ceiling_is_named_alongside_drained(blocked):
+def test_ceiling_named(blocked):
     """Both facts, because either one alone misreports the run.
 
     A feed run ended at fifty pages with a hundred and sixty candidates
@@ -153,12 +153,12 @@ def test_ceiling_is_named_alongside_drained(blocked):
         ([False] * 20 + [True] * 20, False),
     ],
 )
-def test_diminishing_returns(window, fires):
+def test_diminishing(window, fires):
     c = _counters(relevance_window=window)
     assert ("DIMINISHING_RETURNS" in _codes(check_stop(_task(), _frontier(), c))) is fires
 
 
-def test_recall_suppresses_diminishing_returns():
+def test_recall_ignores():
     """A recall run reads its own rejects last, so a dry tail is the
     point of the mode rather than a reason to stop."""
     dry = [False] * 20
@@ -168,7 +168,7 @@ def test_recall_suppresses_diminishing_returns():
     assert "DIMINISHING_RETURNS" not in _codes(check_stop(_task(), _frontier(), c))
 
 
-def test_relevance_window_keeps_only_the_recent_slice():
+def test_window_recent():
     """A run longer than the window must not accumulate forever."""
     c = CrawlCounters()
     for _ in range(100):
@@ -203,7 +203,7 @@ def test_time_horizon(kw, fires):
     assert ("TIME_HORIZON" in _codes(check_stop(_task(), _frontier(), _since_counters(**kw)))) is fires
 
 
-def test_time_horizon_dormant_without_since():
+def test_horizon_dormant():
     """Every run that does not ask for a window must be unaffected."""
     c = CrawlCounters(stale_streak=99)
     assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), c))
@@ -247,7 +247,7 @@ def test_max_relevant(max_relevant, found, fires):
         ("", None),
     ],
 )
-def test_platform_refused(refused_by, code):
+def test_refused(refused_by, code):
     """One refusal is enough: the rest of the run would be refused too.
 
     A rate-limited crawl used to read as a quiet week. Every listing came
@@ -271,7 +271,7 @@ def test_fatal():
     assert "FATAL" in _codes(check_stop(_task(), _frontier(), _counters(fatal_error="disk full")))
 
 
-def test_multiple_reasons():
+def test_many_reasons():
     """Every check runs; the run reports all of them, not the first."""
     codes = set(
         _codes(
@@ -285,7 +285,7 @@ def test_multiple_reasons():
     assert {"BUDGET_PAGES", "USER_REQUESTED", "FATAL"} <= codes
 
 
-def test_no_reasons_when_healthy():
+def test_healthy_quiet():
     reasons = check_stop(
         _task(state="RUNNING"),
         _frontier(size=5),
@@ -329,7 +329,7 @@ def test_adapter_empty(seen, empty, fires):
     assert ("ADAPTER_EMPTY" in _codes(check_stop(_task(), _frontier(), c))) is fires
 
 
-def test_adapter_empty_waits_for_the_end():
+def test_empty_waits():
     """Mid-run there is no telling a dead adapter from a slow start."""
     c = _counters(in_flight=2, listings_seen=5, listings_empty=5)
     assert "ADAPTER_EMPTY" not in _codes(check_stop(_task(), _frontier(size=3), c))

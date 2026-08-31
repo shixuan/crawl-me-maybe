@@ -25,7 +25,7 @@ def frontier() -> GatedFrontier:
 
 
 @pytest.mark.asyncio
-async def test_push_and_pop_by_priority(frontier):
+async def test_pop_by_priority(frontier):
     items = [_item("k1", 0.1), _item("k2", 0.9), _item("k3", 0.5)]
     await frontier.push_batch(items)
     popped = await frontier.pop_next()
@@ -34,7 +34,7 @@ async def test_push_and_pop_by_priority(frontier):
 
 
 @pytest.mark.asyncio
-async def test_pop_respects_domain_gate(frontier):
+async def test_pop_gated(frontier):
     future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
 
     item = _item("k1", 1.0)
@@ -46,7 +46,7 @@ async def test_pop_respects_domain_gate(frontier):
 
 
 @pytest.mark.asyncio
-async def test_domain_budget_exhausted(frontier):
+async def test_domain_spent(frontier):
     f = GatedFrontier(domain_budget=1)
     items = [_item("k1", 0.5, "x.com"), _item("k2", 0.9, "x.com")]
     await f.push_batch(items)
@@ -73,7 +73,7 @@ async def test_global_budget(frontier):
 
 
 @pytest.mark.asyncio
-async def test_record_outcome_updates_visited(frontier):
+async def test_outcome_visited(frontier):
     item = _item("k1")
     await frontier.push_batch([item])
     popped = await frontier.pop_next()
@@ -82,7 +82,7 @@ async def test_record_outcome_updates_visited(frontier):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_not_pushed(frontier):
+async def test_dup_not_pushed(frontier):
     await frontier.push_batch([_item("k1")])
     await frontier.push_batch([_item("k1")])
     assert frontier.size == 1
@@ -107,7 +107,7 @@ async def test_snapshot_roundtrip(frontier):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_pending_gated_items(frontier):
+async def test_snapshot_pending(frontier):
     future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
     item = _item("k1", 1.0)
     item.next_available_at = future
@@ -122,7 +122,7 @@ async def test_snapshot_pending_gated_items(frontier):
 
 
 @pytest.mark.asyncio
-async def test_pending_items_retry_after_gate(frontier):
+async def test_pending_retry(frontier):
     now = datetime.datetime.now(datetime.timezone.utc)
     future = now + datetime.timedelta(hours=1)
     item = _item("k1", 1.0)
@@ -138,7 +138,7 @@ async def test_pending_items_retry_after_gate(frontier):
 
 
 @pytest.mark.asyncio
-async def test_page_in_flight_not_requeued():
+async def test_inflight_once():
     """It is neither waiting nor finished, and dedup has to cover both.
 
     Discovered again from another page mid-fetch, it would otherwise be
@@ -155,7 +155,7 @@ async def test_page_in_flight_not_requeued():
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_keeps_the_queue():
+async def test_checkpoint_keeps():
     """The snapshot used to copy one ordering's internals by name.
 
     With `heap` absent from a composed ordering's state, every
@@ -174,7 +174,7 @@ async def test_checkpoint_keeps_the_queue():
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_without_ordering_state_loads():
+async def test_checkpoint_old_shape():
     f = GatedFrontier()
     await f.push_batch([_item("old", 0.7)])
     snap = f.snapshot()
@@ -186,7 +186,7 @@ async def test_checkpoint_without_ordering_state_loads():
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_survives_json():
+async def test_checkpoint_json():
     """The path a real resume takes, which no test walked before.
 
     In memory dump() and load() agreed because both spoke models; on
@@ -207,7 +207,7 @@ async def test_checkpoint_survives_json():
 
 
 @pytest.mark.asyncio
-async def test_cooling_item_counts_as_work(frontier):
+async def test_cooling_counts(frontier):
     """A pop that returns nothing does not mean there is nothing left.
 
     The fetch pump reads this to tell a frontier that is empty from one
@@ -224,7 +224,7 @@ async def test_cooling_item_counts_as_work(frontier):
 
 
 @pytest.mark.asyncio
-async def test_refused_item_is_not_cooling(frontier):
+async def test_refused_idle(frontier):
     """A spent budget refuses the same item forever, so nobody should wait.
 
     Counting it as cooling would leave the pump asleep on an item that

@@ -58,12 +58,12 @@ def _page(tmp_path: Path, body: bytes, url: str = "https://example.com/feed") ->
         (_HTML, False),
     ],
 )
-def test_claims_reads_the_root_element(tmp_path: Path, body: bytes, claimed: bool) -> None:
+def test_claims_by_root(tmp_path: Path, body: bytes, claimed: bool) -> None:
     page = _page(tmp_path, body)
     assert rss.claims(page, body.decode()) is claimed
 
 
-def test_no_url_is_ever_claimed() -> None:
+def test_claims_no_url() -> None:
     """Measured against seven real feeds, one ended in .rss.
 
     Guessing from the address would be wrong five times in seven, so
@@ -73,7 +73,7 @@ def test_no_url_is_ever_claimed() -> None:
         assert rss.claims_url(url) is False
 
 
-def test_an_entry_arrives_carrying_its_own_text(tmp_path: Path) -> None:
+def test_entry_has_text(tmp_path: Path) -> None:
     """The funnel used to rank a bare URL while the post sat in the feed."""
     out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _ATOM), depth=0)
     assert out.listing
@@ -86,14 +86,14 @@ def test_an_entry_arrives_carrying_its_own_text(tmp_path: Path) -> None:
     assert first.depth == 1
 
 
-def test_a_link_post_keeps_its_title_and_drops_the_boilerplate(tmp_path: Path) -> None:
+def test_link_post_title(tmp_path: Path) -> None:
     """ "submitted by /u/name [link] [comments]" is the feed talking, not
     the author: it must not read as a post with a body."""
     out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _ATOM), depth=0)
     assert out.candidates[1].text == "A link post"
 
 
-def test_an_entry_without_a_date_says_so(tmp_path: Path) -> None:
+def test_entry_undated(tmp_path: Path) -> None:
     """None has to stay distinguishable from a guess: the time window
     filters on this, and an invented date drops real posts silently."""
     out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _RSS), depth=0)
@@ -101,19 +101,19 @@ def test_an_entry_without_a_date_says_so(tmp_path: Path) -> None:
     assert out.candidates[0].text == "Only a title"
 
 
-def test_a_feed_is_never_an_item() -> None:
+def test_feed_not_item() -> None:
     """A feed document lists posts; it is never one of them."""
     assert rss.parse_item(_ATOM.decode(), "https://example.com/feed") is None
 
 
-def test_an_html_page_falls_through_to_links(tmp_path: Path) -> None:
+def test_html_falls_thru(tmp_path: Path) -> None:
     """Nobody claims it, so it is read the way a link graph reads."""
     out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _HTML), depth=0)
     assert not out.listing
     assert [c.url.canonical for c in out.candidates] == ["https://example.com/x"]
 
 
-def test_a_missing_feedparser_is_raised_not_swallowed(monkeypatch):
+def test_no_feedparser(monkeypatch):
     """An empty listing is also what a feed with nothing new returns.
 
     Degrading quietly here made a missing package indistinguishable from

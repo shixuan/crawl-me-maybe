@@ -55,7 +55,7 @@ def _page(tmp_path: Path, html: str, url_key: str = "k1") -> Page:
     )
 
 
-def test_extracts_href_and_anchor(tmp_path):
+def test_href_and_anchor(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     hrefs = {link.href for link in links}
     assert "/intro" in hrefs
@@ -64,53 +64,53 @@ def test_extracts_href_and_anchor(tmp_path):
     assert any(link.anchor == "Authentication" for link in links)
 
 
-def test_positions_are_sequential(tmp_path):
+def test_positions_seq(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     positions = [link.position for link in links]
     assert positions == sorted(positions)
     assert positions[0] >= 1
 
 
-def test_snippet_is_parent_text(tmp_path):
+def test_snippet_parent(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     auth_link = next(link for link in links if link.anchor == "Authentication")
     assert auth_link.snippet is not None
     assert "Authentication" in auth_link.snippet
 
 
-def test_parent_heading_from_ancestor(tmp_path):
+def test_head_ancestor(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_HEADING_ANCESTOR))
     assert len(links) == 1
     assert links[0].parent_heading == "Nested Link"
 
 
-def test_parent_heading_from_preceding(tmp_path):
+def test_heading_before(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
     auth_link = next(link for link in links if link.anchor == "Authentication")
     assert auth_link.parent_heading is not None
     assert "API Reference" in auth_link.parent_heading
 
 
-def test_skips_links_with_empty_href(tmp_path):
+def test_skip_empty_href(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_EMPTY_HREF))
     hrefs = {link.href for link in links}
     assert "" not in hrefs
     assert "/valid" in hrefs
 
 
-def test_empty_page_returns_empty_list(tmp_path):
+def test_empty_page(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_NO_LINKS))
     assert links == []
 
 
-def test_anchor_none_when_no_text(tmp_path):
+def test_anchor_none(tmp_path):
     html = '<html><body><a href="/img"><img src="x.png" alt="pic"></a></body></html>'
     links = extract_links(_page(tmp_path, html))
     assert len(links) == 1
     assert links[0].anchor is None
 
 
-def test_fallback_heading_tracks_document_order(tmp_path):
+def test_heading_order(tmp_path):
     html = (
         "<html><body>"
         '<h2>First</h2><a href="/a">a</a>'
@@ -125,7 +125,7 @@ def test_fallback_heading_tracks_document_order(tmp_path):
     assert by_href["/c"] == "Second"
 
 
-def test_links_before_any_heading_have_no_parent_heading(tmp_path):
+def test_no_heading_yet(tmp_path):
     html = '<html><body><a href="/a">a</a><h2>Later</h2><a href="/b">b</a></body></html>'
     links = extract_links(_page(tmp_path, html))
     by_href = {link.href: link.parent_heading for link in links}
@@ -133,13 +133,13 @@ def test_links_before_any_heading_have_no_parent_heading(tmp_path):
     assert by_href["/b"] == "Later"
 
 
-def test_empty_href_still_advances_position(tmp_path):
+def test_empty_advances(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_EMPTY_HREF))
     valid = next(link for link in links if link.href == "/valid")
     assert valid.position == 2  # the empty-href anchor occupies slot 1
 
 
-def test_many_links_without_headings_stays_fast(tmp_path):
+def test_many_links_fast(tmp_path):
     """Regression for the quadratic find_previous rescan.
 
     A page with 10k links and no headings used to take tens of seconds

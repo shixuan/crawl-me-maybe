@@ -20,7 +20,7 @@ from crawlme.schemas import (
 )
 
 
-def test_crawlgoal_id_is_content_derived():
+def test_goal_id_hashed():
     """A goal is named by its prompt: same text, same id."""
     a = CrawlGoal(prompt="find rust posts")
     b = CrawlGoal(prompt="find rust posts")
@@ -49,14 +49,14 @@ def make_url() -> URL:
 # silent everywhere else.
 
 
-def test_crawl_goal_defaults():
+def test_goal_defaults():
     g = CrawlGoal(prompt="find AI funding news")
     assert g.prompt == "find AI funding news"
     assert g.goal_id
     assert (g.max_pages, g.max_tokens, g.depth_limit, g.domain_budget) == (500, 500_000, 5, 50)
 
 
-def test_crawl_goal_needs_a_prompt():
+def test_goal_prompt_req():
     with pytest.raises(ValidationError):
         CrawlGoal()  # type: ignore[call-arg]
 
@@ -66,7 +66,7 @@ def test_url_defaults():
     assert (u.scheme, u.host, u.reg_domain) == ("", "", "")
 
 
-def test_raw_link_defaults():
+def test_link_defaults():
     r = RawLink(href="/page")
     assert r.anchor is None
     assert r.position == 0
@@ -79,14 +79,14 @@ def test_candidate_defaults():
     assert c.depth == 0
 
 
-def test_frontier_item_defaults():
+def test_item_defaults():
     u = make_url()
     fi = FrontierItem(url=u, url_key=u.url_key)
     assert fi.item_id
     assert (fi.status, fi.score_source, fi.priority) == ("QUEUED", "seed", 0.0)
 
 
-def test_fetch_result_defaults():
+def test_fetch_defaults():
     u = make_url()
     fr = FetchResult(item_id="i1", url_key=u.url_key, url=u)
     assert (fr.status_code, fr.raw, fr.fetch_attempt) == (0, b"", 1)
@@ -99,24 +99,24 @@ def test_page_defaults():
     assert p.extraction_status == "OK"
 
 
-def test_analyzer_feedback_defaults():
+def test_feedback_defaults():
     af = AnalyzerFeedback()
     assert (af.classification, af.relevance_score, af.endorsed_links) == ("UNKNOWN", 0.0, [])
 
 
-def test_analysis_result_defaults():
+def test_analysis_defaults():
     ar = AnalysisResult()
     assert ar.analysis_id
     assert (ar.classification, ar.tokens_used) == ("UNKNOWN", 0)
 
 
-def test_rank_decision_defaults():
+def test_rank_defaults():
     rd = RankDecision(candidate_id="c1")
     assert rd.ranker == "rule"
     assert rd.dropped is False
 
 
-def test_rank_history_defaults():
+def test_history_defaults():
     """Only what the prompt reads.  A field nothing writes and nothing
     reads is worse than no field: it reads as a working signal."""
     rhs = RankHistorySummary()
@@ -124,19 +124,19 @@ def test_rank_history_defaults():
     assert set(RankHistorySummary.model_fields) == {"goal", "relevant_pages"}
 
 
-def test_crawl_task_defaults():
+def test_task_defaults():
     ct = CrawlTask()
     assert ct.task_id
     assert ct.state == "CREATED"
 
 
-def test_frontier_snapshot_defaults():
+def test_snapshot_defaults():
     fs = FrontierSnapshot()
     assert fs.snapshot_id
     assert fs.visited == set()
 
 
-def test_frontier_snapshot_keeps_the_pre_ordering_shape():
+def test_snapshot_old_shape():
     """`heap` predates `ordering` and still has to load.
 
     Checkpoints written by an older build carry their items here, and
@@ -155,7 +155,7 @@ def test_frontier_snapshot_keeps_the_pre_ordering_shape():
     assert fs.budgets["example.com"] == 5
 
 
-def test_candidate_carries_its_own_text_and_signals():
+def test_candidate_text():
     """A feed post brings a caption; a link brings neither."""
     from crawlme.schemas import URL, Candidate
 

@@ -91,7 +91,7 @@ def _seed_item(seed_url: str) -> FrontierItem:
 
 
 @pytest.mark.asyncio
-async def test_fetch_extract_links_pipeline(integration_settings):
+async def test_fetch_to_links(integration_settings):
     """Single seed → fetch → extract → links → prefilter → buffer."""
     cfg = integration_settings
     goal = CrawlGoal(
@@ -124,7 +124,7 @@ async def test_fetch_extract_links_pipeline(integration_settings):
 
 
 @pytest.mark.asyncio
-async def test_prefilter_drops_junk(integration_settings):
+async def test_drops_junk(integration_settings):
     """PDF, javascript, wikidata URLs should be filtered out, so only BUFFERED ones persist."""
     cfg = integration_settings
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
@@ -149,7 +149,7 @@ async def test_prefilter_drops_junk(integration_settings):
 
 
 @pytest.mark.asyncio
-async def test_stops_on_budget_pages(integration_settings):
+async def test_stop_pages(integration_settings):
     """With max_pages=2, crawl should stop after fetching 2 pages."""
     cfg = integration_settings
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2, depth_limit=1)
@@ -166,7 +166,7 @@ async def test_stops_on_budget_pages(integration_settings):
 
 
 @pytest.mark.asyncio
-async def test_frontier_drained_when_no_more_links(integration_settings):
+async def test_drains(integration_settings):
     """Crawl stops naturally when no new candidates pass ranking threshold."""
     cfg = integration_settings
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=100, depth_limit=1)
@@ -209,7 +209,7 @@ async def test_events_emitted(integration_settings):
 
 
 @pytest.mark.asyncio
-async def test_rank_decisions_persisted(integration_settings):
+async def test_ranks_saved(integration_settings):
     """Rank decisions should be written to the DB."""
     cfg = integration_settings
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
@@ -249,7 +249,7 @@ class _RecordingAnalyzer:
 
 
 @pytest.mark.asyncio
-async def test_analyzer_sees_every_fetched_page(integration_settings):
+async def test_analyzes_all(integration_settings):
     """The v0.2 analysis stage runs after each page extraction."""
     cfg = integration_settings
     goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)

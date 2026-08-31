@@ -82,7 +82,7 @@ def no_sleep(monkeypatch):
     return calls
 
 
-async def test_chat_returns_content_usage_and_model(provider, no_sleep):
+async def test_chat_returns(provider, no_sleep):
     client = LLMClient("openai/gpt-4o-mini")
     r = await client.chat("hello?", system="be brief")
     assert r.content == "hello"
@@ -102,7 +102,7 @@ async def test_chat_returns_content_usage_and_model(provider, no_sleep):
     assert no_sleep == []
 
 
-async def test_model_prefers_configured_over_reported(provider, no_sleep):
+async def test_model_wins(provider, no_sleep):
     # Providers may answer under an alias for the configured model
     # (deepseek/deepseek-chat -> deepseek-v4-flash); the configured
     # string is the stable identity replay's check matches on.
@@ -111,19 +111,19 @@ async def test_model_prefers_configured_over_reported(provider, no_sleep):
     assert r.model == "deepseek/deepseek-chat"
 
 
-async def test_model_falls_back_to_reported_when_unconfigured(provider, no_sleep):
+async def test_model_reported(provider, no_sleep):
     client = LLMClient("")
     r = await client.chat("hi")
     assert r.model == "stub-model"
 
 
-async def test_json_mode_passes_response_format(provider):
+async def test_json_mode(provider):
     client = LLMClient("openai/gpt-4o-mini")
     await client.chat("return json", json_mode=True)
     assert provider.kwargs[0]["response_format"] == {"type": "json_object"}
 
 
-async def test_key_and_base_url_only_sent_when_set(monkeypatch):
+async def test_creds_optional(monkeypatch):
     stub = _StubLitellm([_resp("a"), _resp("b")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
 
@@ -138,7 +138,7 @@ async def test_key_and_base_url_only_sent_when_set(monkeypatch):
     assert stub.kwargs[1]["api_base"] == "http://localhost:11434/v1"
 
 
-async def test_transient_error_retries_then_succeeds(monkeypatch, no_sleep):
+async def test_retry_succeeds(monkeypatch, no_sleep):
     stub = _StubLitellm([_StubLitellm.RateLimitError(), _resp("ok")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     r = await LLMClient("openai/gpt-4o-mini").chat("hi")
@@ -147,7 +147,7 @@ async def test_transient_error_retries_then_succeeds(monkeypatch, no_sleep):
     assert no_sleep == [1.0]
 
 
-async def test_transient_errors_exhaust_retries(monkeypatch, no_sleep):
+async def test_retry_exhausted(monkeypatch, no_sleep):
     stub = _StubLitellm([_StubLitellm.RateLimitError(), _StubLitellm.Timeout(), _StubLitellm.ServiceUnavailableError()])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     with pytest.raises(LLMError, match="3 attempts"):
@@ -156,7 +156,7 @@ async def test_transient_errors_exhaust_retries(monkeypatch, no_sleep):
     assert no_sleep == [1.0, 2.0]
 
 
-async def test_httpx_connect_error_is_transient(monkeypatch, no_sleep):
+async def test_connect_retried(monkeypatch, no_sleep):
     stub = _StubLitellm([httpx.ConnectError("provider down"), _resp("ok")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     r = await LLMClient("openai/gpt-4o-mini").chat("hi")
@@ -164,7 +164,7 @@ async def test_httpx_connect_error_is_transient(monkeypatch, no_sleep):
     assert no_sleep == [1.0]
 
 
-async def test_permanent_error_raises_without_retry(monkeypatch, no_sleep):
+async def test_permanent_raises(monkeypatch, no_sleep):
     stub = _StubLitellm([ValueError("bad request body")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     with pytest.raises(LLMError, match="rejected"):
@@ -173,7 +173,7 @@ async def test_permanent_error_raises_without_retry(monkeypatch, no_sleep):
     assert no_sleep == []
 
 
-async def test_missing_credentials_is_permanent(monkeypatch, no_sleep):
+async def test_no_creds_raises(monkeypatch, no_sleep):
     # litellm maps missing credentials to InternalServerError, which is
     # normally transient.  The message check must win.
     stub = _StubLitellm([_StubLitellm.InternalServerError("Missing credentials. Please pass an `api_key`.")])
@@ -184,7 +184,7 @@ async def test_missing_credentials_is_permanent(monkeypatch, no_sleep):
     assert no_sleep == []
 
 
-async def test_concurrency_semaphore_caps_active_calls(monkeypatch):
+async def test_concurrency_cap(monkeypatch):
     stub = _StubLitellm([_resp("r") for _ in range(6)], hold=0.01)
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     client = LLMClient("openai/gpt-4o-mini", concurrency=2)
@@ -193,7 +193,7 @@ async def test_concurrency_semaphore_caps_active_calls(monkeypatch):
     assert stub.max_active == 2
 
 
-async def test_missing_litellm_fails_fast_with_install_hint(monkeypatch):
+async def test_no_litellm(monkeypatch):
     monkeypatch.setattr(llm_mod, "_litellm", None)
     real_import = builtins.__import__
 
@@ -207,7 +207,7 @@ async def test_missing_litellm_fails_fast_with_install_hint(monkeypatch):
         await LLMClient("openai/gpt-4o-mini").chat("hi")
 
 
-def test_from_settings_wires_all_knobs():
+def test_wires_knobs():
     settings = Settings(
         llm_model="anthropic/claude-haiku-4-5",
         llm_api_key="sk-test",
@@ -221,7 +221,7 @@ def test_from_settings_wires_all_knobs():
     assert client._sem._value == 5
 
 
-def test_token_budget_records_and_sinks():
+def test_budget_records():
     totals: list[int] = []
     budget = TokenBudget(limit=100, sink=totals.append)
     budget.record(10, 5)
@@ -234,7 +234,7 @@ def test_token_budget_records_and_sinks():
     assert budget.calls == 2
 
 
-def test_token_budget_check_raises_at_limit():
+def test_budget_limit():
     budget = TokenBudget(limit=10)
     budget.record(10, 0)
     with pytest.raises(TokenBudgetError):
@@ -245,7 +245,7 @@ def test_token_budget_check_raises_at_limit():
     uncapped.check()
 
 
-async def test_budget_check_blocks_call_before_provider(monkeypatch, no_sleep):
+async def test_budget_blocks(monkeypatch, no_sleep):
     stub = _StubLitellm([_resp("hi")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     budget = TokenBudget(limit=1)
@@ -256,7 +256,7 @@ async def test_budget_check_blocks_call_before_provider(monkeypatch, no_sleep):
     assert no_sleep == []
 
 
-async def test_chat_records_tokens_into_budget(monkeypatch):
+async def test_chat_tallies(monkeypatch):
     stub = _StubLitellm([_resp("hello", in_tok=12, out_tok=7)])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     budget = TokenBudget(limit=1000)
@@ -265,7 +265,7 @@ async def test_chat_records_tokens_into_budget(monkeypatch):
     assert budget.calls == 1
 
 
-def test_configured_flags_credentials():
+def test_is_configured():
     assert not LLMClient("openai/gpt-4o-mini").configured
     assert LLMClient("openai/gpt-4o-mini", api_key="sk-1").configured
     assert LLMClient("openai/gpt-4o-mini", base_url="http://localhost:11434/v1").configured
@@ -281,7 +281,7 @@ def test_configured_flags_credentials():
         ("", "http://localhost:11434/v1", True),
     ],
 )
-def test_from_settings_if_configured(api_key, base_url, built):
+def test_settings_gate(api_key, base_url, built):
     settings = Settings(llm_model="", llm_api_key=api_key, llm_base_url=base_url)
     client = LLMClient.from_settings_if_configured(settings)
     assert (client is not None) is built
@@ -291,12 +291,12 @@ def test_from_settings_if_configured(api_key, base_url, built):
         assert client._model == "openai/gpt-4o-mini"  # falls back to the provider default
 
 
-def test_from_settings_resolves_default_model_when_empty():
+def test_default_model():
     assert LLMClient.from_settings(Settings(llm_model=""))._model == "openai/gpt-4o-mini"
 
 
 @pytest.mark.asyncio
-async def test_reply_at_the_ceiling_says_so(monkeypatch, caplog):
+async def test_ceiling_flagged(monkeypatch, caplog):
     """Otherwise a budget problem arrives disguised as a parser one.
 
     A reasoning model spends the ceiling on thinking, and what comes back
@@ -312,7 +312,7 @@ async def test_reply_at_the_ceiling_says_so(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_reply_under_the_ceiling_not_flagged(monkeypatch):
+async def test_under_ceiling(monkeypatch):
     monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("ok", out_tok=5)]))
     client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
     assert (await client.chat("hi")).truncated is False
@@ -321,7 +321,7 @@ async def test_reply_under_the_ceiling_not_flagged(monkeypatch):
 # cached input ----------------------------------------------------------
 
 
-def test_cached_input_is_tallied_apart_from_the_rest():
+def test_cached_tallied():
     """Cached input counts the same and costs about a tenth, so a total
     that does not separate it is not a bill."""
     budget = TokenBudget(limit=0)
@@ -343,7 +343,7 @@ def test_cached_input_is_tallied_apart_from_the_rest():
         (SimpleNamespace(prompt_tokens=900), 0),
     ],
 )
-def test_cached_input_reads_whichever_shape_the_provider_used(usage, expected):
+def test_cached_shapes(usage, expected):
     """Providers disagree on where they put it.  One that reports
     nothing gives 0, which reads as "not measured" rather than "nothing
     was cached" -- a distinction worth a third of the bill."""
@@ -363,14 +363,14 @@ def test_cached_input_reads_whichever_shape_the_provider_used(usage, expected):
         (SimpleNamespace(), SimpleNamespace(completion_tokens=900), 0),
     ],
 )
-def test_reasoning_output_reads_the_field_or_falls_back_to_the_text(resp, usage, expected):
+def test_reasoning_read(resp, usage, expected):
     """Thinking is billed as output and then dropped, so it is counted
     from the usage field when there is one and from what arrived when
     there is not."""
     assert llm_mod._reasoning_output(resp, usage) == expected
 
 
-def test_thinking_is_tallied_apart_from_the_answer():
+def test_thinking_apart():
     budget = TokenBudget(limit=0)
     budget.record(100, 1000, cached_tokens=40, reasoning_tokens=800)
 
@@ -380,7 +380,7 @@ def test_thinking_is_tallied_apart_from_the_answer():
 
 
 @pytest.mark.asyncio
-async def test_reasoning_effort_is_sent_only_when_asked_for(monkeypatch):
+async def test_effort_optional(monkeypatch):
     """Empty means send nothing, which is the provider's default and
     what every run before the setting existed paid for."""
     sent: list[dict] = []
@@ -402,7 +402,7 @@ async def test_reasoning_effort_is_sent_only_when_asked_for(monkeypatch):
     assert sent[-1]["reasoning_effort"] == "minimal"
 
 
-def test_the_ranking_stage_can_think_differently_from_the_rest(monkeypatch):
+def test_effort_stage(monkeypatch):
     """One stage orders candidates for fetching and another decides what
     the run returns, so they do not have to buy the same thinking."""
     from crawlme.pioneer.ranker import LLMRanker
@@ -415,7 +415,7 @@ def test_the_ranking_stage_can_think_differently_from_the_rest(monkeypatch):
     assert PageAnalyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
 
 
-def test_a_stage_that_declares_nothing_sends_nothing():
+def test_effort_absent():
     """Empty means the provider's own default, not some value of ours."""
     from crawlme.pioneer.ranker import LLMRanker
 

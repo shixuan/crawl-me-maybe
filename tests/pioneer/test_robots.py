@@ -17,7 +17,7 @@ Disallow: /login"""
 # -- robots policy ----------------------------------------------------------
 
 
-def test_ignore_mode_allows_everything():
+def test_ignore_allows():
     rp = RobotsPolicy(ignore=True)
     rp.load_robots_txt("example.com", ROBOTS_BLOCK_ADMIN)
     assert rp.allow_fetch("https://example.com/admin") is True
@@ -29,19 +29,19 @@ def test_allow_all():
     assert rp.allow_fetch("https://example.com/any/path") is True
 
 
-def test_disallow_specific_path():
+def test_disallow_path():
     rp = RobotsPolicy()
     rp.load_robots_txt("example.com", ROBOTS_BLOCK_ADMIN)
     assert rp.allow_fetch("https://example.com/admin/secret") is False
     assert rp.allow_fetch("https://example.com/about") is True
 
 
-def test_uncached_domain_allows():
+def test_uncached_ok():
     rp = RobotsPolicy()
     assert rp.allow_fetch("https://never.seen.before/page") is True
 
 
-def test_record_429_triggers_backoff():
+def test_429_backoff():
     rp = RobotsPolicy()
     now = datetime.datetime.now(datetime.timezone.utc)
     rp.record_response("example.com", 429)
@@ -59,7 +59,7 @@ def test_circuit_breaker():
     assert rp.allow_fetch("https://example.com/page") is False
 
 
-def test_success_resets_failure_counter():
+def test_ok_resets():
     rp = RobotsPolicy(circuit_threshold=2)
     rp.record_response("example.com", 429)
     rp.record_response("example.com", 200)
@@ -89,7 +89,7 @@ Crawl-delay: 30
 """
 
 
-def test_the_rules_written_for_us_are_the_ones_we_read():
+def test_our_section():
     """A crawler that states a name and then reads only the wildcard
     ignores whatever was written for it, looser or stricter."""
     named = RobotsPolicy(agent="crawl-me-maybe")
@@ -98,13 +98,13 @@ def test_the_rules_written_for_us_are_the_ones_we_read():
     assert not named.allow_fetch("https://x.com/private/a")
 
 
-def test_the_wildcard_is_the_fallback_not_the_answer():
+def test_star_fallback():
     star = RobotsPolicy(agent="*")
     star.load_robots_txt("x.com", _NAMED)
     assert star.allow_fetch("https://x.com/private/a")
 
 
-def test_a_stated_delay_is_read_from_our_own_section():
+def test_our_delay():
     """The module said it honoured Crawl-delay while nothing ever read
     one: the parameter existed and no caller passed it."""
     named = RobotsPolicy(agent="crawl-me-maybe")
@@ -112,11 +112,11 @@ def test_a_stated_delay_is_read_from_our_own_section():
     assert named.crawl_delay("x.com") == 30.0
 
 
-def test_a_domain_with_no_robots_states_no_delay():
+def test_no_delay():
     assert RobotsPolicy(agent="a").crawl_delay("unknown.com") == 0.0
 
 
-def test_ignoring_robots_ignores_the_delay_too():
+def test_ignore_delay():
     off = RobotsPolicy(agent="crawl-me-maybe", ignore=True)
     off.load_robots_txt("x.com", _NAMED)
     assert off.crawl_delay("x.com") == 0.0

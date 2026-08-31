@@ -76,7 +76,7 @@ def _ranker(client: _StubClient, batch_size: int = 30, demote_dropped: bool = Fa
 
 
 @pytest.mark.asyncio
-async def test_ranks_batch_from_valid_json():
+async def test_ranks_batch():
     client = _StubClient([_resp(_rankings_json(2))])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
     assert len(decisions) == 2
@@ -90,7 +90,7 @@ async def test_ranks_batch_from_valid_json():
 
 
 @pytest.mark.asyncio
-async def test_drop_list_marks_dropped():
+async def test_drop_list():
     client = _StubClient([_resp(_rankings_json(1, drop=["c1"]))])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
     by_id = {d.candidate_id: d for d in decisions}
@@ -100,7 +100,7 @@ async def test_drop_list_marks_dropped():
 
 
 @pytest.mark.asyncio
-async def test_drop_everything_when_batch_is_junk():
+async def test_drop_all_junk():
     content = '{"rankings": [], "candidates_to_drop": ["c0", "c1"]}'
     client = _StubClient([_resp(content)])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
@@ -140,7 +140,7 @@ _NEUTRAL = (0.5, False, "no_opinion")
     ],
 )
 @pytest.mark.asyncio
-async def test_reply_is_read_leniently(content, n, expected):
+async def test_reply_lenient(content, n, expected):
     """Whatever the model returns, every candidate comes back decided."""
     decisions = await _ranker(_StubClient([_resp(content)])).rank_batch(_goal(), _candidates(n), RankHistorySummary())
     assert len(decisions) == n
@@ -153,7 +153,7 @@ async def test_reply_is_read_leniently(content, n, expected):
 
 
 @pytest.mark.asyncio
-async def test_unparseable_retries_once_then_succeeds():
+async def test_retry_parses():
     client = _StubClient([_resp("not json at all"), _resp(_rankings_json(2))])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
     assert len(client.calls) == 2
@@ -162,21 +162,21 @@ async def test_unparseable_retries_once_then_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_unparseable_twice_raises():
+async def test_retry_gives_up():
     client = _StubClient([_resp("garbage"), _resp("still garbage")])
     with pytest.raises(LLMError, match="unparseable JSON"):
         await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
 
 @pytest.mark.asyncio
-async def test_provider_error_propagates():
+async def test_provider_error():
     client = _StubClient([LLMError("provider down")])
     with pytest.raises(LLMError):
         await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
 
 @pytest.mark.asyncio
-async def test_chunks_large_batches():
+async def test_chunks_batches():
     client = _StubClient([_resp(_rankings_json(2)), _resp(_rankings_json(2)), _resp(_rankings_json(1))])
     decisions = await _ranker(client, batch_size=2).rank_batch(_goal(), _candidates(5), RankHistorySummary())
     assert len(client.calls) == 3
@@ -187,7 +187,7 @@ async def test_chunks_large_batches():
 
 
 @pytest.mark.asyncio
-async def test_empty_batch_makes_no_call():
+async def test_empty_no_call():
     client = _StubClient([])
     decisions = await _ranker(client).rank_batch(_goal(), [], RankHistorySummary())
     assert decisions == []
@@ -195,7 +195,7 @@ async def test_empty_batch_makes_no_call():
 
 
 @pytest.mark.asyncio
-async def test_prompt_carries_goal_candidates_and_json_mode():
+async def test_prompt_shape():
     client = _StubClient([_resp(_rankings_json(2))])
     goal = _goal()
     await _ranker(client).rank_batch(goal, _candidates(2), RankHistorySummary())
@@ -212,7 +212,7 @@ async def test_prompt_carries_goal_candidates_and_json_mode():
 
 
 @pytest.mark.asyncio
-async def test_prompt_includes_relevant_history():
+async def test_prompt_history():
     history = RankHistorySummary(relevant_pages=[{"title": "Rust internals deep dive", "url": "https://x.com/a"}])
     client = _StubClient([_resp(_rankings_json(1))])
     await _ranker(client).rank_batch(_goal(), _candidates(1), history)
@@ -253,17 +253,17 @@ async def _prompt_with_source(src: dict) -> str:
     ],
 )
 @pytest.mark.asyncio
-async def test_prompt_source_line(src, line):
+async def test_source_line(src, line):
     prompt = await _prompt_with_source(src)
     assert prompt.split("source page: ")[1].split("\n")[0] == line
 
 
-def test_from_settings_auto_off_without_credentials():
+def test_auto_off():
     cfg = Settings(llm_api_key="", llm_base_url="")
     assert LLMRanker.from_settings(cfg) is None
 
 
-def test_from_settings_wires_client_and_budget():
+def test_wires_client():
     cfg = Settings(llm_api_key="sk-test", llm_base_url="")
     budget = TokenBudget(limit=1000)
     ranker = LLMRanker.from_settings(cfg, budget=budget)
@@ -272,7 +272,7 @@ def test_from_settings_wires_client_and_budget():
     assert ranker._client._model  # provider default when llm_model is unset
 
 
-async def test_overrun_splits_the_batch():
+async def test_overrun_splits():
     """A bigger ceiling buys another slow call that runs out too.
 
     The reply is that long because the batch is that big. One run spent
@@ -288,7 +288,7 @@ async def test_overrun_splits_the_batch():
     assert len(decisions) == 2, "every candidate still gets a decision"
 
 
-async def test_overrun_shrinks_later_batches():
+async def test_overrun_shrinks():
     """Splitting saves the batch in hand; the next one repeats it."""
     cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
     client = _StubClient([cut_off, _resp(_rankings_json(1)), _resp(_rankings_json(1))])
@@ -298,7 +298,7 @@ async def test_overrun_shrinks_later_batches():
     assert ranker._cap == 1, "the size that did not fit, halved"
 
 
-async def test_single_candidate_gets_more_room():
+async def test_single_roomier():
     """There is nothing left to split."""
     cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
     client = _StubClient([cut_off, _resp(_rankings_json(1))])
@@ -306,7 +306,7 @@ async def test_single_candidate_gets_more_room():
     assert client.calls[1]["max_tokens"] == 8192
 
 
-async def test_malformed_reply_retries_stricter():
+async def test_retry_stricter():
     """A short reply that is simply malformed is a wording problem."""
     malformed = LLMResponse(content="not json", input_tokens=100, output_tokens=20, model="stub", truncated=False)
     client = _StubClient([malformed, _resp(_rankings_json(2))])
@@ -320,7 +320,7 @@ async def test_malformed_reply_retries_stricter():
 # recall mode ------------------------------------------------------------
 
 
-async def test_recall_demotes_instead_of_dropping():
+async def test_recall_demotes():
     """A wrong keep is a page you skim; a wrong drop you never learn about.
 
     The model still says what it doubts, and that still sinks the
@@ -337,7 +337,7 @@ async def test_recall_demotes_instead_of_dropping():
     assert by_id["c1"].rationale == "llm_drop_demoted"
 
 
-async def test_rejection_ranks_below_silence():
+async def test_reject_lowest():
     """Silence is weaker evidence than an argument against."""
     body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
     client = _StubClient([_resp(body)])
@@ -348,14 +348,14 @@ async def test_rejection_ranks_below_silence():
     assert by_id["c1"].priority < by_id["c0"].priority
 
 
-async def test_without_recall_a_rejection_is_dropped():
+async def test_reject_dropped():
     body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
     client = _StubClient([_resp(body)])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
     assert {d.candidate_id for d in decisions if d.dropped} == {"c1"}
 
 
-async def test_rejection_carries_its_reason():
+async def test_reject_reason():
     """Every misjudged drop was a black box: no reason was ever stored.
 
     Reading back why the model rejected something is what decides
@@ -370,7 +370,7 @@ async def test_rejection_carries_its_reason():
     assert decisions[0].rationale == "llm_drop: a toy shop, not food"
 
 
-async def test_bare_id_is_a_rejection():
+async def test_bare_id_reject():
     """What a model returns when it ignores the shape it was asked for."""
     client = _StubClient([_resp('{"rankings": [], "candidates_to_drop": ["c0"]}')])
     decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
@@ -378,7 +378,7 @@ async def test_bare_id_is_a_rejection():
     assert decisions[0].rationale == "llm_drop"
 
 
-async def test_demoted_rejection_keeps_its_reason():
+async def test_demote_reason():
     body = '{"rankings": [], "candidates_to_drop": [{"id": "c0", "rationale": "weaker than the rest"}]}'
     client = _StubClient([_resp(body)])
     decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(1), RankHistorySummary())
@@ -389,7 +389,7 @@ async def test_demoted_rejection_keeps_its_reason():
 # whole candidates, split batches -----------------------------------------
 
 
-async def test_candidate_never_truncated():
+async def test_candidate_full_text():
     """The line that matters is often the last one.
 
     A run rejected three real offers because the giveaway sat past
@@ -403,7 +403,7 @@ async def test_candidate_never_truncated():
     assert "FREE incense chamber" in client.calls[0]["prompt"]
 
 
-async def test_batch_splits_on_text_budget():
+async def test_split_on_chars():
     """One long post takes room from its batch, not from its own text."""
     client = _StubClient([_resp(_rankings_json(1)), _resp(_rankings_json(1)), _resp(_rankings_json(1))])
     long_ones = [_candidate(f"c{i}", text="y" * 7000) for i in range(3)]
@@ -411,14 +411,14 @@ async def test_batch_splits_on_text_budget():
     assert len(client.calls) == 3, "three posts too long to share a call"
 
 
-async def test_short_batch_travels_in_one_call():
+async def test_short_one_call():
     client = _StubClient([_resp(_rankings_json(4))])
     shorts = [_candidate(f"c{i}", text="free tea today") for i in range(4)]
     await _ranker(client).rank_batch(_goal(), shorts, RankHistorySummary())
     assert len(client.calls) == 1
 
 
-async def test_link_proxies_stay_capped():
+async def test_proxies_capped():
     """An anchor is a few words by nature; nothing is lost by capping it."""
     client = _StubClient([_resp(_rankings_json(1))])
     c = _candidate("c0", anchor="z" * 500)
@@ -426,7 +426,7 @@ async def test_link_proxies_stay_capped():
     assert "z" * 500 not in client.calls[0]["prompt"]
 
 
-async def test_kept_candidate_needs_no_rationale():
+async def test_kept_no_reason():
     """Its priority is the whole answer, and prose is what overran.
 
     Rationales for a batch of twenty-one were most of an 8k reply; a
@@ -440,7 +440,7 @@ async def test_kept_candidate_needs_no_rationale():
     assert decisions[0].rationale == "llm_priority=0.8000", "the score stands in for words"
 
 
-async def test_prompt_asks_rationale_on_drops_only():
+async def test_reason_on_drop():
     client = _StubClient([_resp(_rankings_json(1))])
     await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
     system = client.calls[0]["system"]
@@ -456,7 +456,7 @@ def _utcnow_for_test():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def test_a_candidate_states_how_old_it_is() -> None:
+def test_states_age() -> None:
     """Without it a post from an hour ago and one from three years ago
     differ only in their title."""
     c = _candidate("c1", posted_at=_hours_ago(3))
@@ -464,13 +464,13 @@ def test_a_candidate_states_how_old_it_is() -> None:
     assert "posted: 3h ago" in prompt
 
 
-def test_a_candidate_without_a_date_gains_no_line() -> None:
+def test_undated_no_line() -> None:
     """Most of the web is links on a page."""
     prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "posted:" not in prompt
 
 
-def test_a_date_without_a_timezone_does_not_take_the_batch_down() -> None:
+def test_naive_date_ok() -> None:
     """Subtracting a naive datetime raises, and that would cost the
     other nineteen candidates."""
     c = _candidate("c1", posted_at=datetime.datetime(2026, 1, 1, 12, 0))
@@ -478,7 +478,7 @@ def test_a_date_without_a_timezone_does_not_take_the_batch_down() -> None:
     assert "posted:" in prompt
 
 
-def test_the_window_in_force_is_stated() -> None:
+def test_window_stated() -> None:
     """The prompt is the user's own words and can disagree with it:
     asked for "this month" with --since "1 week", the model ranked
     three-week-old posts highly and the filter had already dropped
@@ -489,7 +489,7 @@ def test_the_window_in_force_is_stated() -> None:
     assert "2026-08-20" in prompt
 
 
-def test_no_window_says_nothing() -> None:
+def test_no_window() -> None:
     """Most goals have none, and an empty heading is a line per call."""
     prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "Window" not in prompt

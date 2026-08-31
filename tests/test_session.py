@@ -16,18 +16,18 @@ def _args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def test_login_url_comes_from_the_adapter():
+def test_login_url():
     assert _login_url("instagram") == "https://www.instagram.com/"
 
 
-def test_a_platform_that_needs_no_session_is_refused():
+def test_open_platform():
     """The adapters answer this, so no platform list lives here."""
     with pytest.raises(SessionError, match="needs no session"):
         _login_url("rss")
 
 
 @pytest.mark.asyncio
-async def test_a_session_without_cookies_is_refused(tmp_path: Path, monkeypatch):
+async def test_no_cookies(tmp_path: Path, monkeypatch):
     """A logged-out browser produces a state that loads fine and crawls
     nothing, which on a walled platform reads as an empty site."""
     out = tmp_path / "s.json"
@@ -38,7 +38,7 @@ async def test_a_session_without_cookies_is_refused(tmp_path: Path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_captured_session_lands_on_disk(tmp_path: Path):
+async def test_session_saved(tmp_path: Path):
     out = tmp_path / "nested" / "s.json"
     state = {"cookies": [{"name": "sessionid", "value": "x", "domain": ".instagram.com"}], "origins": []}
     with patch("crawlme.cli.session._browser_state", AsyncMock(return_value=state)):
@@ -47,7 +47,7 @@ async def test_a_captured_session_lands_on_disk(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_an_existing_file_is_not_overwritten(tmp_path: Path, capsys):
+async def test_no_overwrite(tmp_path: Path, capsys):
     out = tmp_path / "s.json"
     out.write_text("{}")
     with pytest.raises(SystemExit):

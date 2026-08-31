@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from crawlme.state.events import EventEmitter, EventType
 
 
-def test_emit_calls_storage():
+def test_emit_saves():
     storage = MagicMock()
     emitter = EventEmitter(storage, "t1")
     emitter.emit(EventType.TASK_STARTED, {"max_pages": 10})
@@ -18,7 +18,7 @@ def test_emit_calls_storage():
     assert "ts" in args
 
 
-def test_emit_default_payload():
+def test_emit_default():
     storage = MagicMock()
     emitter = EventEmitter(storage, "t1")
     emitter.emit(EventType.FETCH_COMPLETED)
@@ -27,7 +27,7 @@ def test_emit_default_payload():
     assert args["payload"] == {}
 
 
-def test_event_type_constants():
+def test_event_types():
     assert EventType.TASK_STARTED == "TASK_STARTED"
     assert EventType.URL_DISCOVERED == "URL_DISCOVERED"
     assert EventType.CANDIDATE_FILTERED == "CANDIDATE_FILTERED"
@@ -35,7 +35,7 @@ def test_event_type_constants():
     assert EventType.STOPPED == "STOPPED"
 
 
-def test_all_event_types_are_strings():
+def test_types_are_str():
     """Every EventType attribute should be a plain string."""
     for name in dir(EventType):
         if not name.startswith("_"):

@@ -144,7 +144,7 @@ async def _read_goal(run_dir: Path, goal_id: str) -> dict | None:
 
 
 @pytest.mark.asyncio
-async def test_find_run_dir_picks_the_run_holding_the_task(tmp_path):
+async def test_find_run_picks(tmp_path):
     await _write_run(tmp_path, "20260101_000001", task_id="other", pages=[_page("x")])
     target = await _write_run(tmp_path, "20260101_000002", task_id="wanted", pages=[_page("a")])
     await _write_run(tmp_path, "20260101_000003", task_id="third")
@@ -160,14 +160,14 @@ async def test_find_run_dir_picks_the_run_holding_the_task(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_find_run_dir_lists_what_was_scanned(tmp_path):
+async def test_find_run_lists(tmp_path):
     await _write_run(tmp_path, "20260101_000001", task_id="known")
     with pytest.raises(ReplayError, match="known"):
         await find_run_dir(tmp_path, "missing")
 
 
 @pytest.mark.asyncio
-async def test_find_run_dir_with_no_runs_at_all(tmp_path):
+async def test_find_run_none(tmp_path):
     with pytest.raises(ReplayError, match="no run databases"):
         await find_run_dir(tmp_path, "missing")
 
@@ -176,7 +176,7 @@ async def test_find_run_dir_with_no_runs_at_all(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_analyzes_and_persists(tmp_path):
+async def test_replay_persists(tmp_path):
     run_dir = await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     analyzer = _StubAnalyzer()
 
@@ -198,7 +198,7 @@ async def test_replay_analyzes_and_persists(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_of_replay_is_a_noop(tmp_path):
+async def test_replay_twice(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     cfg = _cfg(tmp_path)
     first = await run_replay(cfg, "task1", analyzer=_StubAnalyzer())
@@ -213,7 +213,7 @@ async def test_replay_of_replay_is_a_noop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_force_reruns_and_keeps_old_rows(tmp_path):
+async def test_replay_force(tmp_path):
     run_dir = await _write_run(tmp_path, "20260101_000001", pages=[_page("a")])
     cfg = _cfg(tmp_path)
     await run_replay(cfg, "task1", analyzer=_StubAnalyzer())
@@ -227,7 +227,7 @@ async def test_replay_force_reruns_and_keeps_old_rows(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_with_prompt_creates_new_goal(tmp_path):
+async def test_replay_newgoal(tmp_path):
     original = _goal()
     run_dir = await _write_run(tmp_path, "20260101_000001", goal=original, pages=[_page("a")])
     analyzer = _StubAnalyzer()
@@ -247,7 +247,7 @@ async def test_replay_with_prompt_creates_new_goal(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_same_prompt_reuses_the_goal_and_skips(tmp_path):
+async def test_replay_samegoal(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     cfg = _cfg(tmp_path)
     first = await run_replay(cfg, "task1", analyzer=_StubAnalyzer(), prompt="new lens")
@@ -270,7 +270,7 @@ async def test_replay_same_prompt_reuses_the_goal_and_skips(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_refuses_goal_id_collision(tmp_path):
+async def test_replay_dup_id(tmp_path):
     prompt = "new lens"
     original = _goal("original prompt")
     run_dir = tmp_path / "20260101_000001"
@@ -295,7 +295,7 @@ async def test_replay_refuses_goal_id_collision(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_limit_caps_the_work(tmp_path):
+async def test_replay_limit(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b"), _page("c")])
     analyzer = _StubAnalyzer()
 
@@ -307,7 +307,7 @@ async def test_replay_limit_caps_the_work(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_skips_empty_pages(tmp_path):
+async def test_replay_empty(tmp_path):
     await _write_run(
         tmp_path,
         "20260101_000001",
@@ -323,7 +323,7 @@ async def test_replay_skips_empty_pages(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_counts_retried_and_failed(tmp_path):
+async def test_replay_counts(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     # Both pages park; one settles on the drain, the other gives up.
     analyzer = _StubAnalyzer(park=True, publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")])
@@ -337,7 +337,7 @@ async def test_replay_counts_retried_and_failed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_stops_when_the_budget_breaks(tmp_path):
+async def test_replay_budget(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     analyzer = _StubAnalyzer(raise_error=TokenBudgetError("budget exhausted"))
 
@@ -348,7 +348,7 @@ async def test_replay_stops_when_the_budget_breaks(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_without_credentials_raises(tmp_path):
+async def test_replay_no_creds(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a")])
     with pytest.raises(ReplayError, match="credentials"):
         await run_replay(_cfg(tmp_path), "task1")

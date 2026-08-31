@@ -17,7 +17,7 @@ def _goal() -> CrawlGoal:
 
 
 @pytest.mark.asyncio
-async def test_manual_parses_seeds():
+async def test_manual_parses():
     src = ManualSource(["https://a.com", "https://b.com"])
     candidates = await src.discover(_goal())
     assert len(candidates) == 2
@@ -26,7 +26,7 @@ async def test_manual_parses_seeds():
 
 
 @pytest.mark.asyncio
-async def test_manual_skips_empty():
+async def test_manual_empty():
     src = ManualSource(["", "  ", "https://a.com"])
     candidates = await src.discover(_goal())
     assert len(candidates) == 1
@@ -45,7 +45,7 @@ async def test_file_bare_list(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_file_seeds_with_scope(tmp_path):
+async def test_file_scope(tmp_path):
     path = tmp_path / "seeds.json"
     path.write_text(json.dumps({"seeds": ["https://a.com"], "allowed_domains": ["a.com", "b.com"]}))
     src = FileSource(str(path))

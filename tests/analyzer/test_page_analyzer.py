@@ -73,7 +73,7 @@ def _analyzer(client: _StubClient, *, retry_delay: float = 0.0) -> PageAnalyzer:
 
 
 @pytest.mark.asyncio
-async def test_analyze_builds_full_result():
+async def test_full_result():
     client = _StubClient([_resp(_valid_json())])
     result = await _analyzer(client).analyze(_page(), _goal())
     assert result is not None
@@ -100,7 +100,7 @@ async def test_analyze_builds_full_result():
 
 
 @pytest.mark.asyncio
-async def test_prompt_carries_goal_page_and_json_mode():
+async def test_prompt_shape():
     client = _StubClient([_resp(_valid_json())])
     goal = _goal()
     await _analyzer(client).analyze(_page(), goal)
@@ -115,7 +115,7 @@ async def test_prompt_carries_goal_page_and_json_mode():
 
 
 @pytest.mark.asyncio
-async def test_page_text_truncated_in_prompt():
+async def test_text_truncated():
     long_text = "word " * 4000  # 20k chars
     client = _StubClient([_resp(_valid_json())])
     await _analyzer(client).analyze(_page(long_text), _goal())
@@ -124,7 +124,7 @@ async def test_page_text_truncated_in_prompt():
 
 
 @pytest.mark.asyncio
-async def test_custom_page_char_cap_is_honored():
+async def test_char_cap():
     """The settings knob dials the page-text cap (the benchmark's C arm)."""
     long_text = "word " * 4000
     client = _StubClient([_resp(_valid_json())])
@@ -135,7 +135,7 @@ async def test_custom_page_char_cap_is_honored():
 
 
 @pytest.mark.asyncio
-async def test_empty_page_skipped_without_call():
+async def test_empty_skipped():
     client = _StubClient([])
     result = await _analyzer(client).analyze(_page(""), _goal())
     assert result is None
@@ -146,7 +146,7 @@ async def test_empty_page_skipped_without_call():
 
 
 @pytest.mark.asyncio
-async def test_prose_wrapped_json_is_tolerated():
+async def test_prose_json():
     content = "Sure:\n" + _valid_json() + "\nDone."
     client = _StubClient([_resp(content)])
     result = await _analyzer(client).analyze(_page(), _goal())
@@ -174,7 +174,7 @@ async def test_field_coercion(content, classification, relevance, hub):
 
 
 @pytest.mark.asyncio
-async def test_missing_fields_fall_back_to_defaults():
+async def test_missing_fields():
     content = "{}"
     client = _StubClient([_resp(content)])
     result = await _analyzer(client).analyze(_page(), _goal())
@@ -186,7 +186,7 @@ async def test_missing_fields_fall_back_to_defaults():
 
 
 @pytest.mark.asyncio
-async def test_lists_deduplicated_and_capped():
+async def test_lists_capped():
     topics = ", ".join('"t"' for _ in range(15))
     content = (
         '{"classification": "HUB", "tags": ["a", "a", "b", "c", "d", "e", "f", "g", "h", "i"], '
@@ -205,7 +205,7 @@ async def test_lists_deduplicated_and_capped():
 
 
 @pytest.mark.asyncio
-async def test_failure_parks_page_and_background_retry_succeeds():
+async def test_parked_retry():
     client = _StubClient([LLMError("provider down"), _resp(_valid_json())])
     analyzer = _analyzer(client)
     published: list = []
@@ -223,7 +223,7 @@ async def test_failure_parks_page_and_background_retry_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_gives_up_after_max_attempts():
+async def test_gives_up():
     client = _StubClient([LLMError("down"), LLMError("down"), LLMError("down")])
     analyzer = _analyzer(client)
     published: list = []
@@ -241,7 +241,7 @@ async def test_gives_up_after_max_attempts():
 
 
 @pytest.mark.asyncio
-async def test_token_budget_exhausted_is_not_requeued():
+async def test_budget_no_retry():
     client = _StubClient([TokenBudgetError("budget exhausted")])
     analyzer = _analyzer(client)
 
@@ -252,7 +252,7 @@ async def test_token_budget_exhausted_is_not_requeued():
 
 
 @pytest.mark.asyncio
-async def test_unparseable_json_is_treated_as_failure():
+async def test_bad_json_fails():
     client = _StubClient([_resp("not json"), _resp(_valid_json())])
     analyzer = _analyzer(client)
     published: list = []
@@ -268,7 +268,7 @@ async def test_unparseable_json_is_treated_as_failure():
 
 
 @pytest.mark.asyncio
-async def test_aclose_cancels_parked_retries():
+async def test_aclose_cancels():
     client = _StubClient([LLMError("down"), _resp(_valid_json())])
     analyzer = _analyzer(client, retry_delay=60.0)
 
@@ -280,7 +280,7 @@ async def test_aclose_cancels_parked_retries():
 
 
 @pytest.mark.asyncio
-async def test_drain_pending_waits_for_retry_success():
+async def test_drain_waits():
     client = _StubClient([LLMError("provider down"), _resp(_valid_json())])
     analyzer = _analyzer(client)
     published: list = []
@@ -294,7 +294,7 @@ async def test_drain_pending_waits_for_retry_success():
 
 
 @pytest.mark.asyncio
-async def test_drain_pending_returns_after_giveup():
+async def test_drain_giveup():
     client = _StubClient([LLMError("down"), LLMError("down")])
     analyzer = PageAnalyzer(client, retry_delay=0.0, max_attempts=2)
     published: list = []
@@ -309,7 +309,7 @@ async def test_drain_pending_returns_after_giveup():
 
 
 @pytest.mark.asyncio
-async def test_sink_receives_first_try_results():
+async def test_sink_first_try():
     client = _StubClient([_resp(_valid_json())])
     analyzer = _analyzer(client)
     published: list = []
@@ -323,12 +323,12 @@ async def test_sink_receives_first_try_results():
 # -- construction -------------------------------------------------------
 
 
-def test_from_settings_auto_off_without_credentials():
+def test_auto_off():
     cfg = Settings(llm_api_key="", llm_base_url="")
     assert PageAnalyzer.from_settings(cfg) is None
 
 
-def test_from_settings_wires_client_and_budget():
+def test_wires_client():
     cfg = Settings(llm_api_key="sk-test", llm_base_url="")
     budget = TokenBudget(limit=1000)
     analyzer = PageAnalyzer.from_settings(cfg, budget=budget)
@@ -337,7 +337,7 @@ def test_from_settings_wires_client_and_budget():
     assert analyzer._max_page_chars == 3000  # default knob
 
 
-def test_from_settings_wires_max_page_chars():
+def test_wires_chars():
     cfg = Settings(llm_api_key="sk-test", llm_base_url="", analyzer_max_chars=3000)
     analyzer = PageAnalyzer.from_settings(cfg)
     assert analyzer is not None
@@ -359,7 +359,7 @@ def _extract_json(body: str) -> str:
     return _valid_json()[:-1] + ', "extracted": ' + body + "}"
 
 
-async def test_declared_fields_carry_evidence():
+async def test_field_evidence():
     client = _StubClient(
         [
             _resp(
@@ -376,7 +376,7 @@ async def test_declared_fields_carry_evidence():
     assert result.extracted["deadline"].evidence == "until August 31 2026"
 
 
-async def test_field_without_evidence_dropped():
+async def test_no_evidence():
     """The check is what separates acting on a result from trusting it."""
     client = _StubClient(
         [_resp(_extract_json('{"deadline": {"value": "2026-09-30", "evidence": "offer ends Sept 30"}}'))]
@@ -386,7 +386,7 @@ async def test_field_without_evidence_dropped():
     assert result.extracted == {}
 
 
-async def test_unstated_field_is_absent():
+async def test_field_unstated():
     """Omission is the correct answer, and must not become a guess."""
     client = _StubClient(
         [_resp(_extract_json('{"offer": {"value": "free sago topping", "evidence": "Free sago topping for members"}}'))]
@@ -396,21 +396,21 @@ async def test_unstated_field_is_absent():
     assert set(result.extracted) == {"offer"}
 
 
-async def test_fields_outside_the_spec_are_ignored():
+async def test_field_offspec():
     client = _StubClient([_resp(_extract_json('{"phone": {"value": "555", "evidence": "Come by"}}'))])
     result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
     assert result is not None
     assert result.extracted == {}
 
 
-async def test_evidence_match_ignores_case():
+async def test_evidence_case():
     client = _StubClient([_resp(_extract_json('{"offer": {"value": "sago", "evidence": "FREE SAGO   TOPPING"}}'))])
     result = await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
     assert result is not None
     assert "offer" in result.extracted
 
 
-async def test_no_spec_asks_nothing_extra():
+async def test_no_spec_quiet():
     """Every link-graph crawl: same prompt, same envelope as before."""
     client = _StubClient([_resp(_valid_json())])
     result = await _analyzer(client).analyze(_page(), _goal())
@@ -420,7 +420,7 @@ async def test_no_spec_asks_nothing_extra():
     assert "evidence" not in client.calls[0]["system"]
 
 
-async def test_spec_fields_reach_the_prompt():
+async def test_spec_in_prompt():
     client = _StubClient([_resp(_valid_json())])
     await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
     prompt = client.calls[0]["prompt"]
@@ -429,7 +429,7 @@ async def test_spec_fields_reach_the_prompt():
     assert "evidence" in client.calls[0]["system"]
 
 
-async def test_spec_is_part_of_analysis_identity():
+async def test_spec_version():
     """A different field list is a different reading of the page.
 
     It does not belong in goal_id: that is sha256(prompt), which is what
@@ -451,7 +451,7 @@ async def test_spec_is_part_of_analysis_identity():
     assert first.spec_version and second.spec_version
 
 
-async def test_no_spec_has_no_spec_version():
+async def test_no_spec_version():
     """So it matches every analysis written before specs existed."""
     client = _StubClient([_resp(_valid_json())])
     result = await _analyzer(client).analyze(_page(), _goal())
@@ -459,7 +459,7 @@ async def test_no_spec_has_no_spec_version():
     assert result.spec_version == ""
 
 
-async def test_reworded_field_is_a_new_spec():
+async def test_spec_reworded():
     """The description steers the extraction, so it counts as identity."""
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
     analyzer = _analyzer(client)
@@ -471,7 +471,7 @@ async def test_reworded_field_is_a_new_spec():
     assert a.spec_version != b.spec_version
 
 
-def test_a_field_answering_no_is_dropped():
+def test_negation_drop():
     """A quote proves what a page says.  Nothing on a page proves an
     absence, so "no" is a claim its evidence cannot support -- and the
     field simply not being there already says it."""
@@ -487,7 +487,7 @@ def test_a_field_answering_no_is_dropped():
     assert kept == {}
 
 
-def test_a_field_that_merely_contains_a_negation_survives():
+def test_negation_inside():
     """Only a bare negation is unprovable; "no-sugar option" is an
     answer the page really does state."""
     goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"variant": "which variant"}})
@@ -502,7 +502,7 @@ def test_a_field_that_merely_contains_a_negation_survives():
     assert kept["variant"].value == "no-sugar option"
 
 
-def test_the_analyzer_is_told_the_window_too() -> None:
+def test_window_told() -> None:
     """It judges relevance against the statement, which is the user's
     wording and need not match the window being enforced."""
     goal = CrawlGoal(prompt="events this month")
@@ -511,6 +511,6 @@ def test_the_analyzer_is_told_the_window_too() -> None:
     assert "2026-08-20" in prompt
 
 
-def test_no_window_adds_no_line_for_the_analyzer() -> None:
+def test_window_absent() -> None:
     prompt = _build_prompt(CrawlGoal(prompt="g"), _page(), "body", 3000)
     assert "out of scope" not in prompt

@@ -33,12 +33,12 @@ def _sources() -> str:
 
 
 @pytest.mark.parametrize("name", _documented())
-def test_every_documented_knob_is_a_real_setting(name: str) -> None:
+def test_knob_is_real(name: str) -> None:
     assert name in Settings.model_fields, f"{name.upper()} is documented but is not a setting"
 
 
 @pytest.mark.parametrize("name", _documented())
-def test_every_documented_knob_is_read_somewhere(name: str) -> None:
+def test_knob_is_read(name: str) -> None:
     """Seven of these were shadowed by module constants and did nothing."""
     if name in _LOG_LEVEL_IS_A_DOCUMENTED_EXCEPTION:
         return
@@ -63,7 +63,7 @@ def _visible_flags() -> set[str]:
     return out
 
 
-def test_setting_documented_once() -> None:
+def test_knob_once() -> None:
     """A flag and an env line for the same knob leave the reader guessing."""
     flags = _visible_flags()
     both = {n for n in _documented() if n.replace("_", "-") in flags} - _LOG_LEVEL_IS_A_DOCUMENTED_EXCEPTION

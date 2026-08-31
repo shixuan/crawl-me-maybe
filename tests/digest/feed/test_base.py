@@ -13,7 +13,7 @@ def _item(**kw) -> FeedItem:
     return FeedItem(**base)  # type: ignore[arg-type]
 
 
-def test_caption_lands_in_text():
+def test_caption_to_text():
     """The funnel reads text, so the post's own words must land there."""
     c = _item(
         text="free drink today",
@@ -33,18 +33,18 @@ def test_caption_lands_in_text():
     assert "posted_at" not in c.signals
 
 
-def test_domain_comes_from_the_permalink():
+def test_domain_of_link():
     """Adapters name the platform; the domain is derived, not declared."""
     assert _item().to_candidate().url.reg_domain == "instagram.com"
 
 
-def test_item_without_text_converts():
+def test_textless_item():
     c = _item().to_candidate()
     assert c.text == ""
     assert c.signals == {"platform": "instagram"}
 
 
-def test_listing_all_keeps_own_first():
+def test_own_first():
     """Own posts lead, because a monitored account is what was asked for."""
     lst = Listing(own=["a", "b"], others=["c"])
     assert lst.all == ["a", "b", "c"]

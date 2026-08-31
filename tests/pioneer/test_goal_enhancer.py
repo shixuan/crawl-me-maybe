@@ -44,12 +44,12 @@ def _valid_json() -> str:
     )
 
 
-async def test_no_client_is_inert():
+async def test_no_client():
     enhanced = await GoalEnhancer(None).enhance(_goal())
     assert enhanced is None
 
 
-async def test_valid_json_fills_all_fields():
+async def test_json_fills_all():
     enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
     enhanced = await enhancer.enhance(_goal("找机器学习论文"))
     assert enhanced is not None
@@ -58,7 +58,7 @@ async def test_valid_json_fills_all_fields():
     assert enhanced.since is None
 
 
-async def test_chat_called_with_system_and_json_mode():
+async def test_chat_args():
     client = _StubClient([_resp(_valid_json())])
     await GoalEnhancer(client).enhance(_goal())
     call = client.calls[0]
@@ -71,29 +71,29 @@ async def test_chat_called_with_system_and_json_mode():
     assert f"Today is {today}" in call["system"]
 
 
-async def test_prose_wrapped_around_json_is_tolerated():
+async def test_prose_json_ok():
     content = "Sure, here you go:\n" + _valid_json() + "\nHope that helps."
     enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal())
     assert enhanced is not None
     assert enhanced.keywords == ["machine learning", "papers"]
 
 
-async def test_llm_error_returns_none():
+async def test_llm_error_none():
     enhancer = GoalEnhancer(_StubClient([LLMError("provider down")]))
     assert await enhancer.enhance(_goal()) is None
 
 
-async def test_token_budget_exceeded_returns_none():
+async def test_budget_none():
     enhancer = GoalEnhancer(_StubClient([TokenBudgetError("token budget exhausted")]))
     assert await enhancer.enhance(_goal()) is None
 
 
-async def test_garbage_response_returns_none():
+async def test_garbage_none():
     assert await GoalEnhancer(_StubClient([_resp("not json at all")])).enhance(_goal()) is None
     assert await GoalEnhancer(_StubClient([_resp("{broken")])).enhance(_goal()) is None
 
 
-async def test_empty_statement_returns_none():
+async def test_empty_none():
     content = '{"goal_statement": "", "keywords": ["machine learning"]}'
     assert await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal()) is None
 
@@ -108,21 +108,21 @@ async def test_keywords_sanitized():
     assert enhanced.keywords == ["ml", "papers", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10", "k11", "k12"]
 
 
-async def test_missing_keywords_tokenize_prompt():
+async def test_keywords_from_prompt():
     content = '{"goal_statement": "Find Rust jobs", "since": null}'
     enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal("find rust jobs"))
     assert enhanced is not None
     assert enhanced.keywords == ["find", "rust", "jobs"]
 
 
-async def test_since_parsed_as_aware_utc():
+async def test_since_aware():
     content = '{"goal_statement": "s", "keywords": ["k"], "since": "2026-07-01"}'
     enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal())
     assert enhanced is not None
     assert enhanced.since == datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc)
 
 
-async def test_since_rejects_future_and_ancient_dates():
+async def test_since_absurd():
     future = '{"goal_statement": "s", "keywords": ["k"], "since": "2999-01-01"}'
     ancient = '{"goal_statement": "s", "keywords": ["k"], "since": "1990-01-01"}'
     garbage = '{"goal_statement": "s", "keywords": ["k"], "since": "not a date"}'
@@ -142,14 +142,14 @@ def _spec_json(fields: str) -> str:
     )
 
 
-async def test_goal_naming_fields_gets_a_spec():
+async def test_spec_from_goal():
     enhancer = GoalEnhancer(_StubClient([_resp(_spec_json('{"merchant": "who runs it", "deadline": "when it ends"}'))]))
     enhanced = await enhancer.enhance(_goal())
     assert enhanced is not None
     assert enhanced.extraction_spec == {"fields": {"merchant": "who runs it", "deadline": "when it ends"}}
 
 
-async def test_goal_without_fields_gets_no_spec():
+async def test_no_spec():
     """Extracting from a goal that named nothing to collect is waste."""
     enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
     enhanced = await enhancer.enhance(_goal())
@@ -167,7 +167,7 @@ async def test_goal_without_fields_gets_no_spec():
         "[]",
     ],
 )
-async def test_odd_field_names_dropped(fields):
+async def test_odd_names_drop(fields):
     """A field name becomes a key the whole downstream depends on.
 
     Anything the model invents that is not a snake_case name is dropped
@@ -179,7 +179,7 @@ async def test_odd_field_names_dropped(fields):
     assert enhanced.extraction_spec is None
 
 
-async def test_field_names_are_normalized_and_capped():
+async def test_names_normed():
     many = ", ".join(f'"f{i}": "d{i}"' for i in range(12))
     enhancer = GoalEnhancer(_StubClient([_resp(_spec_json("{" + many + "}"))]))
     enhanced = await enhancer.enhance(_goal())
@@ -187,7 +187,7 @@ async def test_field_names_are_normalized_and_capped():
     assert len(enhanced.extraction_spec["fields"]) == 8
 
 
-async def test_empty_content_is_reported_as_its_own_failure(caplog):
+async def test_empty_reported(caplog):
     """A reasoning model can spend the whole ceiling before writing JSON.
 
     It reads as "unparseable" unless it is named, and the cure is a
@@ -201,7 +201,7 @@ async def test_empty_content_is_reported_as_its_own_failure(caplog):
     assert "unparseable" not in caplog.text
 
 
-async def test_ceiling_belongs_to_the_client():
+async def test_ceiling_client():
     """One knob for every stage: the right value follows from the model."""
     client = _StubClient([_resp(_valid_json())])
     await GoalEnhancer(client).enhance(_goal())
