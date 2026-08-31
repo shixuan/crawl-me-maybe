@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.4.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.3.1...v0.4.0) (2026-08-31)
+
+
+### Features
+
+* **dashboard:** filter by whether one named field is there ([96e4efd](https://github.com/shixuan/crawl-me-maybe/commit/96e4efd8c83eddec138edb9691c056e60a9020db))
+* **digest:** let one crawl move between a platform and the open web ([9668280](https://github.com/shixuan/crawl-me-maybe/commit/966828022d58ebd38435055000fb68563dfb034f))
+* **digest:** page through a listing ([09ca016](https://github.com/shixuan/crawl-me-maybe/commit/09ca016df59d10dca008514535f77bc12bdbaa4a))
+* **digest:** read reddit, and refuse it without a browser ([99771e5](https://github.com/shixuan/crawl-me-maybe/commit/99771e5360194b7fe01463fa9218ed33523ed5f9))
+* let one crawl cross between platforms and the open web ([4d4c306](https://github.com/shixuan/crawl-me-maybe/commit/4d4c30619d5f58db24f99c19550475bb91bb3f96))
+* page through a listing ([34eb9fd](https://github.com/shixuan/crawl-me-maybe/commit/34eb9fdbb81b921ea3bf9455cf66e5c9eb325b99))
+* **pioneer:** show the ranker how old a candidate is ([ad4d872](https://github.com/shixuan/crawl-me-maybe/commit/ad4d872f53057caf241d00febaa8d3e0ca554a54))
+* read reddit ([5f0c304](https://github.com/shixuan/crawl-me-maybe/commit/5f0c304b387491e8e0669f6566b4c514f330e91a))
+
+
+### Fixes
+
+* **cli:** state the time window in force ([710f0c8](https://github.com/shixuan/crawl-me-maybe/commit/710f0c81c8d3bedcf76f5fb271b5d6f3528f3f65))
+* **config:** state the crawler's own name once, without a version to rot ([18df8fc](https://github.com/shixuan/crawl-me-maybe/commit/18df8fc031744990f125477708c37f0850681fa5))
+* **pioneer:** obey robots.txt ([dee0755](https://github.com/shixuan/crawl-me-maybe/commit/dee07550fcee40ce687fc0cd50a131ac4d3b3069))
+* **storage:** keep one bad statement from hanging the close ([2831a1f](https://github.com/shixuan/crawl-me-maybe/commit/2831a1ff1636a92e77e099fab32ae203097760b3))
+
+
+### Changed
+
+* drop three fields nothing ever filled and a semaphore nothing awaited ([f8f4abd](https://github.com/shixuan/crawl-me-maybe/commit/f8f4abd7ced19df13d12bb2afc03770207007549))
+
 ## [0.3.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.3.0...v0.3.1) (2026-08-25)
 
 
