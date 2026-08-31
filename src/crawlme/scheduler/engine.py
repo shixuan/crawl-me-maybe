@@ -31,7 +31,7 @@ from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.prefilter import PreFilter
+from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.stop_conds import check_stop
@@ -76,6 +76,15 @@ _RANK_BATCH_SIZE = 20
 # ranker's own cap: keeping more here would only be sliced off there.
 _SEEN_SO_FAR = 5
 _POP_SLEEP = 0.2
+
+# Pages of one listing a single seed may ask for. A subreddit pages
+# indefinitely, and its pages arrive at a seed's own depth, so nothing
+# else would stop one seed from taking the whole run.
+_MAX_LISTING_PAGES = 5
+
+# Where the next page of a listing enters. Below anything the ranker
+# thought well of, above what it demoted.
+_LISTING_PAGE_PRIORITY = 0.5
 
 # How long a stopping run waits for the fetches already in the air.
 # Each is bounded by the fetch and extract timeouts and by one analyzer
@@ -201,6 +210,8 @@ class CrawlScheduler:
         # mean "a turn from every page fetched", which a crawl generates
         # itself and without bound.
         self._seed_of: dict[str, str] = {}
+        # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
+        self._pages_of_listing: dict[str, int] = {}
         self._events: EventEmitter | None = None
 
     # seed ingestion --------------------------------------------------
@@ -676,6 +687,54 @@ class CrawlScheduler:
 
         self._state = "STOPPING"
 
+    async def _enqueue_next_page(
+        self,
+        next_url: str,
+        item: FrontierItem,
+        ctx: PreFilterContext,
+        seed: str,
+    ) -> None:
+        """The rest of a paged listing, at the depth it came from.
+
+        Same depth because it is more of the same listing rather than a
+        hop away from it, so counting it would spend the depth budget on
+        standing still.
+
+        Capped per listing. A subreddit pages indefinitely, and left
+        alone one seed would take the whole run: pages arrive at the
+        depth of a seed, so nothing else stops them.
+
+        Neutral priority, not the 1.0 an endorsement gets. More raw
+        material is worth less than a post the ranker already liked, and
+        at 1.0 a six-page budget went entirely on listings without
+        reading one post.
+        """
+        pages = self._pages_of_listing.get(seed, 0)
+        if pages >= _MAX_LISTING_PAGES:
+            logger.debug("listing.page_cap seed=%s pages=%d", seed, pages)
+            return
+        url = self._canonicalizer.canonicalize(next_url, item.url.canonical)
+        candidate = Candidate(url=url, depth=item.depth, discovered_at=_utcnow())
+        decision, why = self._prefilter.check(candidate, self._goal, ctx)  # type: ignore[arg-type]
+        if decision.value != "allow":
+            logger.debug("listing.next_dropped url=%s reason=%s", url.canonical, why)
+            return
+        self._pages_of_listing[seed] = pages + 1
+        await self._frontier.push_batch(
+            [
+                FrontierItem(
+                    url=url,
+                    url_key=url.url_key,
+                    priority=_LISTING_PAGE_PRIORITY,
+                    score_source="listing_page",
+                    depth=item.depth,
+                    reg_domain=url.reg_domain,
+                    seed_url_key=seed,
+                )
+            ]
+        )
+        logger.info("listing.next_page url=%s page=%d", url.canonical, pages + 2)
+
     async def _inject_endorsed(self) -> None:
         """Push analyzer-endorsed links straight into the frontier.
 
@@ -899,6 +958,8 @@ class CrawlScheduler:
                 n_allowed,
                 n_filtered,
             )
+            if harvest.next_url:
+                await self._enqueue_next_page(harvest.next_url, item, ctx, seed)
             if self._events and n_allowed > 0:
                 self._events.emit(
                     EventType.URL_DISCOVERED,

@@ -840,3 +840,83 @@ async def test_pause_settles_the_fetches_in_the_air():
     assert finished == ["done"], "pause returned before the fetch had finished"
     assert task.done()
     assert sched._state == "PAUSED"
+
+
+def _url(raw: str) -> URL:
+    return URL(raw=raw, canonical=raw, url_key=raw, reg_domain="reddit.com")
+
+
+def _paging_sched(**overrides):
+    """A scheduler whose prefilter allows and whose frontier records."""
+    frontier = MagicMock()
+    frontier.push_batch = AsyncMock()
+    prefilter = MagicMock()
+    prefilter.check.return_value = (MagicMock(value="allow"), "")
+    canon = MagicMock()
+    canon.canonicalize.side_effect = lambda raw, _base: _url(raw)
+    sched = _make_sched(frontier=frontier, prefilter=prefilter, canonicalizer=canon, **overrides)
+    sched._goal = _goal(max_pages=100)
+    return sched, frontier
+
+
+@pytest.mark.asyncio
+async def test_a_listing_page_arrives_at_the_depth_it_came_from():
+    """More of the same listing, not a hop away from it. Counting it
+    would spend the depth budget on standing still."""
+    sched, frontier = _paging_sched()
+    item = FrontierItem(url=_url("https://www.reddit.com/r/x/"), url_key="k", depth=2)
+    ctx = MagicMock()
+    await sched._enqueue_next_page("https://www.reddit.com/r/x/?after=t3_a", item, ctx, "seed")
+    pushed = frontier.push_batch.await_args.args[0]
+    assert [p.depth for p in pushed] == [2]
+    assert pushed[0].score_source == "listing_page"
+
+
+@pytest.mark.asyncio
+async def test_a_listing_page_does_not_outrank_the_posts_already_found():
+    """More raw material is worth less than a post the ranker liked. At
+    full priority a six-page budget went entirely on listings."""
+    sched, frontier = _paging_sched()
+    item = FrontierItem(url=_url("https://www.reddit.com/r/x/"), url_key="k", depth=0)
+    await sched._enqueue_next_page("https://www.reddit.com/r/x/?after=t3_a", item, MagicMock(), "seed")
+    assert frontier.push_batch.await_args.args[0][0].priority < 1.0
+
+
+@pytest.mark.asyncio
+async def test_one_listing_cannot_take_the_whole_run():
+    """A subreddit pages indefinitely, and its pages arrive at a seed's
+    own depth, so nothing else would stop them."""
+    from crawlme.scheduler.engine import _MAX_LISTING_PAGES
+
+    sched, frontier = _paging_sched()
+    item = FrontierItem(url=_url("https://www.reddit.com/r/x/"), url_key="k", depth=0)
+    ctx = MagicMock()
+    for i in range(_MAX_LISTING_PAGES + 3):
+        await sched._enqueue_next_page(f"https://www.reddit.com/r/x/?after=t3_{i}", item, ctx, "seed")
+    assert frontier.push_batch.await_count == _MAX_LISTING_PAGES
+
+
+@pytest.mark.asyncio
+async def test_each_listing_gets_its_own_allowance():
+    """Thirty accounts is thirty listings, not one budget between them."""
+    from crawlme.scheduler.engine import _MAX_LISTING_PAGES
+
+    sched, frontier = _paging_sched()
+    ctx = MagicMock()
+    for seed in ("a", "b"):
+        item = FrontierItem(url=_url(f"https://www.reddit.com/r/{seed}/"), url_key=seed, depth=0)
+        for i in range(_MAX_LISTING_PAGES):
+            await sched._enqueue_next_page(f"https://www.reddit.com/r/{seed}/?after=t3_{i}", item, ctx, seed)
+    assert frontier.push_batch.await_count == _MAX_LISTING_PAGES * 2
+
+
+@pytest.mark.asyncio
+async def test_a_next_page_the_prefilter_rejects_is_not_counted():
+    """Robots or scope can refuse it, and a refusal must not eat the
+    allowance for pages that would have been allowed."""
+    sched, frontier = _paging_sched()
+    sched._prefilter.check.return_value = (MagicMock(value="drop"), "robots")
+    item = FrontierItem(url=_url("https://www.reddit.com/r/x/"), url_key="k", depth=0)
+    await sched._enqueue_next_page("https://www.reddit.com/r/x/?after=t3_a", item, MagicMock(), "seed")
+    frontier.push_batch.assert_not_awaited()
+    assert sched._pages_of_listing.get("seed", 0) == 0

@@ -46,6 +46,9 @@ class Harvest:
 
     candidates: list[Candidate]
     problem: PageProblem | None = None
+    # The rest of a paged listing, enqueued at this page's own depth: it
+    # is more of the same listing, not a hop away from it.
+    next_url: str = ""
     # Whether this came from a page that lists other pages.  Only a
     # listing can be judged empty or not: an item page yields nothing by
     # design, and a link graph has no listings at all.  Declared by the
@@ -138,6 +141,7 @@ class PageHarvester:
             return Harvest([])
 
         listing = adapter.parse_listing(html, page.url.canonical, _payloads_of(page))
+        next_url = adapter.next_page(html, page.url.canonical)
         own = {i.permalink for i in listing.own}
         out: list[Candidate] = []
         for item in listing.all:
@@ -147,7 +151,7 @@ class PageHarvester:
             out.append(candidate)
         if not out:
             logger.warning("harvest.listing_empty url=%s platform=%s", page.url.canonical, adapter.PLATFORM)
-        return Harvest(out, listing=True)
+        return Harvest(out, listing=True, next_url=next_url)
 
 
 def _html_of(page: Page) -> str:

@@ -50,6 +50,9 @@ _PERMALINK = re.compile(r'href="(/r/[^/"]+/comments/[^"?#]+)"')
 # leaves the ranker judging a slug.
 _POST_CARD = re.compile(r"<shreddit-post\s([^>]*)>", re.S)
 
+# The thing id of a card, in page order. The last one is the cursor.
+_CARD_ID = re.compile(r'<shreddit-post[^>]*\bid="(t3_[a-z0-9]+)"')
+
 # The same shape, applied to the address a page was fetched from.  It
 # is what tells a post from the listing that pointed at it.
 _POST_URL = re.compile(r"/r/[^/]+/comments/[^/]+")
@@ -159,6 +162,24 @@ def parse_item(html: str, url: str = "") -> FeedItem | None:
         platform=PLATFORM,
         text=_text_of(body.group(1)) if body else "",
     )
+
+
+def next_page(html: str, url: str) -> str:
+    """`?after=<last post>`, which the rendered site still honours.
+
+    Measured over three pages of one subreddit: 79 posts each, 227 after
+    deduplication, so a cursor reaches roughly three times what one page
+    holds. The order it advances is the listing's, not time: all three
+    pages spanned the same month, which is why TIME_HORIZON cannot stop
+    a subreddit the way it stops a strictly ordered feed.
+    """
+    if _POST_URL.search(url):
+        return ""
+    ids = _CARD_ID.findall(html)
+    if not ids:
+        return ""
+    base = url.split("?", 1)[0]
+    return f"{base}?after={ids[-1]}"
 
 
 def keeps_payload(url: str, content_type: str) -> bool:

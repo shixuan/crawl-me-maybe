@@ -136,3 +136,27 @@ def test_a_permalink_the_cards_missed_is_still_a_candidate():
     html = '<a href="/r/Python/comments/abc123/some_slug/">x</a>'
     items = reddit.parse_listing(html, _LISTING_URL, []).own
     assert [i.permalink for i in items] == ["https://www.reddit.com/r/Python/comments/abc123/some_slug/"]
+
+
+def test_a_listing_says_where_the_rest_of_it_is():
+    """Scrolling cannot reach it: a rendered feed unmounts what scrolls
+    past, so sixteen scrolls returned fewer posts than two."""
+    nxt = reddit.next_page(_LISTING, _LISTING_URL)
+    assert nxt.startswith(_LISTING_URL.split("?")[0] + "?after=t3_")
+
+
+def test_a_cursor_replaces_the_one_before_it():
+    """Appending would grow the URL every page and dedup would stop
+    seeing them as the same listing."""
+    once = reddit.next_page(_LISTING, _LISTING_URL)
+    twice = reddit.next_page(_LISTING, once)
+    assert twice.count("after=") == 1
+    assert twice == once
+
+
+def test_a_post_has_no_next_page():
+    assert reddit.next_page(_POST, _POST_URL) == ""
+
+
+def test_a_page_with_no_cards_has_no_next_page():
+    assert reddit.next_page("<html><body>nothing</body></html>", _LISTING_URL) == ""

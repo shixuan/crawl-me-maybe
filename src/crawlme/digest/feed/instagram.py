@@ -97,6 +97,11 @@ def problem(html: str) -> PageProblem | None:
     return None
 
 
+def next_page(html: str, url: str) -> str:
+    """None yet: the cursor lives in an XHR the fetcher does not keep."""
+    return ""
+
+
 def keeps_payload(url: str, content_type: str) -> bool:
     """The grid is built from a graphql answer, and that answer has the text."""
     return "json" in content_type and "/graphql/query" in url
