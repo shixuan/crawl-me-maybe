@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -107,20 +109,31 @@ class _FakeBrowser:
         self._connected = False
 
 
+@contextlib.contextmanager
 def _playwright(browser):
+    """Stand in for the playwright module, installed or not.
+
+    The capture imports it inside the call, so a patch needs the real
+    module to exist and the bare CI lane has none. Supplying the module
+    itself keeps these tests about the waiting, which is what breaks.
+    """
     pw = AsyncMock()
     pw.chromium.launch = AsyncMock(return_value=browser)
     cm = AsyncMock()
     cm.__aenter__ = AsyncMock(return_value=pw)
     cm.__aexit__ = AsyncMock(return_value=False)
-    return lambda: cm
+    fake = types.ModuleType("playwright.async_api")
+    fake.async_playwright = lambda: cm  # type: ignore[attr-defined]
+    parent = sys.modules.get("playwright") or types.ModuleType("playwright")
+    with patch.dict(sys.modules, {"playwright": parent, "playwright.async_api": fake}):
+        yield
 
 
 STATE = {"cookies": [{"name": "sessionid", "value": "x", "domain": ".instagram.com"}], "origins": []}
 
 
 async def _capture(tmp_path, browser, **kw):
-    with patch("playwright.async_api.async_playwright", _playwright(browser)):
+    with _playwright(browser):
         return await asyncio.wait_for(
             capture("instagram", tmp_path / "s.json", timeout_sec=kw.pop("timeout_sec", 5)), timeout=5
         )
@@ -147,7 +160,7 @@ async def test_quitting_the_browser_says_so(tmp_path: Path):
             raise RuntimeError("context has been closed")
 
     browser = _FakeBrowser(_Gone(STATE, _FakePage()), connected=False)
-    with patch("playwright.async_api.async_playwright", _playwright(browser)):
+    with _playwright(browser):
         with pytest.raises(SessionError, match="Close the tab"):
             await capture("instagram", tmp_path / "s.json", timeout_sec=5)
 
@@ -162,7 +175,7 @@ async def test_interrupt_keeps_the_login(tmp_path: Path):
     async def interrupted(*_a, **_k):
         raise KeyboardInterrupt
 
-    with patch("playwright.async_api.async_playwright", _playwright(browser)):
+    with _playwright(browser):
         with patch("crawlme.cli.session._wait_for_a_person", interrupted):
             out = tmp_path / "s.json"
             state = await capture("instagram", out, timeout_sec=5)
@@ -174,7 +187,7 @@ async def test_interrupt_keeps_the_login(tmp_path: Path):
 async def test_nobody_logs_in_saves_nothing(tmp_path: Path):
     """A timeout is the one case where there is nothing worth keeping."""
     browser = _FakeBrowser(_FakeCtx(STATE, _FakePage()))
-    with patch("playwright.async_api.async_playwright", _playwright(browser)):
+    with _playwright(browser):
         with pytest.raises(SessionError, match="within"):
             await capture("instagram", tmp_path / "s.json", timeout_sec=0.05)
 
