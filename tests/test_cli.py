@@ -750,3 +750,30 @@ def test_session_ceiling(_installed, tmp_path):
             except SystemExit:
                 pass
     assert captured["goal"].domain_budget == 0
+
+
+def test_login_refusal_says_how_to_fix_it():
+    """The stop code is for a machine. This is the one ending with an
+    obvious next step, and the run cannot say it any other way."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {"state": "COMPLETED", "reason": "LOGIN_REQUIRED", "session": "./ig.json", "platform": "instagram"}
+    )
+    assert "crawl session ./ig.json --feed instagram --force" in out
+
+
+def test_advice_survives_a_missing_session_path():
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary({"state": "COMPLETED", "reason": "LOGIN_REQUIRED"})
+    assert "crawl session" in out
+
+
+def test_other_endings_get_no_advice():
+    """Most stops have nothing to do about them, and a line per run
+    saying so is noise."""
+    from crawlme.cli.run import _format_summary
+
+    for reason in ("BUDGET_PAGES", "FRONTIER_DRAINED", "none", "RATE_LIMITED"):
+        assert "crawl session" not in _format_summary({"state": "COMPLETED", "reason": reason})

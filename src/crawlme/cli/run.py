@@ -230,7 +230,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # Printed last on purpose: the cleanup above emits its own teardown
     # log lines, and the report should be the final word on the
     # terminal, not buried between shutdown noise.
-    _print_summary(scheduler, task, budget)
+    _print_summary(scheduler, task, budget, args)
     code = exit_code(task.stopping_reason)
     # The run is over: mute the whole logging tree.  Interpreter
     # teardown still fires litellm's atexit worker (which creates a
@@ -383,7 +383,12 @@ def _declared_seeds(args: argparse.Namespace) -> list[str]:
     return [u for u in data if isinstance(u, str)]
 
 
-def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudget) -> None:
+def _print_summary(
+    scheduler: CrawlScheduler,
+    task: CrawlTask,
+    budget: TokenBudget,
+    args: argparse.Namespace | None = None,
+) -> None:
     """Print the end-of-run report: the numbers a user cares about.
 
     The scheduler's summary carries crawl-level tallies (pages,
@@ -395,6 +400,9 @@ def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudg
         return
     summary["state"] = task.state
     summary["reason"] = task.stopping_reason or "none"
+    if args is not None:
+        summary["session"] = args.session or ""
+        summary["platform"] = _walled_platform(args)
     summary["llm_calls"] = budget.calls
     summary["tokens_in"] = budget.input_tokens
     summary["tokens_out"] = budget.output_tokens
@@ -403,9 +411,29 @@ def _print_summary(scheduler: CrawlScheduler, task: CrawlTask, budget: TokenBudg
     print(_format_summary(summary))
 
 
+def _refusal_advice(s: dict[str, Any]) -> list[str]:
+    """What to do about a stop code, where there is something to do.
+
+    The code alone is for a machine. A login that has run out is the one
+    ending with an obvious next step, and printing the step is cheaper
+    and catches more than checking the file up front would: a session
+    the platform revoked looks perfectly valid on disk.
+    """
+    if "LOGIN_REQUIRED" not in str(s.get("reason", "")):
+        return []
+    path = s.get("session") or "./session.json"
+    platform = s.get("platform") or ""
+    feed = f" --feed {platform}" if platform else ""
+    return [
+        "  the platform asked for a login. Make a fresh session with:",
+        f"    crawl session {path}{feed} --force",
+    ]
+
+
 def _format_summary(s: dict[str, Any]) -> str:
     """Render the summary dict as aligned terminal lines."""
     lines = [f"crawl finished: {s.get('state', '?')} ({s.get('reason', 'none')})"]
+    lines.extend(_refusal_advice(s))
 
     pages = f"{s.get('pages_fetched', 0)} fetched"
     if s.get("candidates_discovered"):
