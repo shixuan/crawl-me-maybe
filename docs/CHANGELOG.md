@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.4.0...v0.4.1) (2026-09-01)
+
+
+### Fixes
+
+* **cli:** end the session wait when the window closes ([629d3ab](https://github.com/shixuan/crawl-me-maybe/commit/629d3ab8ab5ec2d060de8cbdb316174e11727d06))
+* **cli:** say how to fix a refused login ([8a2ea4a](https://github.com/shixuan/crawl-me-maybe/commit/8a2ea4a22f906b0e36905e87f22e4ebac346bc29))
+* **config:** default logs to the format a person reads ([86bd8aa](https://github.com/shixuan/crawl-me-maybe/commit/86bd8aade425baaf90a942a0fca1f95729251333))
+* make crawl session usable ([8d37eaf](https://github.com/shixuan/crawl-me-maybe/commit/8d37eafdf838b3fc532106c219c8299812b9ce97))
+
 ## [0.4.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.3.1...v0.4.0) (2026-08-31)
 
 
