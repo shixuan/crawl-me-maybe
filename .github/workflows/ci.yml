@@ -62,6 +62,10 @@ jobs:
       - run: pip install pytest pytest-asyncio pytest-httpx pytest-cov
       # tests/smoke is its own job below, so a broken build is visible
       # on the run summary instead of buried in this job's log.
+      #
+      # The bare matrix entry has no playwright, which a developer venv
+      # does. Run scripts/check-bare-lane.sh before pushing to see what
+      # this sees.
       - run: pytest --cov=src/crawlme --cov-fail-under=70 -m "not e2e and not browser" --ignore=tests/smoke
 
   # Does the assembled system still run at all: a hermetic crawl over a

@@ -20,12 +20,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
+import select
 import sys
+import time
 from pathlib import Path
 from typing import Any, cast
 
 from crawlme.digest.feed import FEEDS
+
+# How often to ask whether the login window is still there.
+_CLOSE_POLL_SECONDS = 0.5
 
 
 class SessionError(Exception):
@@ -45,6 +51,55 @@ def _login_url(feed: str) -> str:
     if adapter is None or not adapter.NEEDS_SESSION:
         raise SessionError(f"{feed} needs no session, so there is nothing to log in to")
     return f"https://www.{adapter.DOMAIN}/"
+
+
+def _typed_enter() -> bool:
+    """Whether a line is waiting on stdin, without blocking for one.
+
+    Not a thread: cancelling a task does not stop the read inside it,
+    and the interpreter then hangs at exit waiting to join it.
+    """
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+    except (OSError, ValueError):
+        # No selectable stdin (a pipe on some platforms, or none at
+        # all). The window is still a way out, so this is not fatal.
+        return False
+    if not ready:
+        return False
+    # An empty read is end of input, not a keypress.
+    return bool(sys.stdin.readline())
+
+
+async def _wait_for_a_person(browser: Any, page: Any, timeout_sec: float) -> bool:
+    """Wait for Enter or for the window to go. False if neither came.
+
+    Polled, not event-driven: a closed tab is neither a closed context
+    nor a disconnected browser, and the events cover only the latter two.
+
+    Nothing is read from the browser while it waits. Reading the session
+    opens a hidden page per stored origin, which flickers a tab and can
+    cut into the login itself.
+    """
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if _typed_enter():
+            return True
+        try:
+            if page.is_closed() or not browser.is_connected():
+                return True
+        except Exception:
+            return True
+        await asyncio.sleep(_CLOSE_POLL_SECONDS)
+    return False
+
+
+async def _read_state(context: Any) -> dict[str, Any] | None:
+    """The session as it stands, or None if it cannot be read."""
+    try:
+        return cast("dict[str, Any]", await context.storage_state())
+    except Exception:
+        return None
 
 
 async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
@@ -69,21 +124,35 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
                 "A visible browser needs a desktop: on WSL that means WSLg, over SSH an X display."
             ) from e
         context = await browser.new_context()
-        await (await context.new_page()).goto(url)
+        page = await context.new_page()
+        await page.goto(url)
 
         print(f"\nA browser window is open at {url}")
         print("  1. log in there, the way you normally would")
-        print("  2. come back here and press Enter")
+        print("  2. close the window, or come back here and press Enter")
         print("Nothing is read from the page: only the session your login produced.\n")
         try:
-            await asyncio.wait_for(asyncio.to_thread(sys.stdin.readline), timeout=timeout_sec)
-        except asyncio.TimeoutError as e:
-            raise SessionError(f"nobody pressed Enter within {timeout_sec}s, so nothing was saved") from e
+            came = await _wait_for_a_person(browser, page, timeout_sec)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # The login already happened by the time anyone reaches for
+            # Ctrl-C, and reading it out still works.
+            print("\ninterrupted; keeping the session the login produced", file=sys.stderr)
+            came = True
+        try:
+            if not came:
+                raise SessionError(f"nobody finished logging in within {timeout_sec}s, so nothing was saved")
+            state = await _read_state(context)
+            if state is None:
+                raise SessionError(
+                    "the browser was closed before its session could be read.\n"
+                    "  Close the tab, or press Enter here, rather than quitting the browser:\n"
+                    "  a session lives in the browser and goes with it."
+                )
         finally:
-            # Read before closing either: a closed context has no state.
-            state = cast("dict[str, Any]", await context.storage_state())
-            await context.close()
-            await browser.close()
+            with contextlib.suppress(Exception):
+                await context.close()
+            with contextlib.suppress(Exception):
+                await browser.close()
     return state
 
 
@@ -113,14 +182,14 @@ async def cmd_session(args: argparse.Namespace) -> None:
         sys.exit(1)
     hosts = sorted({c.get("domain", "") for c in state.get("cookies", [])})
     print(f"saved {out}  ({len(state['cookies'])} cookies from {', '.join(h for h in hosts if h)})")
-    print(f'use it with:  crawl run "<prompt>" --feed {args.feed} --session {out}')
+    print(f'use it with:  crawl run "<prompt>" --seeds <url> --session {out}')
 
 
 def add_arguments(sub: Any) -> None:
     """Register the session subcommand on the top-level parser."""
     p = sub.add_parser("session", help="Log in through a browser and save the session for later runs")
-    p.add_argument("path", help="Where to write the session file, e.g. ./ig-session.json")
+    p.add_argument("path", help="Where to write the session file, e.g. ./session.json")
     walled = sorted(n for n, a in FEEDS.items() if a.NEEDS_SESSION)
-    p.add_argument("--feed", choices=walled, default=(walled or ["instagram"])[0], help="Which platform")
+    p.add_argument("--feed", choices=walled, default=walled[0], help="Which platform")
     p.add_argument("--force", action="store_true", help="Replace an existing session file")
     p.add_argument("--timeout", type=int, default=600, help="Seconds to wait for the login (default: 600)")

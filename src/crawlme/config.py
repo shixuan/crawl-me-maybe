@@ -125,4 +125,6 @@ class Settings(BaseSettings):
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
     # Documented dual knob: the --log-level flag overrides this default.
     log_level: str = "INFO"
-    log_format: str = "json"  # json | console
+    # console for a person at a terminal, which is who runs this; json
+    # for a log collector, which is who reads it afterwards.
+    log_format: str = "console"  # console | json
