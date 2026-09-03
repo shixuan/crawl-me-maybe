@@ -50,6 +50,7 @@ def test_prints_prompt(caplog):
         with patch("crawlme.cli.run.create_scheduler") as mock_factory:
             mock_sched = MagicMock()
             mock_sched.ingest_seeds = AsyncMock()
+            mock_sched.enhance_seeds = AsyncMock(return_value=[])
             mock_sched._counters = CrawlCounters()
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
@@ -78,6 +79,7 @@ def _capturing_factory(captured: dict):
         captured["overrides"] = overrides
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
+        sched.enhance_seeds = AsyncMock(return_value=[])
         sched._counters = CrawlCounters()
         sched.run = AsyncMock()
         return sched
@@ -268,6 +270,7 @@ def test_binds_budget(monkeypatch):
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
+        sched.enhance_seeds = AsyncMock(return_value=[])
         sched._counters = CrawlCounters()
         sched.run = AsyncMock()
         sched.note_tokens_used = note
@@ -290,6 +293,7 @@ def test_prints_summary(capsys):
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
+        sched.enhance_seeds = AsyncMock(return_value=[])
         sched._counters = CrawlCounters(pages_fetched=5, tokens_used=1234)
         sched.run = AsyncMock()
         sched.summary = lambda: {
@@ -777,3 +781,58 @@ def test_other_endings_get_no_advice():
 
     for reason in ("BUDGET_PAGES", "FRONTIER_DRAINED", "none", "RATE_LIMITED"):
         assert "crawl session" not in _format_summary({"state": "COMPLETED", "reason": reason})
+
+
+def test_added_seeds_are_reported_with_what_they_found():
+    """Nothing keeps them, so the report is the only chance to say which
+    were worth naming. Sorted by yield: that is the whole question."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "BUDGET_PAGES",
+            "seeds_asked": 2,
+            "proposed_seeds": {
+                "https://a.com/": ("found nothing", 0),
+                "https://b.com/": ("earned its place", 4),
+            },
+        }
+    )
+    assert out.index("https://b.com/") < out.index("https://a.com/")
+    assert "4 relevant" in out
+    assert "nothing" in out
+    assert "earned its place" in out
+
+
+def test_a_run_that_added_no_seeds_says_nothing():
+    """Most runs do not use this, and a line per run would be noise."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
+    assert "added for itself" not in out
+
+
+def test_a_run_never_asked_says_nothing():
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
+    assert "sources" not in out
+
+
+def test_proposals_that_all_failed_are_reported():
+    """Silence here is what a run that was never asked looks like, and
+    one run lost its proposals to an empty model reply with nothing but
+    a parser warning in the log to show for it."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 6, "proposed_seeds": {}})
+    assert "named 6 more sources" in out
+    assert "none survived" in out
+
+
+def test_a_model_that_named_none_is_reported():
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 0, "proposed_seeds": {}})
+    assert "named none usable" in out

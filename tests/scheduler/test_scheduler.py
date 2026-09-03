@@ -6,10 +6,11 @@ import asyncio
 import datetime
 import logging
 import threading
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from crawlme.config import Settings
 from crawlme.digest.harvest import Harvest
 from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
 from crawlme.schemas import (
@@ -47,8 +48,6 @@ def _item() -> FrontierItem:
 
 def _make_sched(**overrides) -> CrawlScheduler:
     """Build a scheduler with all-mock components for unit tests."""
-    from crawlme.config import Settings
-
     # The waiting half lives inside the frontier now, so the mock hangs
     # off it rather than beside it.
     frontier_mock = MagicMock()
@@ -470,8 +469,6 @@ async def test_analysis_free(monkeypatch):
     Regression: analyze used to run inside the fetch semaphore, which made
     fetch_concurrency and llm_concurrency nested instead of independent.
     """
-    from crawlme.config import Settings
-
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
     sched._harvester = MagicMock(harvest=lambda page, depth: Harvest([]))
     sched._goal = _goal()
@@ -500,8 +497,6 @@ async def test_analysis_free(monkeypatch):
 @pytest.mark.asyncio
 async def test_slot_released():
     """The slot covers the request and its parse, nothing longer."""
-    from crawlme.config import Settings
-
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
     sched._fetcher.fetch = AsyncMock(side_effect=RuntimeError("boom"))
     sched._frontier.record_outcome = AsyncMock()
@@ -1002,3 +997,97 @@ async def test_robots_absent():
     sched._goal = _goal(max_pages=5)
     await sched._ensure_robots("x.com")
     assert sched._robots.allow_fetch("https://x.com/anything")
+
+
+@pytest.mark.asyncio
+async def test_seeds_unenhanced_by_default():
+    """Off unless asked for: no call, and the module is not even loaded."""
+    sched = _make_sched(settings=Settings(enhance_seeds=False))
+    assert await sched.enhance_seeds(_goal(), [MagicMock()]) == []
+
+
+@pytest.mark.asyncio
+async def test_no_seeds_nothing_to_enhance():
+    """Nothing to widen, and the model would have no example to follow."""
+    sched = _make_sched(settings=Settings(enhance_seeds=True))
+    assert await sched.enhance_seeds(_goal(), []) == []
+
+
+@pytest.mark.asyncio
+async def test_enhanced_seeds_are_marked():
+    """The buffer reads this to give them the smaller share."""
+    from crawlme.schemas import URL, Candidate
+
+    url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
+    proposed = Candidate(url=url, seed_ext=True)
+    sched = _make_sched(settings=Settings(enhance_seeds=True))
+    with patch("crawlme.pioneer.seed_enhancer.enhance", AsyncMock(return_value=([proposed], 1))):
+        got = await sched.enhance_seeds(_goal(), [MagicMock(url=url)])
+    assert [c.seed_ext for c in got] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_proposed_seed_is_credited_for_what_it_found():
+    """The report ranks them by this, and it is the whole reason to
+    print them: a seed that earned its place is one to keep."""
+    from crawlme.pioneer.canonicalizer import Canonicalizer
+    from crawlme.schemas import AnalyzerFeedback
+
+    canon = Canonicalizer()
+    seed = "https://ig.test/acct/"
+    seed_key = canon.canonicalize(seed, seed).url_key
+    post = "https://ig.test/acct/p/1/"
+    post_key = canon.canonicalize(post, post).url_key
+
+    sched = _make_sched(canonicalizer=canon)
+    sched._url_key_of = {post: post_key}
+    sched._seed_of = {post_key: seed_key}
+    sched._proposed_seeds = {seed_key: (seed, "why")}
+    sched._counters.relevance_threshold = 0.7
+
+    sched._on_analysis(
+        AnalysisResult(classification="RELEVANT", relevance_score=0.9, feedback=AnalyzerFeedback(url=post, title="t"))
+    )
+    assert sched.summary()["proposed_seeds"][seed] == ("why", 1)
+
+
+@pytest.mark.asyncio
+async def test_a_proposed_seed_that_found_nothing_says_so():
+    sched = _make_sched()
+    sched._proposed_seeds = {"k": ("https://ig.test/acct/", "why")}
+    assert sched.summary()["proposed_seeds"]["https://ig.test/acct/"] == ("why", 0)
+
+
+@pytest.mark.asyncio
+async def test_seed_credited_mid_judge():
+    """The sink runs during the analyze call, and it reads maps that used
+    to be filled only after that call returned. Every verdict therefore
+    landed with its own page still unknown, so a proposed seed reported
+    finding nothing however much it found."""
+    sched = _make_sched()
+    sched._goal = _goal()
+    sched._proposed_seeds = {"seed-k": ("https://ext.test/", "why")}
+    sched._seed_of = {"k1": "seed-k"}
+
+    url = URL(raw="https://ext.test/p/1", canonical="https://ext.test/p/1", url_key="pk", reg_domain="ext.test")
+    page = Page(url_key="pk", url=url)
+    result = MagicMock(item_id="i1", status_code=200, raw=b"x")
+
+    async def _analyze(p, _g):
+        sched._on_analysis(
+            AnalysisResult(
+                classification="RELEVANT",
+                relevance_score=0.9,
+                feedback=AnalyzerFeedback(url=p.url.canonical, title="t"),
+            )
+        )
+
+    sched._analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
+    sched._fetch_and_extract = AsyncMock(return_value=(result, page))
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    await sched._handle_fetch(_item())
+
+    assert sched.summary()["proposed_seeds"]["https://ext.test/"] == ("why", 1)

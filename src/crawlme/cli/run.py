@@ -84,6 +84,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
+    if args.enhance_seeds:
+        cfg.enhance_seeds = True
     if args.session is not None:
         # The session alone: it says which context the platform is read
         # through, not that everything must be. Credentials mean nothing
@@ -196,6 +198,9 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if allowed_domains is None and hasattr(source, "allowed_domains"):
         allowed_domains = source.allowed_domains
 
+    # After the user's own, so theirs are ingested whatever the model
+    # says.
+    candidates += await scheduler.enhance_seeds(goal, candidates, budget)
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(
@@ -411,6 +416,11 @@ def _print_summary(
     print(_format_summary(summary))
 
 
+# Between the report's parts. Indentation alone left them reading as
+# one block.
+_RULE = "-" * 62
+
+
 def _refusal_advice(s: dict[str, Any]) -> list[str]:
     """What to do about a stop code, where there is something to do.
 
@@ -425,16 +435,47 @@ def _refusal_advice(s: dict[str, Any]) -> list[str]:
     platform = s.get("platform") or ""
     feed = f" --feed {platform}" if platform else ""
     return [
-        "  the platform asked for a login. Make a fresh session with:",
-        f"    crawl session {path}{feed} --force",
+        _RULE,
+        "the platform asked for a login. Make a fresh session with:",
+        f"  crawl session {path}{feed} --force",
     ]
+
+
+def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
+    """The seeds the run named for itself, and what each was worth.
+
+    Nothing keeps them, on purpose: what a source is worth is a fact
+    about this goal, and storing it against the address alone is how the
+    last piece of cross-run state went wrong. Printing them puts the
+    keeping where the judgement is, which is with whoever reads this.
+    """
+    proposed = s.get("proposed_seeds") or {}
+    asked = s.get("seeds_asked")
+    if asked is None:
+        return []
+    if not proposed:
+        # Silence here is what a run that was never asked looks like,
+        # and one run lost its proposals to an empty model reply.
+        out = [_RULE]
+        if asked:
+            out.append(f"the model named {asked} more sources; none survived verification.")
+        else:
+            out.append("the model was asked for more sources and named none usable (see the log).")
+        return out
+    out = [_RULE, "seeds this run added for itself, best first:"]
+    for url, (why, found) in sorted(proposed.items(), key=lambda kv: -kv[1][1]):
+        out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
+        if why:
+            out.append(f"                {why}")
+    out.append("  Nothing keeps these. Worth one? Add it to --seeds yourself.")
+    return out
 
 
 def _format_summary(s: dict[str, Any]) -> str:
     """Render the summary dict as aligned terminal lines."""
     lines = [f"crawl finished: {s.get('state', '?')} ({s.get('reason', 'none')})"]
-    lines.extend(_refusal_advice(s))
 
+    lines.append(_RULE)
     pages = f"{s.get('pages_fetched', 0)} fetched"
     if s.get("candidates_discovered"):
         pages += f", {s['candidates_discovered']} links discovered"
@@ -489,6 +530,9 @@ def _format_summary(s: dict[str, Any]) -> str:
 
     if s.get("duration_sec") is not None:
         lines.append(f"  duration:   {s['duration_sec']}s")
+    # After the numbers, which are what a reader came for.
+    lines.extend(_refusal_advice(s))
+    lines.extend(_proposed_seed_lines(s))
     return "\n".join(lines)
 
 

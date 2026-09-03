@@ -67,6 +67,12 @@ crawl run "what is worth doing in Toronto this weekend, with the event, the plac
   --max-relevant 20 --page-budget 60 --ignore-robots
 ```
 
+Add `--enhance-seeds` and the model names more sources for the same goal --
+other subreddits here, other accounts on a platform, other feeds. Each one is
+fetched and read before the crawl uses it: about a third of what it names turns
+out not to exist. What survives gets a smaller share of the run than the seeds
+you named, and the report at the end says what each was worth.
+
 `--fetcher browser` still exists and still means *everything* through a
 browser. A page that is no platform at all can need a script run before it
 says anything, and only the person crawling it knows that.
@@ -145,6 +151,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 |------|--------|---------|---------|
 | `--seeds` | comma-separated URLs, or a path | *required in practice* | Where the crawl begins. Anything not starting with `http://` or `https://` is read as a JSON file: a list of URLs, or `{"seeds": [...], "allowed_domains": [...]}` |
 | `--allowed-domains` | comma-separated domains | none | Registrable domains the crawl may not leave. Outranks the same key in a seeds file |
+| `--enhance-seeds` | flag | off | Let the model name more sources of the same goal, first-hand ones over sites that write about them. Each is fetched and read before use, since roughly a third of what it names does not exist. They take a smaller share of the crawl than yours, and the run prints what each was worth so you can keep the good ones yourself |
 
 **How far to go**
 
@@ -270,6 +277,16 @@ halves: candidates waiting for a score, and scored candidates waiting for a
 fetch slot. Fairness lives upstream of the ranker -- a turn from each seed, so
 one loud account cannot spend the whole LLM budget -- and priority downstream,
 where the scarce thing is the page budget instead.
+
+**Seeds it names itself are checked before use.** With `--enhance-seeds`, the
+model is asked where else to look for the same goal, first-hand sources ahead
+of sites that write about them. It is confident and often wrong -- about a
+third of what it names does not exist, in shapes a person cannot spot: the
+brand is real and the account name is invented. So each one is fetched and read
+first, and only what a harvester gets something out of is used. They also take
+a smaller share of the crawl than the seeds you named, and lose it entirely to
+the ranker if what they yield is worse. Nothing is stored: the run prints what
+each turned out to be worth, and keeping one is your call.
 
 **A run says why it stopped.** Budgets, a target met, diminishing returns, a
 drained frontier -- and the ones that exist because silence was the bug:

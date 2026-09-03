@@ -28,6 +28,7 @@ from crawlme.digest.extractor import Extractor
 from crawlme.digest.feed.base import FeedDependencyError, PageProblem
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
+from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
@@ -214,11 +215,54 @@ class CrawlScheduler:
         # mean "a turn from every page fetched", which a crawl generates
         # itself and without bound.
         self._seed_of: dict[str, str] = {}
+        # How many the model named, kept apart from how many survived:
+        # a run that proposed nothing and a run whose proposals all
+        # failed verification are different things to be told.
+        self._seeds_asked: int | None = None
         # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
         self._pages_of_listing: dict[str, int] = {}
+        # Seeds this run proposed, and what each was worth. Nothing
+        # stores them, so the report is the only place they show.
+        self._proposed_seeds: dict[str, tuple[str, str]] = {}
+        self._relevant_by_seed: collections.Counter[str] = collections.Counter()
         self._events: EventEmitter | None = None
 
     # seed ingestion --------------------------------------------------
+
+    async def enhance_seeds(
+        self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
+    ) -> list[Candidate]:
+        """More seeds of the same kind, verified before they are used.
+
+        Here rather than in the CLI because the parts it takes -- the
+        fetcher, the harvester, the store -- are this object's, and
+        handing them out would make the caller assemble a crawl to add
+        a seed to one.
+
+        Imported inside the branch, so a run that did not ask for this
+        never loads it.
+        """
+        if not self._cfg.enhance_seeds or not seeds:
+            return []
+        from crawlme.pioneer.seed_enhancer import enhance
+
+        proposed, n_proposed = await enhance(
+            goal,
+            [c.url.raw for c in seeds],
+            settings=self._cfg,
+            budget=budget,
+            fetcher=self._fetcher,
+            harvester=self._harvester,
+            storage=self._storage,
+            canonicalizer=self._canonicalizer,
+            ranker=self._ranker,
+        )
+        self._seeds_asked = n_proposed
+        for c in proposed:
+            # url_key, the shape _seed_of counts under.
+            key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
+            self._proposed_seeds[key] = (c.url.canonical, str(c.signals.get("why", "")))
+        return proposed
 
     async def ingest_seeds(
         self,
@@ -253,6 +297,7 @@ class CrawlScheduler:
                     score_source="seed",
                     reg_domain=url.reg_domain,
                     seed_url_key=url.url_key,
+                    seed_ext=c.seed_ext,
                 )
             )
             n_ingested += 1
@@ -398,6 +443,9 @@ class CrawlScheduler:
         # facade until v0.3.0 removed it, and the prompt kept reading a
         # list nothing filled any more.
         if result.classification == "RELEVANT":
+            seed = self._seed_of.get(self._url_key_of.get(fb.url or "", ""), "")
+            if seed:
+                self._relevant_by_seed[seed] += 1
             self._relevant_pages.append(
                 {
                     "url": fb.url,
@@ -482,6 +530,16 @@ class CrawlScheduler:
             "candidates_ranked": stats.candidates_ranked,
             "fetch_errors": stats.fetch_errors,
             "analyses": dict(stats.analyses_by_class),
+            # url -> (why it was proposed, how many relevant pages came
+            # of it). Nothing keeps these between runs, so the report is
+            # the only chance to say which were worth naming.
+            "proposed_seeds": {
+                url: (why, self._relevant_by_seed.get(key, 0)) for key, (url, why) in self._proposed_seeds.items()
+            },
+            # None when the run never asked.  A number, including zero,
+            # means it asked, and the report owes the reader an answer
+            # either way.
+            "seeds_asked": self._seeds_asked,
         }
         if counters.started_at:
             report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
@@ -924,6 +982,12 @@ class CrawlScheduler:
             # the links found below (2.9).
             if self._analyzer is not None:
                 assert self._goal is not None
+                # Both maps before the call, not after: the sink runs
+                # while this awaits, and it reads them to credit the
+                # seed a page came from. Filled below, as they were,
+                # every judgement landed with the page still unknown.
+                self._url_key_of[page.url.canonical] = page.url_key
+                self._seed_of[page.url_key] = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
                 await self._analyzer.analyze(page, self._goal)
             if self._events:
                 self._events.emit(
@@ -965,6 +1029,9 @@ class CrawlScheduler:
             seed = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
             for c in candidates:
                 c.seed_url_key = seed
+                # Descendants inherit it, or the smaller share would
+                # hold for the seed alone.
+                c.seed_ext = item.seed_ext
             self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",

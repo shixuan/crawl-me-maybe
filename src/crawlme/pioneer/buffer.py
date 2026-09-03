@@ -86,6 +86,12 @@ class Buffer(Protocol):
     async def wake(self) -> None: ...
 
 
+# The bucket every proposed seed shares, and how often it gets a turn.
+# One pass in four leaves the user's own seeds most of the flow.
+_EXT_KEY = "\x00ext"
+_EXT_EVERY = 4
+
+
 def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[list[Candidate], str]:
     """Up to *n*, one from each seed in turn, oldest first within a seed.
 
@@ -101,16 +107,25 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
     """
     groups: dict[str, list[Candidate]] = {}
     for c in candidates:
-        groups.setdefault(c.seed_url_key or c.source_url_key or "", []).append(c)
+        # They share one turn, so proposing more changes how deep each
+        # is read, not what the user's own seeds get.
+        key = _EXT_KEY if c.seed_ext else (c.seed_url_key or c.source_url_key or "")
+        groups.setdefault(key, []).append(c)
 
     keys = list(groups)
     offset = keys.index(start) if start in keys else 0
     out: list[Candidate] = []
     served = offset
+    # One pass in four, but only while the user's own still have
+    # candidates. After that an unused slot is better spent than empty.
+    user_left = any(k != _EXT_KEY and q for k, q in groups.items())
+    rounds = 0
     while len(out) < n:
         took = False
         for i in range(len(keys)):
             key = keys[(offset + i) % len(keys)]
+            if key == _EXT_KEY and user_left and rounds % _EXT_EVERY:
+                continue
             queue = groups[key]
             if not queue:
                 continue
@@ -119,6 +134,8 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
             took = True
             if len(out) >= n:
                 break
+        rounds += 1
+        user_left = any(k != _EXT_KEY and q for k, q in groups.items())
         if not took:
             break
     return out, (keys[served] if keys else "")

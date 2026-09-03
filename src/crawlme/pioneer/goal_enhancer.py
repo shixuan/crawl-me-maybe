@@ -83,7 +83,11 @@ class GoalEnhancer:
         """Wire the client with the default-on auto-off semantics: no
         credentials means the enhancer stays inert.  *budget* is shared
         across all LLM consumers of the task."""
-        return cls(LLMClient.from_settings_if_configured(settings, budget=budget))
+        return cls(
+            LLMClient.from_settings_if_configured(
+                settings, budget=budget, reasoning_effort=settings.llm_enhance_reasoning_effort
+            )
+        )
 
     async def enhance(self, goal: CrawlGoal) -> EnhancedGoal | None:
         """One chat call, then validation.  None means apply nothing."""

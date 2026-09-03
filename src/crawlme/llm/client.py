@@ -275,12 +275,20 @@ class LLMClient:
                     thinking_tokens = _reasoning_output(resp, usage)
                     if self._budget is not None:
                         self._budget.record(input_tokens, output_tokens, cached_tokens, thinking_tokens)
-                    truncated = output_tokens >= ceiling
+                    # An empty answer counts too. A model that thinks
+                    # away the whole allowance stops one token under the
+                    # ceiling, which read as a healthy reply that would
+                    # not parse.
+                    truncated = output_tokens >= ceiling or (not content and output_tokens > 0)
                     if truncated:
                         logger.warning(
-                            "llm.chat.output_ceiling out=%d ceiling=%d; the reply is cut short "
+                            "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; nothing left for the "
+                            "answer (turn thinking down for this stage, or raise LLM_MAX_OUTPUT_TOKENS)"
+                            if not content
+                            else "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; the reply is cut short "
                             "(raise LLM_MAX_OUTPUT_TOKENS)",
                             output_tokens,
+                            thinking_tokens,
                             ceiling,
                         )
                     return LLMResponse(

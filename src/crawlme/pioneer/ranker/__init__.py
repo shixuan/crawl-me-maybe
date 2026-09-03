@@ -2,8 +2,13 @@
 
 Public surface (import from crawlme.pioneer.ranker):
 
-  Ranker    : protocol a ranking strategy duck-types
-  LLMRanker : batched LLM scoring, the only stage that ranks
+  Ranker           : protocol a ranking strategy duck-types
+  LLMRanker        : batched LLM scoring, the only stage that ranks
+  DEMOTED_PRIORITY : the floor a rejection sits at under --recall,
+                     where a rejection is demoted rather than removed.
+                     Public because telling a rejection from a real
+                     score means knowing this number, and the seed
+                     verifier has to.
 
 The rule and embedding stages were removed after measurement: over
 seven crawls neither ordered better than a coin flip on most tasks,
@@ -12,6 +17,6 @@ cut a batch of 20.  See the archive/embedding-investigation branch.
 """
 
 from crawlme.pioneer.ranker.base import Ranker
-from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.pioneer.ranker.llm import DEMOTED_PRIORITY, LLMRanker
 
-__all__ = ["LLMRanker", "Ranker"]
+__all__ = ["DEMOTED_PRIORITY", "LLMRanker", "Ranker"]

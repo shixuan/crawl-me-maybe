@@ -28,7 +28,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # -: Per-run knobs (flags are the documented entry; env twins exist
+    # --- Per-run knobs (flags are the documented entry; env twins exist
     #    mechanically but are not advertised in .env.example) ---------
     result_dir: Path = Path("results")
     ignore_robots: bool = False
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # while 3000 won both precision and single-run recall.
     analyzer_max_chars: int = 3000
 
-    # -: LLM (v0.2+) ---
+    # --- LLM (v0.2+) ---
     # On by default.  Degrades automatically: without a key and without
     # a base url the LLM stages are skipped at wiring time, and runtime
     # failures fall back to rule scoring.
@@ -82,8 +82,11 @@ class Settings(BaseSettings):
     # DeepSeek "none", the only value there that turns thinking off.
     llm_rank_reasoning_effort: str = ""
     llm_analyze_reasoning_effort: str = ""
+    # Off, not empty. Both enhancers reply with a dozen addresses, and
+    # one run spent all 8191 output tokens thinking and answered nothing.
+    llm_enhance_reasoning_effort: str = "none"
 
-    # -: Fetch ---
+    # --- Fetch ---
     fetch_concurrency: int = 6
     fetch_timeout_connect: float = 10.0
     fetch_timeout_read: float = 30.0
@@ -109,7 +112,7 @@ class Settings(BaseSettings):
     feed_scrolls: int = 4
     user_agents: list[str] = [DEFAULT_UA]
 
-    # -: Extract ---
+    # --- Extract ---
     # Timeout for trafilatura extraction + bs4 link parsing (per page).
     # Trafilatura can degrade to O(n^2) or worse on pathological HTML
     # (e.g. 6MB wikidata structured-data pages, giant ad-heavy news sites).
@@ -118,10 +121,18 @@ class Settings(BaseSettings):
     # deliberately large / rich pages.
     extract_timeout: float = 120.0
 
-    # -: Frontier ---
+    # --- Frontier ---
     candidate_buffer_size: int = 2_000
 
-    # -: Logging ---
+    # --- Seed enhancement ---
+    # How many seeds the LLM may add: clamp(4 + 2*log2(yours), min, max).
+    # Bounds, not a count, because one seed deserves a few and thirty
+    # does not need thirty more.
+    enhance_seeds: bool = False
+    enhance_seeds_min: int = 4
+    enhance_seeds_max: int = 12
+
+    # --- Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
     # Documented dual knob: the --log-level flag overrides this default.
     log_level: str = "INFO"
