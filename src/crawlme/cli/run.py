@@ -463,11 +463,19 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
             out.append("the model was asked for more sources and named none usable (see the log).")
         return out
     out = [_RULE, "seeds this run added for itself, best first:"]
-    for url, (why, found) in sorted(proposed.items(), key=lambda kv: -kv[1][1]):
+    for url, (why, tally) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
+        found, pages, scored, cands, wanted = tally
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
+        # Without this, one crawled and empty and one the run never got
+        # to both said "nothing", and the same question came back three
+        # times over.
+        out.append(
+            f"                read {pages} page{'' if pages == 1 else 's'}, "
+            f"scored {scored} of {cands} candidates, wanted {wanted}"
+        )
         if why:
             out.append(f"                {why}")
-    out.append("  Nothing keeps these. Worth one? Add it to --seeds yourself.")
+    out.append("  Worth one? Add it to --seeds yourself.")
     return out
 
 

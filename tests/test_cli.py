@@ -794,8 +794,8 @@ def test_added_seeds_are_reported_with_what_they_found():
             "reason": "BUDGET_PAGES",
             "seeds_asked": 2,
             "proposed_seeds": {
-                "https://a.com/": ("found nothing", 0),
-                "https://b.com/": ("earned its place", 4),
+                "https://a.com/": ("found nothing", (0, 1, 9, 45, 0)),
+                "https://b.com/": ("earned its place", (4, 12, 40, 181, 22)),
             },
         }
     )
@@ -876,3 +876,19 @@ def test_hitting_the_target_exactly_says_nothing():
         {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 15}}
     )
     assert "against a target" not in out
+
+
+def test_a_seed_says_how_much_of_it_was_read():
+    """A seed crawled and empty and one the run never got to both said
+    "nothing", and the same question came back three times over."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "MAX_RELEVANT",
+            "seeds_asked": 1,
+            "proposed_seeds": {"https://a.com/": ("why", (0, 1, 9, 45, 0))},
+        }
+    )
+    assert "read 1 page, scored 9 of 45 candidates, wanted 0" in out

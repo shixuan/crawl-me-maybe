@@ -1053,14 +1053,16 @@ async def test_a_proposed_seed_is_credited_for_what_it_found():
     sched._on_analysis(
         AnalysisResult(classification="RELEVANT", relevance_score=0.9, feedback=AnalyzerFeedback(url=post, title="t"))
     )
-    assert sched.summary()["proposed_seeds"][seed] == ("why", 1)
+    why, tally = sched.summary()["proposed_seeds"][seed]
+    assert (why, tally[0]) == ("why", 1)
 
 
 @pytest.mark.asyncio
 async def test_a_proposed_seed_that_found_nothing_says_so():
     sched = _make_sched()
     sched._proposed_seeds = {"k": ("https://ig.test/acct/", "why")}
-    assert sched.summary()["proposed_seeds"]["https://ig.test/acct/"] == ("why", 0)
+    why, tally = sched.summary()["proposed_seeds"]["https://ig.test/acct/"]
+    assert (why, tally[0]) == ("why", 0)
 
 
 @pytest.mark.asyncio
@@ -1095,7 +1097,8 @@ async def test_seed_credited_mid_judge():
 
     await sched._handle_fetch(_item())
 
-    assert sched.summary()["proposed_seeds"]["https://ext.test/"] == ("why", 1)
+    why, tally = sched.summary()["proposed_seeds"]["https://ext.test/"]
+    assert (why, tally[0]) == ("why", 1)
 
 
 def _judge(sched, url_key, score):

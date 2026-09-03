@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
 import datetime
 import logging
 import time
@@ -128,6 +129,21 @@ def _endorsed_href(link: str) -> str | None:
     return None
 
 
+@dataclasses.dataclass
+class _SeedTally:
+    """What one seed got read, for the report to tell apart a seed that
+    was crawled and empty from one the run never reached."""
+
+    pages: int = 0
+    candidates: int = 0
+    scored: int = 0
+    wanted: int = 0
+    relevant: int = 0
+
+    def as_tuple(self) -> tuple[int, int, int, int, int]:
+        return (self.relevant, self.pages, self.scored, self.candidates, self.wanted)
+
+
 class CrawlScheduler:
     """Orchestrator that wires all v0.1 modules together.
 
@@ -230,7 +246,9 @@ class CrawlScheduler:
         # Seeds this run proposed, and what each was worth. Nothing
         # stores them, so the report is the only place they show.
         self._proposed_seeds: dict[str, tuple[str, str]] = {}
-        self._relevant_by_seed: collections.Counter[str] = collections.Counter()
+        # What each seed actually got read. "nothing" said the same thing
+        # for a seed crawled and empty and one barely opened.
+        self._tally_by_seed: dict[str, _SeedTally] = collections.defaultdict(_SeedTally)
         self._events: EventEmitter | None = None
 
     # seed ingestion --------------------------------------------------
@@ -451,7 +469,7 @@ class CrawlScheduler:
         if result.classification == "RELEVANT":
             seed = self._seed_of.get(self._url_key_of.get(fb.url or "", ""), "")
             if seed:
-                self._relevant_by_seed[seed] += 1
+                self._tally_by_seed[seed].relevant += 1
             self._relevant_pages.append(
                 {
                     "url": fb.url,
@@ -555,7 +573,7 @@ class CrawlScheduler:
             "analyses": dict(stats.analyses_by_class),
             # url -> (why it was proposed, relevant pages found through it)
             "proposed_seeds": {
-                url: (why, self._relevant_by_seed.get(key, 0)) for key, (url, why) in self._proposed_seeds.items()
+                url: (why, self._tally_by_seed[key].as_tuple()) for key, (url, why) in self._proposed_seeds.items()
             },
             # The target, so the report can print the tally beside it.
             "max_relevant": self._counters.max_relevant,
@@ -1076,6 +1094,9 @@ class CrawlScheduler:
                 # Descendants inherit it, or the smaller share would
                 # hold for the seed alone.
                 c.seed_ext = item.seed_ext
+            tally = self._tally_by_seed[seed]
+            tally.pages += 1
+            tally.candidates += len(candidates)
             self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
@@ -1222,6 +1243,11 @@ class CrawlScheduler:
         items: list[FrontierItem] = []
         for d in decisions:
             self._storage.save_rank_decision(d)
+            scored = _find_candidate(batch, d.candidate_id)
+            if scored is not None:
+                tally = self._tally_by_seed[scored.seed_url_key]
+                tally.scored += 1
+                tally.wanted += not d.dropped
             if d.dropped:
                 continue
             c = _find_candidate(batch, d.candidate_id)
