@@ -208,9 +208,12 @@ class PriorityQueue:
         for item in ready:
             if item.url_key not in self._items:
                 item.seq = _next_seq()
-                item.priority = self._effective_priority(item, now)
                 self._items[item.url_key] = item
-                heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
+                # Aged for the ordering, not written back. A busy domain
+                # drains the same item many times, and writing it back
+                # aged the aged value again. Five passes lifted a 0.5 to
+                # a 1.0. It is written back once, when taken.
+                heapq.heappush(self._heap, (-self._effective_priority(item, now), item.seq, item.url_key))
         return len(ready) > 0
 
     def _effective_priority(self, item: FrontierItem, now: datetime.datetime) -> float:

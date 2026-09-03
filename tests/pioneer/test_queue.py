@@ -242,3 +242,31 @@ async def test_size_waiting():
     await src.add([_item("a"), _item("b"), _item("c")])
     await src.take(_now(), _always(Gate.TAKE))
     assert src.size == 2, "one is in flight, two still queued"
+
+
+@pytest.mark.asyncio
+async def test_waiting_ages_once():
+    """A busy domain defers and drains the same item many times. Writing
+    the aged score back made the next pass age the aged score again, so
+    at a fixed clock it compounded and five passes lifted a 0.5 to a
+    1.0. Time in the queue then outranked the ranker: one run fetched
+    twelve 0.5 pages while two 1.0 pages waited, and stopped for
+    diminishing returns before reaching them."""
+    src = PriorityQueue(aging_window=10.0, age_factor=1.0)
+    item = _item("k", 0.5)
+    now = _now() + datetime.timedelta(seconds=10)
+    for _ in range(5):
+        src._pending = [item]
+        src._items.pop("k", None)
+        src._heap.clear()
+        src._drain_pending(now)
+    assert item.priority == 0.5
+
+
+@pytest.mark.asyncio
+async def test_a_high_score_goes_first():
+    """Ordering still follows the ranker after the waiting is done."""
+    src = PriorityQueue(aging_window=10.0, age_factor=1.0)
+    await src.add([_item("lo", 0.5), _item("hi", 1.0)])
+    later = _now() + datetime.timedelta(seconds=30)
+    assert (await src.take(later, _always(Gate.TAKE))).url_key == "hi"
