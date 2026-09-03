@@ -726,6 +726,14 @@ class CrawlScheduler:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
+            # Back-pressure. The fetch slot is released before the
+            # analysis, so without this the pump keeps dispatching into
+            # a queue. One run parked 46 tasks and abandoned 33 of them
+            # unjudged. The width leaves each stage a short queue.
+            if self._counters.in_flight >= self._cfg.fetch_concurrency + 2 * self._cfg.llm_concurrency:
+                await asyncio.sleep(_POP_SLEEP)
+                continue
+
             item = await self._frontier.pop_next(
                 now=_utcnow(),
                 next_allowed=None if self._cfg.ignore_robots else self._robots.next_allowed_at,

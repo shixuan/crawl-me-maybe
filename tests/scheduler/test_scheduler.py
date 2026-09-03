@@ -1159,6 +1159,25 @@ def test_the_tally_counts_listings():
     assert sched._counters.relevant_found == 1
 
 
+@pytest.mark.asyncio
+async def test_backpressure_caps_inflight():
+    """The fetch slot is released before the analysis, so tasks waiting
+    for an LLM slot hold nothing back. One run reached forty-six parked
+    on two analysis slots and abandoned thirty-three when it stopped."""
+    sched = _make_sched(settings=Settings(fetch_concurrency=6, llm_concurrency=2))
+    sched._task = _task()
+    sched._counters.in_flight = 6 + 2 * 2
+    sched._frontier.pop_next = AsyncMock(return_value=_item())
+
+    sched._state = "RUNNING"
+    task = asyncio.create_task(sched._fetch_pump())
+    await asyncio.sleep(0.05)
+    sched._state = "STOPPING"
+    await asyncio.gather(task, return_exceptions=True)
+
+    sched._frontier.pop_next.assert_not_awaited()
+
+
 def test_enough_found_reads_the_target():
     sched = _make_sched()
     sched._counters.max_relevant = 15
