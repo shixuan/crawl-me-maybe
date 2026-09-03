@@ -191,6 +191,10 @@ class CrawlScheduler:
         # makes the calls; a second semaphore here was never awaited and
         # read as though the engine were the one limiting them.
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
+        # The analysis queue, moved out of the client so the target
+        # check can sit at its head. Not the fetch slot, which would
+        # nest the two limits.
+        self._analysis_sem = asyncio.Semaphore(settings.llm_concurrency)
 
         self._state: str = "CREATED"
         # LLM usage that landed before run() recreated the counters
@@ -215,10 +219,12 @@ class CrawlScheduler:
         # mean "a turn from every page fetched", which a crawl generates
         # itself and without bound.
         self._seed_of: dict[str, str] = {}
-        # How many the model named, kept apart from how many survived:
-        # a run that proposed nothing and a run whose proposals all
-        # failed verification are different things to be told.
+        # How many the model named. Proposing none and losing them all
+        # in verification are different failures.
         self._seeds_asked: int | None = None
+        # Two halves of one vote, emptied as each pair completes.
+        self._verdict_of: dict[str, bool] = {}
+        self._listing_of: dict[str, bool] = {}
         # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
         self._pages_of_listing: dict[str, int] = {}
         # Seeds this run proposed, and what each was worth. Nothing
@@ -466,15 +472,32 @@ class CrawlScheduler:
                 "summary": result.summary or "",
             },
         )
-        # The only place a page is ever judged, so the only place the
-        # relevance window can be fed.  DIMINISHING_RETURNS reads it to
-        # decide whether the crawl has stopped finding anything.
         relevant = result.relevance_score >= self._counters.relevance_threshold
-        self._counters.relevance_window.append(relevant)
         # The same judgement answers both questions the run asks: the
         # window says whether this is still working, the tally says
-        # whether it is enough.
+        # whether it is enough. Only the tally belongs here, because the
+        # window admits some pages and not others.
         self._counters.relevant_found += relevant
+        self._verdict_of[result.url_key] = relevant
+        self._cast_relevance_vote(result.url_key)
+
+    def _cast_relevance_vote(self, url_key: str) -> None:
+        """Let a page vote on whether the crawl is still finding things.
+
+        A listing does not vote. It is read for its links and can never
+        be an answer, so it only fills the window with certain misses.
+        Five seeds cost seven of twenty slots and stopped one run for
+        diminishing returns, which made --enhance-seeds work against
+        itself. Empty listings are ADAPTER_EMPTY's business, not this.
+
+        The verdict and the listing flag arrive in either order, so the
+        vote is cast by whichever completes the pair.
+        """
+        if url_key not in self._verdict_of or url_key not in self._listing_of:
+            return
+        relevant = self._verdict_of.pop(url_key)
+        if not self._listing_of.pop(url_key):
+            self._counters.relevance_window.append(relevant)
 
     def _note_page_age(self, page: Page) -> None:
         """Track how many pages in a row fell outside the goal's window.
@@ -530,15 +553,13 @@ class CrawlScheduler:
             "candidates_ranked": stats.candidates_ranked,
             "fetch_errors": stats.fetch_errors,
             "analyses": dict(stats.analyses_by_class),
-            # url -> (why it was proposed, how many relevant pages came
-            # of it). Nothing keeps these between runs, so the report is
-            # the only chance to say which were worth naming.
+            # url -> (why it was proposed, relevant pages found through it)
             "proposed_seeds": {
                 url: (why, self._relevant_by_seed.get(key, 0)) for key, (url, why) in self._proposed_seeds.items()
             },
-            # None when the run never asked.  A number, including zero,
-            # means it asked, and the report owes the reader an answer
-            # either way.
+            # The target, so the report can print the tally beside it.
+            "max_relevant": self._counters.max_relevant,
+            # None when the run never asked. A number means it did.
             "seeds_asked": self._seeds_asked,
         }
         if counters.started_at:
@@ -647,6 +668,17 @@ class CrawlScheduler:
                 left_frontier,
                 left_buffer,
             )
+
+    def _enough_found(self) -> bool:
+        """Whether the run already has the answers it asked for.
+
+        The stop only stops dispatch, and every task already out keeps
+        landing, so one run asked for fifteen and reported twenty-four.
+        Asked at the head of the analysis queue, the overshoot is
+        bounded by what is already calling.
+        """
+        c = self._counters
+        return c.max_relevant > 0 and c.relevant_found >= c.max_relevant
 
     def _record_stop_reason(self) -> None:
         """Name why the run is ending, for a path that bypassed the check."""
@@ -982,13 +1014,15 @@ class CrawlScheduler:
             # the links found below (2.9).
             if self._analyzer is not None:
                 assert self._goal is not None
-                # Both maps before the call, not after: the sink runs
-                # while this awaits, and it reads them to credit the
-                # seed a page came from. Filled below, as they were,
-                # every judgement landed with the page still unknown.
-                self._url_key_of[page.url.canonical] = page.url_key
-                self._seed_of[page.url_key] = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
-                await self._analyzer.analyze(page, self._goal)
+                # Both maps before the call. The sink runs while this
+                # awaits and reads them to credit the seed.
+                async with self._analysis_sem:
+                    # At the head of the queue, not before it. What is
+                    # ahead can meet the target while this one waits.
+                    if not self._enough_found():
+                        self._url_key_of[page.url.canonical] = page.url_key
+                        self._seed_of[page.url_key] = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+                        await self._analyzer.analyze(page, self._goal)
             if self._events:
                 self._events.emit(
                     EventType.FETCH_COMPLETED,
@@ -1023,6 +1057,8 @@ class CrawlScheduler:
             if harvest.listing:
                 self._counters.listings_seen += 1
                 self._counters.listings_empty += int(not candidates)
+            self._listing_of[page.url_key] = harvest.listing
+            self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,
             # however many hops back.  Recorded here because this is the
             # only place that holds both ends of the link.

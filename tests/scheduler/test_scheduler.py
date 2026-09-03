@@ -442,12 +442,14 @@ def test_summary_stats():
 
 
 def test_window_fed():
-    """The analyzer sink is the only writer DIMINISHING_RETURNS can have."""
+    """A judged content page is what DIMINISHING_RETURNS counts."""
     sched = _make_sched()
     sched._counters.relevance_threshold = 0.7
 
-    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
-    sched._on_analysis(AnalysisResult(page_id="p2", url_key="k2", relevance_score=0.2))
+    for key, score in (("k1", 0.9), ("k2", 0.2)):
+        sched._on_analysis(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
+        sched._listing_of[key] = False
+        sched._cast_relevance_vote(key)
 
     assert list(sched._counters.relevance_window) == [True, False]
 
@@ -458,6 +460,8 @@ def test_window_threshold():
     sched._counters.relevance_threshold = 0.95
 
     sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
 
     assert list(sched._counters.relevance_window) == [False]
 
@@ -619,9 +623,10 @@ def test_relevant_count():
     """
     sched = _make_sched()
     sched._counters = CrawlCounters(relevance_threshold=0.7)
-    sched._on_analysis(AnalysisResult(url_key="a", relevance_score=0.9, classification="RELEVANT"))
-    sched._on_analysis(AnalysisResult(url_key="b", relevance_score=0.2, classification="IRRELEVANT"))
-    sched._on_analysis(AnalysisResult(url_key="c", relevance_score=0.75, classification="RELEVANT"))
+    for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
+        sched._on_analysis(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
+        sched._listing_of[key] = False
+        sched._cast_relevance_vote(key)
     assert sched._counters.relevant_found == 2
     assert list(sched._counters.relevance_window) == [True, False, True]
 
@@ -1091,3 +1096,139 @@ async def test_seed_credited_mid_judge():
     await sched._handle_fetch(_item())
 
     assert sched.summary()["proposed_seeds"]["https://ext.test/"] == ("why", 1)
+
+
+def _judge(sched, url_key, score):
+    sched._on_analysis(
+        AnalysisResult(
+            url_key=url_key,
+            classification="RELEVANT" if score >= 0.7 else "IRRELEVANT",
+            relevance_score=score,
+            feedback=AnalyzerFeedback(url=f"https://x.test/{url_key}", title="t"),
+        )
+    )
+
+
+def test_a_listing_does_not_vote():
+    """It is read for its links and can never be an answer. Counting it
+    asks a page that was never in the running whether the run is
+    working, and one run stopped for diminishing returns because five
+    seeds put seven certain misses into a window of twenty."""
+    sched = _make_sched()
+    _judge(sched, "k1", 0.0)
+    sched._listing_of["k1"] = True
+    sched._cast_relevance_vote("k1")
+    assert list(sched._counters.relevance_window) == []
+
+
+def test_a_page_votes_once_judged():
+    sched = _make_sched()
+    _judge(sched, "k1", 0.9)
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
+    assert list(sched._counters.relevance_window) == [True]
+
+
+def test_a_late_verdict_still_votes():
+    """A retried analysis lands long after link extraction, so the
+    harvester's half is already in when the verdict arrives."""
+    sched = _make_sched()
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
+    assert list(sched._counters.relevance_window) == []
+    _judge(sched, "k1", 0.9)
+    assert list(sched._counters.relevance_window) == [True]
+
+
+def test_a_vote_is_cast_once():
+    sched = _make_sched()
+    _judge(sched, "k1", 0.9)
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
+    sched._cast_relevance_vote("k1")
+    assert list(sched._counters.relevance_window) == [True]
+
+
+def test_the_tally_counts_listings():
+    """Abstaining from the window is not abstaining from the run: a
+    listing that somehow answers the goal is still an answer found."""
+    sched = _make_sched()
+    _judge(sched, "k1", 0.9)
+    sched._listing_of["k1"] = True
+    sched._cast_relevance_vote("k1")
+    assert sched._counters.relevant_found == 1
+
+
+def test_enough_found_reads_the_target():
+    sched = _make_sched()
+    sched._counters.max_relevant = 15
+    sched._counters.relevant_found = 14
+    assert sched._enough_found() is False
+    sched._counters.relevant_found = 15
+    assert sched._enough_found() is True
+
+
+def test_no_target_never_enough():
+    """Zero means the run was given no target, not a target of zero."""
+    sched = _make_sched()
+    sched._counters.max_relevant = 0
+    sched._counters.relevant_found = 99
+    assert sched._enough_found() is False
+
+
+@pytest.mark.asyncio
+async def test_a_met_target_stops_analysis():
+    """The stop only stops dispatch. Every task already out keeps going
+    and each one that lands adds to the tally, so one run asked for
+    fifteen and reported twenty-four."""
+    sched = _make_sched()
+    sched._goal = _goal()
+    sched._counters.max_relevant = 15
+    sched._counters.relevant_found = 15
+    sched._analyzer = MagicMock(analyze=AsyncMock())
+    url = URL(raw="https://x.test/p", canonical="https://x.test/p", url_key="pk", reg_domain="x.test")
+    page = Page(url_key="pk", url=url)
+    result = MagicMock(item_id="i", status_code=200, raw=b"x")
+    sched._fetch_and_extract = AsyncMock(return_value=(result, page))
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    await sched._handle_fetch(_item())
+
+    sched._analyzer.analyze.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_target_holds_under_a_queue():
+    """The wait for an analysis slot used to happen inside the LLM
+    client, past every check the scheduler could make, so a target met
+    while forty-six pages were queued still had all forty-six analysed.
+    Queued here instead, the check sits at the head of the queue and
+    only what is already calling can overshoot."""
+    sched = _make_sched(settings=Settings(llm_concurrency=2))
+    sched._goal = _goal()
+    sched._counters.max_relevant = 3
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    calls = 0
+
+    async def _analyze(_page, _goal_arg):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        sched._counters.relevant_found += 1  # worst case: every page counts
+
+    sched._analyzer = MagicMock(analyze=_analyze)
+
+    def _fetched(i):
+        url = URL(raw=f"https://x.test/{i}", canonical=f"https://x.test/{i}", url_key=f"k{i}", reg_domain="x.test")
+        return MagicMock(item_id="i", status_code=200, raw=b"x"), Page(url_key=f"k{i}", url=url)
+
+    pages = [_fetched(i) for i in range(20)]
+    sched._fetch_and_extract = AsyncMock(side_effect=pages)
+    await asyncio.gather(*[sched._handle_fetch(_item()) for _ in range(20)])
+
+    assert calls <= sched._counters.max_relevant + 2

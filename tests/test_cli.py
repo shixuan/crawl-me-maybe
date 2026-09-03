@@ -836,3 +836,43 @@ def test_a_model_that_named_none_is_reported():
 
     out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 0, "proposed_seeds": {}})
     assert "named none usable" in out
+
+
+def test_unjudged_pages_are_reported():
+    """Fetching outruns analysis, so a run that stops on a target leaves
+    pages it paid to fetch and never judged. Without this line, "not in
+    the results" and "never looked at" read the same."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {"state": "COMPLETED", "reason": "MAX_RELEVANT", "pages_fetched": 78, "analyses": {"RELEVANT": 41}}
+    )
+    assert "37 fetched pages were never judged" in out
+
+
+def test_no_gap_no_line():
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary({"state": "COMPLETED", "reason": "X", "pages_fetched": 5, "analyses": {"RELEVANT": 5}})
+    assert "never judged" not in out
+
+
+def test_overshooting_the_target_is_explained():
+    """Work already dispatched keeps landing after the target is met.
+    Without the target beside the tally, one run asking for 15 and
+    reporting 24 reads as the run ignoring what it was asked for."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 24}}
+    )
+    assert "24 relevant against a target of 15" in out
+
+
+def test_hitting_the_target_exactly_says_nothing():
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 15}}
+    )
+    assert "against a target" not in out

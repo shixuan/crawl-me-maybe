@@ -511,6 +511,18 @@ def _format_summary(s: dict[str, Any]) -> str:
     if analyses:
         parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))
         lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")
+        # Fetching outruns analysis, so a run that stops on a target
+        # leaves pages it paid for and never judged. One fetched 78 and
+        # judged 41, and the gap was nowhere on the page.
+        target = s.get("max_relevant", 0)
+        found = analyses.get("RELEVANT", 0)
+        if target and found > target:
+            lines.append(
+                f"              {found} relevant against a target of {target}; the extra landed from work already sent"
+            )
+        unjudged = s.get("pages_fetched", 0) - sum(analyses.values())
+        if unjudged > 0:
+            lines.append(f"              {unjudged} fetched pages were never judged; the run stopped first")
 
     # Printed whenever it happened at all: a page that was not content
     # is invisible everywhere else, and "0 relevant" reads very
