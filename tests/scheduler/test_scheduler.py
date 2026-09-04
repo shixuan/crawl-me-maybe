@@ -13,6 +13,7 @@ import pytest
 from crawlme.config import Settings
 from crawlme.digest.harvest import Harvest
 from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
+from crawlme.scheduler.stop_conds import MAX_STALE_STREAK, RELEVANCE_WINDOW
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -322,11 +323,13 @@ _FRESH = datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)
     ],
 )
 def test_stale_streak(since, published, expected):
+    """Per seed, because a feed is time-ordered per account and never as
+    a whole. Counted globally it could only ever arm for one seed."""
     sched = _make_sched()
     sched._counters.since = since
     for at in published:
-        sched._note_page_age(_page_published(at))
-    assert sched._counters.stale_streak == expected
+        sched._note_page_age(_page_published(at), "seedA")
+    assert sched._tally_by_seed["seedA"].stale == expected
 
 
 def test_context_needs_key():
@@ -442,7 +445,7 @@ def test_summary_stats():
 
 
 def test_window_fed():
-    """A judged content page is what DIMINISHING_RETURNS counts."""
+    """A judged content page is what a source's window counts."""
     sched = _make_sched()
     sched._counters.relevance_threshold = 0.7
 
@@ -451,7 +454,7 @@ def test_window_fed():
         sched._listing_of[key] = False
         sched._cast_relevance_vote(key)
 
-    assert list(sched._counters.relevance_window) == [True, False]
+    assert list(sched._tally_by_seed[""].window) == [True, False]
 
 
 def test_window_threshold():
@@ -463,7 +466,7 @@ def test_window_threshold():
     sched._listing_of["k1"] = False
     sched._cast_relevance_vote("k1")
 
-    assert list(sched._counters.relevance_window) == [False]
+    assert list(sched._tally_by_seed[""].window) == [False]
 
 
 @pytest.mark.asyncio
@@ -616,11 +619,8 @@ def test_rank_drain_once():
 
 
 def test_relevant_count():
-    """The tally has to come from the same place the window does.
-
-    Both answer questions about the same judgement: the window whether
-    the crawl is still working, the tally whether it is done.
-    """
+    """One judgement answers two questions: the run's tally of what it
+    found, and the source's own window of whether it is still paying."""
     sched = _make_sched()
     sched._counters = CrawlCounters(relevance_threshold=0.7)
     for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
@@ -628,7 +628,7 @@ def test_relevant_count():
         sched._listing_of[key] = False
         sched._cast_relevance_vote(key)
     assert sched._counters.relevant_found == 2
-    assert list(sched._counters.relevance_window) == [True, False, True]
+    assert list(sched._tally_by_seed[""].window) == [True, False, True]
 
 
 @pytest.mark.asyncio
@@ -1121,7 +1121,7 @@ def test_a_listing_does_not_vote():
     _judge(sched, "k1", 0.0)
     sched._listing_of["k1"] = True
     sched._cast_relevance_vote("k1")
-    assert list(sched._counters.relevance_window) == []
+    assert list(sched._tally_by_seed[""].window) == []
 
 
 def test_a_page_votes_once_judged():
@@ -1129,7 +1129,7 @@ def test_a_page_votes_once_judged():
     _judge(sched, "k1", 0.9)
     sched._listing_of["k1"] = False
     sched._cast_relevance_vote("k1")
-    assert list(sched._counters.relevance_window) == [True]
+    assert list(sched._tally_by_seed[""].window) == [True]
 
 
 def test_a_late_verdict_still_votes():
@@ -1138,9 +1138,9 @@ def test_a_late_verdict_still_votes():
     sched = _make_sched()
     sched._listing_of["k1"] = False
     sched._cast_relevance_vote("k1")
-    assert list(sched._counters.relevance_window) == []
+    assert list(sched._tally_by_seed[""].window) == []
     _judge(sched, "k1", 0.9)
-    assert list(sched._counters.relevance_window) == [True]
+    assert list(sched._tally_by_seed[""].window) == [True]
 
 
 def test_a_vote_is_cast_once():
@@ -1149,7 +1149,7 @@ def test_a_vote_is_cast_once():
     sched._listing_of["k1"] = False
     sched._cast_relevance_vote("k1")
     sched._cast_relevance_vote("k1")
-    assert list(sched._counters.relevance_window) == [True]
+    assert list(sched._tally_by_seed[""].window) == [True]
 
 
 def test_the_tally_counts_listings():
@@ -1254,3 +1254,84 @@ async def test_the_target_holds_under_a_queue():
     await asyncio.gather(*[sched._handle_fetch(_item()) for _ in range(20)])
 
     assert calls <= sched._counters.max_relevant + 2
+
+
+def _vote(sched, seed, url_key, relevant):
+    sched._seed_of[url_key] = seed
+    sched._verdict_of[url_key] = relevant
+    sched._listing_of[url_key] = False
+    sched._cast_relevance_vote(url_key)
+
+
+def test_a_cold_source_retires():
+    """A full window of its own content with almost nothing to show."""
+    sched = _make_sched()
+    for i in range(RELEVANCE_WINDOW):
+        _vote(sched, "seedA", f"k{i}", False)
+    sched._frontier.retire.assert_called_once_with("seedA")
+    assert sched._tally_by_seed["seedA"].retired
+
+
+def test_one_cold_source_leaves_the_others():
+    """The whole reason this is per seed. Read globally, one quiet shop's
+    back catalogue ended a run with three sources still producing."""
+    sched = _make_sched()
+    for i in range(RELEVANCE_WINDOW):
+        _vote(sched, "cold", f"c{i}", False)
+        _vote(sched, "hot", f"h{i}", i % 3 == 0)
+    assert sched._tally_by_seed["cold"].retired
+    assert not sched._tally_by_seed["hot"].retired
+
+
+def test_a_source_past_the_window_retires():
+    """A feed is time-ordered per account, so reading past --since means
+    that account is walked out. It says nothing about the others."""
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    old = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    for i in range(MAX_STALE_STREAK):
+        sched._note_page_age(_page_published(old), "seedA")
+    assert sched._tally_by_seed["seedA"].retired
+    sched._frontier.retire.assert_called_once_with("seedA")
+
+
+def test_one_hit_resets_the_stale_streak():
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    for at in (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),) * 4:
+        sched._note_page_age(_page_published(at), "seedA")
+    sched._note_page_age(_page_published(datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)), "seedA")
+    assert sched._tally_by_seed["seedA"].stale == 0
+
+
+def test_recall_retires_nothing():
+    """Reading the tail is the point of the mode, not evidence a source
+    is done."""
+    sched = _make_sched()
+    sched._counters.recall = True
+    for i in range(RELEVANCE_WINDOW):
+        _vote(sched, "seedA", f"k{i}", False)
+    assert not sched._tally_by_seed["seedA"].retired
+    sched._frontier.retire.assert_not_called()
+
+
+def test_a_source_retires_once():
+    sched = _make_sched()
+    for i in range(RELEVANCE_WINDOW * 2):
+        _vote(sched, "seedA", f"k{i}", False)
+    sched._frontier.retire.assert_called_once_with("seedA")
+
+
+def test_an_unfiled_page_cannot_retire_anything():
+    """The streak used to be looked up by a key the page did not have
+    yet, so it always landed under the empty seed -- where retirement
+    ignores it. Five sources shared one streak, each other's fresh pages
+    reset it, and a --since of one month came back full of year-old
+    posts."""
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    old = _page_published(datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc))
+    for _ in range(MAX_STALE_STREAK * 2):
+        sched._note_page_age(old, "")
+    assert not sched._tally_by_seed[""].retired
+    sched._frontier.retire.assert_not_called()

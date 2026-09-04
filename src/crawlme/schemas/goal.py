@@ -34,7 +34,7 @@ class CrawlGoal(BaseModel):
     # Diagnostic mode: nothing is discarded, the rejects are ranked
     # last.  Carried on the goal because the run's stop conditions have
     # to know: a run that deliberately reads its own rejects ends with a
-    # tail of misses, which is what DIMINISHING_RETURNS watches for.
+    # tail of misses, which is what retires a source.
     recall: bool = False
     depth_limit: int = 5
     domain_budget: int = 50

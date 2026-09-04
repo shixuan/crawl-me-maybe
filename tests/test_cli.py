@@ -679,7 +679,7 @@ def test_extra_present(capsys):
         ("BUDGET_PAGES", 0),
         ("FRONTIER_DRAINED", 0),
         ("MAX_RELEVANT", 0),
-        ("DIMINISHING_RETURNS", 0),
+        ("FRONTIER_DRAINED", 0),
         ("LOGIN_REQUIRED", 1),
         ("RATE_LIMITED", 1),
         ("FATAL", 1),
@@ -892,3 +892,19 @@ def test_a_seed_says_how_much_of_it_was_read():
         }
     )
     assert "read 1 page, scored 9 of 45 candidates, wanted 0" in out
+
+
+def test_retired_sources_are_reported():
+    """A run now ends by every source retiring, so without this it just
+    reads as a drained frontier."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "FRONTIER_DRAINED",
+            "retired_seeds": ["nothing in its last 20 pages", "nothing in its last 20 pages", "5 pages in a row older"],
+        }
+    )
+    assert "3 sources" in out
+    assert "2 nothing in its last 20 pages" in out

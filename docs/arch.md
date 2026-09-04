@@ -531,7 +531,7 @@ Publication time gets its own best-effort chain: nine `<meta>` spellings →
 JSON-LD `datePublished` at any nesting depth → `<time datetime>`. Relative and
 absolute formats are normalised to aware UTC and absurd dates are discarded. When
 nothing is found the value is None — it is **never guessed**, because a wrong
-guess corrupts the TIME_HORIZON decision.
+guess corrupts the stale streak that retires a source.
 
 ### Harvester and FeedAdapter
 
@@ -687,15 +687,12 @@ class CrawlCounters:
     tokens_used: int = 0
     started_at: float = 0.0
     in_flight: int = 0
-    # Fixed-length sliding window; DIMINISHING_RETURNS reads it
-    relevance_window: deque[bool] = field(default_factory=lambda: deque(maxlen=20))
     fatal_error: str = ""
     # Diagnostic mode: nothing is discarded, the rejects rank last
     recall: bool = False
-    # Time horizon; the whole check sleeps when since is None
+    # Time horizon; the whole check sleeps when since is None.  The
+    # streak that reads it lives per seed, in the scheduler's tally.
     since: datetime | None = None
-    stale_streak: int = 0
-    max_stale_streak: int = 5
 ```
 
 ---
@@ -713,8 +710,6 @@ fire**; it returns every reason that did.
 | Natural end | both halves empty, nothing in flight, nothing being scored | FRONTIER_DRAINED |
 | Natural end | the above, and a candidate was refused by a domain ceiling along the way | plus DOMAIN_BUDGET |
 | Enough | relevant results reached `--max-relevant` | MAX_RELEVANT |
-| Time window | a single-entry-point run walked past `--since` | TIME_HORIZON |
-| Diminishing returns | fewer than 2 relevant in the last 20 pages | DIMINISHING_RETURNS |
 | User | `task.state == "STOPPING"` | USER_REQUESTED |
 | Adapter failure | three or more listings read, none yielding anything | plus ADAPTER_EMPTY |
 | Platform refusal | the first BLOCKED page | RATE_LIMITED |
@@ -725,28 +720,40 @@ fire**; it returns every reason that did.
 held N hits, but "stop after N" contradicts "find as many as the budget allows",
 and the budget conditions already cover finishing normally.
 
-**DIMINISHING_RETURNS actually fires now.** `relevance_window` used to be declared
-and read but never written, which made it dead. `engine._on_analysis` now writes
-`relevance_score >= goal.relevance_threshold` into it, and the window is a
-`deque(maxlen=20)` so "the last 20 pages" is guaranteed by the type rather than by
-the caller remembering to trim.
+### Retiring one source, not the run
+
+Two of these used to be run-level checks and are not any more. Both asked a
+question about one source and were counted globally, where neither could be read
+at face value.
+
+`TIME_HORIZON` assumed reverse-chronological traversal: the first item older than
+the window means everything after it is older too. That holds inside one feed and
+never across several, so the check armed only for runs with a single entry point
+-- which is to say it was dormant for every real run.
+
+`DIMINISHING_RETURNS` asked whether the crawl had stopped finding things. Counted
+globally it mixed sources: one quiet shop's back catalogue could end a run with
+three others still producing, and every seed's landing page put a certain miss
+into the window before a single post was read.
+
+Both now live in `stop_conds.why_retire(window, stale)`, asked per seed with the
+same thresholds they always had (20/2 and 5). When one answers, the frontier
+retires that seed: its queued candidates are dropped from both halves and later
+ones are refused at the door. The run ends when every source has retired and the
+frontier drains, which is FRONTIER_DRAINED reporting what it always meant.
+
+Dropping eagerly is not an optimisation. Candidates left behind keep both halves
+non-empty, and a run whose sources had all retired would never read as drained.
 
 **It is suppressed under `--recall`.** That mode deliberately reads the candidates
 the ranker rejected, and reads them last, so a tail of misses is the point of the
-mode rather than evidence the crawl is finished. Stopping on it cut off exactly
-the stretch the run was made to measure.
+mode rather than evidence a source is finished.
 
-**TIME_HORIZON** assumes traversal in reverse chronological order (a feed, a
-listing, an archive): the first item older than the window means everything after
-it is older too. Pages in a link graph have no order, so **passing `--since` is the
-user asserting the source is ordered**, and the check only arms itself for runs
-with a single entry point.
-
-Three implementation rules: with `since=None` the whole check sleeps, so existing
-runs are unaffected; a page that reports no date **neither advances nor resets**
-the streak, because silence is not evidence either way; and an absurd date (before
-1990, or more than a year ahead) is treated as no date at all, so template
-leftovers cannot poison the decision.
+Three rules carried over from the time horizon: with `since=None` it sleeps, so
+runs that ask for no window are unaffected; a page that reports no date **neither
+advances nor resets** the streak, because silence is not evidence either way; and
+an absurd date (before 1990, or more than a year ahead) is treated as no date at
+all, so template leftovers cannot poison the decision.
 
 ---
 

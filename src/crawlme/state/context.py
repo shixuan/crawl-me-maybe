@@ -18,15 +18,11 @@ command, feedback aggregates) become new typed fields here.
 
 from __future__ import annotations
 
-import collections
 import dataclasses
 import datetime
 import time
 
 from crawlme.schemas import CrawlGoal
-
-# How many recent analyzed pages the relevance window keeps.
-RELEVANCE_WINDOW = 20
 
 
 @dataclasses.dataclass
@@ -53,12 +49,6 @@ class CrawlCounters:
     tokens_used: int = 0
     started_at: float = 0.0
     in_flight: int = 0
-    # Sliding window over the most recent analyzed pages, one bool each.
-    # A deque with maxlen keeps "recent" true by construction, which is
-    # what the DIMINISHING_RETURNS check assumes.
-    relevance_window: collections.deque[bool] = dataclasses.field(
-        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
-    )
     fatal_error: str = ""
     # The first page problem that was about the crawl rather than about
     # one page, as its PageProblem value.  A block or a dead session
@@ -71,24 +61,11 @@ class CrawlCounters:
     # any of them.  See _adapter_empty.
     listings_seen: int = 0
     listings_empty: int = 0
-    # Time horizon (2.8).  since=None keeps TIME_HORIZON dormant, which
-    # is every run that does not ask for a window.  stale_streak counts
-    # consecutive pages that stated a publication time older than the
-    # window; pages that state nothing leave it untouched.
+    # since=None leaves the time horizon dormant, which is every run
+    # that does not ask for a window. The streak that reads it lives per
+    # seed now: a feed is time-ordered per account and never as a whole,
+    # so counted globally it could only ever be armed for one seed.
     since: datetime.datetime | None = None
-    stale_streak: int = 0
-    max_stale_streak: int = 5
-    # How many entry points this run was given.  TIME_HORIZON reads it to
-    # decide whether "consecutive stale pages" means anything; see the
-    # check's own docstring for why anything but 1 leaves it dormant.
-    seed_count: int = 0
-    # Whether this traversal can ever read "no recent content" as "no
-    # more content".  Declared by the traversal rather than guessed from
-    # the run's shape: a feed listing is time-ordered per account and
-    # never as a whole, so the answer never depends on how a given run
-    # went.  The seed count still matters on top of it, for a different
-    # reason -- see the check itself.
-    time_horizon_allowed: bool = True
 
 
 @dataclasses.dataclass

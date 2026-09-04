@@ -515,6 +515,14 @@ def _format_summary(s: dict[str, Any]) -> str:
 
     lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
 
+    retired = s.get("retired_seeds") or []
+    if retired:
+        counts: dict[str, int] = {}
+        for why in retired:
+            counts[why] = counts.get(why, 0) + 1
+        parts = ", ".join(f"{n} {why}" for why, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+        lines.append(f"  retired:    {len(retired)} sources ({parts})")
+
     analyses = s.get("analyses") or {}
     if analyses:
         parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))

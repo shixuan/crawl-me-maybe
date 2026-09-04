@@ -36,7 +36,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.scheduler.stop_conds import check_stop
+from crawlme.scheduler.stop_conds import RELEVANCE_WINDOW, check_stop, why_retire
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -131,14 +131,26 @@ def _endorsed_href(link: str) -> str | None:
 
 @dataclasses.dataclass
 class _SeedTally:
-    """What one seed got read, for the report to tell apart a seed that
-    was crawled and empty from one the run never reached."""
+    """What one seed got read, and whether it is still worth reading.
+
+    Both signals are per seed because both questions are. A crawl over
+    five accounts interleaves five walks, so "the last twenty pages" and
+    "five stale pages in a row" span accounts that have nothing to do
+    with each other. Read globally they were unusable, which is why the
+    time horizon armed only for a single seed and why one run stopped
+    for diminishing returns with three sources still producing.
+    """
 
     pages: int = 0
     candidates: int = 0
     scored: int = 0
     wanted: int = 0
     relevant: int = 0
+    stale: int = 0
+    retired: str = ""
+    window: collections.deque[bool] = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
+    )
 
     def as_tuple(self) -> tuple[int, int, int, int, int]:
         return (self.relevant, self.pages, self.scored, self.candidates, self.wanted)
@@ -329,7 +341,6 @@ class CrawlScheduler:
             await self._frontier.push_batch(items)
         if self._events and n_ingested > 0:
             self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
-        self._counters.seed_count += n_ingested
         logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
         return n_ingested
 
@@ -374,13 +385,6 @@ class CrawlScheduler:
         self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
 
         self._ctx.reset(goal=goal, tokens_used_start=self._tokens_used_start)
-        # Whether "no recent content" may ever read as "no more content".
-        # A link graph's pages arrive in no order, so a streak means
-        # nothing there either -- but the streak is already gated on a
-        # single entry point, and one walk of one site is ordered often
-        # enough to be worth reading.  A platform run interleaves
-        # accounts, so it never is.
-        self._counters.time_horizon_allowed = not self._cfg.browser_storage_state
         # Persist goal (with its enhanced statement / keywords / since)
         # and task rows so replay and introspection have a record.
         self._storage.save_goal(goal.model_dump(mode="json"))
@@ -514,23 +518,54 @@ class CrawlScheduler:
         if url_key not in self._verdict_of or url_key not in self._listing_of:
             return
         relevant = self._verdict_of.pop(url_key)
-        if not self._listing_of.pop(url_key):
-            self._counters.relevance_window.append(relevant)
+        if self._listing_of.pop(url_key):
+            return
+        seed = self._seed_of.get(url_key, "")
+        tally = self._tally_by_seed[seed]
+        tally.window.append(relevant)
+        self._maybe_retire(seed, tally)
 
-    def _note_page_age(self, page: Page) -> None:
-        """Track how many pages in a row fell outside the goal's window.
+    def _note_page_age(self, page: Page, seed: str) -> None:
+        """Track how many of one source's pages in a row fell outside the
+        goal's window.
 
         Only pages that state a publication time move the streak.  A page
         that says nothing is not evidence in either direction, so it
         neither advances nor resets it.
+
+        The seed is handed in because this runs before the page is filed
+        under one. Looked up here it was always empty, so every source
+        shared a streak, fresh pages from one kept resetting another's,
+        and retirement -- which ignores an empty seed -- could not fire
+        at all.
         """
         counters = self._counters
         if counters.since is None or page.published_at is None:
             return
-        if page.published_at < counters.since:
-            counters.stale_streak += 1
-        else:
-            counters.stale_streak = 0
+        tally = self._tally_by_seed[seed]
+        if page.published_at >= counters.since:
+            tally.stale = 0
+            return
+        tally.stale += 1
+        self._maybe_retire(seed, tally)
+
+    def _maybe_retire(self, seed: str, tally: _SeedTally) -> None:
+        """Act on stop_conds' answer. Whether to stop is not decided here."""
+        why = why_retire(tally.window, tally.stale)
+        if why is not None:
+            self._retire_seed(seed, why)
+
+    def _retire_seed(self, seed: str, why: str) -> None:
+        """Stop spending on one source without ending the run.
+
+        Off under --recall, where reading the tail is the point of the
+        mode rather than evidence the source is done.
+        """
+        if not seed or self._counters.recall or self._tally_by_seed[seed].retired:
+            return
+        self._tally_by_seed[seed].retired = why
+        self._frontier.retire(seed)
+        logger.info("seed.retired seed=%s reason=%s", seed, why)
 
     def _record_page_context(self, url_key: str, fields: dict[str, Any]) -> None:
         """Merge per-page context that the ranker reads at rank time.
@@ -575,6 +610,10 @@ class CrawlScheduler:
             "proposed_seeds": {
                 url: (why, self._tally_by_seed[key].as_tuple()) for key, (url, why) in self._proposed_seeds.items()
             },
+            # Sources that stopped paying off, and why. A run now ends
+            # by every source retiring, so without this it just reads as
+            # a drained frontier.
+            "retired_seeds": sorted(t.retired for t in self._tally_by_seed.values() if t.retired),
             # The target, so the report can print the tally beside it.
             "max_relevant": self._counters.max_relevant,
             # None when the run never asked. A number means it did.
@@ -999,7 +1038,7 @@ class CrawlScheduler:
                 return None
             page.payload_paths = await asyncio.to_thread(self._save_payloads, item.url_key, result)
             self._storage.save_page(page)
-            self._note_page_age(page)
+            self._note_page_age(page, self._seed_of.get(item.url_key, item.seed_url_key or item.url_key))
             return result, page
 
     def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:

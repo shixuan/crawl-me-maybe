@@ -62,6 +62,8 @@ class Buffer(Protocol):
 
     async def add(self, candidates: list[Candidate]) -> None: ...
 
+    def retire(self, seed_url_key: str) -> None: ...
+
     def contains(self, url_key: str) -> bool:
         """Whether this URL is already waiting here.
 
@@ -152,6 +154,20 @@ class RoundRobinBuffer:
         # drain restarts at the first seed, and any seed past the batch
         # size never gets a turn at all.
         self._next_seed: str = ""
+        # Seeds that stopped paying off. Their candidates stay in the
+        # buffer but never take a turn, so the ranker is not spent on
+        # them either.
+        self._retired: set[str] = set()
+
+    def retire(self, seed_url_key: str) -> None:
+        """Drop what this seed left here, and refuse what it sends next.
+
+        Dropping matters as much as refusing: candidates left behind keep
+        the buffer non-empty, and a run whose sources have all retired
+        would then never read as drained.
+        """
+        self._retired.add(seed_url_key)
+        self._candidates = [c for c in self._candidates if c.seed_url_key != seed_url_key]
 
     # write path -------------------------------------------------------
 
@@ -159,7 +175,7 @@ class RoundRobinBuffer:
         """Add a batch of candidates.  Evicts low-quality ones when full."""
         async with self._cond:
             for c in candidates:
-                if c.url.url_key in self._seen:
+                if c.url.url_key in self._seen or c.seed_url_key in self._retired:
                     continue
                 c.status = "BUFFERED"
                 if len(self._candidates) >= self._capacity:

@@ -66,6 +66,12 @@ class Frontier(Protocol):
 
     # the unscored half: candidates waiting for someone to score them.
     async def push_candidates(self, candidates: list[Candidate]) -> None: ...
+
+    def retire(self, seed_url_key: str) -> None:
+        """Stop spending on one seed, in both halves."""
+        ...
+
+    def is_retired(self, seed_url_key: str) -> bool: ...
     async def take_for_ranking(self, n: int) -> list[Candidate]: ...
     def finish_ranking(self, n: int) -> None: ...
 
@@ -157,9 +163,23 @@ class GatedFrontier:
             aging_window=aging_window,
             age_factor=age_factor,
         )
+        # Seeds that stopped paying off, either by going cold or by
+        # reading past the goal's window. Retiring one source is what a
+        # global streak could not do: it stops that walk without ending
+        # a run whose other sources are still producing.
+        self._retired: set[str] = set()
         self._visited: set[str] = set()
         self._domain_counters: dict[str, int] = {}
         self._global_counter: int = 0
+
+    def retire(self, seed_url_key: str) -> None:
+        """Stop spending on one seed, in both halves."""
+        self._retired.add(seed_url_key)
+        self._waiting.retire(seed_url_key)
+        self._source.discard_seed(seed_url_key)
+
+    def is_retired(self, seed_url_key: str) -> bool:
+        return seed_url_key in self._retired
 
     # the unscored half ------------------------------------------------
 
@@ -245,6 +265,8 @@ class GatedFrontier:
         """
 
         def gate(item: FrontierItem, now: datetime.datetime) -> Gate:
+            if item.seed_url_key and item.seed_url_key in self._retired:
+                return Gate.DROP
             if item.next_available_at > now:
                 return Gate.DEFER
             if next_allowed is not None:

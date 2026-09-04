@@ -159,7 +159,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 |------|--------|---------|---------|
 | `--depth-limit` | int | `5` | Hops from a seed. A listing and its posts are two; a site an analyser endorsed off a post is three |
 | `--since` | `"2 weeks"`, `"3 days"`, `2026-08-01` | none | Time window. Candidates a listing dated before it are dropped; with a single seed, the run also stops once content ages out |
-| `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry. A feed keeps yielding, so in practice the token budget is what ends the run. Mutually exclusive with `--page-budget` |
+| `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry, which is once every source has retired. Use it when you want everything there is rather than a fixed number. Mutually exclusive with `--page-budget` |
 
 **How to fetch**
 
@@ -281,10 +281,16 @@ and put to the ranker before it is used, and one the ranker wants nothing from
 is dropped before it costs a page. Nothing is stored -- the run prints what each
 turned out to be worth, and keeping one is your call.
 
-**A run says why it stopped.** Budgets, a target met, diminishing returns, a
-drained frontier, plus `RATE_LIMITED`, `LOGIN_REQUIRED` and `ADAPTER_EMPTY`,
-which exist because silence was the bug. "Completed" never stands in for "found
-nothing and cannot say why".
+**A run says why it stopped.** Budgets, a target met, a drained frontier, plus
+`RATE_LIMITED`, `LOGIN_REQUIRED` and `ADAPTER_EMPTY`, which exist because silence
+was the bug. "Completed" never stands in for "found nothing and cannot say why".
+
+**A source that stops paying off retires by itself.** Reading past the goal's
+window, or a full window of its own pages with almost nothing to show, ends that
+source and not the run: a feed is ordered and productive per account and never as
+a whole, so counted across accounts neither signal meant anything. Retire them
+all and the frontier drains, which is how a run finishes without being told how
+many answers to expect.
 
 **Everything is recorded.** Which rule dropped a link, what the ranker scored
 it, which model and prompt version produced a judgment, and the sentence each
@@ -312,6 +318,6 @@ See [`.env.example`](.env.example) for the full list.
 | v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
 | v0.3 | ✅ | IG, Playwright with login state, feed traversal, extracted fields with evidence |
 | v0.4 | ✅ | Reddit, a fetcher chosen per candidate, paged listings |
-| v0.5 | ✅ | Seed enhancement: the model names more sources |
+| v0.5 | ✅ | Seed enhancement: the model names more sources, each verified before use. A source that stops paying off retires on its own, so a run ends when every one has |
 
 ---

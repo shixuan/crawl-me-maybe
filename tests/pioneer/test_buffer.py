@@ -310,3 +310,24 @@ def test_proposed_seeds_still_get_read():
 
     out, _ = _take_turns(_mix(1, 4), 20)
     assert any(c.seed_ext for c in out)
+
+
+@pytest.mark.asyncio
+async def test_a_retired_seed_takes_no_turn():
+    """Scoring a retired source is the cheaper half of the waste, but it
+    is still waste: the ranker costs a call per batch."""
+    buf = RoundRobinBuffer()
+    live = [_candidate(f"a{i}", seed_url_key="live") for i in range(3)]
+    dead = [_candidate(f"b{i}", seed_url_key="dead") for i in range(3)]
+    await buf.add(live + dead)
+    buf.retire("dead")
+    got = await buf.drain(6)
+    assert {c.seed_url_key for c in got} == {"live"}
+
+
+@pytest.mark.asyncio
+async def test_retiring_one_leaves_the_rest():
+    buf = RoundRobinBuffer()
+    await buf.add([_candidate("a", seed_url_key="one"), _candidate("b", seed_url_key="two")])
+    buf.retire("one")
+    assert [c.seed_url_key for c in await buf.drain(4)] == ["two"]

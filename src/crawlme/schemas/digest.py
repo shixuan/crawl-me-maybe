@@ -62,7 +62,7 @@ class Page(BaseModel):
     # Publication time as claimed by the page itself (meta tags, JSON-LD,
     # <time>).  Best effort: None means the page did not say, which is
     # different from "published long ago" and is treated as unknown by
-    # the TIME_HORIZON stop condition.
+    # the streak that retires a source.
     published_at: datetime.datetime | None = None
     extracted_at: datetime.datetime = Field(default_factory=_utcnow)
     extraction_status: ExtractionStatus = "OK"

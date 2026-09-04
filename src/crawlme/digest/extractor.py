@@ -169,7 +169,7 @@ def _published_at_from(soup: BeautifulSoup) -> datetime.datetime | None:
     though it is free: it infers a date from body text, so a page whose
     only date-like string is "Copyright 2024" comes back as 2024-01-01.
     That guess would silently age real pages out of the window and fire
-    TIME_HORIZON on a footer.  The extra parse is worth the correctness,
+    a source on a footer.  The extra parse is worth the correctness,
     and trafilatura already parses this document three times anyway.
     """
     for attr, value in _DATE_META:
@@ -215,7 +215,7 @@ def _parse_date(raw: str) -> datetime.datetime | None:
 
     Absurd values are dropped rather than propagated.  A page claiming
     1970 or 2099 is a template artifact, and letting it through would
-    poison the TIME_HORIZON streak.
+    poison the streak that retires a source.
     """
     text = (raw or "").strip()
     if not text:
