@@ -61,6 +61,9 @@ class CrawlCounters:
     # any of them.  See _adapter_empty.
     listings_seen: int = 0
     listings_empty: int = 0
+    # Listings read from markup alone. They look like a normal read and
+    # carry content weeks older than the account has.
+    listings_stale: int = 0
     # since=None leaves the time horizon dormant, which is every run
     # that does not ask for a window. The streak that reads it lives per
     # seed now: a feed is time-ordered per account and never as a whole,

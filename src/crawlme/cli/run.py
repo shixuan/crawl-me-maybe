@@ -555,6 +555,12 @@ def _format_summary(s: dict[str, Any]) -> str:
     seen, empty = (s.get("listings") or [0, 0])[:2]
     if empty:
         lines.append(f"  listings:   {seen} read, {empty} held no items")
+    # A stale listing looks exactly like a healthy one: the count is
+    # normal and nothing refused us. Measured on one account the markup
+    # ran up to 37 days behind, so silence here is the whole problem.
+    stale = s.get("listings_stale", 0)
+    if stale:
+        lines.append(f"              {stale} read from markup alone; their newest posts are missing")
 
     if s.get("duration_sec") is not None:
         lines.append(f"  duration:   {s['duration_sec']}s")

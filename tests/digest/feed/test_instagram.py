@@ -197,10 +197,15 @@ def test_found_by_shape():
     assert lst.all[0].text == "free tea"
 
 
-def test_keeps_post_only():
-    assert ig.keeps_payload("https://www.instagram.com/graphql/query", "application/json") is True
+def test_keeps_the_endpoint_whatever_it_is_labelled():
+    """The label is not the question. Instagram serves the grid as
+    text/javascript and only the home timeline as application/json, so
+    asking for JSON kept the one answer holding none of this account's
+    posts and dropped all four that held them."""
+    q = "https://www.instagram.com/graphql/query"
+    assert ig.keeps_payload(q, "text/javascript; charset=utf-8") is True
+    assert ig.keeps_payload(q, "application/json") is True
     assert ig.keeps_payload("https://www.instagram.com/static/bundle.js", "application/javascript") is False
-    assert ig.keeps_payload("https://www.instagram.com/graphql/query", "text/html") is False
 
 
 def test_scrolled_off():
@@ -234,3 +239,32 @@ def test_payload_author():
     )
     assert [i.item_id for i in lst.others] == ["AAA111"]
     assert lst.own == []
+
+
+def test_markup_alone_is_a_degraded_read():
+    """A grid read without the platform's own answer looks healthy: the
+    count is normal and nothing refused us. Measured on five accounts the
+    markup ran between 4 and 37 days behind, and the newest posts -- the
+    ones a time window is asking for -- were never in it."""
+    lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [])
+    assert lst.own
+    assert lst.degraded
+
+
+def test_the_account_grid_clears_it():
+    lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [_payload()])
+    assert not lst.degraded
+
+
+def test_the_home_timeline_does_not_clear_it():
+    """The account's grid and the viewer's own home timeline answer the
+    same endpoint, so "a payload arrived" is not the question. One run
+    captured only the timeline and read five accounts from markup weeks
+    out of date without noticing."""
+    home = json.dumps({"data": {"xdt_api__v1__feed__timeline__connection": {"edges": []}}})
+    lst = ig.parse_listing(
+        _GRID.decode(),
+        "https://www.instagram.com/mrsurprisetoys/",
+        [Payload(url="u", content_type="application/json", body=home.encode())],
+    )
+    assert lst.degraded

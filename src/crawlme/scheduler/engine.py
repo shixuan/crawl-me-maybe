@@ -625,6 +625,8 @@ class CrawlScheduler:
             report["not_content"] = dict(stats.not_content)
         if counters.listings_seen:
             report["listings"] = [counters.listings_seen, counters.listings_empty]
+        if counters.listings_stale:
+            report["listings_stale"] = counters.listings_stale
         return report
 
     @property
@@ -1122,6 +1124,7 @@ class CrawlScheduler:
             if harvest.listing:
                 self._counters.listings_seen += 1
                 self._counters.listings_empty += int(not candidates)
+                self._counters.listings_stale += int(harvest.degraded)
             self._listing_of[page.url_key] = harvest.listing
             self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,

@@ -315,7 +315,7 @@ async def test_scroll_stops() -> None:
             self.waits += 1
 
     page = _Page()
-    await PlaywrightFetcher(scrolls=10)._scroll_through(page)
+    await PlaywrightFetcher(scrolls=10)._scroll_through(page, [])
     assert page.wheels == 1, "one scroll, then the height said there was no more"
 
 
@@ -343,7 +343,7 @@ async def test_scroll_grows() -> None:
             return None
 
     page = _Page()
-    await PlaywrightFetcher(scrolls=3)._scroll_through(page)
+    await PlaywrightFetcher(scrolls=3)._scroll_through(page, [])
     assert page.wheels == 3
 
 
@@ -448,3 +448,70 @@ async def test_timeout_empty(monkeypatch) -> None:
 
     with pytest.raises(FetchError):
         await fetcher.fetch(_item("https://example.com/p"))
+
+
+@pytest.mark.asyncio
+async def test_a_scroll_waits_for_its_answer():
+    """A fixed delay expired before the reply on a slow one, and the run
+    carried on with markup weeks behind. The wait ends on the answer."""
+
+    class _Page:
+        url = "https://x/"
+
+        def __init__(self, payloads: list) -> None:
+            self.height = 1000
+            self.waits = 0
+            self._payloads = payloads
+
+        async def evaluate(self, _js: str) -> int:
+            self.height += 500
+            return self.height
+
+        @property
+        def mouse(self):
+            return self
+
+        async def wheel(self, _x: int, _y: int) -> None:
+            return None
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            self.waits += 1
+            if self.waits % 3 == 0:  # the reply lands on the third look
+                self._payloads.append(object())
+
+    payloads: list = []
+    page = _Page(payloads)
+    await PlaywrightFetcher(scrolls=2)._scroll_through(page, payloads)
+
+    assert len(payloads) == 2, "one answer per scroll"
+    assert page.waits == 6, "it stopped looking as soon as each arrived"
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_scroll_gives_up_at_the_deadline():
+    from crawlme.digest.fetcher.browser import _SCROLL_POLL_MS, _SCROLL_SETTLE_MS
+
+    class _Page:
+        url = "https://x/"
+
+        def __init__(self) -> None:
+            self.height = 1000
+            self.waits = 0
+
+        async def evaluate(self, _js: str) -> int:
+            self.height += 500
+            return self.height
+
+        @property
+        def mouse(self):
+            return self
+
+        async def wheel(self, _x: int, _y: int) -> None:
+            return None
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            self.waits += 1
+
+    page = _Page()
+    await PlaywrightFetcher(scrolls=1)._scroll_through(page, [])
+    assert page.waits == _SCROLL_SETTLE_MS // _SCROLL_POLL_MS
