@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -394,12 +395,28 @@ async def test_effort_optional(monkeypatch):
         )
 
     monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
+    # Stubbed rather than asked of the real catalogue: what a model
+    # accepts is not this test's subject, and the answer differs between
+    # environments.
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm",
+        SimpleNamespace(
+            get_supported_openai_params=lambda model: [] if "4o-mini" in model else ["reasoning_effort"],
+            get_model_info=lambda model: {},
+        ),
+    )
 
-    await LLMClient("m", api_key="k").chat("hi")
+    model = "deepseek/deepseek-chat"
+    await LLMClient(model, api_key="k").chat("hi")
     assert "reasoning_effort" not in sent[-1]
 
-    await LLMClient("m", api_key="k", reasoning_effort="minimal").chat("hi")
-    assert sent[-1]["reasoning_effort"] == "minimal"
+    await LLMClient(model, api_key="k", reasoning_effort="medium").chat("hi")
+    assert sent[-1]["reasoning_effort"] == "medium"
+
+    # A model that cannot think is sent nothing, whatever was configured.
+    await LLMClient("openai/gpt-4o-mini", api_key="k", reasoning_effort="medium").chat("hi")
+    assert "reasoning_effort" not in sent[-1]
 
 
 def test_effort_stage(monkeypatch):
@@ -407,10 +424,10 @@ def test_effort_stage(monkeypatch):
     the run returns, so they do not have to buy the same thinking."""
     from crawlme.pioneer.ranker import LLMRanker
 
-    cfg = Settings(llm_api_key="k", llm_analyze_reasoning_effort="high", llm_rank_reasoning_effort="none")
+    cfg = Settings(llm_api_key="k", llm_analyze_reasoning_effort="high", llm_rank_reasoning_effort="off")
     ranker = LLMRanker.from_settings(cfg)
     assert ranker is not None
-    assert ranker._client._reasoning_effort == "none"
+    assert ranker._client._reasoning_effort == "off"
 
     assert PageAnalyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
 

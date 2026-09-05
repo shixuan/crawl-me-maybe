@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # reply comes back empty or half-finished, which reads like a broken
     # parser rather than a budget.  A ceiling is not a cost: only tokens
     # actually generated are billed, so headroom is free until used.
-    llm_max_output_tokens: int = 8192
+    llm_max_output_tokens: int = 16384
     # How much candidate text one ranking call may carry.  Candidates are
     # never cut to fit: a batch that would exceed this is split into more
     # calls, because a post whose only relevant line sits past a cut is
@@ -73,13 +73,10 @@ class Settings(BaseSettings):
     # Empty sends nothing and takes the provider's default, which is what
     # every run before this one paid for: measured on one crawl, 84% of
     # output tokens were thinking, and thinking is billed as output and
-    # then discarded.  Values are the provider's ("minimal", "low",
-    # "medium", "high", and on some providers "none"), passed through
-    # rather than validated here, because the vocabulary is theirs.
-    # How hard the model thinks before answering, per stage, on models
-    # that think.  Empty sends nothing and takes the provider's default.
-    # Values are the provider's: minimal / low / medium / high, and on
-    # DeepSeek "none", the only value there that turns thinking off.
+    # then discarded.
+    # How hard the model thinks before answering, per stage. Named in
+    # this project's words, off / low / medium / high, and translated
+    # per model by llm.reasoning. Empty leaves the provider's default.
     llm_rank_reasoning_effort: str = ""
     llm_analyze_reasoning_effort: str = ""
     llm_enhance_reasoning_effort: str = ""

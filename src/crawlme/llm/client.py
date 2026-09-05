@@ -27,6 +27,7 @@ import httpx
 from crawlme.config import Settings
 from crawlme.llm.budget import TokenBudget
 from crawlme.llm.errors import LLMError
+from crawlme.llm.reasoning import effort_for
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +336,7 @@ class LLMClient:
             kwargs["api_base"] = self._base_url
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        if self._reasoning_effort:
-            kwargs["reasoning_effort"] = self._reasoning_effort
+        effort = effort_for(self._model, self._reasoning_effort)
+        if effort:
+            kwargs["reasoning_effort"] = effort
         return await litellm.acompletion(**kwargs)
