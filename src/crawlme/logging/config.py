@@ -56,6 +56,28 @@ if TYPE_CHECKING:
 
 
 _OFF = logging.CRITICAL + 10
+# Startup lines held for a file that does not exist yet. Enough for the
+# whole startup phase and small enough to forget about if no file ever
+# arrives.
+_BACKLOG_LIMIT = 1000
+
+
+class _Backlog(logging.Handler):
+    """Keeps records until there is a file to put them in.
+
+    The run directory is named by the scheduler, so nothing can be
+    written to disk until it exists. Everything logged before that used
+    to reach the terminal alone, which is exactly the part a person
+    goes looking for afterwards, and afterwards the terminal is gone.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if len(self.records) < _BACKLOG_LIMIT:
+            self.records.append(record)
 
 
 def setup_logging(settings: Settings, *, force: bool = False) -> None:
@@ -95,6 +117,7 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
         h.setFormatter(ConsoleFormatter())
 
     root.addHandler(h)
+    root.addHandler(_Backlog())
 
     # Quiet noisy third-party loggers. litellm attaches a handler of
     # its own and never sets a level, so at INFO it announced every
@@ -127,6 +150,12 @@ def to_file(path: str) -> None:
     h.setLevel(root.level)
     h.setFormatter(ConsoleFormatter())
     root.addHandler(h)
+    # What was said before the file existed, in the order it was said.
+    # The backlog goes with it: from here the file is the record.
+    for backlog in [x for x in root.handlers if isinstance(x, _Backlog)]:
+        for record in backlog.records:
+            h.handle(record)
+        root.removeHandler(backlog)
 
 
 def _level(name: str) -> int:
