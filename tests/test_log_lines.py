@@ -21,7 +21,7 @@ def _calls():
                 continue
             fmt = node.args[0] if node.args else None
             if isinstance(fmt, ast.Constant) and isinstance(fmt.value, str):
-                yield path.relative_to(SRC), node.lineno, fmt.value, len(node.args) - 1
+                yield path.relative_to(SRC), node.lineno, fmt.value, len(node.args) - 1, node.func.attr
 
 
 def test_placeholders_match_their_arguments():
@@ -29,7 +29,7 @@ def test_placeholders_match_their_arguments():
     which for a rare branch means in front of a user. `%2$d` is not
     Python at all and passes review by looking like C."""
     bad = []
-    for path, line, fmt, argc in _calls():
+    for path, line, fmt, argc, _level in _calls():
         placeholders = fmt.replace("%%", "").count("%")
         if placeholders != argc:
             bad.append(f"{path}:{line} {fmt!r} takes {placeholders}, given {argc}")
@@ -55,3 +55,25 @@ def test_info_carries_no_internal_identifiers():
                     if banned in fmt.value:
                         bad.append(f"{path.relative_to(SRC)}:{node.lineno} {banned!r} in an INFO line")
     assert bad == [], "\n".join(bad)
+
+
+def test_each_item_handled_gets_both_lines():
+    """Sparse is not the same as readable. With every per-item line at
+    DEBUG, four workers in parallel printed once a minute and the run
+    read as a stall. The split is vocabulary, so each of these events
+    is said in words at INFO and counted at DEBUG."""
+    wanted = [
+        ("scheduler/engine.py", "info", "fetching "),
+        ("scheduler/engine.py", "debug", "fetch.ok "),
+        ("pioneer/ranker/llm.py", "info", "scored "),
+        ("pioneer/ranker/llm.py", "debug", "rank.scored "),
+        ("analyzer/page_analyzer.py", "info", "judged "),
+        ("analyzer/page_analyzer.py", "debug", "analysis.ok "),
+    ]
+    seen = {(str(path), level, fmt) for path, _, fmt, _, level in _calls()}
+    missing = [
+        f"{path} has no {level.upper()} line starting {start!r}"
+        for path, level, start in wanted
+        if not any(p == path and lv == level and f.startswith(start) for p, lv, f in seen)
+    ]
+    assert missing == [], "\n".join(missing)

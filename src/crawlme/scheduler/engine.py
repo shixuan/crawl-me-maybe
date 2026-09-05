@@ -29,7 +29,7 @@ from crawlme.digest.feed.base import FeedDependencyError, PageProblem
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
 from crawlme.llm import TokenBudget
-from crawlme.logging import setup_logging
+from crawlme.logging import setup_logging, where
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
@@ -56,14 +56,6 @@ from crawlme.storage.contracts import CrawlDb
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_INTERVAL = 10
-# How often the run says it is still going, in pages.
-_PULSE_PAGES = 25
-
-
-def _where(url: str) -> str:
-    """A URL as a person would say it, for the lines they read."""
-    short = url.split("://", 1)[-1].removeprefix("www.").rstrip("/")
-    return short if len(short) <= 70 else short[:69] + "\u2026"
 
 
 # How many candidates the rank pump takes out of the buffer at once,
@@ -475,7 +467,7 @@ class CrawlScheduler:
                 }
             )
             # The one line the run exists to produce.
-            logger.info("found: %s (%s)", fb.title or "untitled", _where(fb.url or ""))
+            logger.info("found: %s (%s)", fb.title or "untitled", where(fb.url or ""))
         # Backfill the judgment into the source page's context so the LLM
         # ranker can tell a link off a RELEVANT article from a link off a
         # help page.  Retries land here through the same sink, so a late
@@ -1005,6 +997,10 @@ class CrawlScheduler:
             await self._frontier.record_outcome(item, "SKIPPED")
             return None
         async with self._fetch_sem:
+            # Said before the wait. A browser fetch of one page has
+            # measured 12 to 22 seconds, and naming it only afterwards
+            # leaves that whole time looking like nothing is happening.
+            logger.info("fetching %s", where(item.url.canonical))
             try:
                 result = await self._fetcher.fetch(item)
                 self._robots.record_response(domain, result.status_code, self._robots.crawl_delay(domain))
@@ -1130,7 +1126,7 @@ class CrawlScheduler:
                 self._ctx.progress.listings_seen += 1
                 self._ctx.progress.listings_empty += int(not candidates)
                 self._ctx.ledger.listings_stale += int(harvest.degraded)
-                logger.info("read %d posts from %s", len(candidates), _where(page.url.canonical))
+                logger.info("read %d posts from %s", len(candidates), where(page.url.canonical))
             self._pages.of(page.url_key).listing = harvest.listing
             self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,
@@ -1213,15 +1209,6 @@ class CrawlScheduler:
                 n_allowed,
                 (time.monotonic() - self._ctx.progress.started_at),
             )
-
-            # A run can read for many minutes without a hit, and every
-            # other INFO line here waits on something happening.
-            if n % _PULSE_PAGES == 0:
-                logger.info(
-                    "%d pages read, %d found so far",
-                    n,
-                    self._ctx.progress.relevant_found,
-                )
 
             # Periodic checkpoint.
             if self._ctx.progress.pages_fetched % _CHECKPOINT_INTERVAL == 0:

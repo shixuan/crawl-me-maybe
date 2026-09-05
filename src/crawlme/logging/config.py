@@ -7,9 +7,11 @@ investigation:
   WARNING  the run is producing something wrong or incomplete and is
            carrying on anyway. A reader who ignores it gets a report
            that looks fine and is not
-  INFO     what is happening, in sentences, for the person who started
-           the run. No url_keys, no byte counts, no ratios
-  DEBUG    everything with a number in it, and every per-item mechanic
+  INFO     what is happening, for the person who started the run. One
+           line each time something is handled, naming it by its
+           address. No url_keys, no byte counts, no ratios
+  DEBUG    the same events counted rather than described, plus the
+           mechanics that have no readable form
 
 Two tests. WARNING against INFO: would ignoring this line leave someone
 believing a result that is not true? Payloads dropped by their content
@@ -20,6 +22,14 @@ INFO against DEBUG: would the person who typed the command understand
 this line and care? "read 63 posts from timhortons" passes. "kept=6
 bytes=2482493" does not, however much it helped whoever was debugging
 the day it was written.
+
+Readable is not the same as sparse. Both levels run per item, and the
+split is vocabulary rather than density. A page fetched, a candidate
+scored, a page judged, each gets an INFO line in words and a DEBUG
+line in numbers. Moving the per-item lines to DEBUG alone left four
+workers running in parallel behind a terminal that printed once a
+minute, which reads as a stall, and a periodic "25 pages read" stood
+in for the work without showing any of it.
 
 INFO speaks when the wait begins, not when it ends. A line that only
 arrives with the answer says nothing for as long as the answer takes,

@@ -28,6 +28,7 @@ from typing import Any
 
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
+from crawlme.logging import where
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
 
 logger = logging.getLogger(__name__)
@@ -349,6 +350,14 @@ def _parse_response(content: str) -> dict[str, Any] | None:
     return parse_json_response(content)
 
 
+def _aside(rationale: str) -> str:
+    """The model's reason, short enough to sit at the end of a line."""
+    if not rationale or rationale == "no_opinion":
+        return ""
+    trimmed = rationale if len(rationale) <= 60 else rationale[:59] + "\u2026"
+    return f", {trimmed}"
+
+
 def _to_decisions(
     candidates: list[Candidate],
     data: dict[str, Any],
@@ -433,6 +442,11 @@ def _to_decisions(
         else:
             priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
             missing += 1
+        # One line per candidate, not per batch. A batch line says 30
+        # were scored and never which link got which number, which is
+        # the only part a reader can argue with.
+        logger.info("scored %.2f %s%s", priority, where(c.url.canonical), _aside(rationale))
+        logger.debug("rank.scored url_key=%s priority=%.2f dropped=%s", c.url.url_key, priority, dropped)
         decisions.append(
             RankDecision(
                 candidate_id=cid,

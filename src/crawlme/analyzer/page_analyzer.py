@@ -29,6 +29,7 @@ from typing import Any, Protocol, cast
 
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
+from crawlme.logging import where
 from crawlme.schemas import (
     AnalysisResult,
     AnalyzerFeedback,
@@ -218,6 +219,12 @@ class PageAnalyzer:
             raise LLMError(f"unparseable JSON for {page.url_key}")
         tokens = resp.input_tokens + resp.output_tokens
         result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
+        logger.info(
+            "judged %s: %s (%.2f)",
+            where(page.url.canonical),
+            result.classification,
+            result.relevance_score,
+        )
         logger.debug(
             "analysis.ok url_key=%s classification=%s relevance=%.2f hub=%.2f model=%s tokens=+%d",
             page.url_key,
