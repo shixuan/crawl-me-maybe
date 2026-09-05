@@ -50,7 +50,7 @@ from crawlme.schemas import (
     RankDecision,
     RankHistorySummary,
 )
-from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
+from crawlme.state.context import CrawlContext, CrawlCounters, PageBook, RunStats
 from crawlme.state.events import EventEmitter, EventType
 from crawlme.storage.contracts import CrawlDb
 
@@ -238,24 +238,18 @@ class CrawlScheduler:
         # Maps url_key -> {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
-        # canonical URL -> url_key, for endorsed links to inherit their
-        # source page's depth.
-        self._url_key_of: dict[str, str] = {}
-        # url_key -> the seed it descends from, so a candidate found on a
-        # page inherits that page's seed rather than pointing at the page
-        # itself.  Grouping on the immediate parent would make fairness
+        # What is known about each page fetched: the seed it descends
+        # from, whether it was a listing, and the verdict. Grouping on
+        # the immediate parent rather than the seed would make fairness
         # mean "a turn from every page fetched", which a crawl generates
         # itself and without bound.
-        self._seed_of: dict[str, str] = {}
+        self._pages = PageBook()
         # How many the model named. Proposing none and losing them all
         # in verification are different failures.
         self._seeds_asked: int | None = None
         # url -> why it was turned away. A proposal costs a fetch either
         # way, so the reason is what makes the spend arguable.
         self._rejected_seeds: list[tuple[str, str]] = []
-        # Two halves of one vote, emptied as each pair completes.
-        self._verdict_of: dict[str, bool] = {}
-        self._listing_of: dict[str, bool] = {}
         # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
         self._pages_of_listing: dict[str, int] = {}
         # Seeds this run proposed, and what each was worth. Nothing
@@ -298,7 +292,7 @@ class CrawlScheduler:
         self._seeds_asked = n_proposed
         self._rejected_seeds = rejected
         for c in proposed:
-            # url_key, the shape _seed_of counts under.
+            # url_key, the shape the page book counts under.
             key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
             self._proposed_seeds[key] = (c.url.canonical, str(c.signals.get("why", "")))
         return proposed
@@ -489,7 +483,8 @@ class CrawlScheduler:
         # facade until v0.3.0 removed it, and the prompt kept reading a
         # list nothing filled any more.
         if result.classification == "RELEVANT":
-            seed = self._seed_of.get(self._url_key_of.get(fb.url or "", ""), "")
+            rec = self._pages.by_url(fb.url or "")
+            seed = rec.seed if rec else ""
             if seed:
                 self._tally_by_seed[seed].relevant += 1
             self._relevant_pages.append(
@@ -518,7 +513,7 @@ class CrawlScheduler:
         # whether it is enough. Only the tally belongs here, because the
         # window admits some pages and not others.
         self._counters.relevant_found += relevant
-        self._verdict_of[result.url_key] = relevant
+        self._pages.of(result.url_key).relevant = relevant
         self._cast_relevance_vote(result.url_key)
 
     def _cast_relevance_vote(self, url_key: str) -> None:
@@ -533,15 +528,15 @@ class CrawlScheduler:
         The verdict and the listing flag arrive in either order, so the
         vote is cast by whichever completes the pair.
         """
-        if url_key not in self._verdict_of or url_key not in self._listing_of:
+        rec = self._pages.of(url_key)
+        if not rec.ready():
             return
-        relevant = self._verdict_of.pop(url_key)
-        if self._listing_of.pop(url_key):
+        rec.counted = True
+        if rec.listing:
             return
-        seed = self._seed_of.get(url_key, "")
-        tally = self._tally_by_seed[seed]
-        tally.window.append(relevant)
-        self._maybe_retire(seed, tally)
+        tally = self._tally_by_seed[rec.seed]
+        tally.window.append(bool(rec.relevant))
+        self._maybe_retire(rec.seed, tally)
 
     def _note_page_age(self, page: Page, seed: str) -> None:
         """Track how many of one source's pages in a row fell outside the
@@ -981,7 +976,7 @@ class CrawlScheduler:
                 logger.debug("endorsed.unusable link=%r source=%s", link[:80], source_url)
                 continue
             url = self._canonicalizer.canonicalize(usable, source_url)
-            source_key = self._url_key_of.get(source_url, "")
+            source_key = self._pages.key_of(source_url)
             source_depth = int(self._page_contexts.get(source_key, {}).get("depth", 0))
             candidate = Candidate(url=url, depth=source_depth + 1, discovered_at=_utcnow())
             decision, _ = self._prefilter.check(candidate, self._goal, ctx)
@@ -997,7 +992,7 @@ class CrawlScheduler:
                     reg_domain=url.reg_domain,
                     # A shop's own site endorsed from an account belongs
                     # to that account's share, not to a share of its own.
-                    seed_url_key=self._seed_of.get(source_key, source_key),
+                    seed_url_key=self._pages.seed_of(source_key, source_key),
                 )
             )
         if items:
@@ -1059,7 +1054,7 @@ class CrawlScheduler:
                 return None
             page.payload_paths = await asyncio.to_thread(self._save_payloads, item.url_key, result)
             self._storage.save_page(page)
-            self._note_page_age(page, self._seed_of.get(item.url_key, item.seed_url_key or item.url_key))
+            self._note_page_age(page, self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key))
             return result, page
 
     def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
@@ -1106,8 +1101,11 @@ class CrawlScheduler:
                     # At the head of the queue, not before it. What is
                     # ahead can meet the target while this one waits.
                     if not self._enough_found():
-                        self._url_key_of[page.url.canonical] = page.url_key
-                        self._seed_of[page.url_key] = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+                        self._pages.open(
+                            page.url_key,
+                            page.url.canonical,
+                            self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
+                        )
                         await self._analyzer.analyze(page, self._goal)
             if self._events:
                 self._events.emit(
@@ -1144,12 +1142,12 @@ class CrawlScheduler:
                 self._counters.listings_seen += 1
                 self._counters.listings_empty += int(not candidates)
                 self._counters.listings_stale += int(harvest.degraded)
-            self._listing_of[page.url_key] = harvest.listing
+            self._pages.of(page.url_key).listing = harvest.listing
             self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,
             # however many hops back.  Recorded here because this is the
             # only place that holds both ends of the link.
-            seed = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+            seed = self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key)
             for c in candidates:
                 c.seed_url_key = seed
                 # Descendants inherit it, or the smaller share would
@@ -1178,8 +1176,7 @@ class CrawlScheduler:
                     "depth": item.depth,
                 },
             )
-            self._url_key_of[page.url.canonical] = page.url_key
-            self._seed_of[page.url_key] = seed
+            self._pages.open(page.url_key, page.url.canonical, seed)
             ctx = self._frontier.get_prefilter_context(
                 allow_fetch=lambda url: self._robots.allow_fetch(url),
             )

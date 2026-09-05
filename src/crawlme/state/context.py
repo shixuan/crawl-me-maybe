@@ -26,6 +26,61 @@ from crawlme.schemas import CrawlGoal
 
 
 @dataclasses.dataclass
+class PageRecord:
+    """What the run knows about one page it fetched.
+
+    Three facts arrive from three places and in no fixed order: the seed
+    when the page is dispatched, whether it was a listing after it is
+    harvested, and the verdict when the analyzer answers, which for a
+    retried analysis can be long after both. Held as one record rather
+    than one dict each, so "are both halves in" is a question about a
+    record instead of a lookup in two maps.
+    """
+
+    seed: str = ""
+    listing: bool | None = None
+    relevant: bool | None = None
+    counted: bool = False
+
+    def ready(self) -> bool:
+        """Both halves in, and not counted yet."""
+        return self.listing is not None and self.relevant is not None and not self.counted
+
+
+class PageBook:
+    """The pages this run fetched, and the index from address to key.
+
+    The index exists because the analyzer's feedback names a URL while
+    everything else is keyed by url_key.
+    """
+
+    def __init__(self) -> None:
+        self._by_key: dict[str, PageRecord] = {}
+        self._key_of: dict[str, str] = {}
+
+    def open(self, url_key: str, canonical: str, seed: str) -> PageRecord:
+        """Start a record, before anything is known about the page."""
+        self._key_of[canonical] = url_key
+        rec = self._by_key.setdefault(url_key, PageRecord())
+        rec.seed = seed
+        return rec
+
+    def of(self, url_key: str) -> PageRecord:
+        return self._by_key.setdefault(url_key, PageRecord())
+
+    def by_url(self, canonical: str) -> PageRecord | None:
+        key = self._key_of.get(canonical, "")
+        return self._by_key.get(key)
+
+    def seed_of(self, url_key: str, default: str = "") -> str:
+        rec = self._by_key.get(url_key)
+        return rec.seed if rec and rec.seed else default
+
+    def key_of(self, canonical: str, default: str = "") -> str:
+        return self._key_of.get(canonical, default)
+
+
+@dataclasses.dataclass
 class CrawlCounters:
     """Mutable counters shared between the scheduler and stop-condition checks.
 

@@ -349,7 +349,7 @@ async def test_endorsed_top():
     sched._endorsed.extend([("https://a.com/x", "https://src.com/page"), ("/rel", "https://src.com/page")])
     sched._goal = _goal(max_pages=5)
     sched._page_contexts["src-key"] = {"depth": 2}
-    sched._url_key_of["https://src.com/page"] = "src-key"
+    sched._pages.open("src-key", "https://src.com/page", "")
     sched._prefilter.check = MagicMock(return_value=(Decision.ALLOW, ""))
     sched._frontier.push_batch = AsyncMock()
 
@@ -451,7 +451,7 @@ def test_window_fed():
 
     for key, score in (("k1", 0.9), ("k2", 0.2)):
         sched._on_analysis(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
-        sched._listing_of[key] = False
+        sched._pages.of(key).listing = False
         sched._cast_relevance_vote(key)
 
     assert list(sched._tally_by_seed[""].window) == [True, False]
@@ -463,7 +463,7 @@ def test_window_threshold():
     sched._counters.relevance_threshold = 0.95
 
     sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
-    sched._listing_of["k1"] = False
+    sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
 
     assert list(sched._tally_by_seed[""].window) == [False]
@@ -625,7 +625,7 @@ def test_relevant_count():
     sched._counters = CrawlCounters(relevance_threshold=0.7)
     for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
         sched._on_analysis(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
-        sched._listing_of[key] = False
+        sched._pages.of(key).listing = False
         sched._cast_relevance_vote(key)
     assert sched._counters.relevant_found == 2
     assert list(sched._tally_by_seed[""].window) == [True, False, True]
@@ -1045,8 +1045,7 @@ async def test_a_proposed_seed_is_credited_for_what_it_found():
     post_key = canon.canonicalize(post, post).url_key
 
     sched = _make_sched(canonicalizer=canon)
-    sched._url_key_of = {post: post_key}
-    sched._seed_of = {post_key: seed_key}
+    sched._pages.open(post_key, post, seed_key)
     sched._proposed_seeds = {seed_key: (seed, "why")}
     sched._counters.relevance_threshold = 0.7
 
@@ -1074,7 +1073,7 @@ async def test_seed_credited_mid_judge():
     sched = _make_sched()
     sched._goal = _goal()
     sched._proposed_seeds = {"seed-k": ("https://ext.test/", "why")}
-    sched._seed_of = {"k1": "seed-k"}
+    sched._pages.open("k1", "https://ext.test/k1", "seed-k")
 
     url = URL(raw="https://ext.test/p/1", canonical="https://ext.test/p/1", url_key="pk", reg_domain="ext.test")
     page = Page(url_key="pk", url=url)
@@ -1119,7 +1118,7 @@ def test_a_listing_does_not_vote():
     seeds put seven certain misses into a window of twenty."""
     sched = _make_sched()
     _judge(sched, "k1", 0.0)
-    sched._listing_of["k1"] = True
+    sched._pages.of("k1").listing = True
     sched._cast_relevance_vote("k1")
     assert list(sched._tally_by_seed[""].window) == []
 
@@ -1127,7 +1126,7 @@ def test_a_listing_does_not_vote():
 def test_a_page_votes_once_judged():
     sched = _make_sched()
     _judge(sched, "k1", 0.9)
-    sched._listing_of["k1"] = False
+    sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
     assert list(sched._tally_by_seed[""].window) == [True]
 
@@ -1136,7 +1135,7 @@ def test_a_late_verdict_still_votes():
     """A retried analysis lands long after link extraction, so the
     harvester's half is already in when the verdict arrives."""
     sched = _make_sched()
-    sched._listing_of["k1"] = False
+    sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
     assert list(sched._tally_by_seed[""].window) == []
     _judge(sched, "k1", 0.9)
@@ -1146,7 +1145,7 @@ def test_a_late_verdict_still_votes():
 def test_a_vote_is_cast_once():
     sched = _make_sched()
     _judge(sched, "k1", 0.9)
-    sched._listing_of["k1"] = False
+    sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
     sched._cast_relevance_vote("k1")
     assert list(sched._tally_by_seed[""].window) == [True]
@@ -1157,7 +1156,7 @@ def test_the_tally_counts_listings():
     listing that somehow answers the goal is still an answer found."""
     sched = _make_sched()
     _judge(sched, "k1", 0.9)
-    sched._listing_of["k1"] = True
+    sched._pages.of("k1").listing = True
     sched._cast_relevance_vote("k1")
     assert sched._counters.relevant_found == 1
 
@@ -1257,9 +1256,9 @@ async def test_the_target_holds_under_a_queue():
 
 
 def _vote(sched, seed, url_key, relevant):
-    sched._seed_of[url_key] = seed
-    sched._verdict_of[url_key] = relevant
-    sched._listing_of[url_key] = False
+    sched._pages.open(url_key, f"https://x.test/{url_key}", seed)
+    sched._pages.of(url_key).relevant = relevant
+    sched._pages.of(url_key).listing = False
     sched._cast_relevance_vote(url_key)
 
 
