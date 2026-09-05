@@ -151,7 +151,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 |------|--------|---------|---------|
 | `--seeds` | comma-separated URLs, or a path | *required in practice* | Where the crawl begins. Anything not starting with `http://` or `https://` is read as a JSON file: a list of URLs, or `{"seeds": [...], "allowed_domains": [...]}` |
 | `--allowed-domains` | comma-separated domains | none | Registrable domains the crawl may not leave. Outranks the same key in a seeds file |
-| `--enhance-seeds` | flag | off | Let the model name more sources of the same goal, first-hand ones over sites that write about them. Each is fetched, read, and put to the ranker before use, since roughly a third of what it names does not exist and an aggregator yields hundreds of links to its own help centre. They take a smaller share of the crawl than yours, and the run prints what each was worth so you can keep the good ones yourself |
+| `--enhance-seeds` | flag | off | Let the model name more sources whose own posts would answer the goal. Each is fetched and read before use, since two thirds of what it names does not exist. They take a smaller share of the crawl than yours, and the run prints what each was worth and what it turned away, so you can keep the good ones yourself |
 
 **How far to go**
 
@@ -274,12 +274,13 @@ following, which is the only way a crawl leaves the platform it started on.
 keeps one loud account from spending the whole LLM budget. Priority decides only
 where the scarce page budget goes.
 
-**Seeds it names itself are checked before use.** About a third of what the
-model names does not exist, in a shape a person cannot spot: the brand is real
-and the account name is invented. So each proposal has to be fetched, harvested
-and put to the ranker before it is used, and one the ranker wants nothing from
-is dropped before it costs a page. Nothing is stored -- the run prints what each
-turned out to be worth, and keeping one is your call.
+**Seeds it names itself are checked before use.** Two thirds of what the model
+names does not exist, in a shape a person cannot spot: the brand is real and the
+account name is invented. So each proposal is fetched and read, and only what
+answers survives. Whether it is worth reading past that is left to the run, which
+retires a source on pages it actually read rather than on a sample of captions.
+Nothing is stored -- the run prints what each turned out to be worth and what it
+turned away, and keeping one is your call.
 
 **A run says why it stopped.** Budgets, a target met, a drained frontier, plus
 `RATE_LIMITED`, `LOGIN_REQUIRED` and `ADAPTER_EMPTY`, which exist because silence

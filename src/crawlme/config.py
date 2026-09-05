@@ -82,9 +82,7 @@ class Settings(BaseSettings):
     # DeepSeek "none", the only value there that turns thinking off.
     llm_rank_reasoning_effort: str = ""
     llm_analyze_reasoning_effort: str = ""
-    # Off, not empty. Both enhancers reply with a dozen addresses, and
-    # one run spent all 8191 output tokens thinking and answered nothing.
-    llm_enhance_reasoning_effort: str = "none"
+    llm_enhance_reasoning_effort: str = ""
 
     # --- Fetch ---
     fetch_concurrency: int = 6

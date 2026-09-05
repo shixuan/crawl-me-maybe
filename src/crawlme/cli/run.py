@@ -453,12 +453,17 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
     asked = s.get("seeds_asked")
     if asked is None:
         return []
+    # Every proposal costs a fetch whether it survives or not, so the
+    # ones turned away are half of what that spend bought. Without them
+    # a run that named nine and kept none reads as having done nothing.
+    turned_away = [f"                {url}  --  {why}" for url, why in sorted(s.get("rejected_seeds") or [])]
     if not proposed:
         # Silence here is what a run that was never asked looks like,
         # and one run lost its proposals to an empty model reply.
         out = [_RULE]
         if asked:
-            out.append(f"the model named {asked} more sources; none survived verification.")
+            out.append(f"the model named {asked} more sources; none survived verification:")
+            out.extend(turned_away)
         else:
             out.append("the model was asked for more sources and named none usable (see the log).")
         return out
@@ -475,6 +480,9 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
         )
         if why:
             out.append(f"                {why}")
+    if turned_away:
+        out.append(f"  and {len(turned_away)} more it named that did not survive:")
+        out.extend(turned_away)
     out.append("  Worth one? Add it to --seeds yourself.")
     return out
 

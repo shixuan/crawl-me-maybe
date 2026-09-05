@@ -1026,7 +1026,7 @@ async def test_enhanced_seeds_are_marked():
     url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
     proposed = Candidate(url=url, seed_ext=True)
     sched = _make_sched(settings=Settings(enhance_seeds=True))
-    with patch("crawlme.pioneer.seed_enhancer.enhance", AsyncMock(return_value=([proposed], 1))):
+    with patch("crawlme.pioneer.seed_enhancer.enhance", AsyncMock(return_value=([proposed], 1, []))):
         got = await sched.enhance_seeds(_goal(), [MagicMock(url=url)])
     assert [c.seed_ext for c in got] == [True]
 

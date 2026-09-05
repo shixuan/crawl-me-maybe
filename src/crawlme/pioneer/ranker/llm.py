@@ -50,7 +50,7 @@ _NEUTRAL_PRIORITY = 0.5
 # Below anything the model scores itself, so a rejection is read last
 # rather than not at all.  Not zero: a candidate nobody has an opinion
 # about should still outrank one the model argued against.
-DEMOTED_PRIORITY = 0.01
+_DEMOTED_PRIORITY = 0.01
 _DROP_TAG = "llm_drop"
 _DEMOTED_TAG = "llm_drop_demoted"
 # At most this many previously-relevant pages are shown to the model.
@@ -427,7 +427,7 @@ def _to_decisions(
             tag = _DEMOTED_TAG if demote_dropped else _DROP_TAG
             why = drops[cid]
             rationale = f"{tag}: {why}" if why else tag
-            priority, dropped = (DEMOTED_PRIORITY, False) if demote_dropped else (0.0, True)
+            priority, dropped = (_DEMOTED_PRIORITY, False) if demote_dropped else (0.0, True)
         else:
             priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
             missing += 1

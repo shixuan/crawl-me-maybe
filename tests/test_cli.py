@@ -908,3 +908,39 @@ def test_retired_sources_are_reported():
     )
     assert "3 sources" in out
     assert "2 nothing in its last 20 pages" in out
+
+
+def test_rejected_proposals_are_named_with_their_reason():
+    """A proposal costs a fetch whether it survives or not, so the ones
+    turned away are half of what that spend bought. One run named nine
+    and kept none, and the report said only that none survived."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "FRONTIER_DRAINED",
+            "seeds_asked": 2,
+            "proposed_seeds": {},
+            "rejected_seeds": [("https://a.test/", "does not exist"), ("https://b.test/", "none the ranker wanted")],
+        }
+    )
+    assert "https://a.test/  --  does not exist" in out
+    assert "https://b.test/  --  none the ranker wanted" in out
+
+
+def test_survivors_and_rejects_are_both_listed():
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "FRONTIER_DRAINED",
+            "seeds_asked": 2,
+            "proposed_seeds": {"https://good.test/": ("worth it", (3, 8, 40, 45, 12))},
+            "rejected_seeds": [("https://bad.test/", "does not exist")],
+        }
+    )
+    assert "3 relevant" in out
+    assert "1 more it named that did not survive" in out
+    assert "https://bad.test/  --  does not exist" in out

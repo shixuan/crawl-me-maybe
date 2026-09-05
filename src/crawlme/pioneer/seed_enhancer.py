@@ -45,19 +45,19 @@ _MAX_WHY = 80
 # One verification fetch, generously. A platform seed renders a page.
 _VERIFY_TIMEOUT = 60.0
 
-# How many candidates to score. One ranker chunk, so the probe costs
-# one call however many links the page held.
-_SAMPLE = 20
-
 _SYSTEM = (
     "You propose additional starting points for a web crawler. Given a goal and the "
     "seeds a user already chose, name more sources the crawl would otherwise miss. "
     "Reply with JSON only, no prose: "
     '{"seeds": [{"url": "...", "why": "one short clause"}]}. '
-    # No platform is named. What is asked for is who is speaking, which
-    # holds for a source of any shape.
-    "Prefer sources that publish first-hand -- the party the goal is about, speaking "
-    "for itself -- over sites that write about them. You are often wrong about exact "
+    # No platform is named, and neither is a kind of organisation. What
+    # is asked for is what a source publishes, which holds for a source
+    # of any shape. Asked instead for the party the goal is about, it
+    # answered a non-food goal with coffee chains three times running.
+    "Judge a source by what it posts, not by who it is: name it only if its own recent "
+    "posts would themselves be answers to the goal. An account that exists to post "
+    "exactly this beats a brand that merely does it sometimes, and beats a directory "
+    "that indexes everyone. You are often wrong about exact "
     "addresses, so name a source only when you are confident it exists. Never repeat a "
     "seed you were given. Give at most the number asked for, and keep every "
     "reason under a dozen words: a long reply is a cut-off reply."
@@ -163,9 +163,7 @@ async def verify(
     harvester: Harvester,
     storage: Any,
     canonicalizer: Any,
-    ranker: Any = None,
-    goal: CrawlGoal | None = None,
-) -> list[Candidate]:
+) -> tuple[list[Candidate], list[tuple[str, str]]]:
     """Keep the proposals a crawl would get something out of.
 
     Asked by reading one page, not by guessing from the address. A
@@ -174,13 +172,11 @@ async def verify(
     What decides is the question the harvester already answers: is there
     anything here to follow.
 
-    Having something to follow is not enough on its own. An events site
-    hands back two hundred links to its own help centre, which passes
-    that bar and then spends the run going nowhere. So a sample is put
-    to the ranker too, and a seed survives only if the ranker wanted at
-    least one of them. Measured over one real run, that separates the
-    two cleanly: two ext seeds scored nothing at all across every
-    candidate they had, while the third scored 68 of 181.
+    Whether it is worth reading past that is not asked here. It was, on
+    a sample of twenty captions, and the answer was wrong whenever the
+    fetch came back thin: three real accounts were turned away on three
+    leftover posts each. Retiring a source answers the same question on
+    pages actually read, so this asks only what one fetch can settle.
 
     Payloads are kept and handed on. A grid drops posts as they scroll
     out of view, so an adapter reading markup alone reports a busy
@@ -189,6 +185,10 @@ async def verify(
     from crawlme.schemas import Candidate, FetchResult, FrontierItem, Page
 
     kept: list[Candidate] = []
+    # What was turned away and what turned it away. A proposal costs a
+    # fetch either way, and the reason is the only thing that says
+    # whether the model guessed an address or picked a poor source.
+    dropped: list[tuple[str, str]] = []
     for url, why in proposals:
         canonical = canonicalizer.canonicalize(url, url)
         item = FrontierItem(url=canonical, url_key=canonical.url_key, reg_domain=canonical.reg_domain)
@@ -196,6 +196,7 @@ async def verify(
             result: FetchResult = await asyncio.wait_for(fetcher.fetch(item), timeout=_VERIFY_TIMEOUT)
         except Exception as e:
             logger.info("seeds.unreachable url=%s error=%s", url, type(e).__name__)
+            dropped.append((url, "could not be fetched"))
             continue
         page = Page(
             url_key=canonical.url_key,
@@ -205,57 +206,14 @@ async def verify(
         )
         harvest = harvester.harvest(page, 0)
         if harvest.problem is not None or not harvest.candidates:
-            logger.info(
-                "seeds.empty url=%s problem=%s",
-                url,
-                harvest.problem.value if harvest.problem else "nothing to follow",
-            )
-            continue
-        if not await _wanted_by_ranker(harvest.candidates, ranker=ranker, goal=goal):
-            logger.info("seeds.off_goal url=%s yields=%d", url, len(harvest.candidates))
+            reason = harvest.problem.value if harvest.problem else "nothing to follow"
+            logger.info("seeds.empty url=%s problem=%s", url, reason)
+            dropped.append((url, "does not exist" if harvest.problem else "held nothing to follow"))
             continue
         candidate = Candidate(url=canonical, depth=0, seed_ext=True, signals={"why": why})
         kept.append(candidate)
         logger.info("seeds.kept url=%s yields=%d why=%s", url, len(harvest.candidates), why)
-    return kept
-
-
-def _spread(items: list[Any], n: int) -> list[Any]:
-    """A sample drawn across the whole page rather than off the top.
-
-    The top of a listing is its chrome. On the one aggregator that
-    turned out to be a good seed, the first eighteen candidates scored
-    zero -- header, footer, help links -- and the events it was kept for
-    began after them. A head sample would have thrown it away.
-    """
-    if len(items) <= n:
-        return items
-    stride = len(items) / n
-    return [items[int(i * stride)] for i in range(n)]
-
-
-async def _wanted_by_ranker(candidates: list[Any], *, ranker: Any, goal: CrawlGoal | None) -> bool:
-    """Whether the ranker wanted any of a sample of this page's links.
-
-    Fails open. A ranker that errors or is not configured leaves the
-    weaker bar in place, which is the behaviour this had before: a real
-    seed is not worth discarding over a provider hiccup.
-    """
-    if ranker is None or goal is None:
-        return True
-    from crawlme.pioneer.ranker import DEMOTED_PRIORITY
-    from crawlme.schemas import RankHistorySummary
-
-    sample = _spread(candidates, _SAMPLE)
-    try:
-        decisions = await ranker.rank_batch(goal, sample, RankHistorySummary(goal=goal.goal_statement or goal.prompt))
-    except Exception as e:
-        logger.info("seeds.unranked error=%s", type(e).__name__)
-        return True
-    # Above the floor, not above zero. Under --recall a rejection is
-    # demoted to a small positive score, and testing for any score at
-    # all would let a wholly rejected page through.
-    return any(d.priority > DEMOTED_PRIORITY for d in decisions)
+    return kept, dropped
 
 
 def _save_payloads(storage: Any, url_key: str, result: Any) -> list[str]:
@@ -278,8 +236,7 @@ async def enhance(
     harvester: Harvester,
     storage: Any,
     canonicalizer: Any,
-    ranker: Any = None,
-) -> tuple[list[Candidate], int]:
+) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
     """Propose seeds and hand back the ones that answered.
 
     The count of proposals comes back with them, because none surviving
@@ -289,16 +246,14 @@ async def enhance(
     want = how_many(len(seeds), settings.enhance_seeds_min, settings.enhance_seeds_max)
     proposals = await SeedEnhancer.from_settings(settings, budget=budget).propose(goal, seeds, want)
     if not proposals:
-        return [], 0
+        return [], 0, []
     logger.info("seeds.proposed count=%d of=%d", len(proposals), want)
-    kept = await verify(
+    kept, dropped = await verify(
         proposals,
         fetcher=fetcher,
         harvester=harvester,
         storage=storage,
         canonicalizer=canonicalizer,
-        ranker=ranker,
-        goal=goal,
     )
     logger.info("seeds.enhanced kept=%d of=%d", len(kept), len(proposals))
-    return kept, len(proposals)
+    return kept, len(proposals), dropped

@@ -250,6 +250,9 @@ class CrawlScheduler:
         # How many the model named. Proposing none and losing them all
         # in verification are different failures.
         self._seeds_asked: int | None = None
+        # url -> why it was turned away. A proposal costs a fetch either
+        # way, so the reason is what makes the spend arguable.
+        self._rejected_seeds: list[tuple[str, str]] = []
         # Two halves of one vote, emptied as each pair completes.
         self._verdict_of: dict[str, bool] = {}
         self._listing_of: dict[str, bool] = {}
@@ -282,7 +285,7 @@ class CrawlScheduler:
             return []
         from crawlme.pioneer.seed_enhancer import enhance
 
-        proposed, n_proposed = await enhance(
+        proposed, n_proposed, rejected = await enhance(
             goal,
             [c.url.raw for c in seeds],
             settings=self._cfg,
@@ -291,9 +294,9 @@ class CrawlScheduler:
             harvester=self._harvester,
             storage=self._storage,
             canonicalizer=self._canonicalizer,
-            ranker=self._ranker,
         )
         self._seeds_asked = n_proposed
+        self._rejected_seeds = rejected
         for c in proposed:
             # url_key, the shape _seed_of counts under.
             key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
@@ -618,6 +621,7 @@ class CrawlScheduler:
             "max_relevant": self._counters.max_relevant,
             # None when the run never asked. A number means it did.
             "seeds_asked": self._seeds_asked,
+            "rejected_seeds": self._rejected_seeds,
         }
         if counters.started_at:
             report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
