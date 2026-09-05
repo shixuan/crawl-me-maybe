@@ -82,7 +82,7 @@ async def test_wiki_basic(e2e_settings):
 
     # ── assertions ──────────────────────────────────────────────────
 
-    counters = sched._counters
+    counters = sched.context.progress
     pages_fetched = counters.pages_fetched
 
     print(f"\nElapsed: {elapsed:.1f}s")
@@ -172,7 +172,7 @@ async def test_wiki_budget(e2e_settings):
     except asyncio.TimeoutError:
         pass
 
-    pages_fetched = sched._counters.pages_fetched
+    pages_fetched = sched.context.progress.pages_fetched
     print(f"Pages fetched: {pages_fetched}, Stop: {task.stopping_reason}")
 
     # Budget stop may fire while a fetch is in-flight; that page still completes.
@@ -256,7 +256,7 @@ async def test_wiki_draining(e2e_settings):
         print(f"\nTimed out after {_DRAINING_TIMEOUT}s — checking partial results.")
 
     elapsed = time.monotonic() - t0
-    counters = sched._counters
+    counters = sched.context.progress
     pages_fetched = counters.pages_fetched
 
     print(f"\nElapsed: {elapsed:.1f}s")

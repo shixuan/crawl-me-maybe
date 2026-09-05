@@ -228,7 +228,7 @@ class LLMRanker:
         tokens = resp.input_tokens + resp.output_tokens
         decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow(), demote_dropped=self._demote_dropped)
         kept = sum(1 for d in decisions if not d.dropped)
-        logger.info(
+        logger.debug(
             "llm.rank batch=%d kept=%d %s=%d model=%s tokens=+%d",
             len(chunk),
             kept,

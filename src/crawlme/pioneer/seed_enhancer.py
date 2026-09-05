@@ -101,6 +101,11 @@ class SeedEnhancer:
             f"## Goal\n{goal.goal_statement or goal.prompt}\n\n"
             f"## Seeds already chosen\n" + "\n".join(f"- {s}" for s in seeds) + f"\n\n## Give at most {want}"
         )
+        # Said before the wait, not after it. This one call has taken
+        # over two minutes on a thinking model, and a line that only
+        # arrives with the answer leaves the terminal silent for all of
+        # it, which reads as a hang.
+        logger.info("asking the model for up to %d more sources to try", want)
         try:
             resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
         except LLMError as e:
@@ -190,12 +195,13 @@ async def verify(
     # whether the model guessed an address or picked a poor source.
     dropped: list[tuple[str, str]] = []
     for url, why in proposals:
+        logger.info("checking %s", url)
         canonical = canonicalizer.canonicalize(url, url)
         item = FrontierItem(url=canonical, url_key=canonical.url_key, reg_domain=canonical.reg_domain)
         try:
             result: FetchResult = await asyncio.wait_for(fetcher.fetch(item), timeout=_VERIFY_TIMEOUT)
-        except Exception as e:
-            logger.info("seeds.unreachable url=%s error=%s", url, type(e).__name__)
+        except Exception:
+            logger.info("dropping %s: could not be fetched", url)
             dropped.append((url, "could not be fetched"))
             continue
         page = Page(
@@ -207,12 +213,12 @@ async def verify(
         harvest = harvester.harvest(page, 0)
         if harvest.problem is not None or not harvest.candidates:
             reason = harvest.problem.value if harvest.problem else "nothing to follow"
-            logger.info("seeds.empty url=%s problem=%s", url, reason)
+            logger.info("dropping %s: %s", url, reason)
             dropped.append((url, "does not exist" if harvest.problem else "held nothing to follow"))
             continue
         candidate = Candidate(url=canonical, depth=0, seed_ext=True, signals={"why": why})
         kept.append(candidate)
-        logger.info("seeds.kept url=%s yields=%d why=%s", url, len(harvest.candidates), why)
+        logger.info("keeping %s: %s", url, why)
     return kept, dropped
 
 
@@ -247,7 +253,7 @@ async def enhance(
     proposals = await SeedEnhancer.from_settings(settings, budget=budget).propose(goal, seeds, want)
     if not proposals:
         return [], 0, []
-    logger.info("seeds.proposed count=%d of=%d", len(proposals), want)
+    logger.info("the model named %d more source%s to try", len(proposals), "" if len(proposals) == 1 else "s")
     kept, dropped = await verify(
         proposals,
         fetcher=fetcher,
@@ -255,5 +261,5 @@ async def enhance(
         storage=storage,
         canonicalizer=canonicalizer,
     )
-    logger.info("seeds.enhanced kept=%d of=%d", len(kept), len(proposals))
+    logger.info("%d of the %d it named answered", len(kept), len(proposals))
     return kept, len(proposals), dropped

@@ -65,7 +65,7 @@ class TokenBudget:
         self.calls += 1
         if self._sink is not None:
             self._sink(self.used)
-        logger.info(
+        logger.debug(
             "llm.tokens call=%d used=%d/%d (+%d in, +%d out, %d cached, %d thinking)",
             self.calls,
             self.used,

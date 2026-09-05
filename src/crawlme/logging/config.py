@@ -1,4 +1,36 @@
-"""Setup function: wires the root logger from Settings."""
+"""Setup function: wires the root logger from Settings.
+
+What belongs at each level, so the answer is not decided once per
+investigation:
+
+  ERROR    the run cannot go on, or a whole stage stopped working
+  WARNING  the run is producing something wrong or incomplete and is
+           carrying on anyway. A reader who ignores it gets a report
+           that looks fine and is not
+  INFO     what is happening, in sentences, for the person who started
+           the run. No url_keys, no byte counts, no ratios
+  DEBUG    everything with a number in it, and every per-item mechanic
+
+Two tests. WARNING against INFO: would ignoring this line leave someone
+believing a result that is not true? Payloads dropped by their content
+type sat at DEBUG and five accounts were read weeks out of date without
+a word.
+
+INFO against DEBUG: would the person who typed the command understand
+this line and care? "read 63 posts from timhortons" passes. "kept=6
+bytes=2482493" does not, however much it helped whoever was debugging
+the day it was written.
+
+INFO speaks when the wait begins, not when it ends. A line that only
+arrives with the answer says nothing for as long as the answer takes,
+and one seed proposal took over two minutes, which read as a hang and
+was interrupted twice. Anything that can take seconds announces itself
+first.
+
+A field name says what it measured, not what it is about. `took` reads
+as the time a call spent and was the wall clock around an await, which
+on a busy loop is a different number.
+"""
 
 from __future__ import annotations
 
@@ -54,8 +86,19 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
 
     root.addHandler(h)
 
-    # Quiet noisy third-party loggers.
-    for noisy in ("httpx", "httpcore", "trafilatura", "urllib3", "aiosqlite"):
+    # Quiet noisy third-party loggers. litellm attaches a handler of
+    # its own and never sets a level, so at INFO it announced every
+    # completion twice, once through its handler and once through ours.
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "trafilatura",
+        "urllib3",
+        "aiosqlite",
+        "LiteLLM",
+        "LiteLLM Router",
+        "LiteLLM Proxy",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

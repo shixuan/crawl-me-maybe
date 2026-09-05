@@ -119,7 +119,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # leave the platform now, and the way out is already three levels.
     if args.session and args.domain_budget is None:
         args.domain_budget = 0
-        logger.info("run.platform domain_budget=%d", args.domain_budget)
+        logger.debug("run.platform domain_budget=%d", args.domain_budget)
     if args.depth_limit is not None:
         goal.depth_limit = args.depth_limit
     if args.domain_budget is not None:
@@ -148,7 +148,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     budget = TokenBudget(limit=goal.max_tokens)
     llm_ranker = LLMRanker.from_settings(cfg, budget=budget)
     if llm_ranker is not None:
-        logger.info("llm.ranker enabled")
+        logger.info("ranking with the LLM")
     # The analysis subsystem (analyzer + signals + priors) is built by
     # the factory from settings: the CLI just shares the budget.
     scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, budget=budget)
@@ -159,6 +159,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
     # One LLM call per task: enrich statement, keywords, and the time
     # window.  Inert without credentials, never blocks the crawl.
+    logger.info("reading the goal with the model")
     enhanced = await GoalEnhancer.from_settings(cfg, budget=budget).enhance(goal)
     if enhanced is not None:
         goal.goal_statement = enhanced.statement
@@ -169,7 +170,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         if args.since is None:
             goal.since = enhanced.since
         goal.extraction_spec = enhanced.extraction_spec
-        logger.info(
+        logger.debug(
             "goal.enhanced statement_len=%d keywords=%d fields=%s",
             len(enhanced.statement),
             len(enhanced.keywords),
@@ -180,15 +181,14 @@ async def cmd_run(args: argparse.Namespace) -> None:
         # that fetched a week, and nothing said otherwise.
         if args.since is not None and enhanced.since and enhanced.since != goal.since:
             logger.info(
-                "goal.window flag=%s inferred=%s using=flag",
-                goal.since.isoformat() if goal.since else "none",
-                enhanced.since.isoformat(),
+                "reading back to %s, as you asked; the prompt suggested %s",
+                goal.since.date().isoformat() if goal.since else "no limit",
+                enhanced.since.date().isoformat(),
             )
         else:
             logger.info(
-                "goal.window using=%s since=%s",
-                "flag" if args.since is not None else ("prompt" if goal.since else "none"),
-                goal.since.isoformat() if goal.since else "unlimited",
+                "reading back to %s",
+                goal.since.date().isoformat() if goal.since else "no limit",
             )
 
     candidates = await source.discover(goal)
@@ -204,12 +204,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(
-        "task=%s prompt=%r pages=%d tokens=%d duration=%ds",
-        task.task_id,
+        "looking for: %s",
         args.prompt,
-        goal.max_pages,
-        goal.max_tokens,
-        goal.max_duration_sec,
     )
 
     try:
@@ -222,11 +218,11 @@ async def cmd_run(args: argparse.Namespace) -> None:
         await scheduler.aclose()
     finally:
         logger.info(
-            "state=%s reason=%s pages=%d tokens=%d",
-            task.state,
-            task.stopping_reason or "none",
+            "%s after %d pages and %d tokens: %s",
+            task.state.lower(),
             scheduler.context.progress.pages_fetched,
             scheduler.context.progress.tokens_used,
+            task.stopping_reason or "no reason recorded",
         )
 
     # Tear down litellm's cached clients while the loop is still alive,

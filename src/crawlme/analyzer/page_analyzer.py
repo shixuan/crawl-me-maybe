@@ -204,7 +204,7 @@ class PageAnalyzer:
             self._publish(result)
             # Settled: this parked page is done either way now.
             self._parked_count -= 1
-            logger.info("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
+            logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
 
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
@@ -215,7 +215,7 @@ class PageAnalyzer:
             raise LLMError(f"unparseable JSON for {page.url_key}")
         tokens = resp.input_tokens + resp.output_tokens
         result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
-        logger.info(
+        logger.debug(
             "analysis.ok url_key=%s classification=%s relevance=%.2f hub=%.2f model=%s tokens=+%d",
             page.url_key,
             result.classification,
@@ -342,7 +342,7 @@ def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[
         if not value or not evidence:
             continue
         if _normalize(evidence) not in haystack:
-            logger.info("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
+            logger.debug("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
             continue
         if _normalize(value) in _NEGATIONS:
             # A quote can only prove what a page says.  There is no
@@ -350,7 +350,7 @@ def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[
             # answering "no" is asserting something its evidence cannot
             # support -- and absence is already sayable here, by the
             # field not being present at all.
-            logger.info("analysis.negative_claim url_key=%s field=%s", page.url_key, name)
+            logger.debug("analysis.negative_claim url_key=%s field=%s", page.url_key, name)
             continue
         out[name] = ExtractedField(value=value, evidence=evidence)
     return out

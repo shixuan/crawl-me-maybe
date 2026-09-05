@@ -602,7 +602,7 @@ def test_unfinished_log(caplog):
     sched._frontier.size = 16
     sched._frontier.waiting_size = 4
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         sched._reconcile()
 
     assert "task.reconcile" in caplog.text
@@ -616,7 +616,7 @@ def test_complete_quiet(caplog):
     sched._frontier.size = 0
     sched._frontier.waiting_size = 0
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         sched._reconcile()
 
     assert "task.reconcile" in caplog.text
@@ -670,7 +670,7 @@ async def test_cooldown_lives(caplog):
     sched._frontier.cooling = 1
     sched._frontier.waiting.is_empty = True
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(sched._fetch_pump(), timeout=0.3)
 

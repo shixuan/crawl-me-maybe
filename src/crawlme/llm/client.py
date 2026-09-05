@@ -229,7 +229,7 @@ class LLMClient:
         no way to authenticate, so return None and let the caller skip
         the LLM stages instead of failing at runtime."""
         if not settings.llm_api_key and not settings.llm_base_url:
-            logger.info("llm.auto_off no api key or base url configured")
+            logger.info("no LLM key configured, running without the LLM stages")
             return None
         return cls.from_settings(settings, budget=budget, reasoning_effort=reasoning_effort)
 
@@ -298,13 +298,12 @@ class LLMClient:
                             thinking_tokens,
                             ceiling,
                         )
-                    # Timed on every call, not only the ones that fail.
-                    # A timeout says how long it waited; without the same
-                    # number from the calls that answered there is no way
-                    # to tell a limit cutting into the ordinary spread
-                    # from one catching a call that had hung.
-                    logger.info(
-                        "llm.chat.took %.1fs out=%d thinking=%d of %d",
+                    # Wall clock around the await, which on a busy loop
+                    # includes waiting to be scheduled. Named for what it
+                    # measures: read as the call's own duration it says a
+                    # request outlived a timeout that did cut it off.
+                    logger.debug(
+                        "llm.chat.wall %.1fs out=%d thinking=%d of %d",
                         elapsed,
                         output_tokens,
                         thinking_tokens,

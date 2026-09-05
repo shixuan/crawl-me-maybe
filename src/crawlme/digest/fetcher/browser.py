@@ -143,9 +143,8 @@ class PlaywrightFetcher:
         self._context = await self._browser.new_context(**options)
         self._context.set_default_timeout(self._timeout_ms)
         logger.info(
-            "browser.started headless=%s session=%s",
-            self._headless,
-            "yes" if self._storage_state else "anonymous",
+            "browser ready%s",
+            " with your session" if self._storage_state else ", not signed in",
         )
         return self._context
 
@@ -208,7 +207,7 @@ class PlaywrightFetcher:
                     # downstream emptiness check decide -- discarding it
                     # here threw away a page we had already paid for, and
                     # then paid for it twice more on retry.
-                    logger.info("browser.wait_timeout url=%s taking what rendered", item.url.canonical)
+                    logger.info("%s was slow to settle, reading what it rendered", item.url.canonical)
                     response = None
                 if self._scrolls:
                     await self._scroll_through(page, payloads)
@@ -237,7 +236,7 @@ class PlaywrightFetcher:
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
         if payloads:
-            logger.info(
+            logger.debug(
                 "browser.payloads url=%s kept=%d bytes=%d",
                 item.url.canonical,
                 len(payloads),
@@ -287,7 +286,7 @@ class PlaywrightFetcher:
             height = await page.evaluate("document.body.scrollHeight")
             before = len(payloads)
             if height == last_height and i:
-                logger.info("browser.scroll_end url=%s after=%d of %d", page.url, i, self._scrolls)
+                logger.debug("browser.scroll_end url=%s after=%d of %d", page.url, i, self._scrolls)
                 return
             last_height = height
             await page.mouse.wheel(0, max(height, 4000))
@@ -301,7 +300,9 @@ class PlaywrightFetcher:
             waited += _SCROLL_POLL_MS
             if len(payloads) > before:
                 return
-        logger.info("browser.scroll_unanswered url=%s after=%dms", page.url, waited)
+        # One scroll going unanswered is not a bad read on its own.
+        # Whether the read came out stale is the listing's to say.
+        logger.debug("browser.scroll_unanswered url=%s after=%dms", page.url, waited)
 
     def _collect(self, response: Any, into: list[Payload]) -> None:
         """Keep one response the page asked for, if anyone wants it.
@@ -333,7 +334,7 @@ class PlaywrightFetcher:
             logger.debug("browser.payload_gone url=%s", getattr(response, "url", "?"))
             return
         if total + len(body) > self._max_payload_bytes:
-            logger.info("browser.payload_capped url=%s bytes=%d", response.url, total)
+            logger.debug("browser.payload_capped url=%s bytes=%d", response.url, total)
             return
         into.append(Payload(url=response.url, content_type=ctype, body=body))
 

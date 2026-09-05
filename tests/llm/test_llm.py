@@ -445,10 +445,11 @@ def test_effort_absent():
 
 
 @pytest.mark.asyncio
-async def test_every_call_reports_how_long_it_took(monkeypatch, caplog):
-    """A timeout says how long it waited. Without the same number from
-    the calls that answered, a limit cutting into the ordinary spread
-    looks the same as one catching a call that had hung."""
+async def test_every_call_reports_its_wall_clock(monkeypatch, caplog):
+    """Named for what it measures. It is the wall clock around the await,
+    so on a busy loop it includes waiting to be scheduled, and read as
+    the call's own duration it says a request outlived a timeout that
+    did cut it off."""
 
     async def _fake(**kwargs):
         return SimpleNamespace(
@@ -458,6 +459,6 @@ async def test_every_call_reports_how_long_it_took(monkeypatch, caplog):
         )
 
     monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
-    with caplog.at_level("INFO"):
+    with caplog.at_level("DEBUG"):
         await LLMClient("m", api_key="k").chat("hi")
-    assert "llm.chat.took" in caplog.text
+    assert "llm.chat.wall" in caplog.text

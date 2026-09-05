@@ -56,6 +56,16 @@ from crawlme.storage.contracts import CrawlDb
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_INTERVAL = 10
+# How often the run says it is still going, in pages.
+_PULSE_PAGES = 25
+
+
+def _where(url: str) -> str:
+    """A URL as a person would say it, for the lines they read."""
+    short = url.split("://", 1)[-1].removeprefix("www.").rstrip("/")
+    return short if len(short) <= 70 else short[:69] + "\u2026"
+
+
 # How many candidates the rank pump takes out of the buffer at once,
 # and therefore how long anything waits to become fetchable: nothing in
 # a drained batch reaches the frontier until all of it is scored.
@@ -308,7 +318,7 @@ class CrawlScheduler:
             await self._frontier.push_batch(items)
         if self._events and n_ingested > 0:
             self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
-        logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
+        logger.info("starting from %d seed%s", n_ingested, "" if n_ingested == 1 else "s")
         return n_ingested
 
     # public API -------------------------------------------------------
@@ -340,8 +350,7 @@ class CrawlScheduler:
 
         setup_logging(self._cfg)
         logger.info(
-            "task.start task_id=%s pages=%d tokens=%d duration=%ds",
-            task.task_id,
+            "crawling, at most %d pages or %d tokens or %ds",
             goal.max_pages,
             goal.max_tokens,
             goal.max_duration_sec,
@@ -369,8 +378,7 @@ class CrawlScheduler:
         reason = task.stopping_reason or "none"
         self._reconcile()
         logger.info(
-            "task.done task_id=%s pages=%d tokens=%d reason=%s",
-            task.task_id,
+            "finished after %d pages and %d tokens: %s",
             self._ctx.progress.pages_fetched,
             self._ctx.progress.tokens_used,
             reason,
@@ -418,7 +426,7 @@ class CrawlScheduler:
         if not self._inflight:
             return
         pending = set(self._inflight)
-        logger.info("task.settling in_flight=%d", len(pending))
+        logger.debug("task.settling in_flight=%d", len(pending))
         _, still = await asyncio.wait(pending, timeout=_SETTLE_TIMEOUT)
         if still:
             # Past the backstop: whatever is left was not going to
@@ -465,6 +473,8 @@ class CrawlScheduler:
                     "relevance": round(result.relevance_score, 2),
                 }
             )
+            # The one line the run exists to produce.
+            logger.info("found: %s (%s)", fb.title or "untitled", _where(fb.url or ""))
         # Backfill the judgment into the source page's context so the LLM
         # ranker can tell a link off a RELEVANT article from a link off a
         # help page.  Retries land here through the same sink, so a late
@@ -552,7 +562,7 @@ class CrawlScheduler:
             return
         self._seeds[seed].retired = why
         self._frontier.retire(seed)
-        logger.info("seed.retired seed=%s reason=%s", seed, why)
+        logger.info("done with one source: %s", why)
 
     def _record_page_context(self, url_key: str, fields: dict[str, Any]) -> None:
         """Merge per-page context that the ranker reads at rank time.
@@ -632,7 +642,7 @@ class CrawlScheduler:
         fetches pending, printed "Task was destroyed but it is pending",
         and left its row in the database saying RUNNING for ever.
         """
-        logger.info("pause.requested inflight=%d", self._ctx.progress.in_flight)
+        logger.debug("pause.requested inflight=%d", self._ctx.progress.in_flight)
         self._state = "PAUSING"
         await self._settle_inflight()
         self._state = "PAUSED"
@@ -649,7 +659,7 @@ class CrawlScheduler:
         # Restore from latest checkpoint.
         snap = await self._load_latest_snapshot()
         if snap:
-            logger.info(
+            logger.debug(
                 "resume.restored heap=%d pending=%d visited=%d", len(snap.heap), len(snap.pending), len(snap.visited)
             )
             self._frontier.restore(snap)
@@ -690,7 +700,7 @@ class CrawlScheduler:
         left_frontier = self._frontier.size
         left_buffer = self._frontier.waiting_size
         ledger = self._ctx.ledger
-        logger.info(
+        logger.debug(
             "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
             ledger.links_discovered,
             ledger.candidates_ranked,
@@ -723,7 +733,7 @@ class CrawlScheduler:
             return
         reasons = check_stop(self._task, self._frontier, self._ctx.limits, self._ctx.progress)
         self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
-        logger.info("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._ctx.progress.pages_fetched)
+        logger.debug("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._ctx.progress.pages_fetched)
 
     # fetch loop -------------------------------------------------------
 
@@ -741,11 +751,10 @@ class CrawlScheduler:
                 self._task.stopping_reason = codes  # type: ignore[union-attr]
                 self._state = "STOPPING"
                 logger.info(
-                    "stop.triggered reasons=%s pages=%d frontier=%d buffer=%d inflight=%d",
+                    "stopping: %s, after %d pages (%d still queued, %d in the air)",
                     codes,
                     self._ctx.progress.pages_fetched,
-                    self._frontier.size,
-                    self._frontier.waiting_size,
+                    self._frontier.size + self._frontier.waiting_size,
                     self._ctx.progress.in_flight,
                 )
                 await self._frontier.waiting.wake()
@@ -798,7 +807,7 @@ class CrawlScheduler:
                         # recorded on the way out or the run reports
                         # "completed" with no cause at all.
                         self._record_stop_reason()
-                        logger.info("fetch_pump.exhausted frontier=0 buffer=0")
+                        logger.debug("fetch_pump.exhausted frontier=0 buffer=0")
                         await self._frontier.waiting.wake()
                         break
                     # Nothing waiting to be scored, but either a fetch is
@@ -915,7 +924,7 @@ class CrawlScheduler:
                 )
             ]
         )
-        logger.info("listing.next_page url=%s page=%d", url.canonical, pages + 2)
+        logger.debug("listing.next_page url=%s page=%d", url.canonical, pages + 2)
 
     async def _inject_endorsed(self) -> None:
         """Push analyzer-endorsed links straight into the frontier.
@@ -962,7 +971,7 @@ class CrawlScheduler:
             )
         if items:
             await self._frontier.push_batch(items)
-            logger.info("endorsed.injected count=%d", len(items))
+            logger.debug("endorsed.injected count=%d", len(items))
 
     async def _fetch_and_extract(self, item: FrontierItem) -> tuple[FetchResult, Page] | None:
         """Download and parse one page while holding a fetch slot.
@@ -977,7 +986,7 @@ class CrawlScheduler:
         # host so the lookup finds what the fetch stored.
         await self._ensure_robots(_extract_domain(item.url.canonical))
         if not self._robots.allow_fetch(item.url.canonical):
-            logger.info("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
+            logger.debug("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
             self._ctx.ledger.robots_blocked += 1
             await self._frontier.record_outcome(item, "SKIPPED")
             return None
@@ -1005,7 +1014,7 @@ class CrawlScheduler:
 
             # Extract content: offload to thread pool with a timeout.
             raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
-            logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+            logger.debug("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
             await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
             try:
                 page = await asyncio.wait_for(
@@ -1107,6 +1116,7 @@ class CrawlScheduler:
                 self._ctx.progress.listings_seen += 1
                 self._ctx.progress.listings_empty += int(not candidates)
                 self._ctx.ledger.listings_stale += int(harvest.degraded)
+                logger.info("read %d posts from %s", len(candidates), _where(page.url.canonical))
             self._pages.of(page.url_key).listing = harvest.listing
             self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,
@@ -1160,7 +1170,7 @@ class CrawlScheduler:
                 # Progress pulse: large pages take a while to persist.
                 total = n_allowed + n_filtered
                 if total % 500 == 0:
-                    logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(candidates))
+                    logger.debug("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(candidates))
             logger.debug(
                 "prefilter url_key=%s total=%d allowed=%d filtered=%d",
                 page.url_key,
@@ -1180,7 +1190,7 @@ class CrawlScheduler:
 
             self._ctx.progress.pages_fetched = self._ctx.progress.pages_fetched + 1
             n = self._ctx.progress.pages_fetched
-            logger.info(
+            logger.debug(
                 "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
                 n,
                 page.url_key,
@@ -1189,6 +1199,15 @@ class CrawlScheduler:
                 n_allowed,
                 (time.monotonic() - self._ctx.progress.started_at),
             )
+
+            # A run can read for many minutes without a hit, and every
+            # other INFO line here waits on something happening.
+            if n % _PULSE_PAGES == 0:
+                logger.info(
+                    "%d pages read, %d found so far",
+                    n,
+                    self._ctx.progress.relevant_found,
+                )
 
             # Periodic checkpoint.
             if self._ctx.progress.pages_fetched % _CHECKPOINT_INTERVAL == 0:
@@ -1256,7 +1275,7 @@ class CrawlScheduler:
 
         n_dropped = sum(1 for d in decisions if d.dropped)
         n_kept = len(decisions) - n_dropped
-        logger.info(
+        logger.debug(
             "rank.batch candidates=%d kept=%d dropped=%d",
             len(batch),
             n_kept,
