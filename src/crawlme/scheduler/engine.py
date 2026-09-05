@@ -313,6 +313,7 @@ class CrawlScheduler:
                     seed_ext=c.seed_ext,
                 )
             )
+            self._seeds[url.url_key].url = url.canonical
             n_ingested += 1
         if items:
             await self._frontier.push_batch(items)
@@ -602,6 +603,19 @@ class CrawlScheduler:
             "candidates_ranked": ledger.candidates_ranked,
             "fetch_errors": ledger.fetch_errors,
             "analyses": dict(ledger.analyses_by_class),
+            # Every seed the run read, in the order it was given them,
+            # each with its own funnel. Asked for one seed at a time
+            # ("wanted 6 but found nothing") and answerable only here.
+            "seeds": {
+                key: {
+                    "url": st.url,
+                    "funnel": st.funnel.as_tuple(),
+                    "retired": st.retired,
+                    "proposed": key in self._proposed_seeds,
+                }
+                for key, st in self._seeds.items()
+                if st.url
+            },
             # url -> (why it was proposed, relevant pages found through it)
             "proposed_seeds": {
                 url: (why, self._seeds[key].funnel.as_tuple()) for key, (url, why) in self._proposed_seeds.items()

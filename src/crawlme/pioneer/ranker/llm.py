@@ -27,7 +27,7 @@ import logging
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, TokenBudget, parse_json_response
+from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,7 @@ class LLMRanker:
             settings,
             budget=budget,
             reasoning_effort=settings.llm_rank_reasoning_effort,
+            stage=Stage.RANKING,
         )
         if client is None:
             return None

@@ -20,7 +20,8 @@ from typing import Any
 
 from crawlme.config import Settings
 from crawlme.digest.feed import ADAPTERS
-from crawlme.llm import TokenBudget, close_litellm_clients
+from crawlme.digest.feed.base import PageProblem
+from crawlme.llm import Stage, TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
@@ -29,7 +30,7 @@ from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
+from crawlme.schemas import CLASSIFICATIONS, CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
 
@@ -409,12 +410,65 @@ def _print_summary(
     summary["tokens_out"] = budget.output_tokens
     summary["tokens_cached"] = budget.cached_input_tokens
     summary["tokens_thinking"] = budget.reasoning_tokens
+    summary["tokens_by_stage"] = {
+        name: {
+            "used": u.used,
+            "calls": u.calls,
+            "in": u.input_tokens,
+            "out": u.output_tokens,
+            "cached": u.cached_input_tokens,
+            "thinking": u.reasoning_tokens,
+        }
+        for name, u in budget.by_stage.items()
+    }
     print(_format_summary(summary))
 
 
 # Between the report's parts. Indentation alone left them reading as
 # one block.
 _RULE = "-" * 62
+# Where a report line's own text starts, past its label.
+_INDENT = " " * 14
+
+
+def _in_order(counts: dict[str, int], vocabulary: tuple[str, ...]) -> list[str]:
+    """The keys present, in the vocabulary's order.
+
+    Not by count. A line sorted by size reshuffles between runs, so
+    reading two reports side by side means finding each class again
+    before comparing it. Anything the vocabulary does not name follows,
+    alphabetically, rather than being dropped.
+    """
+    named = [k for k in vocabulary if k in counts]
+    return named + sorted(k for k in counts if k not in vocabulary)
+
+
+def _stage_lines(s: dict[str, Any]) -> list[str]:
+    """The bill split by who spent it.
+
+    A single total cannot be argued with. Knowing that analysis took
+    three quarters of it and seed proposal a twentieth says which one
+    to turn down.
+    """
+    stages: dict[str, dict[str, int]] = s.get("tokens_by_stage") or {}
+    if not stages:
+        return []
+    total = sum(u["used"] for u in stages.values())
+    order = _in_order(stages, Stage.ORDER)  # type: ignore[arg-type]
+    name_w = max(len(name) for name in order)
+    used_w = max(len(str(u["used"])) for u in stages.values())
+    lines = []
+    for i, name in enumerate(order):
+        u = stages[name]
+        share = f"{u['used'] / total:.0%}" if total else "0%"
+        calls = u["calls"]
+        lines.append(
+            f"{'  by stage:' if i == 0 else '':<14}"
+            f"{name:<{name_w}}  {u['used']:>{used_w}} ({share:>3}), "
+            f"{calls} call{'' if calls == 1 else 's'}, "
+            f"{u['in']} in / {u['out']} out, {u['cached']} cached, {u['thinking']} thinking"
+        )
+    return lines
 
 
 def _refusal_advice(s: dict[str, Any]) -> list[str]:
@@ -435,6 +489,28 @@ def _refusal_advice(s: dict[str, Any]) -> list[str]:
         "the platform asked for a login. Make a fresh session with:",
         f"  crawl session {path}{feed} --force",
     ]
+
+
+def _own_seed_lines(s: dict[str, Any]) -> list[str]:
+    """What each seed the user gave was actually worth.
+
+    In the order they were given, not best first. A reader comes to this
+    looking for one address they typed, and a list that reorders itself
+    every run has to be searched instead of read.
+    """
+    seeds = [v for v in (s.get("seeds") or {}).values() if not v.get("proposed")]
+    if not seeds:
+        return []
+    out = [_RULE, "the sources you gave, in the order you gave them:"]
+    for seed in seeds:
+        found, judged, fetched, wanted, scored, discovered = seed["funnel"]
+        out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {seed['url']}")
+        out.append(
+            f"{_INDENT}  {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
+        )
+        if seed.get("retired"):
+            out.append(f"{_INDENT}  stopped reading it: {seed['retired']}")
+    return out
 
 
 def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
@@ -520,6 +596,7 @@ def _format_summary(s: dict[str, Any]) -> str:
         tout = s.get("tokens_out", 0)
         share = f" ({think / tout:.0%} of output)" if tout else ""
         lines.append(f"  thinking:   {think}{share}")
+    lines.extend(_stage_lines(s))
 
     lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
 
@@ -528,12 +605,14 @@ def _format_summary(s: dict[str, Any]) -> str:
         counts: dict[str, int] = {}
         for why in retired:
             counts[why] = counts.get(why, 0) + 1
-        parts = ", ".join(f"{n} {why}" for why, n in sorted(counts.items(), key=lambda kv: -kv[1]))
-        lines.append(f"  retired:    {len(retired)} sources ({parts})")
+        lines.append(f"  retired:    {len(retired)} sources stopped paying off")
+        lines.extend(
+            f"{_INDENT}{why} ({counts[why]} source{'' if counts[why] == 1 else 's'})" for why in sorted(counts)
+        )
 
     analyses = s.get("analyses") or {}
     if analyses:
-        parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))
+        parts = ", ".join(f"{analyses[c]} {c}" for c in _in_order(analyses, CLASSIFICATIONS))
         lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")
         # Fetching outruns analysis, so a run that stops on a target
         # leaves pages it paid for and never judged. One fetched 78 and
@@ -553,7 +632,8 @@ def _format_summary(s: dict[str, Any]) -> str:
     # differently once you know nine accounts were gone or refused.
     refused = s.get("not_content") or {}
     if refused:
-        parts = ", ".join(f"{n} {kind}" for kind, n in sorted(refused.items(), key=lambda kv: -kv[1]))
+        kinds = tuple(p.value for p in PageProblem)
+        parts = ", ".join(f"{refused[k]} {k}" for k in _in_order(refused, kinds))
         lines.append(f"  no content: {sum(refused.values())} pages ({parts})")
 
     # An adapter that stops recognising a platform's markup shows up as
@@ -574,6 +654,7 @@ def _format_summary(s: dict[str, Any]) -> str:
         lines.append(f"  duration:   {s['duration_sec']}s")
     # After the numbers, which are what a reader came for.
     lines.extend(_refusal_advice(s))
+    lines.extend(_own_seed_lines(s))
     lines.extend(_proposed_seed_lines(s))
     return "\n".join(lines)
 

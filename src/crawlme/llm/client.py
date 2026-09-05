@@ -192,7 +192,12 @@ class LLMClient:
         budget: TokenBudget | None = None,
         max_output_tokens: int = 8192,
         reasoning_effort: str = "",
+        stage: str = "",
     ) -> None:
+        # Which stage this client works for, so the shared budget can
+        # keep the bill split. A client belongs to one consumer, so it
+        # is set once here rather than passed at every call.
+        self._stage = stage
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
@@ -203,7 +208,12 @@ class LLMClient:
 
     @classmethod
     def from_settings(
-        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str = ""
+        cls,
+        settings: Settings,
+        *,
+        budget: TokenBudget | None = None,
+        reasoning_effort: str = "",
+        stage: str = "",
     ) -> LLMClient:
         """Build from Settings: llm_model, llm_api_key, llm_base_url,
         llm_concurrency.  An empty llm_model resolves to the provider
@@ -218,11 +228,17 @@ class LLMClient:
             budget=budget,
             max_output_tokens=settings.llm_max_output_tokens,
             reasoning_effort=reasoning_effort,
+            stage=stage,
         )
 
     @classmethod
     def from_settings_if_configured(
-        cls, settings: Settings, *, budget: TokenBudget | None = None, reasoning_effort: str = ""
+        cls,
+        settings: Settings,
+        *,
+        budget: TokenBudget | None = None,
+        reasoning_effort: str = "",
+        stage: str = "",
     ) -> LLMClient | None:
         """Default-on with graceful auto-off, mirroring the analysis
         provider.  Without a key and without a custom endpoint there is
@@ -231,7 +247,7 @@ class LLMClient:
         if not settings.llm_api_key and not settings.llm_base_url:
             logger.info("no LLM key configured, running without the LLM stages")
             return None
-        return cls.from_settings(settings, budget=budget, reasoning_effort=reasoning_effort)
+        return cls.from_settings(settings, budget=budget, reasoning_effort=reasoning_effort, stage=stage)
 
     @property
     def configured(self) -> bool:
@@ -281,7 +297,9 @@ class LLMClient:
                     cached_tokens = _cached_input(usage)
                     thinking_tokens = _reasoning_output(resp, usage)
                     if self._budget is not None:
-                        self._budget.record(input_tokens, output_tokens, cached_tokens, thinking_tokens)
+                        self._budget.record(
+                            input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
+                        )
                     # An empty answer counts too. A model that thinks
                     # away the whole allowance stops one token under the
                     # ceiling, which read as a healthy reply that would

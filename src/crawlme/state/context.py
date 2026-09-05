@@ -58,6 +58,9 @@ class Funnel:
 class SeedState:
     """One seed's funnel, and whether it is still worth reading."""
 
+    # The address it was given as, kept here so the report can name a
+    # seed without a second map from key to URL.
+    url: str = ""
     funnel: Funnel = dataclasses.field(default_factory=Funnel)
     # Its own recent content pages, one bool each. Per seed because a
     # feed is productive per account and never as a whole.

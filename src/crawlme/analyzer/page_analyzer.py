@@ -28,7 +28,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, cast
 
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError, parse_json_response
+from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.schemas import (
     AnalysisResult,
     AnalyzerFeedback,
@@ -137,7 +137,10 @@ class PageAnalyzer:
         stages: without credentials there is nothing to call.  *budget*
         is shared across all LLM consumers of the task."""
         client = LLMClient.from_settings_if_configured(
-            settings, budget=budget, reasoning_effort=settings.llm_analyze_reasoning_effort
+            settings,
+            budget=budget,
+            reasoning_effort=settings.llm_analyze_reasoning_effort,
+            stage=Stage.ANALYSIS,
         )
         if client is None:
             return None

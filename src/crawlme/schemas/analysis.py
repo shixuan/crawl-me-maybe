@@ -9,7 +9,11 @@ from pydantic import BaseModel, Field
 
 from crawlme.schemas.core import _new_id, _utcnow
 
-Classification = Literal["RELEVANT", "HUB", "AGGREGATOR", "IRRELEVANT", "NAVIGATION", "UNKNOWN"]
+# Declaration order is display order: the report walks this rather
+# than sorting by count, so the same line reads the same way every run
+# and the two verdicts a reader looks for come first.
+Classification = Literal["RELEVANT", "IRRELEVANT", "HUB", "AGGREGATOR", "NAVIGATION", "UNKNOWN"]
+CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "HUB", "AGGREGATOR", "NAVIGATION", "UNKNOWN")
 
 
 class ExtractedField(BaseModel):

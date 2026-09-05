@@ -27,7 +27,7 @@ import math
 import re
 from typing import TYPE_CHECKING, Any
 
-from crawlme.llm import LLMClient, LLMError
+from crawlme.llm import LLMClient, LLMError, Stage
 
 if TYPE_CHECKING:
     from crawlme.config import Settings
@@ -89,7 +89,10 @@ class SeedEnhancer:
         """Inert without credentials, like the Goal Enhancer."""
         return cls(
             LLMClient.from_settings_if_configured(
-                settings, budget=budget, reasoning_effort=settings.llm_enhance_reasoning_effort
+                settings,
+                budget=budget,
+                reasoning_effort=settings.llm_enhance_reasoning_effort,
+                stage=Stage.SEEDS,
             )
         )
 

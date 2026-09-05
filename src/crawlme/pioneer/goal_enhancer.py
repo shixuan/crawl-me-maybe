@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, TokenBudget, parse_json_response
+from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
 from crawlme.schemas import CrawlGoal
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,10 @@ class GoalEnhancer:
         across all LLM consumers of the task."""
         return cls(
             LLMClient.from_settings_if_configured(
-                settings, budget=budget, reasoning_effort=settings.llm_enhance_reasoning_effort
+                settings,
+                budget=budget,
+                reasoning_effort=settings.llm_enhance_reasoning_effort,
+                stage=Stage.GOAL,
             )
         )
 
