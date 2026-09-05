@@ -82,3 +82,13 @@ def test_a_lookup_that_raises_does_not_fail_the_call(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "litellm", _Broken)
     assert effort_for("any/model", "off") == "none"
+
+
+def test_a_skipped_setting_is_announced(catalogue, caplog):
+    """A model whose catalogue entry is missing looks exactly like one
+    that cannot think, so a new model could silently keep thinking."""
+    supported, _ = catalogue
+    supported["openai/gpt-7"] = ["temperature"]
+    with caplog.at_level("INFO"):
+        assert effort_for("openai/gpt-7", "off") == ""
+    assert "llm.reasoning_skipped" in caplog.text

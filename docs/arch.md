@@ -757,6 +757,37 @@ all, so template leftovers cannot poison the decision.
 
 ---
 
+## Seeds the run names for itself
+
+`--enhance-seeds` adds one LLM call at task start: given the goal and the seeds
+the user chose, name more sources. It is off by default, and the branch is
+imported inside the `if`, so a run that does not ask for it never loads the
+module.
+
+The model is asked where to look, never what is there. Asked for content it
+reports what other people said about a source; asked for sources, the crawl
+still reads them first-hand.
+
+Nothing it names is trusted. Two thirds of the addresses do not exist, in a
+shape a person cannot spot: the brand is real and the account name is invented.
+Each proposal is fetched and read before use, and only what a harvester gets
+something out of survives. Payloads are kept for that read, or a busy account
+reports as empty and a real seed is thrown away for being real.
+
+Verification answers only what one fetch can settle: does this exist, does it
+yield anything. Whether it is worth reading past that was once asked here too,
+on a sample of twenty captions put to the ranker, and the answer was wrong
+whenever the fetch came back thin. Retiring a source answers the same question
+on pages actually read.
+
+Survivors take a smaller share of the crawl than the seeds the user named: all
+of them share one rotation key, so proposing more changes how deep each is read
+rather than what the user's own seeds get. Nothing is stored between runs. What
+a source is worth is a fact about this goal, and the last piece of cross-run
+state went wrong by storing exactly that kind of fact against an address.
+
+---
+
 ## Concurrency
 
 One process, asyncio. `fetch_pump` and `rank_pump` run concurrently. Fetching is
@@ -774,8 +805,17 @@ goes through `asyncio.to_thread`, and every lxml/libxml2 parse is serialised by 
 global lock in `digest/lxml.py` — libxml2's global dictionary has a concurrency
 race that produced a SIGABRT. Writes go through a single-consumer queue.
 
-Backpressure: the candidate buffer is bounded at 2000 and evicts the
-lowest-quality candidate when full.
+Analysis queues on a third semaphore of its own, as wide as the LLM's. It used
+to queue inside the LLM client, past every check the scheduler could make, so a
+target met while forty-six pages waited still had all forty-six analysed. Holding
+a slot here means being the next to call, which is where the target check belongs.
+
+Backpressure, two kinds. The candidate buffer is bounded at 2000 and evicts the
+lowest-quality candidate when full. The fetch pump stops dispatching once
+`fetch_concurrency + 2 * llm_concurrency` tasks are in flight: the fetch slot is
+released before the analysis, so without this the pump kept dispatching into a
+queue. One run reached forty-six parked tasks and abandoned thirty-three of them
+unjudged when it stopped.
 
 ---
 
@@ -792,9 +832,15 @@ Two categories throughout: transient (retry) and permanent (mark failed).
 | Domain | more than 5 consecutive failures | Circuit breaker, 10-minute cooldown |
 | Extract | parse failure | Degrade to DEGRADED/FAILED, do not interrupt |
 | Extract | timeout | `asyncio.wait_for`, mark SKIPPED |
-| Rank | LLM failure | Retry once; then enqueue the batch flat, without blocking |
+| Rank | LLM failure | Retries inside the client, then propagates; a dead pump ends the run as FATAL |
 | Analyze | LLM failure | Background retry queue, up to 3 attempts; never blocks fetching |
 | Storage | write failure | Retry 3 times → checkpoint and PAUSE |
+| Any pump | uncaught exception | Recorded as `fatal_error`, the run ends as FATAL |
+
+Nothing stands behind the ranker any more, so a rank pump that dies stops scoring
+and the crawl would otherwise reach a stop condition the ordinary way and report
+having completed with nothing ranked. Both pumps are gathered with
+`return_exceptions`, and the results are read rather than discarded.
 
 ---
 

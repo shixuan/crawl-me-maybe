@@ -442,3 +442,22 @@ def test_effort_absent():
     ranker = LLMRanker.from_settings(Settings(llm_api_key="k", llm_rank_reasoning_effort=""))
     assert ranker is not None
     assert ranker._client._reasoning_effort == ""
+
+
+@pytest.mark.asyncio
+async def test_every_call_reports_how_long_it_took(monkeypatch, caplog):
+    """A timeout says how long it waited. Without the same number from
+    the calls that answered, a limit cutting into the ordinary spread
+    looks the same as one catching a call that had hung."""
+
+    async def _fake(**kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
+            model="m",
+        )
+
+    monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
+    with caplog.at_level("INFO"):
+        await LLMClient("m", api_key="k").chat("hi")
+    assert "llm.chat.took" in caplog.text

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,7 +32,10 @@ from crawlme.llm.reasoning import effort_for
 
 logger = logging.getLogger(__name__)
 
-_LLM_TIMEOUT = 60.0
+# One call, generation included. A thinking model spends most of it
+# thinking, so this and the output ceiling bound the same wait from two
+# sides. Eight calls timed out at 60s, all of them analysing a page.
+_LLM_TIMEOUT = 90.0
 _LLM_MAX_RETRIES = 2
 _LLM_RETRY_BASE = 1.0
 _DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -267,7 +271,9 @@ class LLMClient:
         async with self._sem:
             for attempt in range(_LLM_MAX_RETRIES + 1):
                 try:
+                    started = time.monotonic()
                     resp = await self._complete(messages, ceiling, json_mode)
+                    elapsed = time.monotonic() - started
                     content = (resp.choices[0].message.content or "").strip()
                     usage = resp.usage
                     input_tokens = getattr(usage, "prompt_tokens", 0) or 0
@@ -292,6 +298,18 @@ class LLMClient:
                             thinking_tokens,
                             ceiling,
                         )
+                    # Timed on every call, not only the ones that fail.
+                    # A timeout says how long it waited; without the same
+                    # number from the calls that answered there is no way
+                    # to tell a limit cutting into the ordinary spread
+                    # from one catching a call that had hung.
+                    logger.info(
+                        "llm.chat.took %.1fs out=%d thinking=%d of %d",
+                        elapsed,
+                        output_tokens,
+                        thinking_tokens,
+                        ceiling,
+                    )
                     return LLMResponse(
                         content=content,
                         input_tokens=input_tokens,

@@ -34,7 +34,14 @@ def effort_for(model: str, wanted: str) -> str:
     if not wanted:
         return ""
     if not _takes_effort(model):
-        logger.debug("llm.reasoning_skipped model=%s wanted=%s", model, wanted)
+        # Said out loud: the setting had no effect, and a model whose
+        # catalogue entry is missing looks exactly like one that cannot
+        # think, so a new model can silently keep thinking and billing.
+        logger.info(
+            "llm.reasoning_skipped model=%s wanted=%s; this model is not known to take the parameter",
+            model,
+            wanted,
+        )
         return ""
     if wanted != OFF:
         return wanted

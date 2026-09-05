@@ -8,7 +8,7 @@ v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
   - the feedback subsystem is absent (v0.2)
   - tokens_used is fed externally via note_tokens_used (v0.2)
-  - HybridRanker uses RuleRanker only
+  - there is no ranker at all, so the frontier's own order decides
 
 See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
 """
@@ -397,7 +397,7 @@ class CrawlScheduler:
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
         ]
-        await asyncio.gather(*self._pump_tasks, return_exceptions=True)
+        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         await self._settle_inflight()
 
         task.state = "COMPLETED"
@@ -423,6 +423,21 @@ class CrawlScheduler:
         # pause() (which checkpoints through this storage) before its
         # own aclose(), so resources must still be open here.
         await self.aclose()
+
+    def _note_pump_failures(self, results: list[Any]) -> None:
+        """Let a dead pump end the run instead of quietly ending its half.
+
+        Both pumps are gathered with return_exceptions, so one that died
+        left its exception in a list nobody read. A rank pump that lost
+        its provider stopped scoring, the run reached a stop condition
+        the ordinary way, and the report said it had completed with
+        nothing ranked.
+        """
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                logger.error("pump.died error=%s", r)
+                if not self._counters.fatal_error:
+                    self._counters.fatal_error = str(r)
 
     async def _settle_inflight(self) -> None:
         """Let the fetches already in the air finish before anything closes.
@@ -691,7 +706,7 @@ class CrawlScheduler:
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
         ]
-        await asyncio.gather(*self._pump_tasks, return_exceptions=True)
+        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
 
     async def stop(self) -> None:
         self._state = "STOPPING"

@@ -1335,3 +1335,27 @@ def test_an_unfiled_page_cannot_retire_anything():
         sched._note_page_age(old, "")
     assert not sched._tally_by_seed[""].retired
     sched._frontier.retire.assert_not_called()
+
+
+def test_a_dead_pump_ends_the_run():
+    """Both pumps are gathered with return_exceptions, so one that died
+    left its exception in a list nobody read: a rank pump that lost its
+    provider stopped scoring and the report said the run completed."""
+    from crawlme.llm import LLMError
+
+    sched = _make_sched()
+    sched._note_pump_failures([None, LLMError("provider rejected the request")])
+    assert sched._counters.fatal_error == "provider rejected the request"
+
+
+def test_a_cancelled_pump_is_not_a_failure():
+    """Stopping and pausing both cancel them on purpose."""
+    sched = _make_sched()
+    sched._note_pump_failures([asyncio.CancelledError(), None])
+    assert not sched._counters.fatal_error
+
+
+def test_the_first_failure_is_the_one_reported():
+    sched = _make_sched()
+    sched._note_pump_failures([RuntimeError("first"), RuntimeError("second")])
+    assert sched._counters.fatal_error == "first"

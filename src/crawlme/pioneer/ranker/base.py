@@ -12,8 +12,8 @@ Contract (duck-typed, no inheritance required):
   4. aclose() releases stage-owned resources (connections, model
      clients); implementations without resources may no-op.
 
-Sub-rankers ignore parameters they don't use.  HybridRanker chains
-multiple Ranker implementations into a funnel (see hybrid.py).
+Sub-rankers ignore parameters they don't use.  One implementation is
+left; the funnel that chained several is gone.
 """
 
 from __future__ import annotations
