@@ -23,7 +23,7 @@ from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
-from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
+from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 
@@ -53,7 +53,7 @@ def create_scheduler(
     # into (stop-condition counters + report statistics).  The engine
     # resets it in place when run() starts, so the references handed
     # out here stay valid for the scheduler's lifetime.
-    ctx = CrawlContext(counters=CrawlCounters(), stats=RunStats())
+    ctx = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
     canonicalizer = Canonicalizer()
     if analyzer is None and settings.analysis_enabled:
         analyzer = PageAnalyzer.from_settings(settings, budget=budget)

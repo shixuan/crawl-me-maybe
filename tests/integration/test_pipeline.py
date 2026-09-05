@@ -107,7 +107,7 @@ async def test_fetch_to_links(integration_settings):
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
     assert task.state == "COMPLETED"
-    assert sched._counters.pages_fetched == 1
+    assert sched._ctx.progress.pages_fetched == 1
 
     # Verify DB contents.
     async with aiosqlite.connect(sched._storage.db_path) as db:
@@ -160,7 +160,7 @@ async def test_stop_pages(integration_settings):
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
-    pages = sched._counters.pages_fetched
+    pages = sched._ctx.progress.pages_fetched
     assert 1 <= pages <= 2 + 1  # budget + possible in-flight
     assert "BUDGET_PAGES" in (task.stopping_reason or "")
 
@@ -180,7 +180,7 @@ async def test_drains(integration_settings):
     # With our small mock site (3 pages) and depth_limit=1, should drain naturally.
     assert task.state == "COMPLETED"
     # At minimum the seed page was fetched.
-    assert sched._counters.pages_fetched >= 1
+    assert sched._ctx.progress.pages_fetched >= 1
 
 
 @pytest.mark.asyncio

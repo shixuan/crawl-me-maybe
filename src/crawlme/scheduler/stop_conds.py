@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from crawlme.digest.feed.base import PageProblem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.schemas import CrawlTask
-from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
+from crawlme.state.context import RELEVANCE_WINDOW, Limits, Progress
 
 # has stopped finding anything worth the budget.
 
@@ -62,7 +62,7 @@ def why_retire(window: Sequence[bool], stale: int) -> str | None:
 # -- the run -------------------------------------------------------------
 
 # All checks share the same signature so _CHECKS is a flat list.
-_CheckFunc = Callable[[CrawlTask, Frontier, CrawlCounters], StopReason | None]
+_CheckFunc = Callable[[CrawlTask, Frontier, Limits, Progress], StopReason | None]
 
 
 # Listings a run must have read before "all of them were empty" means
@@ -73,45 +73,49 @@ _EMPTY_LISTING_FLOOR = 3
 def _budget_pages(
     _task: CrawlTask,
     _frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
-    if c.max_pages > 0 and c.pages_fetched >= c.max_pages:
-        return StopReason("BUDGET_PAGES", f"fetched {c.pages_fetched}/{c.max_pages} pages")
+    if lim.max_pages > 0 and p.pages_fetched >= lim.max_pages:
+        return StopReason("BUDGET_PAGES", f"fetched {p.pages_fetched}/{lim.max_pages} pages")
     return None
 
 
 def _budget_tokens(
     _task: CrawlTask,
     _frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
-    if c.max_tokens > 0 and c.tokens_used >= c.max_tokens:
-        return StopReason("BUDGET_TOKENS", f"used {c.tokens_used}/{c.max_tokens} tokens")
+    if lim.max_tokens > 0 and p.tokens_used >= lim.max_tokens:
+        return StopReason("BUDGET_TOKENS", f"used {p.tokens_used}/{lim.max_tokens} tokens")
     return None
 
 
 def _budget_time(
     _task: CrawlTask,
     _frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
-    if c.max_duration_sec > 0 and c.started_at > 0 and (time.monotonic() - c.started_at) >= c.max_duration_sec:
-        return StopReason("BUDGET_TIME", f"ran {c.max_duration_sec}s")
+    if lim.max_duration_sec > 0 and p.started_at > 0 and (time.monotonic() - p.started_at) >= lim.max_duration_sec:
+        return StopReason("BUDGET_TIME", f"ran {lim.max_duration_sec}s")
     return None
 
 
-def _is_drained(frontier: Frontier, c: CrawlCounters) -> bool:
+def _is_drained(frontier: Frontier, p: Progress) -> bool:
     """Nothing to fetch in either half, and nothing on its way back."""
-    return frontier.size == 0 and frontier.waiting.is_empty and c.in_flight == 0 and frontier.scoring == 0
+    return frontier.size == 0 and frontier.waiting.is_empty and p.in_flight == 0 and frontier.scoring == 0
 
 
 def _frontier_drained(
     _task: CrawlTask,
     frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
     """The crawl read everything it found."""
-    if not _is_drained(frontier, c):
+    if not _is_drained(frontier, p):
         return None
     return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
 
@@ -119,7 +123,8 @@ def _frontier_drained(
 def _ceiling_refused(
     _task: CrawlTask,
     frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
     """The per-domain ceiling refused candidates before the run ended.
 
@@ -131,7 +136,7 @@ def _ceiling_refused(
     still a real completion.
     """
     blocked = getattr(frontier, "blocked_by_domain_budget", 0)
-    if not blocked or not _is_drained(frontier, c):
+    if not blocked or not _is_drained(frontier, p):
         return None
     return StopReason("DOMAIN_BUDGET", f"{blocked} candidates refused by the per-domain ceiling")
 
@@ -139,7 +144,8 @@ def _ceiling_refused(
 def _enough_found(
     _task: CrawlTask,
     _frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
     """Stop once the run has what it was asked for.
 
@@ -153,15 +159,16 @@ def _enough_found(
     was already in flight.  Overshooting by a page or two beats holding
     the pumps to make the count exact.
     """
-    if c.max_relevant > 0 and c.relevant_found >= c.max_relevant:
-        return StopReason("MAX_RELEVANT", f"found {c.relevant_found}/{c.max_relevant} relevant pages")
+    if lim.max_relevant > 0 and p.relevant_found >= lim.max_relevant:
+        return StopReason("MAX_RELEVANT", f"found {p.relevant_found}/{lim.max_relevant} relevant pages")
     return None
 
 
 def _platform_refused(
     _task: CrawlTask,
     _frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
     """The platform is refusing this crawl, not just this page.
 
@@ -174,17 +181,18 @@ def _platform_refused(
     A gone account is the opposite kind of fact and never arrives here;
     it is counted and reported instead.  See PageProblem.refuses_the_run.
     """
-    if not c.refused_by:
+    if not p.refused_by:
         return None
-    if c.refused_by == PageProblem.LOGIN_REQUIRED.value:
+    if p.refused_by == PageProblem.LOGIN_REQUIRED.value:
         return StopReason("LOGIN_REQUIRED", "the platform asked for a login; the session is not valid")
-    return StopReason("RATE_LIMITED", f"the platform refused the crawl ({c.refused_by})")
+    return StopReason("RATE_LIMITED", f"the platform refused the crawl ({p.refused_by})")
 
 
 def _adapter_empty(
     _task: CrawlTask,
     frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
     """Every listing was readable and none of them held anything.
 
@@ -197,17 +205,18 @@ def _adapter_empty(
     once the run is over: a single empty account is an account having a
     quiet week, and mid-run there is no telling which this is.
     """
-    if not _is_drained(frontier, c):
+    if not _is_drained(frontier, p):
         return None
-    if c.listings_seen < _EMPTY_LISTING_FLOOR or c.listings_empty < c.listings_seen:
+    if p.listings_seen < _EMPTY_LISTING_FLOOR or p.listings_empty < p.listings_seen:
         return None
-    return StopReason("ADAPTER_EMPTY", f"all {c.listings_seen} listings parsed and none held an item")
+    return StopReason("ADAPTER_EMPTY", f"all {p.listings_seen} listings parsed and none held an item")
 
 
 def _user_requested(
     task: CrawlTask,
     _frontier: Frontier,
-    _counters: CrawlCounters,
+    _lim: Limits,
+    _p: Progress,
 ) -> StopReason | None:
     if task.state == "STOPPING":
         return StopReason("USER_REQUESTED", "stop requested by user")
@@ -217,10 +226,11 @@ def _user_requested(
 def _fatal(
     _task: CrawlTask,
     _frontier: Frontier,
-    c: CrawlCounters,
+    lim: Limits,
+    p: Progress,
 ) -> StopReason | None:
-    if c.fatal_error:
-        return StopReason("FATAL", c.fatal_error)
+    if p.fatal_error:
+        return StopReason("FATAL", p.fatal_error)
     return None
 
 
@@ -243,11 +253,18 @@ _CHECKS: list[_CheckFunc] = [
 def check_stop(
     task: CrawlTask,
     frontier: Frontier,
-    counters: CrawlCounters,
+    limits: Limits,
+    progress: Progress,
 ) -> list[StopReason]:
+    """Why this run should stop, if it should.
+
+    The Ledger is deliberately not a parameter. A statistic nothing
+    stops on cannot be read here, so it cannot quietly become a stopping
+    criterion, and the split holds by signature rather than by care.
+    """
     reasons: list[StopReason] = []
     for check in _CHECKS:
-        result = check(task, frontier, counters)
+        result = check(task, frontier, limits, progress)
         if result is not None:
             reasons.append(result)
     return reasons

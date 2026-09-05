@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime
 import logging
 import threading
@@ -25,7 +26,7 @@ from crawlme.schemas import (
     FrontierItem,
     Page,
 )
-from crawlme.state.context import CrawlCounters
+from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
 
 
 def _utcnow():
@@ -45,6 +46,24 @@ def _task() -> CrawlTask:
 def _item() -> FrontierItem:
     url = URL(raw="https://example.com", canonical="https://example.com", url_key="k1", reg_domain="example.com")
     return FrontierItem(url=url, url_key="k1", priority=0.5, depth=0, reg_domain="example.com")
+
+
+_LIMIT_FIELDS = {
+    "max_pages",
+    "max_tokens",
+    "max_duration_sec",
+    "max_relevant",
+    "relevance_threshold",
+    "recall",
+    "since",
+}
+
+
+def _ctx(**kw) -> CrawlContext:
+    """A run context with each field routed to the half that owns it."""
+    lim = {k: v for k, v in kw.items() if k in _LIMIT_FIELDS}
+    prog = {k: v for k, v in kw.items() if k not in _LIMIT_FIELDS}
+    return CrawlContext(limits=Limits(**lim), progress=Progress(**prog), ledger=Ledger())
 
 
 def _make_sched(**overrides) -> CrawlScheduler:
@@ -86,7 +105,7 @@ def test_tokens_counted():
     BUDGET_TOKENS stop condition reads every pump iteration."""
     sched = _make_sched()
     sched.note_tokens_used(1234)
-    assert sched._counters.tokens_used == 1234
+    assert sched._ctx.progress.tokens_used == 1234
 
 
 @pytest.mark.asyncio
@@ -97,7 +116,7 @@ async def test_stop_drained():
     sched._state = "RUNNING"
     sched._goal = _goal(max_pages=5)
     sched._task = _task()
-    sched._counters = CrawlCounters(
+    sched._ctx = _ctx(
         max_pages=5,
         max_tokens=100000,
         max_duration_sec=3600,
@@ -120,7 +139,7 @@ async def test_stop_pages():
     sched._state = "RUNNING"
     sched._goal = _goal(max_pages=10)
     sched._task = _task()
-    sched._counters = CrawlCounters(
+    sched._ctx = _ctx(
         max_pages=10,
         pages_fetched=10,  # Already at budget.
         max_tokens=100000,
@@ -145,7 +164,7 @@ async def test_gate_blocks():
     sched._state = "RUNNING"
     sched._goal = _goal(max_pages=10)
     sched._task = _task()
-    sched._counters = CrawlCounters(
+    sched._ctx = _ctx(
         max_pages=10,
         pages_fetched=8,
         in_flight=2,  # 8 + 2 = 10 committed: nothing may be popped
@@ -167,7 +186,7 @@ async def test_gate_allows():
     sched._state = "RUNNING"
     sched._goal = _goal(max_pages=10)
     sched._task = _task()
-    sched._counters = CrawlCounters(
+    sched._ctx = _ctx(
         max_pages=10,
         pages_fetched=8,
         in_flight=1,  # 9 committed < 10: one more pop is allowed
@@ -190,7 +209,7 @@ async def test_rank_pump_exits():
     sched = _make_sched()
     sched._state = "STOPPING"
     sched._goal = _goal()
-    sched._counters = CrawlCounters()
+    sched._ctx = _ctx()
 
     await sched._rank_pump()
     # Should exit immediately without error.
@@ -203,7 +222,7 @@ async def test_pause_state():
     sched = _make_sched()
     sched._state = "RUNNING"
     sched._task = _task()
-    sched._counters = CrawlCounters()
+    sched._ctx = _ctx()
 
     # Mock checkpoint to avoid storage calls.
     sched._checkpoint = AsyncMock()
@@ -326,7 +345,7 @@ def test_stale_streak(since, published, expected):
     """Per seed, because a feed is time-ordered per account and never as
     a whole. Counted globally it could only ever arm for one seed."""
     sched = _make_sched()
-    sched._counters.since = since
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, since=since)
     for at in published:
         sched._note_page_age(_page_published(at), "seedA")
     assert sched._seeds["seedA"].stale == expected
@@ -398,7 +417,7 @@ async def test_harvest_timeout(monkeypatch):
     sched = _make_sched()
     sched._goal = _goal(max_pages=5)
     sched._task = _task()
-    sched._counters = CrawlCounters(max_pages=5, max_tokens=100000, max_duration_sec=3600)
+    sched._ctx = _ctx(max_pages=5, max_tokens=100000, max_duration_sec=3600)
     sched._cfg.extract_timeout = 0.2
     sched._fetcher.fetch = AsyncMock(
         return_value=FetchResult(item_id="i1", url_key="k1", url=_item().url, raw=b"<html></html>")
@@ -420,7 +439,7 @@ async def test_harvest_timeout(monkeypatch):
     finally:
         done.set()
 
-    assert sched._counters.pages_fetched == 1
+    assert sched._ctx.progress.pages_fetched == 1
     args = sched._frontier.record_outcome.call_args[0]
     assert args[1] == "COMPLETED"
 
@@ -428,11 +447,11 @@ async def test_harvest_timeout(monkeypatch):
 def test_summary_stats():
     """summary() reads counters and stats straight from the context."""
     sched = _make_sched()
-    sched._counters = CrawlCounters(pages_fetched=12, tokens_used=5000, started_at=100.0)
-    sched._ctx.stats.links_discovered = 123
-    sched._ctx.stats.candidates_ranked = 45
-    sched._ctx.stats.fetch_errors = 2
-    sched._ctx.stats.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
+    sched._ctx = _ctx(pages_fetched=12, tokens_used=5000, started_at=100.0)
+    sched._ctx.ledger.links_discovered = 123
+    sched._ctx.ledger.candidates_ranked = 45
+    sched._ctx.ledger.fetch_errors = 2
+    sched._ctx.ledger.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
 
     summary = sched.summary()
 
@@ -447,7 +466,7 @@ def test_summary_stats():
 def test_window_fed():
     """A judged content page is what a source's window counts."""
     sched = _make_sched()
-    sched._counters.relevance_threshold = 0.7
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, relevance_threshold=0.7)
 
     for key, score in (("k1", 0.9), ("k2", 0.2)):
         sched._on_analysis(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
@@ -460,7 +479,7 @@ def test_window_fed():
 def test_window_threshold():
     """relevance_threshold stops being dead config here."""
     sched = _make_sched()
-    sched._counters.relevance_threshold = 0.95
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, relevance_threshold=0.95)
 
     sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
     sched._pages.of("k1").listing = False
@@ -523,7 +542,7 @@ async def test_pump_quiet(caplog):
     sched._state = "RUNNING"
     sched._goal = _goal()
     sched._task = _task()
-    sched._counters = CrawlCounters()
+    sched._ctx = _ctx()
 
     sched._frontier.scoring = 11
     sched._frontier.pop_next = AsyncMock(return_value=None)
@@ -579,7 +598,7 @@ def test_unfinished_log(caplog):
     that was never opened. None of them said anything.
     """
     sched = _make_sched()
-    sched._counters = CrawlCounters(pages_fetched=45)
+    sched._ctx = _ctx(pages_fetched=45)
     sched._frontier.size = 16
     sched._frontier.waiting_size = 4
 
@@ -593,7 +612,7 @@ def test_unfinished_log(caplog):
 
 def test_complete_quiet(caplog):
     sched = _make_sched()
-    sched._counters = CrawlCounters(pages_fetched=10)
+    sched._ctx = _ctx(pages_fetched=10)
     sched._frontier.size = 0
     sched._frontier.waiting_size = 0
 
@@ -622,12 +641,12 @@ def test_relevant_count():
     """One judgement answers two questions: the run's tally of what it
     found, and the source's own window of whether it is still paying."""
     sched = _make_sched()
-    sched._counters = CrawlCounters(relevance_threshold=0.7)
+    sched._ctx = _ctx(relevance_threshold=0.7)
     for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
         sched._on_analysis(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
         sched._pages.of(key).listing = False
         sched._cast_relevance_vote(key)
-    assert sched._counters.relevant_found == 2
+    assert sched._ctx.progress.relevant_found == 2
     assert list(sched._seeds[""].window) == [True, False, True]
 
 
@@ -644,7 +663,7 @@ async def test_cooldown_lives(caplog):
     sched._state = "RUNNING"
     sched._goal = _goal()
     sched._task = _task()
-    sched._counters = CrawlCounters()
+    sched._ctx = _ctx()
 
     sched._frontier.pop_next = AsyncMock(return_value=None)
     sched._frontier.size = 1
@@ -670,19 +689,19 @@ async def test_refusal_stops():
     from crawlme.digest.feed.base import PageProblem
 
     sched = _make_sched()
-    sched._ctx.stats.reset()
+    sched._ctx.ledger.reset()
 
     sched._note_not_content(PageProblem.UNAVAILABLE)
-    assert sched._counters.refused_by == "", "a gone account is not a reason to stop"
+    assert sched._ctx.progress.refused_by == "", "a gone account is not a reason to stop"
 
     sched._note_not_content(PageProblem.BLOCKED)
-    assert sched._counters.refused_by == "blocked"
+    assert sched._ctx.progress.refused_by == "blocked"
 
     # Later refusals do not overwrite: the first one is what ended it.
     sched._note_not_content(PageProblem.LOGIN_REQUIRED)
-    assert sched._counters.refused_by == "blocked"
+    assert sched._ctx.progress.refused_by == "blocked"
 
-    assert sched._ctx.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
+    assert sched._ctx.ledger.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
     assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}
 
 
@@ -757,7 +776,7 @@ async def test_missing_extra():
 
     await sched._handle_fetch(_item())
 
-    assert "crawl-me-maybe[rss]" in sched._counters.fatal_error
+    assert "crawl-me-maybe[rss]" in sched._ctx.progress.fatal_error
 
 
 @pytest.mark.asyncio
@@ -964,7 +983,7 @@ async def test_robots_blocks():
     assert await sched._fetch_and_extract(item) is None
     # The only fetch was robots.txt itself.
     assert [c.args[0].url.canonical for c in fetcher.fetch.await_args_list] == ["https://x.com/robots.txt"]
-    assert sched._ctx.stats.robots_blocked == 1
+    assert sched._ctx.ledger.robots_blocked == 1
 
 
 @pytest.mark.asyncio
@@ -1047,7 +1066,7 @@ async def test_a_proposed_seed_is_credited_for_what_it_found():
     sched = _make_sched(canonicalizer=canon)
     sched._pages.open(post_key, post, seed_key)
     sched._proposed_seeds = {seed_key: (seed, "why")}
-    sched._counters.relevance_threshold = 0.7
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, relevance_threshold=0.7)
 
     sched._on_analysis(
         AnalysisResult(classification="RELEVANT", relevance_score=0.9, feedback=AnalyzerFeedback(url=post, title="t"))
@@ -1158,7 +1177,7 @@ def test_the_tally_counts_listings():
     _judge(sched, "k1", 0.9)
     sched._pages.of("k1").listing = True
     sched._cast_relevance_vote("k1")
-    assert sched._counters.relevant_found == 1
+    assert sched._ctx.progress.relevant_found == 1
 
 
 @pytest.mark.asyncio
@@ -1168,7 +1187,7 @@ async def test_backpressure_caps_inflight():
     on two analysis slots and abandoned thirty-three when it stopped."""
     sched = _make_sched(settings=Settings(fetch_concurrency=6, llm_concurrency=2))
     sched._task = _task()
-    sched._counters.in_flight = 6 + 2 * 2
+    sched._ctx.progress.in_flight = 6 + 2 * 2
     sched._frontier.pop_next = AsyncMock(return_value=_item())
 
     sched._state = "RUNNING"
@@ -1182,18 +1201,18 @@ async def test_backpressure_caps_inflight():
 
 def test_enough_found_reads_the_target():
     sched = _make_sched()
-    sched._counters.max_relevant = 15
-    sched._counters.relevant_found = 14
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, max_relevant=15)
+    sched._ctx.progress.relevant_found = 14
     assert sched._enough_found() is False
-    sched._counters.relevant_found = 15
+    sched._ctx.progress.relevant_found = 15
     assert sched._enough_found() is True
 
 
 def test_no_target_never_enough():
     """Zero means the run was given no target, not a target of zero."""
     sched = _make_sched()
-    sched._counters.max_relevant = 0
-    sched._counters.relevant_found = 99
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, max_relevant=0)
+    sched._ctx.progress.relevant_found = 99
     assert sched._enough_found() is False
 
 
@@ -1204,8 +1223,8 @@ async def test_a_met_target_stops_analysis():
     fifteen and reported twenty-four."""
     sched = _make_sched()
     sched._goal = _goal()
-    sched._counters.max_relevant = 15
-    sched._counters.relevant_found = 15
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, max_relevant=15)
+    sched._ctx.progress.relevant_found = 15
     sched._analyzer = MagicMock(analyze=AsyncMock())
     url = URL(raw="https://x.test/p", canonical="https://x.test/p", url_key="pk", reg_domain="x.test")
     page = Page(url_key="pk", url=url)
@@ -1229,7 +1248,7 @@ async def test_the_target_holds_under_a_queue():
     only what is already calling can overshoot."""
     sched = _make_sched(settings=Settings(llm_concurrency=2))
     sched._goal = _goal()
-    sched._counters.max_relevant = 3
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, max_relevant=3)
     sched._frontier.record_outcome = AsyncMock()
     sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
     sched._checkpoint = AsyncMock()
@@ -1240,7 +1259,7 @@ async def test_the_target_holds_under_a_queue():
         nonlocal calls
         calls += 1
         await asyncio.sleep(0)
-        sched._counters.relevant_found += 1  # worst case: every page counts
+        sched._ctx.progress.relevant_found += 1  # worst case: every page counts
 
     sched._analyzer = MagicMock(analyze=_analyze)
 
@@ -1252,7 +1271,7 @@ async def test_the_target_holds_under_a_queue():
     sched._fetch_and_extract = AsyncMock(side_effect=pages)
     await asyncio.gather(*[sched._handle_fetch(_item()) for _ in range(20)])
 
-    assert calls <= sched._counters.max_relevant + 2
+    assert calls <= sched._ctx.limits.max_relevant + 2
 
 
 def _vote(sched, seed, url_key, relevant):
@@ -1286,7 +1305,8 @@ def test_a_source_past_the_window_retires():
     """A feed is time-ordered per account, so reading past --since means
     that account is walked out. It says nothing about the others."""
     sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, since=since)
     old = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
     for i in range(MAX_STALE_STREAK):
         sched._note_page_age(_page_published(old), "seedA")
@@ -1296,7 +1316,8 @@ def test_a_source_past_the_window_retires():
 
 def test_one_hit_resets_the_stale_streak():
     sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, since=since)
     for at in (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),) * 4:
         sched._note_page_age(_page_published(at), "seedA")
     sched._note_page_age(_page_published(datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)), "seedA")
@@ -1307,7 +1328,7 @@ def test_recall_retires_nothing():
     """Reading the tail is the point of the mode, not evidence a source
     is done."""
     sched = _make_sched()
-    sched._counters.recall = True
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, recall=True)
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "seedA", f"k{i}", False)
     assert not sched._seeds["seedA"].retired
@@ -1328,7 +1349,8 @@ def test_an_unfiled_page_cannot_retire_anything():
     reset it, and a --since of one month came back full of year-old
     posts."""
     sched = _make_sched()
-    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    sched._ctx.limits = dataclasses.replace(sched._ctx.limits, since=since)
     old = _page_published(datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc))
     for _ in range(MAX_STALE_STREAK * 2):
         sched._note_page_age(old, "")
@@ -1344,17 +1366,17 @@ def test_a_dead_pump_ends_the_run():
 
     sched = _make_sched()
     sched._note_pump_failures([None, LLMError("provider rejected the request")])
-    assert sched._counters.fatal_error == "provider rejected the request"
+    assert sched._ctx.progress.fatal_error == "provider rejected the request"
 
 
 def test_a_cancelled_pump_is_not_a_failure():
     """Stopping and pausing both cancel them on purpose."""
     sched = _make_sched()
     sched._note_pump_failures([asyncio.CancelledError(), None])
-    assert not sched._counters.fatal_error
+    assert not sched._ctx.progress.fatal_error
 
 
 def test_the_first_failure_is_the_one_reported():
     sched = _make_sched()
     sched._note_pump_failures([RuntimeError("first"), RuntimeError("second")])
-    assert sched._counters.fatal_error == "first"
+    assert sched._ctx.progress.fatal_error == "first"

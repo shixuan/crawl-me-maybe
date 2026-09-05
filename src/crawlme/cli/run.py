@@ -225,8 +225,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
             "state=%s reason=%s pages=%d tokens=%d",
             task.state,
             task.stopping_reason or "none",
-            scheduler._counters.pages_fetched,
-            scheduler._counters.tokens_used,
+            scheduler.context.progress.pages_fetched,
+            scheduler.context.progress.tokens_used,
         )
 
     # Tear down litellm's cached clients while the loop is still alive,

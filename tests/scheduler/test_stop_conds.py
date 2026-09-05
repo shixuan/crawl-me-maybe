@@ -8,7 +8,7 @@ import pytest
 from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
-from crawlme.state.context import CrawlCounters
+from crawlme.state.context import Limits, Progress
 
 
 def _task(state: str = "RUNNING") -> CrawlTask:
@@ -48,8 +48,21 @@ def _waiting_candidate(i: int) -> Candidate:
     )
 
 
-def _counters(**kw) -> CrawlCounters:
-    return CrawlCounters(**kw)
+def _split(**kw) -> tuple[Limits, Progress]:
+    """Route each field to the half that owns it."""
+    lim = {k: v for k, v in kw.items() if k in _LIMIT_FIELDS}
+    return Limits(**lim), Progress(**{k: v for k, v in kw.items() if k not in _LIMIT_FIELDS})
+
+
+_LIMIT_FIELDS = {
+    "max_pages",
+    "max_tokens",
+    "max_duration_sec",
+    "max_relevant",
+    "relevance_threshold",
+    "recall",
+    "since",
+}
 
 
 def _codes(reasons) -> list[str]:
@@ -69,7 +82,7 @@ def _codes(reasons) -> list[str]:
     ],
 )
 def test_budget_pages(kw, fires):
-    assert ("BUDGET_PAGES" in _codes(check_stop(_task(), _frontier(), _counters(**kw)))) is fires
+    assert ("BUDGET_PAGES" in _codes(check_stop(_task(), _frontier(), *_split(**kw)))) is fires
 
 
 @pytest.mark.parametrize(
@@ -81,7 +94,7 @@ def test_budget_pages(kw, fires):
     ],
 )
 def test_budget_tokens(kw, fires):
-    assert ("BUDGET_TOKENS" in _codes(check_stop(_task(), _frontier(), _counters(**kw)))) is fires
+    assert ("BUDGET_TOKENS" in _codes(check_stop(_task(), _frontier(), *_split(**kw)))) is fires
 
 
 @pytest.mark.parametrize(
@@ -89,8 +102,8 @@ def test_budget_tokens(kw, fires):
     [(1, 10, True), (3600, 0, False)],
 )
 def test_budget_time(max_duration_sec, elapsed, fires):
-    c = _counters(max_duration_sec=max_duration_sec, started_at=time.monotonic() - elapsed)
-    assert ("BUDGET_TIME" in _codes(check_stop(_task(), _frontier(), c))) is fires
+    lim, prog = _split(max_duration_sec=max_duration_sec, started_at=time.monotonic() - elapsed)
+    assert ("BUDGET_TIME" in _codes(check_stop(_task(), _frontier(), lim, prog))) is fires
 
 
 # -- frontier drained ----------------------------------------------------
@@ -113,7 +126,7 @@ def test_budget_time(max_duration_sec, elapsed, fires):
     ],
 )
 def test_drained(frontier_kw, in_flight, fires):
-    reasons = check_stop(_task(), _frontier(**frontier_kw), _counters(in_flight=in_flight))
+    reasons = check_stop(_task(), _frontier(**frontier_kw), *_split(in_flight=in_flight))
     assert ("FRONTIER_DRAINED" in _codes(reasons)) is fires
 
 
@@ -129,7 +142,7 @@ def test_ceiling_named(blocked):
     """
     frontier = _frontier(size=0)
     frontier.blocked_by_domain_budget = blocked
-    codes = _codes(check_stop(_task(), frontier, _counters(in_flight=0)))
+    codes = _codes(check_stop(_task(), frontier, *_split(in_flight=0)))
     assert "FRONTIER_DRAINED" in codes
     assert ("DOMAIN_BUDGET" in codes) is bool(blocked)
 
@@ -153,9 +166,8 @@ def test_max_relevant(max_relevant, found, fires):
     tells nobody how many answers that buys: one run spent sixty and
     returned twenty-two.
     """
-    c = _counters(max_relevant=max_relevant)
-    c.relevant_found = found
-    assert ("MAX_RELEVANT" in _codes(check_stop(_task(), _frontier(size=9), c))) is fires
+    lim, prog = _split(max_relevant=max_relevant, relevant_found=found)
+    assert ("MAX_RELEVANT" in _codes(check_stop(_task(), _frontier(size=9), lim, prog))) is fires
 
 
 # -- the platform refusing the crawl -------------------------------------
@@ -179,7 +191,7 @@ def test_refused(refused_by, code):
     back with no posts, the frontier drained on schedule, and the run
     reported completion having learned nothing.
     """
-    codes = _codes(check_stop(_task(), _frontier(), _counters(refused_by=refused_by)))
+    codes = _codes(check_stop(_task(), _frontier(), *_split(refused_by=refused_by)))
     refusals = [c for c in codes if c in ("RATE_LIMITED", "LOGIN_REQUIRED")]
     assert refusals == ([code] if code else [])
 
@@ -189,11 +201,11 @@ def test_refused(refused_by, code):
 
 @pytest.mark.parametrize(("state", "fires"), [("STOPPING", True), ("RUNNING", False)])
 def test_user_requested(state, fires):
-    assert ("USER_REQUESTED" in _codes(check_stop(_task(state=state), _frontier(), _counters()))) is fires
+    assert ("USER_REQUESTED" in _codes(check_stop(_task(state=state), _frontier(), *_split()))) is fires
 
 
 def test_fatal():
-    assert "FATAL" in _codes(check_stop(_task(), _frontier(), _counters(fatal_error="disk full")))
+    assert "FATAL" in _codes(check_stop(_task(), _frontier(), *_split(fatal_error="disk full")))
 
 
 def test_many_reasons():
@@ -203,7 +215,7 @@ def test_many_reasons():
             check_stop(
                 _task(state="STOPPING"),
                 _frontier(),
-                _counters(max_pages=10, pages_fetched=10, fatal_error="disk full"),
+                *_split(max_pages=10, pages_fetched=10, fatal_error="disk full"),
             )
         )
     )
@@ -214,7 +226,7 @@ def test_healthy_quiet():
     reasons = check_stop(
         _task(state="RUNNING"),
         _frontier(size=5),
-        _counters(
+        *_split(
             max_pages=50,
             pages_fetched=10,
             max_tokens=100000,
@@ -249,14 +261,14 @@ def test_adapter_empty(seen, empty, fires):
     pages; it recognises nothing on any of them. The run then drains on
     schedule and reports a finished crawl of a silent platform.
     """
-    c = _counters(in_flight=0, listings_seen=seen, listings_empty=empty)
-    assert ("ADAPTER_EMPTY" in _codes(check_stop(_task(), _frontier(), c))) is fires
+    lim, prog = _split(in_flight=0, listings_seen=seen, listings_empty=empty)
+    assert ("ADAPTER_EMPTY" in _codes(check_stop(_task(), _frontier(), lim, prog))) is fires
 
 
 def test_empty_waits():
     """Mid-run there is no telling a dead adapter from a slow start."""
-    c = _counters(in_flight=2, listings_seen=5, listings_empty=5)
-    assert "ADAPTER_EMPTY" not in _codes(check_stop(_task(), _frontier(size=3), c))
+    lim, prog = _split(in_flight=2, listings_seen=5, listings_empty=5)
+    assert "ADAPTER_EMPTY" not in _codes(check_stop(_task(), _frontier(size=3), lim, prog))
 
 
 # -- one source ----------------------------------------------------------
@@ -278,3 +290,32 @@ def test_why_retire(window, stale, why):
 
 def test_a_full_window_of_hits_keeps_it():
     assert why_retire([True] * 20, 0) is None
+
+
+def test_a_stop_condition_cannot_see_the_ledger():
+    """The split that keeps statistics out of the stopping criteria is
+    held by this signature, not by care. A number nothing stops on used
+    to sit among the ones that do, and adding another was one keyword
+    away."""
+    import inspect
+
+    from crawlme.state.context import Ledger
+
+    params = inspect.signature(check_stop).parameters
+    assert "ledger" not in params
+    assert not any(p.annotation is Ledger for p in params.values())
+
+
+def test_every_progress_field_is_read_by_some_check():
+    """The entry rule for Progress. listings_stale once sat there and no
+    condition read it, which is how a report statistic ends up looking
+    like a stopping criterion."""
+    import dataclasses
+    import inspect
+
+    from crawlme.scheduler import stop_conds
+    from crawlme.state.context import Progress
+
+    source = inspect.getsource(stop_conds)
+    unread = [f.name for f in dataclasses.fields(Progress) if f"p.{f.name}" not in source]
+    assert unread == [], f"Progress fields nothing stops on: {unread}"

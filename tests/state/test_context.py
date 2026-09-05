@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from crawlme.schemas import CrawlGoal
-from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
+from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
 
 
 def _ctx() -> CrawlContext:
-    return CrawlContext(counters=CrawlCounters(), stats=RunStats())
+    return CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
 
 
 def test_reset_counters():
@@ -15,25 +15,25 @@ def test_reset_counters():
     goal = CrawlGoal(prompt="p", max_pages=7, max_tokens=123, max_duration_sec=60)
     ctx.reset(goal=goal, tokens_used_start=42)
 
-    assert ctx.counters.max_pages == 7
-    assert ctx.counters.max_tokens == 123
-    assert ctx.counters.max_duration_sec == 60
-    assert ctx.counters.tokens_used == 42  # pre-run usage survives the reset
-    assert ctx.counters.started_at > 0
-    assert ctx.counters.pages_fetched == 0
+    assert ctx.limits.max_pages == 7
+    assert ctx.limits.max_tokens == 123
+    assert ctx.limits.max_duration_sec == 60
+    assert ctx.progress.tokens_used == 42  # pre-run usage survives the reset
+    assert ctx.progress.started_at > 0
+    assert ctx.progress.pages_fetched == 0
 
 
 def test_reset_stats():
     ctx = _ctx()
-    ctx.stats.links_discovered = 5
-    ctx.stats.analyses_by_class = {"RELEVANT": 2}
-    stats_id = id(ctx.stats)
+    ctx.ledger.links_discovered = 5
+    ctx.ledger.analyses_by_class = {"RELEVANT": 2}
+    ledger_id = id(ctx.ledger)
 
     ctx.reset(goal=CrawlGoal(prompt="p"))
 
-    assert id(ctx.stats) == stats_id  # identity preserved, stage refs stay valid
-    assert ctx.stats.links_discovered == 0
-    assert ctx.stats.analyses_by_class == {}
+    assert id(ctx.ledger) == ledger_id  # identity preserved, stage refs stay valid
+    assert ctx.ledger.links_discovered == 0
+    assert ctx.ledger.analyses_by_class == {}
 
 
 def test_reset_identity():
