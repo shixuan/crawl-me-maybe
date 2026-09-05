@@ -103,8 +103,30 @@ def next_page(html: str, url: str) -> str:
 
 
 def keeps_payload(url: str, content_type: str) -> bool:
-    """The grid is built from a graphql answer, and that answer has the text."""
-    return "json" in content_type and "/graphql/query" in url
+    """The grid is built from a graphql answer, and that answer has the text.
+
+    The content type is not part of the question. Instagram labels the
+    grid's answer `text/javascript` and only the home timeline's
+    `application/json`, so asking for JSON kept the one answer with none
+    of this account's posts in it and dropped all four that had them.
+    Five accounts then read from markup up to 37 days out of date, and a
+    window of one month came back full of year-old posts.
+
+    The endpoint is the whole filter. What comes back is parsed by shape
+    and sorted by who posted, so an answer that is not a grid costs a
+    parse and nothing else.
+    """
+    return "/graphql/query" in url
+
+
+# The answer carrying an account's own grid. The viewer's home timeline
+# comes back from the same endpoint under a different name, so a payload
+# arriving is not the question; this one arriving is.
+_GRID_ANSWER = "user_timeline_graphql_connection"
+
+
+def _body_text(payload: Payload) -> str:
+    return payload.body.decode("utf-8", "ignore")
 
 
 def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
@@ -165,7 +187,12 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
 
     own = [i for c, i in seen.items() if owners[c] == handle]
     others = [i for c, i in seen.items() if owners[c] != handle]
-    return Listing(own=own, others=others)
+    # Health, not parsing. Parsing stays shape-based because the
+    # connection is named for an API version and will be renamed; a
+    # rename makes this over-report staleness, which is noisy and safe,
+    # where reading the markup silently is neither.
+    answered = any(_GRID_ANSWER in _body_text(pl) for pl in payloads)
+    return Listing(own=own, others=others, degraded=not answered)
 
 
 def _from_alt(alt: str) -> tuple[str, datetime.datetime | None]:

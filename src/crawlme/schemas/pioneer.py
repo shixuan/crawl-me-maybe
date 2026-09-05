@@ -31,6 +31,9 @@ class Candidate(BaseModel):
     # this and nothing else, which is what lets it judge content instead
     # of proxies once a source can supply it.
     text: str = ""
+    # Proposed by the enhancer, not named by the user. The buffer gives
+    # these a smaller share of its turns.
+    seed_ext: bool = False
     # When the source says this was published, if it says so at all.
     # Typed rather than left in the bag because the funnel scores on it
     # and the time window filters on it, and a key read by name would
@@ -65,6 +68,8 @@ class FrontierItem(BaseModel):
     # candidate under the page it was found on.  The grouping that uses
     # it happens upstream, on the candidate, not here.
     seed_url_key: str = ""
+    # Carried through so a resumed run keeps the smaller share.
+    seed_ext: bool = False
     status: FrontierItemStatus = "QUEUED"
     attempts: int = 0
     next_available_at: datetime.datetime = Field(default_factory=_utcnow)

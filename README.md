@@ -67,6 +67,12 @@ crawl run "what is worth doing in Toronto this weekend, with the event, the plac
   --max-relevant 20 --page-budget 60 --ignore-robots
 ```
 
+Add `--enhance-seeds` and the model names more sources for the same goal --
+other subreddits here, other accounts on a platform, other feeds. Each one is
+fetched and read before the crawl uses it: about a third of what it names turns
+out not to exist. What survives gets a smaller share of the run than the seeds
+you named, and the report at the end says what each was worth.
+
 `--fetcher browser` still exists and still means *everything* through a
 browser. A page that is no platform at all can need a script run before it
 says anything, and only the person crawling it knows that.
@@ -145,6 +151,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 |------|--------|---------|---------|
 | `--seeds` | comma-separated URLs, or a path | *required in practice* | Where the crawl begins. Anything not starting with `http://` or `https://` is read as a JSON file: a list of URLs, or `{"seeds": [...], "allowed_domains": [...]}` |
 | `--allowed-domains` | comma-separated domains | none | Registrable domains the crawl may not leave. Outranks the same key in a seeds file |
+| `--enhance-seeds` | flag | off | Let the model name more sources whose own posts would answer the goal. Each is fetched and read before use, since two thirds of what it names does not exist. They take a smaller share of the crawl than yours, and the run prints what each was worth and what it turned away, so you can keep the good ones yourself |
 
 **How far to go**
 
@@ -152,7 +159,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 |------|--------|---------|---------|
 | `--depth-limit` | int | `5` | Hops from a seed. A listing and its posts are two; a site an analyser endorsed off a post is three |
 | `--since` | `"2 weeks"`, `"3 days"`, `2026-08-01` | none | Time window. Candidates a listing dated before it are dropped; with a single seed, the run also stops once content ages out |
-| `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry. Mutually exclusive with `--page-budget` |
+| `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry, which is once every source has retired. Use it when you want everything there is rather than a fixed number. Mutually exclusive with `--page-budget` |
 
 **How to fetch**
 
@@ -232,53 +239,61 @@ a better prompt costs only the analyzer.
 
 ## How it works
 
-**A page is read by whoever claims it.** Each adapter is asked whether a
-fetched page is theirs: Instagram answers from the host, RSS from the
-document's root element. Nobody claiming is the ordinary case and the graph's
-answer -- read the links. So one run can hold posts, feed entries and ordinary
-web pages, and adding a platform is one adapter, not a new mode.
-
-**Two stages, and only two.** A structural filter, then one that reads:
-
+```mermaid
+flowchart TD
+    seeds["your seeds"] --> FR
+    ext["--enhance-seeds<br>seeds it names itself, verified"] -.-> FR
+    FR[("Frontier<br>a turn from each seed")] --> fetch["fetch<br>whoever claims the page reads it"]
+    fetch --> an["Analyzer<br>verdict · extracted fields"]
+    an --> out(["results"])
+    fetch --> links["~200 links"]
+    links --> pre["Pre-filter<br>URL rules, zero LLM"]
+    pre -->|"10-30 candidates"| rank["LLMRanker<br>one call per 20"]
+    rank -->|"priority, or dropped"| FR
+    an -.->|"links worth following"| FR
 ```
-~200 links per page
-  │
-  ▼  Pre-filter   URL-level rules, zero LLM   → 10-30 candidates
-  ▼  LLMRanker    one batched call per 20     → priority, or dropped
-```
 
-There were two cheap ranking stages between them, scoring keywords and cosine
-similarity. Measured over seven crawls against the analyzer's own verdicts,
-neither ever removed a candidate -- a top-K of 60 cannot cut a batch of 20 --
-and neither ordered better than a coin flip on most tasks. They were removed
-rather than tuned; the measurements are on the `archive/embedding-investigation`
-branch. Without LLM credentials there is now no ranking stage at all, and the
-crawl fetches in frontier order: a turn from each seed, oldest first.
+**Whoever claims the page reads it.** Instagram answers from the host, RSS from
+the document's root element. Nobody claiming is the ordinary case, and the
+answer then is to read the links. So one run holds posts, feed entries and
+ordinary web pages, and a new platform is one adapter, not a new mode.
 
-**Ranking predicts; analysis verifies.** Every fetched page gets one analyzer
-call: classification, summary, relevance, and the fields the goal asked for.
-Each extracted value is checked against the page text before it is stored, and
-a field the page does not state is simply absent -- there is no "unknown".
-The analyzer also names the links on a page worth following, and those are
-injected directly. It is the only way a crawl leaves the platform it started
-on: a feed harvester only ever finds more of the same platform, so a merchant's
-own site is reachable only because the analyzer pointed at it.
+**Two ranking stages, and only two.** Two cheap ones scoring keywords and cosine
+similarity sat between them, until seven crawls showed neither ever removed a
+candidate and neither ordered better than a coin flip. They were removed rather
+than tuned; the measurements are on `archive/embedding-investigation`. Without
+LLM credentials there is no ranking stage at all, and the crawl fetches in
+frontier order.
 
-**Two loops, one meeting point.** `fetch_pump` downloads and harvests;
-`rank_pump` scores. They coordinate only through the Frontier, which owns both
-halves: candidates waiting for a score, and scored candidates waiting for a
-fetch slot. Fairness lives upstream of the ranker -- a turn from each seed, so
-one loud account cannot spend the whole LLM budget -- and priority downstream,
-where the scarce thing is the page budget instead.
+**Ranking predicts; analysis verifies.** Each extracted value is checked against
+the page text before it is stored, and a field the page does not state is simply
+absent -- there is no "unknown". The analyzer also names the links worth
+following, which is the only way a crawl leaves the platform it started on.
 
-**A run says why it stopped.** Budgets, a target met, diminishing returns, a
-drained frontier -- and the ones that exist because silence was the bug:
-`RATE_LIMITED` and `LOGIN_REQUIRED` when the platform refuses the crawl,
-`ADAPTER_EMPTY` when every listing parsed and held nothing, which is what a
-platform redesign looks like from inside. All of them are reported together,
-so "completed" never has to stand in for "found nothing and cannot say why".
+**Fairness upstream of the ranker, priority downstream.** A turn from each seed
+keeps one loud account from spending the whole LLM budget. Priority decides only
+where the scarce page budget goes.
 
-**Everything is recorded.** Which rule dropped a link, what each ranker scored
+**Seeds it names itself are checked before use.** Two thirds of what the model
+names does not exist, in a shape a person cannot spot: the brand is real and the
+account name is invented. So each proposal is fetched and read, and only what
+answers survives. Whether it is worth reading past that is left to the run, which
+retires a source on pages it actually read rather than on a sample of captions.
+Nothing is stored -- the run prints what each turned out to be worth and what it
+turned away, and keeping one is your call.
+
+**A run says why it stopped.** Budgets, a target met, a drained frontier, plus
+`RATE_LIMITED`, `LOGIN_REQUIRED` and `ADAPTER_EMPTY`, which exist because silence
+was the bug. "Completed" never stands in for "found nothing and cannot say why".
+
+**A source that stops paying off retires by itself.** Reading past the goal's
+window, or a full window of its own pages with almost nothing to show, ends that
+source and not the run: a feed is ordered and productive per account and never as
+a whole, so counted across accounts neither signal meant anything. Retire them
+all and the frontier drains, which is how a run finishes without being told how
+many answers to expect.
+
+**Everything is recorded.** Which rule dropped a link, what the ranker scored
 it, which model and prompt version produced a judgment, and the sentence each
 extracted value came from. Raw HTML is kept, so a better prompt can re-judge a
 finished run without re-crawling.
@@ -302,6 +317,8 @@ See [`.env.example`](.env.example) for the full list.
 | v0.1 | ✅ | Full pipeline at zero LLM cost |
 | v0.1.1 | ❌ | (deprecated) EmbeddingRanker, semantic ranking on a local model. (see archive/embedding-investigation branch) |
 | v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
-| v0.3 | ✅ | Playwright with login state, feed traversal, extracted fields with evidence |
+| v0.3 | ✅ | IG, Playwright with login state, feed traversal, extracted fields with evidence |
+| v0.4 | ✅ | Reddit, a fetcher chosen per candidate, paged listings |
+| v0.5 | ✅ | Seed enhancement: the model names more sources, each verified before use. A source that stops paying off retires on its own, so a run ends when every one has |
 
 ---

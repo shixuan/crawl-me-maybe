@@ -110,6 +110,11 @@ def main() -> None:
         "on them, so leave it off when you want results rather than an answer "
         "about the ranker",
     )
+    run_p.add_argument(
+        "--enhance-seeds",
+        action="store_true",
+        help="Let the model name more sources of the same kind, verified before use",
+    )
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")
     run_p.add_argument(

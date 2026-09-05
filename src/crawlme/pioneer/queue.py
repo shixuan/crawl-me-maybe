@@ -124,6 +124,17 @@ class PriorityQueue:
         self._taken.discard(url_key)
         self._pending = [i for i in self._pending if i.url_key != url_key]
 
+    def discard_seed(self, seed_url_key: str) -> None:
+        """Forget everything queued for one seed.
+
+        Eagerly, not when the scan next reaches them: size counts what is
+        queued, and a run whose sources have all retired would otherwise
+        never read as drained. The heap entries left behind are stale and
+        the scan already drops those.
+        """
+        self._items = {k: i for k, i in self._items.items() if i.seed_url_key != seed_url_key}
+        self._pending = [i for i in self._pending if i.seed_url_key != seed_url_key]
+
     async def add(self, items: list[FrontierItem]) -> None:
         for item in items:
             if item.url_key in self._items:
@@ -208,9 +219,12 @@ class PriorityQueue:
         for item in ready:
             if item.url_key not in self._items:
                 item.seq = _next_seq()
-                item.priority = self._effective_priority(item, now)
                 self._items[item.url_key] = item
-                heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
+                # Aged for the ordering, not written back. A busy domain
+                # drains the same item many times, and writing it back
+                # aged the aged value again. Five passes lifted a 0.5 to
+                # a 1.0. It is written back once, when taken.
+                heapq.heappush(self._heap, (-self._effective_priority(item, now), item.seq, item.url_key))
         return len(ready) > 0
 
     def _effective_priority(self, item: FrontierItem, now: datetime.datetime) -> float:

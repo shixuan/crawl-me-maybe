@@ -250,3 +250,84 @@ async def test_rotation_resume():
     second = [c.seed_url_key for c in await buf.drain(2)]
     assert first == ["a", "b"]
     assert second[0] == "c", "the next drain picks up at the seed that was skipped"
+
+
+def _mix(users: int, exts: int, each: int = 10) -> list[Candidate]:
+    """`users` user seeds and `exts` proposed ones, each with candidates."""
+    out = []
+    for u in range(users):
+        out += [_candidate(f"u{u}-{i}", seed_url_key=f"seed{u}") for i in range(each)]
+    for e in range(exts):
+        out += [_candidate(f"e{e}-{i}", seed_url_key=f"ext{e}", seed_ext=True) for i in range(each)]
+    return out
+
+
+def test_proposed_seeds_take_the_smaller_share():
+    """The user's own seeds are the point of the run; the proposed ones
+    are there in case they missed something."""
+    from crawlme.pioneer.buffer import _take_turns
+
+    out, _ = _take_turns(_mix(2, 6, each=40), 40)
+    assert 0 < sum(c.seed_ext for c in out) <= 40 // 4
+
+
+def test_proposed_seeds_fill_what_would_be_empty():
+    """No cap beyond the one pass in four. Once the user's seeds have
+    nothing left, a slot given to a proposed one is one that would
+    otherwise go to waste."""
+    from crawlme.pioneer.buffer import _take_turns
+
+    thin = _mix(1, 0, each=2) + _mix(0, 3, each=20)
+    out, _ = _take_turns(thin, 20)
+    assert len(out) == 20
+    assert sum(c.seed_ext for c in out) > 10
+
+
+def test_the_share_does_not_grow_with_more_proposed():
+    """All of them share one turn, so proposing twenty instead of two
+    reads each less deeply rather than crowding the user out."""
+    from crawlme.pioneer.buffer import _take_turns
+
+    few, _ = _take_turns(_mix(2, 2), 40)
+    many, _ = _take_turns(_mix(2, 20), 40)
+    assert sum(c.seed_ext for c in few) == sum(c.seed_ext for c in many)
+
+
+def test_a_run_without_proposed_seeds_is_unchanged():
+    """Structural, not incidental: with none of them the bucket does not
+    exist and the loop never reaches the branch."""
+    from crawlme.pioneer.buffer import _take_turns
+
+    plain = _mix(4, 0, each=3)
+    out, resume = _take_turns(plain, 8)
+    assert [c.url.url_key for c in out] == ["u0-0", "u1-0", "u2-0", "u3-0", "u0-1", "u1-1", "u2-1", "u3-1"]
+    assert resume
+
+
+def test_proposed_seeds_still_get_read():
+    """A share of nothing would make the whole feature pointless."""
+    from crawlme.pioneer.buffer import _take_turns
+
+    out, _ = _take_turns(_mix(1, 4), 20)
+    assert any(c.seed_ext for c in out)
+
+
+@pytest.mark.asyncio
+async def test_a_retired_seed_takes_no_turn():
+    """Scoring a retired source is the cheaper half of the waste, but it
+    is still waste: the ranker costs a call per batch."""
+    buf = RoundRobinBuffer()
+    live = [_candidate(f"a{i}", seed_url_key="live") for i in range(3)]
+    dead = [_candidate(f"b{i}", seed_url_key="dead") for i in range(3)]
+    await buf.add(live + dead)
+    buf.retire("dead")
+    got = await buf.drain(6)
+    assert {c.seed_url_key for c in got} == {"live"}
+
+
+@pytest.mark.asyncio
+async def test_retiring_one_leaves_the_rest():
+    buf = RoundRobinBuffer()
+    await buf.add([_candidate("a", seed_url_key="one"), _candidate("b", seed_url_key="two")])
+    buf.retire("one")
+    assert [c.seed_url_key for c in await buf.drain(4)] == ["two"]

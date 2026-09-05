@@ -176,9 +176,9 @@ def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[
     twelve entries on the page this was written against carried no date
     at all. Guessing there would silently discard fresh posts.
 
-    This is the per-candidate half of the time window. TIME_HORIZON is
-    the other half and stops a whole run, which is right only for a
-    strictly ordered source; a monitoring run over many accounts must not
+    This is the per-candidate half of the time window. The stale streak
+    is the other half and retires one source, which is right only for a
+    strictly ordered one; a monitoring run over many accounts must not
     stop because one quiet account's posts came up first.
     """
     if goal.since is None or c.posted_at is None:

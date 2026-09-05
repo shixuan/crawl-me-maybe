@@ -83,7 +83,7 @@ _JSON_LD = '<script type="application/ld+json">{"@type":"Article","datePublished
         ('<meta property="article:published_time" content="2026-08-01T10:30:00Z">', False, 8),
         (_JSON_LD, False, 7),
         ('<time datetime="2026-06-02">June 2</time>', True, 6),
-        # Unknown must stay unknown; guessing would poison TIME_HORIZON.
+        # Unknown must stay unknown; guessing would poison the stale streak.
         ("", False, None),
         # A template artifact like a year-1 date is not a real time.
         ('<meta name="date" content="0001-01-01T00:00:00Z">', False, None),

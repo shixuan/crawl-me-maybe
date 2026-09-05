@@ -1,8 +1,13 @@
-"""Stop conditions: independent checks, each returning StopReason or None.
+"""When to stop, at both scales this crawl has one.
 
-check_stop() runs them all each iteration and returns every triggered reason.
-The scheduler decides whether to pause (USER_REQUESTED) or terminate (everything
-else).
+check_stop() answers it for the run: independent checks, each returning
+a StopReason or None, all of them run every iteration.  why_retire()
+answers it for one source, which is a different question with the same
+shape -- a feed is time-ordered and productive per account and never as
+a whole, so read globally neither signal meant anything.
+
+Both live here so that "when does this stop" has one place to look.  The
+scheduler acts on the answers; it does not decide them.
 
 Every check in _CHECKS must be reachable.  A check whose input is never
 written is worse than no check, because the capability looks present in
@@ -12,17 +17,15 @@ the docs while nothing can trigger it.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from crawlme.digest.feed.base import PageProblem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.schemas import CrawlTask
-from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
+from crawlme.state.context import CrawlCounters
 
-# Fewer than this many relevant pages in a full window means the crawl
 # has stopped finding anything worth the budget.
-_MIN_RELEVANT_IN_WINDOW = 2
 
 
 @dataclass
@@ -32,6 +35,32 @@ class StopReason:
 
 
 # individual checks ---------------------------------------------------
+
+# -- one source ----------------------------------------------------------
+
+# How many of a source's own analyzed pages the window keeps, and how
+# few relevant ones in a full one mean it has stopped paying off.
+RELEVANCE_WINDOW = 20
+MIN_RELEVANT_IN_WINDOW = 2
+# Consecutive pages older than the goal's window before a source reads as
+# walked past its end.
+MAX_STALE_STREAK = 5
+
+
+def why_retire(window: Sequence[bool], stale: int) -> str | None:
+    """Whether one source has stopped being worth reading, and why.
+
+    The reason travels with the judgement, as a StopReason's does: a run
+    that retires a source it should have kept has to be arguable.
+    """
+    if len(window) >= RELEVANCE_WINDOW and sum(window) < MIN_RELEVANT_IN_WINDOW:
+        return f"nothing in its last {RELEVANCE_WINDOW} pages"
+    if stale >= MAX_STALE_STREAK:
+        return f"{stale} pages in a row older than the window"
+    return None
+
+
+# -- the run -------------------------------------------------------------
 
 # All checks share the same signature so _CHECKS is a flat list.
 _CheckFunc = Callable[[CrawlTask, Frontier, CrawlCounters], StopReason | None]
@@ -69,50 +98,6 @@ def _budget_time(
 ) -> StopReason | None:
     if c.max_duration_sec > 0 and c.started_at > 0 and (time.monotonic() - c.started_at) >= c.max_duration_sec:
         return StopReason("BUDGET_TIME", f"ran {c.max_duration_sec}s")
-    return None
-
-
-def _time_horizon(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    c: CrawlCounters,
-) -> StopReason | None:
-    """Stop once the content has aged out of the goal's window.
-
-    Dormant unless the goal carries a `since`, so every run that does not
-    ask for a window behaves exactly as before.
-
-    The premise is reverse-chronological traversal: the first run of
-    pages older than the window means everything after it is older too.
-    That holds within one feed, listing page, or archive, and passing
-    `--since` is the user asserting their source reads that way.
-
-    It stops holding the moment a run has more than one entry point.
-    Monitoring thirty shops interleaves thirty traversals, so "pages in a
-    row" spans accounts that have nothing to do with each other: one
-    quiet shop's back catalogue would end the run before an active shop's
-    posts were ever reached.  Losing those results is far worse than
-    spending the budget, so the streak arms only where it can be read at
-    face value, and anything else leaves it dormant.
-
-    Dropping stale candidates one at a time is the part that still works
-    everywhere; PreFilter's `stale_check` does it whenever a listing
-    stated the date.  See refactor.md R3.
-    """
-    # Two conditions, two reasons.  The traversal says whether its
-    # source is ordered by time at all; the seed count says whether this
-    # run walks one of them or interleaves several, which turns "pages in
-    # a row" into pages from sources that have nothing to do with each
-    # other.
-    if c.since is None or c.max_stale_streak <= 0:
-        return None
-    if not c.time_horizon_allowed or c.seed_count != 1:
-        return None
-    if c.stale_streak >= c.max_stale_streak:
-        return StopReason(
-            "TIME_HORIZON",
-            f"{c.stale_streak} pages in a row older than {c.since.date().isoformat()}",
-        )
     return None
 
 
@@ -171,24 +156,6 @@ def _enough_found(
     """
     if c.max_relevant > 0 and c.relevant_found >= c.max_relevant:
         return StopReason("MAX_RELEVANT", f"found {c.relevant_found}/{c.max_relevant} relevant pages")
-    return None
-
-
-def _diminishing_returns(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    c: CrawlCounters,
-) -> StopReason | None:
-    # --recall means the run was asked to read the candidates the
-    # ranker rejected, and it reads them last.  A tail of misses is
-    # therefore the point of the mode, not evidence the crawl is
-    # finished, and stopping on it cuts off exactly the stretch the run
-    # was made to measure.
-    if c.recall:
-        return None
-    window = c.relevance_window
-    if len(window) >= RELEVANCE_WINDOW and sum(window) < _MIN_RELEVANT_IN_WINDOW:
-        return StopReason("DIMINISHING_RETURNS", f"only {sum(window)} relevant in last {len(window)}")
     return None
 
 
@@ -264,13 +231,11 @@ _CHECKS: list[_CheckFunc] = [
     _budget_pages,
     _budget_tokens,
     _budget_time,
-    _time_horizon,
     _fatal,
     _platform_refused,
     _adapter_empty,
     _user_requested,
     _enough_found,
-    _diminishing_returns,
     _frontier_drained,
     _ceiling_refused,
 ]

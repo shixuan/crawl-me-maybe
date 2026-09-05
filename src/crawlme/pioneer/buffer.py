@@ -62,6 +62,8 @@ class Buffer(Protocol):
 
     async def add(self, candidates: list[Candidate]) -> None: ...
 
+    def retire(self, seed_url_key: str) -> None: ...
+
     def contains(self, url_key: str) -> bool:
         """Whether this URL is already waiting here.
 
@@ -86,6 +88,12 @@ class Buffer(Protocol):
     async def wake(self) -> None: ...
 
 
+# The bucket every proposed seed shares, and how often it gets a turn.
+# One pass in four leaves the user's own seeds most of the flow.
+_EXT_KEY = "\x00ext"
+_EXT_EVERY = 4
+
+
 def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[list[Candidate], str]:
     """Up to *n*, one from each seed in turn, oldest first within a seed.
 
@@ -101,16 +109,25 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
     """
     groups: dict[str, list[Candidate]] = {}
     for c in candidates:
-        groups.setdefault(c.seed_url_key or c.source_url_key or "", []).append(c)
+        # They share one turn, so proposing more changes how deep each
+        # is read, not what the user's own seeds get.
+        key = _EXT_KEY if c.seed_ext else (c.seed_url_key or c.source_url_key or "")
+        groups.setdefault(key, []).append(c)
 
     keys = list(groups)
     offset = keys.index(start) if start in keys else 0
     out: list[Candidate] = []
     served = offset
+    # One pass in four, but only while the user's own still have
+    # candidates. After that an unused slot is better spent than empty.
+    user_left = any(k != _EXT_KEY and q for k, q in groups.items())
+    rounds = 0
     while len(out) < n:
         took = False
         for i in range(len(keys)):
             key = keys[(offset + i) % len(keys)]
+            if key == _EXT_KEY and user_left and rounds % _EXT_EVERY:
+                continue
             queue = groups[key]
             if not queue:
                 continue
@@ -119,6 +136,8 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
             took = True
             if len(out) >= n:
                 break
+        rounds += 1
+        user_left = any(k != _EXT_KEY and q for k, q in groups.items())
         if not took:
             break
     return out, (keys[served] if keys else "")
@@ -135,6 +154,20 @@ class RoundRobinBuffer:
         # drain restarts at the first seed, and any seed past the batch
         # size never gets a turn at all.
         self._next_seed: str = ""
+        # Seeds that stopped paying off. Their candidates stay in the
+        # buffer but never take a turn, so the ranker is not spent on
+        # them either.
+        self._retired: set[str] = set()
+
+    def retire(self, seed_url_key: str) -> None:
+        """Drop what this seed left here, and refuse what it sends next.
+
+        Dropping matters as much as refusing: candidates left behind keep
+        the buffer non-empty, and a run whose sources have all retired
+        would then never read as drained.
+        """
+        self._retired.add(seed_url_key)
+        self._candidates = [c for c in self._candidates if c.seed_url_key != seed_url_key]
 
     # write path -------------------------------------------------------
 
@@ -142,7 +175,7 @@ class RoundRobinBuffer:
         """Add a batch of candidates.  Evicts low-quality ones when full."""
         async with self._cond:
             for c in candidates:
-                if c.url.url_key in self._seen:
+                if c.url.url_key in self._seen or c.seed_url_key in self._retired:
                     continue
                 c.status = "BUFFERED"
                 if len(self._candidates) >= self._capacity:

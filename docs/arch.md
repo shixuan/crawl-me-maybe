@@ -531,7 +531,7 @@ Publication time gets its own best-effort chain: nine `<meta>` spellings →
 JSON-LD `datePublished` at any nesting depth → `<time datetime>`. Relative and
 absolute formats are normalised to aware UTC and absurd dates are discarded. When
 nothing is found the value is None — it is **never guessed**, because a wrong
-guess corrupts the TIME_HORIZON decision.
+guess corrupts the stale streak that retires a source.
 
 ### Harvester and FeedAdapter
 
@@ -687,15 +687,12 @@ class CrawlCounters:
     tokens_used: int = 0
     started_at: float = 0.0
     in_flight: int = 0
-    # Fixed-length sliding window; DIMINISHING_RETURNS reads it
-    relevance_window: deque[bool] = field(default_factory=lambda: deque(maxlen=20))
     fatal_error: str = ""
     # Diagnostic mode: nothing is discarded, the rejects rank last
     recall: bool = False
-    # Time horizon; the whole check sleeps when since is None
+    # Time horizon; the whole check sleeps when since is None.  The
+    # streak that reads it lives per seed, in the scheduler's tally.
     since: datetime | None = None
-    stale_streak: int = 0
-    max_stale_streak: int = 5
 ```
 
 ---
@@ -713,8 +710,6 @@ fire**; it returns every reason that did.
 | Natural end | both halves empty, nothing in flight, nothing being scored | FRONTIER_DRAINED |
 | Natural end | the above, and a candidate was refused by a domain ceiling along the way | plus DOMAIN_BUDGET |
 | Enough | relevant results reached `--max-relevant` | MAX_RELEVANT |
-| Time window | a single-entry-point run walked past `--since` | TIME_HORIZON |
-| Diminishing returns | fewer than 2 relevant in the last 20 pages | DIMINISHING_RETURNS |
 | User | `task.state == "STOPPING"` | USER_REQUESTED |
 | Adapter failure | three or more listings read, none yielding anything | plus ADAPTER_EMPTY |
 | Platform refusal | the first BLOCKED page | RATE_LIMITED |
@@ -725,28 +720,71 @@ fire**; it returns every reason that did.
 held N hits, but "stop after N" contradicts "find as many as the budget allows",
 and the budget conditions already cover finishing normally.
 
-**DIMINISHING_RETURNS actually fires now.** `relevance_window` used to be declared
-and read but never written, which made it dead. `engine._on_analysis` now writes
-`relevance_score >= goal.relevance_threshold` into it, and the window is a
-`deque(maxlen=20)` so "the last 20 pages" is guaranteed by the type rather than by
-the caller remembering to trim.
+### Retiring one source, not the run
+
+Two of these used to be run-level checks and are not any more. Both asked a
+question about one source and were counted globally, where neither could be read
+at face value.
+
+`TIME_HORIZON` assumed reverse-chronological traversal: the first item older than
+the window means everything after it is older too. That holds inside one feed and
+never across several, so the check armed only for runs with a single entry point
+-- which is to say it was dormant for every real run.
+
+`DIMINISHING_RETURNS` asked whether the crawl had stopped finding things. Counted
+globally it mixed sources: one quiet shop's back catalogue could end a run with
+three others still producing, and every seed's landing page put a certain miss
+into the window before a single post was read.
+
+Both now live in `stop_conds.why_retire(window, stale)`, asked per seed with the
+same thresholds they always had (20/2 and 5). When one answers, the frontier
+retires that seed: its queued candidates are dropped from both halves and later
+ones are refused at the door. The run ends when every source has retired and the
+frontier drains, which is FRONTIER_DRAINED reporting what it always meant.
+
+Dropping eagerly is not an optimisation. Candidates left behind keep both halves
+non-empty, and a run whose sources had all retired would never read as drained.
 
 **It is suppressed under `--recall`.** That mode deliberately reads the candidates
 the ranker rejected, and reads them last, so a tail of misses is the point of the
-mode rather than evidence the crawl is finished. Stopping on it cut off exactly
-the stretch the run was made to measure.
+mode rather than evidence a source is finished.
 
-**TIME_HORIZON** assumes traversal in reverse chronological order (a feed, a
-listing, an archive): the first item older than the window means everything after
-it is older too. Pages in a link graph have no order, so **passing `--since` is the
-user asserting the source is ordered**, and the check only arms itself for runs
-with a single entry point.
+Three rules carried over from the time horizon: with `since=None` it sleeps, so
+runs that ask for no window are unaffected; a page that reports no date **neither
+advances nor resets** the streak, because silence is not evidence either way; and
+an absurd date (before 1990, or more than a year ahead) is treated as no date at
+all, so template leftovers cannot poison the decision.
 
-Three implementation rules: with `since=None` the whole check sleeps, so existing
-runs are unaffected; a page that reports no date **neither advances nor resets**
-the streak, because silence is not evidence either way; and an absurd date (before
-1990, or more than a year ahead) is treated as no date at all, so template
-leftovers cannot poison the decision.
+---
+
+## Seeds the run names for itself
+
+`--enhance-seeds` adds one LLM call at task start: given the goal and the seeds
+the user chose, name more sources. It is off by default, and the branch is
+imported inside the `if`, so a run that does not ask for it never loads the
+module.
+
+The model is asked where to look, never what is there. Asked for content it
+reports what other people said about a source; asked for sources, the crawl
+still reads them first-hand.
+
+Nothing it names is trusted. Two thirds of the addresses do not exist, in a
+shape a person cannot spot: the brand is real and the account name is invented.
+Each proposal is fetched and read before use, and only what a harvester gets
+something out of survives. Payloads are kept for that read, or a busy account
+reports as empty and a real seed is thrown away for being real.
+
+Verification answers only what one fetch can settle: does this exist, does it
+yield anything. Whether it is worth reading past that was once asked here too,
+on a sample of twenty captions put to the ranker, and the answer was wrong
+whenever the fetch came back thin. Retiring a source answers the same question
+on pages actually read.
+
+Survivors take a smaller share of the crawl than the seeds the user named: all
+of them share one rotation key, so proposing more changes how deep each is read
+rather than what the user's own seeds get. Nothing is stored between runs. What
+a source is worth is a fact about this goal, and the last piece of cross-run
+state went wrong by storing exactly that kind of fact against an address.
 
 ---
 
@@ -767,8 +805,17 @@ goes through `asyncio.to_thread`, and every lxml/libxml2 parse is serialised by 
 global lock in `digest/lxml.py` — libxml2's global dictionary has a concurrency
 race that produced a SIGABRT. Writes go through a single-consumer queue.
 
-Backpressure: the candidate buffer is bounded at 2000 and evicts the
-lowest-quality candidate when full.
+Analysis queues on a third semaphore of its own, as wide as the LLM's. It used
+to queue inside the LLM client, past every check the scheduler could make, so a
+target met while forty-six pages waited still had all forty-six analysed. Holding
+a slot here means being the next to call, which is where the target check belongs.
+
+Backpressure, two kinds. The candidate buffer is bounded at 2000 and evicts the
+lowest-quality candidate when full. The fetch pump stops dispatching once
+`fetch_concurrency + 2 * llm_concurrency` tasks are in flight: the fetch slot is
+released before the analysis, so without this the pump kept dispatching into a
+queue. One run reached forty-six parked tasks and abandoned thirty-three of them
+unjudged when it stopped.
 
 ---
 
@@ -785,9 +832,15 @@ Two categories throughout: transient (retry) and permanent (mark failed).
 | Domain | more than 5 consecutive failures | Circuit breaker, 10-minute cooldown |
 | Extract | parse failure | Degrade to DEGRADED/FAILED, do not interrupt |
 | Extract | timeout | `asyncio.wait_for`, mark SKIPPED |
-| Rank | LLM failure | Retry once; then enqueue the batch flat, without blocking |
+| Rank | LLM failure | Retries inside the client, then propagates; a dead pump ends the run as FATAL |
 | Analyze | LLM failure | Background retry queue, up to 3 attempts; never blocks fetching |
 | Storage | write failure | Retry 3 times → checkpoint and PAUSE |
+| Any pump | uncaught exception | Recorded as `fatal_error`, the run ends as FATAL |
+
+Nothing stands behind the ranker any more, so a rank pump that dies stops scoring
+and the crawl would otherwise reach a stop condition the ordinary way and report
+having completed with nothing ranked. Both pumps are gathered with
+`return_exceptions`, and the results are read rather than discarded.
 
 ---
 

@@ -8,11 +8,12 @@ judging each in isolation.  The response carries a priority and
 rationale per candidate, a drop list for clear junk, and optional new
 search suggestions.
 
-Failure policy.  An LLMError (provider failure, token budget exhausted)
-propagates: HybridRanker catches it and keeps the earlier stages'
-decisions, so a dead LLM never blocks the crawl.  An unparseable JSON
-response gets one repair retry with a stricter instruction; if that
-also fails, the batch fails the same way.
+Failure policy.  An LLMError (provider failure, token budget
+exhausted) propagates.  Nothing catches it any more, since the stages
+that used to stand behind this one are gone, so the scheduler reads a
+dead rank pump as fatal and ends the run saying why.  An unparseable
+JSON response gets one repair retry with a stricter instruction; if
+that also fails, the batch fails the same way.
 
 Partial responses are tolerated fail-open.  Candidates the model did
 not mention in either list are kept with a neutral priority, because
@@ -84,9 +85,9 @@ def _utcnow() -> datetime.datetime:
 class LLMRanker:
     """Fine-ranks batches of candidates with one LLM call per batch.
 
-    On provider failure the exception propagates: HybridRanker catches
-    it and falls back to the earlier stages' scores, so the pipeline
-    never blocks on the LLM.
+    On provider failure the exception propagates and the scheduler ends
+    the run with it. Nothing scores candidates behind this, so carrying
+    on would crawl in frontier order and report a normal finish.
     """
 
     def __init__(

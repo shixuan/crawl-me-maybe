@@ -55,6 +55,9 @@ class Harvest:
     # harvester, which knows, rather than inferred by the caller, which
     # would be guessing from the shape of the candidates.
     listing: bool = False
+    # The listing was read without the platform's own answer, so it holds
+    # whatever the markup had rather than what the account has now.
+    degraded: bool = False
 
 
 class Harvester(Protocol):
@@ -151,7 +154,14 @@ class PageHarvester:
             out.append(candidate)
         if not out:
             logger.warning("harvest.listing_empty url=%s platform=%s", page.url.canonical, adapter.PLATFORM)
-        return Harvest(out, listing=True, next_url=next_url)
+        if listing.degraded:
+            # Loudly, because it looks like success: the count is normal,
+            # nothing refused us, and the content is weeks old.
+            logger.warning(
+                "harvest.listing_stale url=%s read from markup alone, its newest posts are missing",
+                page.url.canonical,
+            )
+        return Harvest(out, listing=True, next_url=next_url, degraded=listing.degraded)
 
 
 def _html_of(page: Page) -> str:

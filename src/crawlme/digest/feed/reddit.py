@@ -170,8 +170,8 @@ def next_page(html: str, url: str) -> str:
     Measured over three pages of one subreddit: 79 posts each, 227 after
     deduplication, so a cursor reaches roughly three times what one page
     holds. The order it advances is the listing's, not time: all three
-    pages spanned the same month, which is why TIME_HORIZON cannot stop
-    a subreddit the way it stops a strictly ordered feed.
+    pages spanned the same month, which is why the stale streak cannot
+    retire a subreddit the way it retires a strictly ordered feed.
     """
     if _POST_URL.search(url):
         return ""

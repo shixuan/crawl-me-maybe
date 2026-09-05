@@ -232,3 +232,13 @@ def test_graph_no_list(tmp_path: Path) -> None:
     out = PageHarvester(Canonicalizer()).harvest(page, depth=0)
     assert out.candidates == []
     assert not out.listing
+
+
+def test_a_listing_without_its_payload_says_so():
+    """Markup alone looks like a healthy read: the count is normal and
+    nothing refused us. Measured on one account it ran up to 37 days
+    behind."""
+    from crawlme.digest.feed.base import Listing
+
+    assert Listing(own=[], others=[], degraded=True).degraded
+    assert not Listing(own=[], others=[]).degraded

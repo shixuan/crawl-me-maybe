@@ -6,12 +6,14 @@ import asyncio
 import datetime
 import logging
 import threading
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from crawlme.config import Settings
 from crawlme.digest.harvest import Harvest
 from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
+from crawlme.scheduler.stop_conds import MAX_STALE_STREAK, RELEVANCE_WINDOW
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -47,8 +49,6 @@ def _item() -> FrontierItem:
 
 def _make_sched(**overrides) -> CrawlScheduler:
     """Build a scheduler with all-mock components for unit tests."""
-    from crawlme.config import Settings
-
     # The waiting half lives inside the frontier now, so the mock hangs
     # off it rather than beside it.
     frontier_mock = MagicMock()
@@ -323,11 +323,13 @@ _FRESH = datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)
     ],
 )
 def test_stale_streak(since, published, expected):
+    """Per seed, because a feed is time-ordered per account and never as
+    a whole. Counted globally it could only ever arm for one seed."""
     sched = _make_sched()
     sched._counters.since = since
     for at in published:
-        sched._note_page_age(_page_published(at))
-    assert sched._counters.stale_streak == expected
+        sched._note_page_age(_page_published(at), "seedA")
+    assert sched._tally_by_seed["seedA"].stale == expected
 
 
 def test_context_needs_key():
@@ -443,14 +445,16 @@ def test_summary_stats():
 
 
 def test_window_fed():
-    """The analyzer sink is the only writer DIMINISHING_RETURNS can have."""
+    """A judged content page is what a source's window counts."""
     sched = _make_sched()
     sched._counters.relevance_threshold = 0.7
 
-    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
-    sched._on_analysis(AnalysisResult(page_id="p2", url_key="k2", relevance_score=0.2))
+    for key, score in (("k1", 0.9), ("k2", 0.2)):
+        sched._on_analysis(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
+        sched._listing_of[key] = False
+        sched._cast_relevance_vote(key)
 
-    assert list(sched._counters.relevance_window) == [True, False]
+    assert list(sched._tally_by_seed[""].window) == [True, False]
 
 
 def test_window_threshold():
@@ -459,8 +463,10 @@ def test_window_threshold():
     sched._counters.relevance_threshold = 0.95
 
     sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
 
-    assert list(sched._counters.relevance_window) == [False]
+    assert list(sched._tally_by_seed[""].window) == [False]
 
 
 @pytest.mark.asyncio
@@ -470,8 +476,6 @@ async def test_analysis_free(monkeypatch):
     Regression: analyze used to run inside the fetch semaphore, which made
     fetch_concurrency and llm_concurrency nested instead of independent.
     """
-    from crawlme.config import Settings
-
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
     sched._harvester = MagicMock(harvest=lambda page, depth: Harvest([]))
     sched._goal = _goal()
@@ -500,8 +504,6 @@ async def test_analysis_free(monkeypatch):
 @pytest.mark.asyncio
 async def test_slot_released():
     """The slot covers the request and its parse, nothing longer."""
-    from crawlme.config import Settings
-
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
     sched._fetcher.fetch = AsyncMock(side_effect=RuntimeError("boom"))
     sched._frontier.record_outcome = AsyncMock()
@@ -617,18 +619,16 @@ def test_rank_drain_once():
 
 
 def test_relevant_count():
-    """The tally has to come from the same place the window does.
-
-    Both answer questions about the same judgement: the window whether
-    the crawl is still working, the tally whether it is done.
-    """
+    """One judgement answers two questions: the run's tally of what it
+    found, and the source's own window of whether it is still paying."""
     sched = _make_sched()
     sched._counters = CrawlCounters(relevance_threshold=0.7)
-    sched._on_analysis(AnalysisResult(url_key="a", relevance_score=0.9, classification="RELEVANT"))
-    sched._on_analysis(AnalysisResult(url_key="b", relevance_score=0.2, classification="IRRELEVANT"))
-    sched._on_analysis(AnalysisResult(url_key="c", relevance_score=0.75, classification="RELEVANT"))
+    for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
+        sched._on_analysis(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
+        sched._listing_of[key] = False
+        sched._cast_relevance_vote(key)
     assert sched._counters.relevant_found == 2
-    assert list(sched._counters.relevance_window) == [True, False, True]
+    assert list(sched._tally_by_seed[""].window) == [True, False, True]
 
 
 @pytest.mark.asyncio
@@ -1002,3 +1002,360 @@ async def test_robots_absent():
     sched._goal = _goal(max_pages=5)
     await sched._ensure_robots("x.com")
     assert sched._robots.allow_fetch("https://x.com/anything")
+
+
+@pytest.mark.asyncio
+async def test_seeds_unenhanced_by_default():
+    """Off unless asked for: no call, and the module is not even loaded."""
+    sched = _make_sched(settings=Settings(enhance_seeds=False))
+    assert await sched.enhance_seeds(_goal(), [MagicMock()]) == []
+
+
+@pytest.mark.asyncio
+async def test_no_seeds_nothing_to_enhance():
+    """Nothing to widen, and the model would have no example to follow."""
+    sched = _make_sched(settings=Settings(enhance_seeds=True))
+    assert await sched.enhance_seeds(_goal(), []) == []
+
+
+@pytest.mark.asyncio
+async def test_enhanced_seeds_are_marked():
+    """The buffer reads this to give them the smaller share."""
+    from crawlme.schemas import URL, Candidate
+
+    url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
+    proposed = Candidate(url=url, seed_ext=True)
+    sched = _make_sched(settings=Settings(enhance_seeds=True))
+    with patch("crawlme.pioneer.seed_enhancer.enhance", AsyncMock(return_value=([proposed], 1, []))):
+        got = await sched.enhance_seeds(_goal(), [MagicMock(url=url)])
+    assert [c.seed_ext for c in got] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_proposed_seed_is_credited_for_what_it_found():
+    """The report ranks them by this, and it is the whole reason to
+    print them: a seed that earned its place is one to keep."""
+    from crawlme.pioneer.canonicalizer import Canonicalizer
+    from crawlme.schemas import AnalyzerFeedback
+
+    canon = Canonicalizer()
+    seed = "https://ig.test/acct/"
+    seed_key = canon.canonicalize(seed, seed).url_key
+    post = "https://ig.test/acct/p/1/"
+    post_key = canon.canonicalize(post, post).url_key
+
+    sched = _make_sched(canonicalizer=canon)
+    sched._url_key_of = {post: post_key}
+    sched._seed_of = {post_key: seed_key}
+    sched._proposed_seeds = {seed_key: (seed, "why")}
+    sched._counters.relevance_threshold = 0.7
+
+    sched._on_analysis(
+        AnalysisResult(classification="RELEVANT", relevance_score=0.9, feedback=AnalyzerFeedback(url=post, title="t"))
+    )
+    why, tally = sched.summary()["proposed_seeds"][seed]
+    assert (why, tally[0]) == ("why", 1)
+
+
+@pytest.mark.asyncio
+async def test_a_proposed_seed_that_found_nothing_says_so():
+    sched = _make_sched()
+    sched._proposed_seeds = {"k": ("https://ig.test/acct/", "why")}
+    why, tally = sched.summary()["proposed_seeds"]["https://ig.test/acct/"]
+    assert (why, tally[0]) == ("why", 0)
+
+
+@pytest.mark.asyncio
+async def test_seed_credited_mid_judge():
+    """The sink runs during the analyze call, and it reads maps that used
+    to be filled only after that call returned. Every verdict therefore
+    landed with its own page still unknown, so a proposed seed reported
+    finding nothing however much it found."""
+    sched = _make_sched()
+    sched._goal = _goal()
+    sched._proposed_seeds = {"seed-k": ("https://ext.test/", "why")}
+    sched._seed_of = {"k1": "seed-k"}
+
+    url = URL(raw="https://ext.test/p/1", canonical="https://ext.test/p/1", url_key="pk", reg_domain="ext.test")
+    page = Page(url_key="pk", url=url)
+    result = MagicMock(item_id="i1", status_code=200, raw=b"x")
+
+    async def _analyze(p, _g):
+        sched._on_analysis(
+            AnalysisResult(
+                classification="RELEVANT",
+                relevance_score=0.9,
+                feedback=AnalyzerFeedback(url=p.url.canonical, title="t"),
+            )
+        )
+
+    sched._analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
+    sched._fetch_and_extract = AsyncMock(return_value=(result, page))
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    await sched._handle_fetch(_item())
+
+    why, tally = sched.summary()["proposed_seeds"]["https://ext.test/"]
+    assert (why, tally[0]) == ("why", 1)
+
+
+def _judge(sched, url_key, score):
+    sched._on_analysis(
+        AnalysisResult(
+            url_key=url_key,
+            classification="RELEVANT" if score >= 0.7 else "IRRELEVANT",
+            relevance_score=score,
+            feedback=AnalyzerFeedback(url=f"https://x.test/{url_key}", title="t"),
+        )
+    )
+
+
+def test_a_listing_does_not_vote():
+    """It is read for its links and can never be an answer. Counting it
+    asks a page that was never in the running whether the run is
+    working, and one run stopped for diminishing returns because five
+    seeds put seven certain misses into a window of twenty."""
+    sched = _make_sched()
+    _judge(sched, "k1", 0.0)
+    sched._listing_of["k1"] = True
+    sched._cast_relevance_vote("k1")
+    assert list(sched._tally_by_seed[""].window) == []
+
+
+def test_a_page_votes_once_judged():
+    sched = _make_sched()
+    _judge(sched, "k1", 0.9)
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
+    assert list(sched._tally_by_seed[""].window) == [True]
+
+
+def test_a_late_verdict_still_votes():
+    """A retried analysis lands long after link extraction, so the
+    harvester's half is already in when the verdict arrives."""
+    sched = _make_sched()
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
+    assert list(sched._tally_by_seed[""].window) == []
+    _judge(sched, "k1", 0.9)
+    assert list(sched._tally_by_seed[""].window) == [True]
+
+
+def test_a_vote_is_cast_once():
+    sched = _make_sched()
+    _judge(sched, "k1", 0.9)
+    sched._listing_of["k1"] = False
+    sched._cast_relevance_vote("k1")
+    sched._cast_relevance_vote("k1")
+    assert list(sched._tally_by_seed[""].window) == [True]
+
+
+def test_the_tally_counts_listings():
+    """Abstaining from the window is not abstaining from the run: a
+    listing that somehow answers the goal is still an answer found."""
+    sched = _make_sched()
+    _judge(sched, "k1", 0.9)
+    sched._listing_of["k1"] = True
+    sched._cast_relevance_vote("k1")
+    assert sched._counters.relevant_found == 1
+
+
+@pytest.mark.asyncio
+async def test_backpressure_caps_inflight():
+    """The fetch slot is released before the analysis, so tasks waiting
+    for an LLM slot hold nothing back. One run reached forty-six parked
+    on two analysis slots and abandoned thirty-three when it stopped."""
+    sched = _make_sched(settings=Settings(fetch_concurrency=6, llm_concurrency=2))
+    sched._task = _task()
+    sched._counters.in_flight = 6 + 2 * 2
+    sched._frontier.pop_next = AsyncMock(return_value=_item())
+
+    sched._state = "RUNNING"
+    task = asyncio.create_task(sched._fetch_pump())
+    await asyncio.sleep(0.05)
+    sched._state = "STOPPING"
+    await asyncio.gather(task, return_exceptions=True)
+
+    sched._frontier.pop_next.assert_not_awaited()
+
+
+def test_enough_found_reads_the_target():
+    sched = _make_sched()
+    sched._counters.max_relevant = 15
+    sched._counters.relevant_found = 14
+    assert sched._enough_found() is False
+    sched._counters.relevant_found = 15
+    assert sched._enough_found() is True
+
+
+def test_no_target_never_enough():
+    """Zero means the run was given no target, not a target of zero."""
+    sched = _make_sched()
+    sched._counters.max_relevant = 0
+    sched._counters.relevant_found = 99
+    assert sched._enough_found() is False
+
+
+@pytest.mark.asyncio
+async def test_a_met_target_stops_analysis():
+    """The stop only stops dispatch. Every task already out keeps going
+    and each one that lands adds to the tally, so one run asked for
+    fifteen and reported twenty-four."""
+    sched = _make_sched()
+    sched._goal = _goal()
+    sched._counters.max_relevant = 15
+    sched._counters.relevant_found = 15
+    sched._analyzer = MagicMock(analyze=AsyncMock())
+    url = URL(raw="https://x.test/p", canonical="https://x.test/p", url_key="pk", reg_domain="x.test")
+    page = Page(url_key="pk", url=url)
+    result = MagicMock(item_id="i", status_code=200, raw=b"x")
+    sched._fetch_and_extract = AsyncMock(return_value=(result, page))
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    await sched._handle_fetch(_item())
+
+    sched._analyzer.analyze.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_target_holds_under_a_queue():
+    """The wait for an analysis slot used to happen inside the LLM
+    client, past every check the scheduler could make, so a target met
+    while forty-six pages were queued still had all forty-six analysed.
+    Queued here instead, the check sits at the head of the queue and
+    only what is already calling can overshoot."""
+    sched = _make_sched(settings=Settings(llm_concurrency=2))
+    sched._goal = _goal()
+    sched._counters.max_relevant = 3
+    sched._frontier.record_outcome = AsyncMock()
+    sched._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
+    sched._checkpoint = AsyncMock()
+
+    calls = 0
+
+    async def _analyze(_page, _goal_arg):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        sched._counters.relevant_found += 1  # worst case: every page counts
+
+    sched._analyzer = MagicMock(analyze=_analyze)
+
+    def _fetched(i):
+        url = URL(raw=f"https://x.test/{i}", canonical=f"https://x.test/{i}", url_key=f"k{i}", reg_domain="x.test")
+        return MagicMock(item_id="i", status_code=200, raw=b"x"), Page(url_key=f"k{i}", url=url)
+
+    pages = [_fetched(i) for i in range(20)]
+    sched._fetch_and_extract = AsyncMock(side_effect=pages)
+    await asyncio.gather(*[sched._handle_fetch(_item()) for _ in range(20)])
+
+    assert calls <= sched._counters.max_relevant + 2
+
+
+def _vote(sched, seed, url_key, relevant):
+    sched._seed_of[url_key] = seed
+    sched._verdict_of[url_key] = relevant
+    sched._listing_of[url_key] = False
+    sched._cast_relevance_vote(url_key)
+
+
+def test_a_cold_source_retires():
+    """A full window of its own content with almost nothing to show."""
+    sched = _make_sched()
+    for i in range(RELEVANCE_WINDOW):
+        _vote(sched, "seedA", f"k{i}", False)
+    sched._frontier.retire.assert_called_once_with("seedA")
+    assert sched._tally_by_seed["seedA"].retired
+
+
+def test_one_cold_source_leaves_the_others():
+    """The whole reason this is per seed. Read globally, one quiet shop's
+    back catalogue ended a run with three sources still producing."""
+    sched = _make_sched()
+    for i in range(RELEVANCE_WINDOW):
+        _vote(sched, "cold", f"c{i}", False)
+        _vote(sched, "hot", f"h{i}", i % 3 == 0)
+    assert sched._tally_by_seed["cold"].retired
+    assert not sched._tally_by_seed["hot"].retired
+
+
+def test_a_source_past_the_window_retires():
+    """A feed is time-ordered per account, so reading past --since means
+    that account is walked out. It says nothing about the others."""
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    old = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    for i in range(MAX_STALE_STREAK):
+        sched._note_page_age(_page_published(old), "seedA")
+    assert sched._tally_by_seed["seedA"].retired
+    sched._frontier.retire.assert_called_once_with("seedA")
+
+
+def test_one_hit_resets_the_stale_streak():
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    for at in (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),) * 4:
+        sched._note_page_age(_page_published(at), "seedA")
+    sched._note_page_age(_page_published(datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)), "seedA")
+    assert sched._tally_by_seed["seedA"].stale == 0
+
+
+def test_recall_retires_nothing():
+    """Reading the tail is the point of the mode, not evidence a source
+    is done."""
+    sched = _make_sched()
+    sched._counters.recall = True
+    for i in range(RELEVANCE_WINDOW):
+        _vote(sched, "seedA", f"k{i}", False)
+    assert not sched._tally_by_seed["seedA"].retired
+    sched._frontier.retire.assert_not_called()
+
+
+def test_a_source_retires_once():
+    sched = _make_sched()
+    for i in range(RELEVANCE_WINDOW * 2):
+        _vote(sched, "seedA", f"k{i}", False)
+    sched._frontier.retire.assert_called_once_with("seedA")
+
+
+def test_an_unfiled_page_cannot_retire_anything():
+    """The streak used to be looked up by a key the page did not have
+    yet, so it always landed under the empty seed -- where retirement
+    ignores it. Five sources shared one streak, each other's fresh pages
+    reset it, and a --since of one month came back full of year-old
+    posts."""
+    sched = _make_sched()
+    sched._counters.since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
+    old = _page_published(datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc))
+    for _ in range(MAX_STALE_STREAK * 2):
+        sched._note_page_age(old, "")
+    assert not sched._tally_by_seed[""].retired
+    sched._frontier.retire.assert_not_called()
+
+
+def test_a_dead_pump_ends_the_run():
+    """Both pumps are gathered with return_exceptions, so one that died
+    left its exception in a list nobody read: a rank pump that lost its
+    provider stopped scoring and the report said the run completed."""
+    from crawlme.llm import LLMError
+
+    sched = _make_sched()
+    sched._note_pump_failures([None, LLMError("provider rejected the request")])
+    assert sched._counters.fatal_error == "provider rejected the request"
+
+
+def test_a_cancelled_pump_is_not_a_failure():
+    """Stopping and pausing both cancel them on purpose."""
+    sched = _make_sched()
+    sched._note_pump_failures([asyncio.CancelledError(), None])
+    assert not sched._counters.fatal_error
+
+
+def test_the_first_failure_is_the_one_reported():
+    sched = _make_sched()
+    sched._note_pump_failures([RuntimeError("first"), RuntimeError("second")])
+    assert sched._counters.fatal_error == "first"

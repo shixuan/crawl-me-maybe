@@ -7,15 +7,26 @@ import pytest
 
 from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.queue import PriorityQueue
-from crawlme.schemas import URL, FrontierItem, FrontierSnapshot
+from crawlme.schemas import URL, Candidate, FrontierItem, FrontierSnapshot
 
 
-def _item(url_key: str = "k1", priority: float = 0.5, domain: str = "example.com") -> FrontierItem:
+def _item(
+    url_key: str = "k1", priority: float = 0.5, domain: str = "example.com", seed_url_key: str = ""
+) -> FrontierItem:
     return FrontierItem(
         url=URL(raw=f"https://{domain}/page", canonical=f"https://{domain}/page", url_key=url_key, reg_domain=domain),
         url_key=url_key,
         priority=priority,
         reg_domain=domain,
+        seed_url_key=seed_url_key,
+    )
+
+
+def _candidate(url_key: str, seed_url_key: str = "") -> Candidate:
+    raw = f"https://example.com/{url_key}"
+    return Candidate(
+        url=URL(raw=raw, canonical=raw, url_key=url_key, reg_domain="example.com"),
+        seed_url_key=seed_url_key,
     )
 
 
@@ -238,3 +249,31 @@ async def test_refused_idle(frontier):
     assert await frontier.pop_next(global_budget=1) is None, "the budget is spent"
     assert frontier.size == 1
     assert frontier.cooling == 0
+
+
+@pytest.mark.asyncio
+async def test_retiring_empties_both_halves():
+    """Left behind, a retired seed's candidates keep the frontier
+    non-empty, and a run whose sources have all retired would never read
+    as drained."""
+    f = GatedFrontier()
+    await f.push_candidates([_candidate("a", seed_url_key="dead")])
+    await f.push_batch([_item("b", seed_url_key="dead")])
+    assert f.size == 1 and not f.waiting.is_empty
+
+    f.retire("dead")
+
+    assert f.size == 0
+    assert f.waiting.is_empty
+    assert f.is_retired("dead")
+
+
+@pytest.mark.asyncio
+async def test_a_retired_seed_is_not_handed_out():
+    f = GatedFrontier()
+    await f.push_batch([_item("a", seed_url_key="live"), _item("b", seed_url_key="dead")])
+    f.retire("dead")
+    got = []
+    while (item := await f.pop_next()) is not None:
+        got.append(item.seed_url_key)
+    assert got == ["live"]

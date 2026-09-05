@@ -8,7 +8,7 @@ v0.1 path (no LLM):
   - Page Analyzer is skipped (v0.2)
   - the feedback subsystem is absent (v0.2)
   - tokens_used is fed externally via note_tokens_used (v0.2)
-  - HybridRanker uses RuleRanker only
+  - there is no ranker at all, so the frontier's own order decides
 
 See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
 import datetime
 import logging
 import time
@@ -28,13 +29,14 @@ from crawlme.digest.extractor import Extractor
 from crawlme.digest.feed.base import FeedDependencyError, PageProblem
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
+from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.scheduler.stop_conds import check_stop
+from crawlme.scheduler.stop_conds import RELEVANCE_WINDOW, check_stop, why_retire
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -127,6 +129,33 @@ def _endorsed_href(link: str) -> str | None:
     return None
 
 
+@dataclasses.dataclass
+class _SeedTally:
+    """What one seed got read, and whether it is still worth reading.
+
+    Both signals are per seed because both questions are. A crawl over
+    five accounts interleaves five walks, so "the last twenty pages" and
+    "five stale pages in a row" span accounts that have nothing to do
+    with each other. Read globally they were unusable, which is why the
+    time horizon armed only for a single seed and why one run stopped
+    for diminishing returns with three sources still producing.
+    """
+
+    pages: int = 0
+    candidates: int = 0
+    scored: int = 0
+    wanted: int = 0
+    relevant: int = 0
+    stale: int = 0
+    retired: str = ""
+    window: collections.deque[bool] = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
+    )
+
+    def as_tuple(self) -> tuple[int, int, int, int, int]:
+        return (self.relevant, self.pages, self.scored, self.candidates, self.wanted)
+
+
 class CrawlScheduler:
     """Orchestrator that wires all v0.1 modules together.
 
@@ -190,6 +219,10 @@ class CrawlScheduler:
         # makes the calls; a second semaphore here was never awaited and
         # read as though the engine were the one limiting them.
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
+        # The analysis queue, moved out of the client so the target
+        # check can sit at its head. Not the fetch slot, which would
+        # nest the two limits.
+        self._analysis_sem = asyncio.Semaphore(settings.llm_concurrency)
 
         self._state: str = "CREATED"
         # LLM usage that landed before run() recreated the counters
@@ -214,11 +247,61 @@ class CrawlScheduler:
         # mean "a turn from every page fetched", which a crawl generates
         # itself and without bound.
         self._seed_of: dict[str, str] = {}
+        # How many the model named. Proposing none and losing them all
+        # in verification are different failures.
+        self._seeds_asked: int | None = None
+        # url -> why it was turned away. A proposal costs a fetch either
+        # way, so the reason is what makes the spend arguable.
+        self._rejected_seeds: list[tuple[str, str]] = []
+        # Two halves of one vote, emptied as each pair completes.
+        self._verdict_of: dict[str, bool] = {}
+        self._listing_of: dict[str, bool] = {}
         # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
         self._pages_of_listing: dict[str, int] = {}
+        # Seeds this run proposed, and what each was worth. Nothing
+        # stores them, so the report is the only place they show.
+        self._proposed_seeds: dict[str, tuple[str, str]] = {}
+        # What each seed actually got read. "nothing" said the same thing
+        # for a seed crawled and empty and one barely opened.
+        self._tally_by_seed: dict[str, _SeedTally] = collections.defaultdict(_SeedTally)
         self._events: EventEmitter | None = None
 
     # seed ingestion --------------------------------------------------
+
+    async def enhance_seeds(
+        self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
+    ) -> list[Candidate]:
+        """More seeds of the same kind, verified before they are used.
+
+        Here rather than in the CLI because the parts it takes -- the
+        fetcher, the harvester, the store -- are this object's, and
+        handing them out would make the caller assemble a crawl to add
+        a seed to one.
+
+        Imported inside the branch, so a run that did not ask for this
+        never loads it.
+        """
+        if not self._cfg.enhance_seeds or not seeds:
+            return []
+        from crawlme.pioneer.seed_enhancer import enhance
+
+        proposed, n_proposed, rejected = await enhance(
+            goal,
+            [c.url.raw for c in seeds],
+            settings=self._cfg,
+            budget=budget,
+            fetcher=self._fetcher,
+            harvester=self._harvester,
+            storage=self._storage,
+            canonicalizer=self._canonicalizer,
+        )
+        self._seeds_asked = n_proposed
+        self._rejected_seeds = rejected
+        for c in proposed:
+            # url_key, the shape _seed_of counts under.
+            key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
+            self._proposed_seeds[key] = (c.url.canonical, str(c.signals.get("why", "")))
+        return proposed
 
     async def ingest_seeds(
         self,
@@ -253,6 +336,7 @@ class CrawlScheduler:
                     score_source="seed",
                     reg_domain=url.reg_domain,
                     seed_url_key=url.url_key,
+                    seed_ext=c.seed_ext,
                 )
             )
             n_ingested += 1
@@ -260,7 +344,6 @@ class CrawlScheduler:
             await self._frontier.push_batch(items)
         if self._events and n_ingested > 0:
             self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
-        self._counters.seed_count += n_ingested
         logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
         return n_ingested
 
@@ -305,13 +388,6 @@ class CrawlScheduler:
         self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
 
         self._ctx.reset(goal=goal, tokens_used_start=self._tokens_used_start)
-        # Whether "no recent content" may ever read as "no more content".
-        # A link graph's pages arrive in no order, so a streak means
-        # nothing there either -- but the streak is already gated on a
-        # single entry point, and one walk of one site is ordered often
-        # enough to be worth reading.  A platform run interleaves
-        # accounts, so it never is.
-        self._counters.time_horizon_allowed = not self._cfg.browser_storage_state
         # Persist goal (with its enhanced statement / keywords / since)
         # and task rows so replay and introspection have a record.
         self._storage.save_goal(goal.model_dump(mode="json"))
@@ -321,7 +397,7 @@ class CrawlScheduler:
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
         ]
-        await asyncio.gather(*self._pump_tasks, return_exceptions=True)
+        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         await self._settle_inflight()
 
         task.state = "COMPLETED"
@@ -347,6 +423,21 @@ class CrawlScheduler:
         # pause() (which checkpoints through this storage) before its
         # own aclose(), so resources must still be open here.
         await self.aclose()
+
+    def _note_pump_failures(self, results: list[Any]) -> None:
+        """Let a dead pump end the run instead of quietly ending its half.
+
+        Both pumps are gathered with return_exceptions, so one that died
+        left its exception in a list nobody read. A rank pump that lost
+        its provider stopped scoring, the run reached a stop condition
+        the ordinary way, and the report said it had completed with
+        nothing ranked.
+        """
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                logger.error("pump.died error=%s", r)
+                if not self._counters.fatal_error:
+                    self._counters.fatal_error = str(r)
 
     async def _settle_inflight(self) -> None:
         """Let the fetches already in the air finish before anything closes.
@@ -398,6 +489,9 @@ class CrawlScheduler:
         # facade until v0.3.0 removed it, and the prompt kept reading a
         # list nothing filled any more.
         if result.classification == "RELEVANT":
+            seed = self._seed_of.get(self._url_key_of.get(fb.url or "", ""), "")
+            if seed:
+                self._tally_by_seed[seed].relevant += 1
             self._relevant_pages.append(
                 {
                     "url": fb.url,
@@ -418,30 +512,78 @@ class CrawlScheduler:
                 "summary": result.summary or "",
             },
         )
-        # The only place a page is ever judged, so the only place the
-        # relevance window can be fed.  DIMINISHING_RETURNS reads it to
-        # decide whether the crawl has stopped finding anything.
         relevant = result.relevance_score >= self._counters.relevance_threshold
-        self._counters.relevance_window.append(relevant)
         # The same judgement answers both questions the run asks: the
         # window says whether this is still working, the tally says
-        # whether it is enough.
+        # whether it is enough. Only the tally belongs here, because the
+        # window admits some pages and not others.
         self._counters.relevant_found += relevant
+        self._verdict_of[result.url_key] = relevant
+        self._cast_relevance_vote(result.url_key)
 
-    def _note_page_age(self, page: Page) -> None:
-        """Track how many pages in a row fell outside the goal's window.
+    def _cast_relevance_vote(self, url_key: str) -> None:
+        """Let a page vote on whether the crawl is still finding things.
+
+        A listing does not vote. It is read for its links and can never
+        be an answer, so it only fills the window with certain misses.
+        Five seeds cost seven of twenty slots and stopped one run for
+        diminishing returns, which made --enhance-seeds work against
+        itself. Empty listings are ADAPTER_EMPTY's business, not this.
+
+        The verdict and the listing flag arrive in either order, so the
+        vote is cast by whichever completes the pair.
+        """
+        if url_key not in self._verdict_of or url_key not in self._listing_of:
+            return
+        relevant = self._verdict_of.pop(url_key)
+        if self._listing_of.pop(url_key):
+            return
+        seed = self._seed_of.get(url_key, "")
+        tally = self._tally_by_seed[seed]
+        tally.window.append(relevant)
+        self._maybe_retire(seed, tally)
+
+    def _note_page_age(self, page: Page, seed: str) -> None:
+        """Track how many of one source's pages in a row fell outside the
+        goal's window.
 
         Only pages that state a publication time move the streak.  A page
         that says nothing is not evidence in either direction, so it
         neither advances nor resets it.
+
+        The seed is handed in because this runs before the page is filed
+        under one. Looked up here it was always empty, so every source
+        shared a streak, fresh pages from one kept resetting another's,
+        and retirement -- which ignores an empty seed -- could not fire
+        at all.
         """
         counters = self._counters
         if counters.since is None or page.published_at is None:
             return
-        if page.published_at < counters.since:
-            counters.stale_streak += 1
-        else:
-            counters.stale_streak = 0
+        tally = self._tally_by_seed[seed]
+        if page.published_at >= counters.since:
+            tally.stale = 0
+            return
+        tally.stale += 1
+        self._maybe_retire(seed, tally)
+
+    def _maybe_retire(self, seed: str, tally: _SeedTally) -> None:
+        """Act on stop_conds' answer. Whether to stop is not decided here."""
+        why = why_retire(tally.window, tally.stale)
+        if why is not None:
+            self._retire_seed(seed, why)
+
+    def _retire_seed(self, seed: str, why: str) -> None:
+        """Stop spending on one source without ending the run.
+
+        Off under --recall, where reading the tail is the point of the
+        mode rather than evidence the source is done.
+        """
+        if not seed or self._counters.recall or self._tally_by_seed[seed].retired:
+            return
+        self._tally_by_seed[seed].retired = why
+        self._frontier.retire(seed)
+        logger.info("seed.retired seed=%s reason=%s", seed, why)
 
     def _record_page_context(self, url_key: str, fields: dict[str, Any]) -> None:
         """Merge per-page context that the ranker reads at rank time.
@@ -482,6 +624,19 @@ class CrawlScheduler:
             "candidates_ranked": stats.candidates_ranked,
             "fetch_errors": stats.fetch_errors,
             "analyses": dict(stats.analyses_by_class),
+            # url -> (why it was proposed, relevant pages found through it)
+            "proposed_seeds": {
+                url: (why, self._tally_by_seed[key].as_tuple()) for key, (url, why) in self._proposed_seeds.items()
+            },
+            # Sources that stopped paying off, and why. A run now ends
+            # by every source retiring, so without this it just reads as
+            # a drained frontier.
+            "retired_seeds": sorted(t.retired for t in self._tally_by_seed.values() if t.retired),
+            # The target, so the report can print the tally beside it.
+            "max_relevant": self._counters.max_relevant,
+            # None when the run never asked. A number means it did.
+            "seeds_asked": self._seeds_asked,
+            "rejected_seeds": self._rejected_seeds,
         }
         if counters.started_at:
             report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
@@ -489,6 +644,8 @@ class CrawlScheduler:
             report["not_content"] = dict(stats.not_content)
         if counters.listings_seen:
             report["listings"] = [counters.listings_seen, counters.listings_empty]
+        if counters.listings_stale:
+            report["listings_stale"] = counters.listings_stale
         return report
 
     @property
@@ -549,7 +706,7 @@ class CrawlScheduler:
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
         ]
-        await asyncio.gather(*self._pump_tasks, return_exceptions=True)
+        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
 
     async def stop(self) -> None:
         self._state = "STOPPING"
@@ -589,6 +746,17 @@ class CrawlScheduler:
                 left_frontier,
                 left_buffer,
             )
+
+    def _enough_found(self) -> bool:
+        """Whether the run already has the answers it asked for.
+
+        The stop only stops dispatch, and every task already out keeps
+        landing, so one run asked for fifteen and reported twenty-four.
+        Asked at the head of the analysis queue, the overshoot is
+        bounded by what is already calling.
+        """
+        c = self._counters
+        return c.max_relevant > 0 and c.relevant_found >= c.max_relevant
 
     def _record_stop_reason(self) -> None:
         """Name why the run is ending, for a path that bypassed the check."""
@@ -633,6 +801,14 @@ class CrawlScheduler:
                 self._counters.max_pages > 0
                 and self._counters.pages_fetched + self._counters.in_flight >= self._counters.max_pages
             ):
+                await asyncio.sleep(_POP_SLEEP)
+                continue
+
+            # Back-pressure. The fetch slot is released before the
+            # analysis, so without this the pump keeps dispatching into
+            # a queue. One run parked 46 tasks and abandoned 33 of them
+            # unjudged. The width leaves each stage a short queue.
+            if self._counters.in_flight >= self._cfg.fetch_concurrency + 2 * self._cfg.llm_concurrency:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -883,7 +1059,7 @@ class CrawlScheduler:
                 return None
             page.payload_paths = await asyncio.to_thread(self._save_payloads, item.url_key, result)
             self._storage.save_page(page)
-            self._note_page_age(page)
+            self._note_page_age(page, self._seed_of.get(item.url_key, item.seed_url_key or item.url_key))
             return result, page
 
     def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
@@ -924,7 +1100,15 @@ class CrawlScheduler:
             # the links found below (2.9).
             if self._analyzer is not None:
                 assert self._goal is not None
-                await self._analyzer.analyze(page, self._goal)
+                # Both maps before the call. The sink runs while this
+                # awaits and reads them to credit the seed.
+                async with self._analysis_sem:
+                    # At the head of the queue, not before it. What is
+                    # ahead can meet the target while this one waits.
+                    if not self._enough_found():
+                        self._url_key_of[page.url.canonical] = page.url_key
+                        self._seed_of[page.url_key] = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+                        await self._analyzer.analyze(page, self._goal)
             if self._events:
                 self._events.emit(
                     EventType.FETCH_COMPLETED,
@@ -959,12 +1143,21 @@ class CrawlScheduler:
             if harvest.listing:
                 self._counters.listings_seen += 1
                 self._counters.listings_empty += int(not candidates)
+                self._counters.listings_stale += int(harvest.degraded)
+            self._listing_of[page.url_key] = harvest.listing
+            self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,
             # however many hops back.  Recorded here because this is the
             # only place that holds both ends of the link.
             seed = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
             for c in candidates:
                 c.seed_url_key = seed
+                # Descendants inherit it, or the smaller share would
+                # hold for the seed alone.
+                c.seed_ext = item.seed_ext
+            tally = self._tally_by_seed[seed]
+            tally.pages += 1
+            tally.candidates += len(candidates)
             self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
@@ -1111,6 +1304,11 @@ class CrawlScheduler:
         items: list[FrontierItem] = []
         for d in decisions:
             self._storage.save_rank_decision(d)
+            scored = _find_candidate(batch, d.candidate_id)
+            if scored is not None:
+                tally = self._tally_by_seed[scored.seed_url_key]
+                tally.scored += 1
+                tally.wanted += not d.dropped
             if d.dropped:
                 continue
             c = _find_candidate(batch, d.candidate_id)

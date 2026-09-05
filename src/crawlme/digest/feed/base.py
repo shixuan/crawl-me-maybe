@@ -129,6 +129,11 @@ class Listing:
     # the DOM holds a sliding window and asking for more of it loses as
     # much as it gains.
     next_url: str = ""
+    # Whether the account's own posts came from the platform's own answer
+    # or only from the markup. Measured on one account, the markup was
+    # between four and thirty-seven days behind, so a listing read that
+    # way is stale rather than short and nothing downstream can tell.
+    degraded: bool = False
 
     @property
     def all(self) -> list[FeedItem]:

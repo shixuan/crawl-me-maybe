@@ -45,7 +45,10 @@ logger = logging.getLogger(__name__)
 # Time for a lazily-built page to answer one scroll.  Long enough for a
 # request to come back on a slow connection, short enough that a page
 # with nothing left costs little.
-_SCROLL_SETTLE_MS = 1500
+_SCROLL_SETTLE_MS = 6000
+# How often to look while waiting.  The wait ends on the answer, so this
+# only bounds how long an early one goes unnoticed.
+_SCROLL_POLL_MS = 200
 
 _INSTALL_HINT = (
     "playwright is required for --fetcher browser. Install it with:\n"
@@ -208,7 +211,7 @@ class PlaywrightFetcher:
                     logger.info("browser.wait_timeout url=%s taking what rendered", item.url.canonical)
                     response = None
                 if self._scrolls:
-                    await self._scroll_through(page)
+                    await self._scroll_through(page, payloads)
                 html = await page.content()
                 final_url_str = page.url
             finally:
@@ -234,7 +237,7 @@ class PlaywrightFetcher:
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
         if payloads:
-            logger.debug(
+            logger.info(
                 "browser.payloads url=%s kept=%d bytes=%d",
                 item.url.canonical,
                 len(payloads),
@@ -263,24 +266,42 @@ class PlaywrightFetcher:
             fetch_attempt=1,
         )
 
-    async def _scroll_through(self, page: Any) -> None:
+    async def _scroll_through(self, page: Any, payloads: list[Payload]) -> None:
         """Ask the page for more of itself, and stop when it stops giving.
 
         A listing hands out one screen at a time, so a window measured in
         weeks is answered with the dozen most recent items unless someone
-        keeps asking. The height check is what makes it stop early on a
-        short account rather than spend every scroll on a page that has
-        already ended.
+        keeps asking.
+
+        What a scroll is waiting for is the answer it triggers, not a
+        fixed delay: on a slow reply the delay expired first and the run
+        carried on with markup that was weeks behind. So each scroll
+        waits for a payload to arrive and gives up only at the deadline.
+
+        The height check stops early on a short account, but only when
+        nothing arrived either: a grid can hand back a batch without
+        growing, and reading that as "no more" cost a whole account.
         """
         last_height = 0
         for i in range(self._scrolls):
             height = await page.evaluate("document.body.scrollHeight")
+            before = len(payloads)
             if height == last_height and i:
-                logger.debug("browser.scroll_end url=%s after=%d", page.url, i)
+                logger.info("browser.scroll_end url=%s after=%d of %d", page.url, i, self._scrolls)
                 return
             last_height = height
             await page.mouse.wheel(0, max(height, 4000))
-            await page.wait_for_timeout(_SCROLL_SETTLE_MS)
+            await self._wait_for_payload(page, payloads, before)
+
+    async def _wait_for_payload(self, page: Any, payloads: list[Payload], before: int) -> None:
+        """Wait for a scroll to be answered, up to the settle deadline."""
+        waited = 0
+        while waited < _SCROLL_SETTLE_MS:
+            await page.wait_for_timeout(_SCROLL_POLL_MS)
+            waited += _SCROLL_POLL_MS
+            if len(payloads) > before:
+                return
+        logger.info("browser.scroll_unanswered url=%s after=%dms", page.url, waited)
 
     def _collect(self, response: Any, into: list[Payload]) -> None:
         """Keep one response the page asked for, if anyone wants it.

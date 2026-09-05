@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import time
 
 import pytest
 
 from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.scheduler.stop_conds import check_stop
+from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
 from crawlme.state.context import CrawlCounters
 
@@ -50,11 +49,7 @@ def _waiting_candidate(i: int) -> Candidate:
 
 
 def _counters(**kw) -> CrawlCounters:
-    window = kw.pop("relevance_window", None)
-    c = CrawlCounters(**kw)
-    if window is not None:
-        c.relevance_window.extend(window)
-    return c
+    return CrawlCounters(**kw)
 
 
 def _codes(reasons) -> list[str]:
@@ -143,76 +138,6 @@ def test_ceiling_named(blocked):
 
 
 @pytest.mark.parametrize(
-    ("window", "fires"),
-    [
-        ([False] * 19 + [True], True),
-        ([False] * 10, False),  # too few pages to conclude anything
-        ([True] * 5 + [False] * 15, False),
-        # Twenty misses then twenty hits is a healthy crawl, not a dead
-        # one: the window has to forget the old dry spell.
-        ([False] * 20 + [True] * 20, False),
-    ],
-)
-def test_diminishing(window, fires):
-    c = _counters(relevance_window=window)
-    assert ("DIMINISHING_RETURNS" in _codes(check_stop(_task(), _frontier(), c))) is fires
-
-
-def test_recall_ignores():
-    """A recall run reads its own rejects last, so a dry tail is the
-    point of the mode rather than a reason to stop."""
-    dry = [False] * 20
-    assert "DIMINISHING_RETURNS" in _codes(check_stop(_task(), _frontier(), _counters(relevance_window=dry)))
-    c = _counters(relevance_window=dry)
-    c.recall = True
-    assert "DIMINISHING_RETURNS" not in _codes(check_stop(_task(), _frontier(), c))
-
-
-def test_window_recent():
-    """A run longer than the window must not accumulate forever."""
-    c = CrawlCounters()
-    for _ in range(100):
-        c.relevance_window.append(False)
-    assert len(c.relevance_window) == 20
-
-
-# -- time horizon --------------------------------------------------------
-
-
-def _since_counters(**kw: object) -> CrawlCounters:
-    base = {"since": datetime.datetime(2026, 8, 10, tzinfo=datetime.timezone.utc), "seed_count": 1}
-    base.update(kw)
-    return CrawlCounters(**base)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    ("kw", "fires"),
-    [
-        ({"stale_streak": 5}, True),
-        ({"stale_streak": 4}, False),
-        ({"stale_streak": 50, "max_stale_streak": 0}, False),
-        # Thirty shops interleave thirty traversals, so a streak spans
-        # accounts: one quiet shop's back catalogue must not end the run
-        # before an active shop is ever reached.
-        ({"stale_streak": 99, "seed_count": 30}, False),
-        # Unknown entry points stay dormant.  Overspending beats missing.
-        ({"stale_streak": 99, "seed_count": 0}, False),
-    ],
-)
-def test_time_horizon(kw, fires):
-    assert ("TIME_HORIZON" in _codes(check_stop(_task(), _frontier(), _since_counters(**kw)))) is fires
-
-
-def test_horizon_dormant():
-    """Every run that does not ask for a window must be unaffected."""
-    c = CrawlCounters(stale_streak=99)
-    assert "TIME_HORIZON" not in _codes(check_stop(_task(), _frontier(), c))
-
-
-# -- what the run is for -------------------------------------------------
-
-
-@pytest.mark.parametrize(
     ("max_relevant", "found", "fires"),
     [
         (50, 50, True),
@@ -297,7 +222,6 @@ def test_healthy_quiet():
             max_duration_sec=3600,
             started_at=time.monotonic(),
             in_flight=2,
-            relevance_window=[True, False],
         ),
     )
     assert reasons == []
@@ -333,3 +257,24 @@ def test_empty_waits():
     """Mid-run there is no telling a dead adapter from a slow start."""
     c = _counters(in_flight=2, listings_seen=5, listings_empty=5)
     assert "ADAPTER_EMPTY" not in _codes(check_stop(_task(), _frontier(size=3), c))
+
+
+# -- one source ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("window", "stale", "why"),
+    [
+        ([False] * 20, 0, "nothing in its last 20 pages"),
+        ([True] * 2 + [False] * 18, 0, None),  # two hits is enough to keep it
+        ([False] * 19, 0, None),  # a window that is not full yet says nothing
+        ([], 5, "5 pages in a row older than the window"),
+        ([], 4, None),
+    ],
+)
+def test_why_retire(window, stale, why):
+    assert why_retire(window, stale) == why
+
+
+def test_a_full_window_of_hits_keeps_it():
+    assert why_retire([True] * 20, 0) is None
