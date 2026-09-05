@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import dataclasses
 import datetime
 import logging
 import time
@@ -36,7 +35,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.scheduler.stop_conds import RELEVANCE_WINDOW, check_stop, why_retire
+from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -50,7 +49,7 @@ from crawlme.schemas import (
     RankDecision,
     RankHistorySummary,
 )
-from crawlme.state.context import CrawlContext, CrawlCounters, PageBook, RunStats
+from crawlme.state.context import CrawlContext, CrawlCounters, PageBook, RunStats, SeedState
 from crawlme.state.events import EventEmitter, EventType
 from crawlme.storage.contracts import CrawlDb
 
@@ -127,33 +126,6 @@ def _endorsed_href(link: str) -> str | None:
     if href.lower().startswith("www."):
         return f"https://{href}"
     return None
-
-
-@dataclasses.dataclass
-class _SeedTally:
-    """What one seed got read, and whether it is still worth reading.
-
-    Both signals are per seed because both questions are. A crawl over
-    five accounts interleaves five walks, so "the last twenty pages" and
-    "five stale pages in a row" span accounts that have nothing to do
-    with each other. Read globally they were unusable, which is why the
-    time horizon armed only for a single seed and why one run stopped
-    for diminishing returns with three sources still producing.
-    """
-
-    pages: int = 0
-    candidates: int = 0
-    scored: int = 0
-    wanted: int = 0
-    relevant: int = 0
-    stale: int = 0
-    retired: str = ""
-    window: collections.deque[bool] = dataclasses.field(
-        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
-    )
-
-    def as_tuple(self) -> tuple[int, int, int, int, int]:
-        return (self.relevant, self.pages, self.scored, self.candidates, self.wanted)
 
 
 class CrawlScheduler:
@@ -250,14 +222,12 @@ class CrawlScheduler:
         # url -> why it was turned away. A proposal costs a fetch either
         # way, so the reason is what makes the spend arguable.
         self._rejected_seeds: list[tuple[str, str]] = []
-        # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
-        self._pages_of_listing: dict[str, int] = {}
         # Seeds this run proposed, and what each was worth. Nothing
         # stores them, so the report is the only place they show.
         self._proposed_seeds: dict[str, tuple[str, str]] = {}
         # What each seed actually got read. "nothing" said the same thing
         # for a seed crawled and empty and one barely opened.
-        self._tally_by_seed: dict[str, _SeedTally] = collections.defaultdict(_SeedTally)
+        self._seeds: dict[str, SeedState] = collections.defaultdict(SeedState)
         self._events: EventEmitter | None = None
 
     # seed ingestion --------------------------------------------------
@@ -486,7 +456,7 @@ class CrawlScheduler:
             rec = self._pages.by_url(fb.url or "")
             seed = rec.seed if rec else ""
             if seed:
-                self._tally_by_seed[seed].relevant += 1
+                self._seeds[seed].funnel.relevant += 1
             self._relevant_pages.append(
                 {
                     "url": fb.url,
@@ -513,7 +483,11 @@ class CrawlScheduler:
         # whether it is enough. Only the tally belongs here, because the
         # window admits some pages and not others.
         self._counters.relevant_found += relevant
-        self._pages.of(result.url_key).relevant = relevant
+        rec = self._pages.of(result.url_key)
+        rec.relevant = relevant
+        # Answered, whatever the answer. The gap between this and
+        # fetched is a run that stopped before the analyzer got there.
+        self._seeds[rec.seed].funnel.judged += 1
         self._cast_relevance_vote(result.url_key)
 
     def _cast_relevance_vote(self, url_key: str) -> None:
@@ -534,9 +508,9 @@ class CrawlScheduler:
         rec.counted = True
         if rec.listing:
             return
-        tally = self._tally_by_seed[rec.seed]
-        tally.window.append(bool(rec.relevant))
-        self._maybe_retire(rec.seed, tally)
+        state = self._seeds[rec.seed]
+        state.window.append(bool(rec.relevant))
+        self._maybe_retire(rec.seed, state)
 
     def _note_page_age(self, page: Page, seed: str) -> None:
         """Track how many of one source's pages in a row fell outside the
@@ -555,16 +529,16 @@ class CrawlScheduler:
         counters = self._counters
         if counters.since is None or page.published_at is None:
             return
-        tally = self._tally_by_seed[seed]
+        state = self._seeds[seed]
         if page.published_at >= counters.since:
-            tally.stale = 0
+            state.stale = 0
             return
-        tally.stale += 1
-        self._maybe_retire(seed, tally)
+        state.stale += 1
+        self._maybe_retire(seed, state)
 
-    def _maybe_retire(self, seed: str, tally: _SeedTally) -> None:
+    def _maybe_retire(self, seed: str, state: SeedState) -> None:
         """Act on stop_conds' answer. Whether to stop is not decided here."""
-        why = why_retire(tally.window, tally.stale)
+        why = why_retire(state.window, state.stale)
         if why is not None:
             self._retire_seed(seed, why)
 
@@ -574,9 +548,9 @@ class CrawlScheduler:
         Off under --recall, where reading the tail is the point of the
         mode rather than evidence the source is done.
         """
-        if not seed or self._counters.recall or self._tally_by_seed[seed].retired:
+        if not seed or self._counters.recall or self._seeds[seed].retired:
             return
-        self._tally_by_seed[seed].retired = why
+        self._seeds[seed].retired = why
         self._frontier.retire(seed)
         logger.info("seed.retired seed=%s reason=%s", seed, why)
 
@@ -621,12 +595,12 @@ class CrawlScheduler:
             "analyses": dict(stats.analyses_by_class),
             # url -> (why it was proposed, relevant pages found through it)
             "proposed_seeds": {
-                url: (why, self._tally_by_seed[key].as_tuple()) for key, (url, why) in self._proposed_seeds.items()
+                url: (why, self._seeds[key].funnel.as_tuple()) for key, (url, why) in self._proposed_seeds.items()
             },
             # Sources that stopped paying off, and why. A run now ends
             # by every source retiring, so without this it just reads as
             # a drained frontier.
-            "retired_seeds": sorted(t.retired for t in self._tally_by_seed.values() if t.retired),
+            "retired_seeds": sorted(st.retired for st in self._seeds.values() if st.retired),
             # The target, so the report can print the tally beside it.
             "max_relevant": self._counters.max_relevant,
             # None when the run never asked. A number means it did.
@@ -926,7 +900,7 @@ class CrawlScheduler:
         at 1.0 a six-page budget went entirely on listings without
         reading one post.
         """
-        pages = self._pages_of_listing.get(seed, 0)
+        pages = self._seeds[seed].listing_pages
         if pages >= _MAX_LISTING_PAGES:
             logger.debug("listing.page_cap seed=%s pages=%d", seed, pages)
             return
@@ -936,7 +910,7 @@ class CrawlScheduler:
         if decision.value != "allow":
             logger.debug("listing.next_dropped url=%s reason=%s", url.canonical, why)
             return
-        self._pages_of_listing[seed] = pages + 1
+        self._seeds[seed].listing_pages = pages + 1
         await self._frontier.push_batch(
             [
                 FrontierItem(
@@ -1153,9 +1127,9 @@ class CrawlScheduler:
                 # Descendants inherit it, or the smaller share would
                 # hold for the seed alone.
                 c.seed_ext = item.seed_ext
-            tally = self._tally_by_seed[seed]
-            tally.pages += 1
-            tally.candidates += len(candidates)
+            funnel = self._seeds[seed].funnel
+            funnel.fetched += 1
+            funnel.discovered += len(candidates)
             self._ctx.stats.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
@@ -1303,9 +1277,9 @@ class CrawlScheduler:
             self._storage.save_rank_decision(d)
             scored = _find_candidate(batch, d.candidate_id)
             if scored is not None:
-                tally = self._tally_by_seed[scored.seed_url_key]
-                tally.scored += 1
-                tally.wanted += not d.dropped
+                funnel = self._seeds[scored.seed_url_key].funnel
+                funnel.scored += 1
+                funnel.wanted += not d.dropped
             if d.dropped:
                 continue
             c = _find_candidate(batch, d.candidate_id)

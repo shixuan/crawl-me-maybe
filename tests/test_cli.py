@@ -794,8 +794,8 @@ def test_added_seeds_are_reported_with_what_they_found():
             "reason": "BUDGET_PAGES",
             "seeds_asked": 2,
             "proposed_seeds": {
-                "https://a.com/": ("found nothing", (0, 1, 9, 45, 0)),
-                "https://b.com/": ("earned its place", (4, 12, 40, 181, 22)),
+                "https://a.com/": ("found nothing", (0, 1, 1, 0, 9, 45)),
+                "https://b.com/": ("earned its place", (4, 12, 12, 22, 40, 181)),
             },
         }
     )
@@ -888,10 +888,10 @@ def test_a_seed_says_how_much_of_it_was_read():
             "state": "COMPLETED",
             "reason": "MAX_RELEVANT",
             "seeds_asked": 1,
-            "proposed_seeds": {"https://a.com/": ("why", (0, 1, 9, 45, 0))},
+            "proposed_seeds": {"https://a.com/": ("why", (0, 1, 7, 6, 11, 63))},
         }
     )
-    assert "read 1 page, scored 9 of 45 candidates, wanted 0" in out
+    assert "63 found, 11 scored, 6 wanted, 7 fetched, 1 judged" in out
 
 
 def test_retired_sources_are_reported():
@@ -937,7 +937,7 @@ def test_survivors_and_rejects_are_both_listed():
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
             "seeds_asked": 2,
-            "proposed_seeds": {"https://good.test/": ("worth it", (3, 8, 40, 45, 12))},
+            "proposed_seeds": {"https://good.test/": ("worth it", (3, 8, 8, 12, 40, 45))},
             "rejected_seeds": [("https://bad.test/", "does not exist")],
         }
     )

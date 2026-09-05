@@ -51,3 +51,22 @@ def test_an_unknown_page_answers_with_the_default():
     assert book.by_url("https://nowhere.test/") is None
     assert book.seed_of("nope", "fallback") == "fallback"
     assert book.key_of("https://nowhere.test/") == ""
+
+
+def test_a_funnel_only_narrows():
+    """Every gap between two stages means something, which is what lets
+    a new question be answered without a new field."""
+    from crawlme.state.context import Funnel
+
+    f = Funnel(discovered=63, scored=11, wanted=6, fetched=7, judged=1, relevant=0)
+    found, judged, fetched, wanted, scored, discovered = f.as_tuple()
+    assert (found, judged, fetched, wanted, scored, discovered) == (0, 1, 7, 6, 11, 63)
+
+
+def test_a_seed_starts_with_an_empty_funnel():
+    from crawlme.state.context import SeedState
+
+    st = SeedState()
+    assert st.funnel.as_tuple() == (0, 0, 0, 0, 0, 0)
+    assert st.listing_pages == 0
+    assert not st.retired

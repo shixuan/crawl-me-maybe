@@ -468,15 +468,19 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
             out.append("the model was asked for more sources and named none usable (see the log).")
         return out
     out = [_RULE, "seeds this run added for itself, best first:"]
-    for url, (why, tally) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
-        found, pages, scored, cands, wanted = tally
+    for url, (why, funnel) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
+        found, judged, fetched, wanted, scored, discovered = funnel
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
         # Without this, one crawled and empty and one the run never got
         # to both said "nothing", and the same question came back three
         # times over.
+        # A funnel, so every gap says something: scored short of
+        # discovered is a rotation that never reached it, judged short of
+        # fetched is a run that stopped before the analyzer answered.
+        # Read as one number, "7 pages, wanted 6, nothing" once looked
+        # like a content judgement when six were never looked at.
         out.append(
-            f"                read {pages} page{'' if pages == 1 else 's'}, "
-            f"scored {scored} of {cands} candidates, wanted {wanted}"
+            f"                {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
         )
         if why:
             out.append(f"                {why}")

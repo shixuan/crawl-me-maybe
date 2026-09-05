@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from crawlme.digest.feed.base import PageProblem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.schemas import CrawlTask
-from crawlme.state.context import CrawlCounters
+from crawlme.state.context import RELEVANCE_WINDOW, CrawlCounters
 
 # has stopped finding anything worth the budget.
 
@@ -38,9 +38,8 @@ class StopReason:
 
 # -- one source ----------------------------------------------------------
 
-# How many of a source's own analyzed pages the window keeps, and how
-# few relevant ones in a full one mean it has stopped paying off.
-RELEVANCE_WINDOW = 20
+# How few relevant pages in a full window mean a source has stopped
+# paying off. How big the window is belongs to the state that holds it.
 MIN_RELEVANT_IN_WINDOW = 2
 # Consecutive pages older than the goal's window before a source reads as
 # walked past its end.

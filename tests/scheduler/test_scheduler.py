@@ -329,7 +329,7 @@ def test_stale_streak(since, published, expected):
     sched._counters.since = since
     for at in published:
         sched._note_page_age(_page_published(at), "seedA")
-    assert sched._tally_by_seed["seedA"].stale == expected
+    assert sched._seeds["seedA"].stale == expected
 
 
 def test_context_needs_key():
@@ -454,7 +454,7 @@ def test_window_fed():
         sched._pages.of(key).listing = False
         sched._cast_relevance_vote(key)
 
-    assert list(sched._tally_by_seed[""].window) == [True, False]
+    assert list(sched._seeds[""].window) == [True, False]
 
 
 def test_window_threshold():
@@ -466,7 +466,7 @@ def test_window_threshold():
     sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
 
-    assert list(sched._tally_by_seed[""].window) == [False]
+    assert list(sched._seeds[""].window) == [False]
 
 
 @pytest.mark.asyncio
@@ -628,7 +628,7 @@ def test_relevant_count():
         sched._pages.of(key).listing = False
         sched._cast_relevance_vote(key)
     assert sched._counters.relevant_found == 2
-    assert list(sched._tally_by_seed[""].window) == [True, False, True]
+    assert list(sched._seeds[""].window) == [True, False, True]
 
 
 @pytest.mark.asyncio
@@ -928,7 +928,7 @@ async def test_page_drop_uncap():
     item = FrontierItem(url=_url("https://www.reddit.com/r/x/"), url_key="k", depth=0)
     await sched._enqueue_next_page("https://www.reddit.com/r/x/?after=t3_a", item, MagicMock(), "seed")
     frontier.push_batch.assert_not_awaited()
-    assert sched._pages_of_listing.get("seed", 0) == 0
+    assert sched._seeds["seed"].listing_pages == 0
 
 
 def _robots_sched(raw: str, *, cached=None):
@@ -1120,7 +1120,7 @@ def test_a_listing_does_not_vote():
     _judge(sched, "k1", 0.0)
     sched._pages.of("k1").listing = True
     sched._cast_relevance_vote("k1")
-    assert list(sched._tally_by_seed[""].window) == []
+    assert list(sched._seeds[""].window) == []
 
 
 def test_a_page_votes_once_judged():
@@ -1128,7 +1128,7 @@ def test_a_page_votes_once_judged():
     _judge(sched, "k1", 0.9)
     sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
-    assert list(sched._tally_by_seed[""].window) == [True]
+    assert list(sched._seeds[""].window) == [True]
 
 
 def test_a_late_verdict_still_votes():
@@ -1137,9 +1137,9 @@ def test_a_late_verdict_still_votes():
     sched = _make_sched()
     sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
-    assert list(sched._tally_by_seed[""].window) == []
+    assert list(sched._seeds[""].window) == []
     _judge(sched, "k1", 0.9)
-    assert list(sched._tally_by_seed[""].window) == [True]
+    assert list(sched._seeds[""].window) == [True]
 
 
 def test_a_vote_is_cast_once():
@@ -1148,7 +1148,7 @@ def test_a_vote_is_cast_once():
     sched._pages.of("k1").listing = False
     sched._cast_relevance_vote("k1")
     sched._cast_relevance_vote("k1")
-    assert list(sched._tally_by_seed[""].window) == [True]
+    assert list(sched._seeds[""].window) == [True]
 
 
 def test_the_tally_counts_listings():
@@ -1268,7 +1268,7 @@ def test_a_cold_source_retires():
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "seedA", f"k{i}", False)
     sched._frontier.retire.assert_called_once_with("seedA")
-    assert sched._tally_by_seed["seedA"].retired
+    assert sched._seeds["seedA"].retired
 
 
 def test_one_cold_source_leaves_the_others():
@@ -1278,8 +1278,8 @@ def test_one_cold_source_leaves_the_others():
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "cold", f"c{i}", False)
         _vote(sched, "hot", f"h{i}", i % 3 == 0)
-    assert sched._tally_by_seed["cold"].retired
-    assert not sched._tally_by_seed["hot"].retired
+    assert sched._seeds["cold"].retired
+    assert not sched._seeds["hot"].retired
 
 
 def test_a_source_past_the_window_retires():
@@ -1290,7 +1290,7 @@ def test_a_source_past_the_window_retires():
     old = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
     for i in range(MAX_STALE_STREAK):
         sched._note_page_age(_page_published(old), "seedA")
-    assert sched._tally_by_seed["seedA"].retired
+    assert sched._seeds["seedA"].retired
     sched._frontier.retire.assert_called_once_with("seedA")
 
 
@@ -1300,7 +1300,7 @@ def test_one_hit_resets_the_stale_streak():
     for at in (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),) * 4:
         sched._note_page_age(_page_published(at), "seedA")
     sched._note_page_age(_page_published(datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)), "seedA")
-    assert sched._tally_by_seed["seedA"].stale == 0
+    assert sched._seeds["seedA"].stale == 0
 
 
 def test_recall_retires_nothing():
@@ -1310,7 +1310,7 @@ def test_recall_retires_nothing():
     sched._counters.recall = True
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "seedA", f"k{i}", False)
-    assert not sched._tally_by_seed["seedA"].retired
+    assert not sched._seeds["seedA"].retired
     sched._frontier.retire.assert_not_called()
 
 
@@ -1332,7 +1332,7 @@ def test_an_unfiled_page_cannot_retire_anything():
     old = _page_published(datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc))
     for _ in range(MAX_STALE_STREAK * 2):
         sched._note_page_age(old, "")
-    assert not sched._tally_by_seed[""].retired
+    assert not sched._seeds[""].retired
     sched._frontier.retire.assert_not_called()
 
 

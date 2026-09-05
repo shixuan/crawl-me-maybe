@@ -18,11 +18,56 @@ command, feedback aggregates) become new typed fields here.
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import datetime
 import time
 
 from crawlme.schemas import CrawlGoal
+
+# How many of a source's own analyzed pages its window keeps.
+RELEVANCE_WINDOW = 20
+
+
+@dataclasses.dataclass
+class Funnel:
+    """How far this seed's work got, stage by stage.
+
+    Monotonically decreasing by construction, so every gap between two
+    stages means something and no new question needs a new field:
+    discovered but not scored is a rotation that never reached it,
+    wanted but not fetched is a budget that ran out first, and fetched
+    but not judged is a run that stopped before the analyzer answered.
+    That last gap is why "read 7 pages, wanted 6" once reported nothing
+    and read as a content judgement when six of the seven were never
+    looked at.
+    """
+
+    discovered: int = 0
+    scored: int = 0
+    wanted: int = 0
+    fetched: int = 0
+    judged: int = 0
+    relevant: int = 0
+
+    def as_tuple(self) -> tuple[int, int, int, int, int, int]:
+        return (self.relevant, self.judged, self.fetched, self.wanted, self.scored, self.discovered)
+
+
+@dataclasses.dataclass
+class SeedState:
+    """One seed's funnel, and whether it is still worth reading."""
+
+    funnel: Funnel = dataclasses.field(default_factory=Funnel)
+    # Its own recent content pages, one bool each. Per seed because a
+    # feed is productive per account and never as a whole.
+    window: collections.deque[bool] = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
+    )
+    stale: int = 0
+    retired: str = ""
+    # Pages of this listing already asked for, against _MAX_LISTING_PAGES.
+    listing_pages: int = 0
 
 
 @dataclasses.dataclass
