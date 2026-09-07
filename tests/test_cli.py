@@ -10,7 +10,7 @@ from crawlme.cli import main
 from crawlme.cli.run import _build_source
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
-from crawlme.state.context import CrawlCounters
+from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,7 @@ def test_prints_prompt(caplog):
             mock_sched = MagicMock()
             mock_sched.ingest_seeds = AsyncMock()
             mock_sched.enhance_seeds = AsyncMock(return_value=[])
-            mock_sched._counters = CrawlCounters()
+            mock_sched.context = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
 
@@ -80,7 +80,7 @@ def _capturing_factory(captured: dict):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched.enhance_seeds = AsyncMock(return_value=[])
-        sched._counters = CrawlCounters()
+        sched.context = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
         sched.run = AsyncMock()
         return sched
 
@@ -271,7 +271,7 @@ def test_binds_budget(monkeypatch):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched.enhance_seeds = AsyncMock(return_value=[])
-        sched._counters = CrawlCounters()
+        sched.context = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
         sched.run = AsyncMock()
         sched.note_tokens_used = note
         return sched
@@ -294,7 +294,9 @@ def test_prints_summary(capsys):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched.enhance_seeds = AsyncMock(return_value=[])
-        sched._counters = CrawlCounters(pages_fetched=5, tokens_used=1234)
+        sched.context = CrawlContext(
+            limits=Limits(), progress=Progress(pages_fetched=5, tokens_used=1234), ledger=Ledger()
+        )
         sched.run = AsyncMock()
         sched.summary = lambda: {
             "pages_fetched": 5,
@@ -794,8 +796,8 @@ def test_added_seeds_are_reported_with_what_they_found():
             "reason": "BUDGET_PAGES",
             "seeds_asked": 2,
             "proposed_seeds": {
-                "https://a.com/": ("found nothing", (0, 1, 9, 45, 0)),
-                "https://b.com/": ("earned its place", (4, 12, 40, 181, 22)),
+                "https://a.com/": ("found nothing", (0, 1, 1, 0, 9, 45)),
+                "https://b.com/": ("earned its place", (4, 12, 12, 22, 40, 181)),
             },
         }
     )
@@ -888,10 +890,10 @@ def test_a_seed_says_how_much_of_it_was_read():
             "state": "COMPLETED",
             "reason": "MAX_RELEVANT",
             "seeds_asked": 1,
-            "proposed_seeds": {"https://a.com/": ("why", (0, 1, 9, 45, 0))},
+            "proposed_seeds": {"https://a.com/": ("why", (0, 1, 7, 6, 11, 63))},
         }
     )
-    assert "read 1 page, scored 9 of 45 candidates, wanted 0" in out
+    assert "63 found, 11 scored, 6 wanted, 7 fetched, 1 judged" in out
 
 
 def test_retired_sources_are_reported():
@@ -907,7 +909,7 @@ def test_retired_sources_are_reported():
         }
     )
     assert "3 sources" in out
-    assert "2 nothing in its last 20 pages" in out
+    assert "nothing in its last 20 pages (2 sources)" in out
 
 
 def test_rejected_proposals_are_named_with_their_reason():
@@ -937,10 +939,68 @@ def test_survivors_and_rejects_are_both_listed():
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
             "seeds_asked": 2,
-            "proposed_seeds": {"https://good.test/": ("worth it", (3, 8, 40, 45, 12))},
+            "proposed_seeds": {"https://good.test/": ("worth it", (3, 8, 8, 12, 40, 45))},
             "rejected_seeds": [("https://bad.test/", "does not exist")],
         }
     )
     assert "3 relevant" in out
     assert "1 more it named that did not survive" in out
     assert "https://bad.test/  --  does not exist" in out
+
+
+def test_tokens_split_by_stage():
+    """A single total cannot be argued with. One run spent 500k and the
+    report could not say which stage to turn down."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "FRONTIER_DRAINED",
+            "llm_calls": 3,
+            "tokens_by_stage": {
+                "seeds": {"used": 250, "calls": 1, "in": 100, "out": 150, "cached": 0, "thinking": 140},
+                "analysis": {"used": 750, "calls": 2, "in": 700, "out": 50, "cached": 400, "thinking": 0},
+            },
+        }
+    )
+    assert "analysis  750 (75%), 2 calls, 700 in / 50 out, 400 cached, 0 thinking" in out
+    # Stage order, not size order: analysis leads whichever spent more.
+    assert out.index("analysis") < out.index("seeds")
+
+
+def test_analyses_keep_a_fixed_order():
+    """Sorted by count the line reshuffles between runs, so comparing two
+    reports means finding each class again first."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "FRONTIER_DRAINED",
+            "pages_fetched": 60,
+            "analyses": {"NAVIGATION": 9, "IRRELEVANT": 44, "HUB": 5, "RELEVANT": 2},
+        }
+    )
+    assert "60 (2 RELEVANT, 44 IRRELEVANT, 5 HUB, 9 NAVIGATION)" in out
+
+
+def test_own_seeds_get_their_own_funnel():
+    """Only proposed seeds carried a funnel, so a seed the user typed
+    that found nothing could not be told from one never fetched."""
+    from crawlme.cli.run import _format_summary
+
+    out = _format_summary(
+        {
+            "state": "COMPLETED",
+            "reason": "FRONTIER_DRAINED",
+            "seeds": {
+                "k1": {"url": "https://a.example/x", "funnel": (0, 0, 0, 6, 6, 6), "retired": "", "proposed": False},
+                "k2": {"url": "https://b.example/y", "funnel": (3, 4, 4, 4, 9, 20), "retired": "", "proposed": True},
+            },
+        }
+    )
+    assert "nothing  https://a.example/x" in out
+    assert "6 found, 6 scored, 6 wanted, 0 fetched, 0 judged" in out
+    # The proposed one belongs to the section below, not this one.
+    assert "https://b.example/y" not in out

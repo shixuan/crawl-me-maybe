@@ -38,7 +38,7 @@ def effort_for(model: str, wanted: str) -> str:
         # catalogue entry is missing looks exactly like one that cannot
         # think, so a new model can silently keep thinking and billing.
         logger.info(
-            "llm.reasoning_skipped model=%s wanted=%s; this model is not known to take the parameter",
+            "%s is not known to take a thinking level, so %r had no effect",
             model,
             wanted,
         )
@@ -51,7 +51,7 @@ def effort_for(model: str, wanted: str) -> str:
     # It thinks and will not be talked out of it. Sending a floor the
     # model rejects would fail the call, and failing is worse than
     # thinking.
-    logger.info("llm.reasoning_stays_on model=%s; it has no way to turn thinking off", model)
+    logger.info("%s has no way to turn thinking off, leaving it on", model)
     return ""
 
 

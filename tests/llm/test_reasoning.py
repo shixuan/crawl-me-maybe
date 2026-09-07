@@ -91,4 +91,4 @@ def test_a_skipped_setting_is_announced(catalogue, caplog):
     supported["openai/gpt-7"] = ["temperature"]
     with caplog.at_level("INFO"):
         assert effort_for("openai/gpt-7", "off") == ""
-    assert "llm.reasoning_skipped" in caplog.text
+    assert "not known to take a thinking level" in caplog.text

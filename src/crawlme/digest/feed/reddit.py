@@ -137,7 +137,7 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
         seen.setdefault(permalink, FeedItem(permalink=permalink, platform=PLATFORM))
     items = list(seen.values())
     titled = sum(1 for i in items if i.text)
-    logger.info("reddit.parsed url=%s permalinks=%d titled=%d", url, len(items), titled)
+    logger.debug("reddit.parsed url=%s permalinks=%d titled=%d", url, len(items), titled)
     return Listing(own=items)
 
 

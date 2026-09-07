@@ -12,5 +12,6 @@ Usage:
 """
 
 from crawlme.logging.config import setup_logging, to_file
+from crawlme.logging.say import where
 
-__all__ = ["setup_logging", "to_file"]
+__all__ = ["setup_logging", "to_file", "where"]

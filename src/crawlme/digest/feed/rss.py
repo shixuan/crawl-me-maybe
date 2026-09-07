@@ -123,7 +123,7 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
         if not link:
             continue
         items.append(_from_entry(entry, link))
-    logger.info("rss.parsed url=%s entries=%d with_text=%d", url, len(items), sum(1 for i in items if i.text))
+    logger.debug("rss.parsed url=%s entries=%d with_text=%d", url, len(items), sum(1 for i in items if i.text))
     # Every entry is the feed's own: a feed does not carry other
     # people's posts the way a platform's grid carries tagged ones.
     return Listing(own=items)

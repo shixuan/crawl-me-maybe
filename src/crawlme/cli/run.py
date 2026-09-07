@@ -20,7 +20,8 @@ from typing import Any
 
 from crawlme.config import Settings
 from crawlme.digest.feed import ADAPTERS
-from crawlme.llm import TokenBudget, close_litellm_clients
+from crawlme.digest.feed.base import PageProblem
+from crawlme.llm import Stage, TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
@@ -29,7 +30,7 @@ from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask, spec_fields
+from crawlme.schemas import CLASSIFICATIONS, CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # leave the platform now, and the way out is already three levels.
     if args.session and args.domain_budget is None:
         args.domain_budget = 0
-        logger.info("run.platform domain_budget=%d", args.domain_budget)
+        logger.debug("run.platform domain_budget=%d", args.domain_budget)
     if args.depth_limit is not None:
         goal.depth_limit = args.depth_limit
     if args.domain_budget is not None:
@@ -148,7 +149,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     budget = TokenBudget(limit=goal.max_tokens)
     llm_ranker = LLMRanker.from_settings(cfg, budget=budget)
     if llm_ranker is not None:
-        logger.info("llm.ranker enabled")
+        logger.info("ranking with the LLM")
     # The analysis subsystem (analyzer + signals + priors) is built by
     # the factory from settings: the CLI just shares the budget.
     scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, budget=budget)
@@ -159,6 +160,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
     # One LLM call per task: enrich statement, keywords, and the time
     # window.  Inert without credentials, never blocks the crawl.
+    logger.info("reading the goal with the model")
     enhanced = await GoalEnhancer.from_settings(cfg, budget=budget).enhance(goal)
     if enhanced is not None:
         goal.goal_statement = enhanced.statement
@@ -169,7 +171,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         if args.since is None:
             goal.since = enhanced.since
         goal.extraction_spec = enhanced.extraction_spec
-        logger.info(
+        logger.debug(
             "goal.enhanced statement_len=%d keywords=%d fields=%s",
             len(enhanced.statement),
             len(enhanced.keywords),
@@ -180,15 +182,14 @@ async def cmd_run(args: argparse.Namespace) -> None:
         # that fetched a week, and nothing said otherwise.
         if args.since is not None and enhanced.since and enhanced.since != goal.since:
             logger.info(
-                "goal.window flag=%s inferred=%s using=flag",
-                goal.since.isoformat() if goal.since else "none",
-                enhanced.since.isoformat(),
+                "reading back to %s, as you asked; the prompt suggested %s",
+                goal.since.date().isoformat() if goal.since else "no limit",
+                enhanced.since.date().isoformat(),
             )
         else:
             logger.info(
-                "goal.window using=%s since=%s",
-                "flag" if args.since is not None else ("prompt" if goal.since else "none"),
-                goal.since.isoformat() if goal.since else "unlimited",
+                "reading back to %s",
+                goal.since.date().isoformat() if goal.since else "no limit",
             )
 
     candidates = await source.discover(goal)
@@ -204,12 +205,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(
-        "task=%s prompt=%r pages=%d tokens=%d duration=%ds",
-        task.task_id,
+        "looking for: %s",
         args.prompt,
-        goal.max_pages,
-        goal.max_tokens,
-        goal.max_duration_sec,
     )
 
     try:
@@ -222,11 +219,11 @@ async def cmd_run(args: argparse.Namespace) -> None:
         await scheduler.aclose()
     finally:
         logger.info(
-            "state=%s reason=%s pages=%d tokens=%d",
-            task.state,
-            task.stopping_reason or "none",
-            scheduler._counters.pages_fetched,
-            scheduler._counters.tokens_used,
+            "%s after %d pages and %d tokens: %s",
+            task.state.lower(),
+            scheduler.context.progress.pages_fetched,
+            scheduler.context.progress.tokens_used,
+            task.stopping_reason or "no reason recorded",
         )
 
     # Tear down litellm's cached clients while the loop is still alive,
@@ -413,12 +410,65 @@ def _print_summary(
     summary["tokens_out"] = budget.output_tokens
     summary["tokens_cached"] = budget.cached_input_tokens
     summary["tokens_thinking"] = budget.reasoning_tokens
+    summary["tokens_by_stage"] = {
+        name: {
+            "used": u.used,
+            "calls": u.calls,
+            "in": u.input_tokens,
+            "out": u.output_tokens,
+            "cached": u.cached_input_tokens,
+            "thinking": u.reasoning_tokens,
+        }
+        for name, u in budget.by_stage.items()
+    }
     print(_format_summary(summary))
 
 
 # Between the report's parts. Indentation alone left them reading as
 # one block.
 _RULE = "-" * 62
+# Where a report line's own text starts, past its label.
+_INDENT = " " * 14
+
+
+def _in_order(counts: dict[str, int], vocabulary: tuple[str, ...]) -> list[str]:
+    """The keys present, in the vocabulary's order.
+
+    Not by count. A line sorted by size reshuffles between runs, so
+    reading two reports side by side means finding each class again
+    before comparing it. Anything the vocabulary does not name follows,
+    alphabetically, rather than being dropped.
+    """
+    named = [k for k in vocabulary if k in counts]
+    return named + sorted(k for k in counts if k not in vocabulary)
+
+
+def _stage_lines(s: dict[str, Any]) -> list[str]:
+    """The bill split by who spent it.
+
+    A single total cannot be argued with. Knowing that analysis took
+    three quarters of it and seed proposal a twentieth says which one
+    to turn down.
+    """
+    stages: dict[str, dict[str, int]] = s.get("tokens_by_stage") or {}
+    if not stages:
+        return []
+    total = sum(u["used"] for u in stages.values())
+    order = _in_order(stages, Stage.ORDER)  # type: ignore[arg-type]
+    name_w = max(len(name) for name in order)
+    used_w = max(len(str(u["used"])) for u in stages.values())
+    lines = []
+    for i, name in enumerate(order):
+        u = stages[name]
+        share = f"{u['used'] / total:.0%}" if total else "0%"
+        calls = u["calls"]
+        lines.append(
+            f"{'  by stage:' if i == 0 else '':<14}"
+            f"{name:<{name_w}}  {u['used']:>{used_w}} ({share:>3}), "
+            f"{calls} call{'' if calls == 1 else 's'}, "
+            f"{u['in']} in / {u['out']} out, {u['cached']} cached, {u['thinking']} thinking"
+        )
+    return lines
 
 
 def _refusal_advice(s: dict[str, Any]) -> list[str]:
@@ -439,6 +489,28 @@ def _refusal_advice(s: dict[str, Any]) -> list[str]:
         "the platform asked for a login. Make a fresh session with:",
         f"  crawl session {path}{feed} --force",
     ]
+
+
+def _own_seed_lines(s: dict[str, Any]) -> list[str]:
+    """What each seed the user gave was actually worth.
+
+    In the order they were given, not best first. A reader comes to this
+    looking for one address they typed, and a list that reorders itself
+    every run has to be searched instead of read.
+    """
+    seeds = [v for v in (s.get("seeds") or {}).values() if not v.get("proposed")]
+    if not seeds:
+        return []
+    out = [_RULE, "the sources you gave, in the order you gave them:"]
+    for seed in seeds:
+        found, judged, fetched, wanted, scored, discovered = seed["funnel"]
+        out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {seed['url']}")
+        out.append(
+            f"{_INDENT}  {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
+        )
+        if seed.get("retired"):
+            out.append(f"{_INDENT}  stopped reading it: {seed['retired']}")
+    return out
 
 
 def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
@@ -468,15 +540,19 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
             out.append("the model was asked for more sources and named none usable (see the log).")
         return out
     out = [_RULE, "seeds this run added for itself, best first:"]
-    for url, (why, tally) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
-        found, pages, scored, cands, wanted = tally
+    for url, (why, funnel) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
+        found, judged, fetched, wanted, scored, discovered = funnel
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
         # Without this, one crawled and empty and one the run never got
         # to both said "nothing", and the same question came back three
         # times over.
+        # A funnel, so every gap says something: scored short of
+        # discovered is a rotation that never reached it, judged short of
+        # fetched is a run that stopped before the analyzer answered.
+        # Read as one number, "7 pages, wanted 6, nothing" once looked
+        # like a content judgement when six were never looked at.
         out.append(
-            f"                read {pages} page{'' if pages == 1 else 's'}, "
-            f"scored {scored} of {cands} candidates, wanted {wanted}"
+            f"                {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
         )
         if why:
             out.append(f"                {why}")
@@ -520,6 +596,7 @@ def _format_summary(s: dict[str, Any]) -> str:
         tout = s.get("tokens_out", 0)
         share = f" ({think / tout:.0%} of output)" if tout else ""
         lines.append(f"  thinking:   {think}{share}")
+    lines.extend(_stage_lines(s))
 
     lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
 
@@ -528,12 +605,14 @@ def _format_summary(s: dict[str, Any]) -> str:
         counts: dict[str, int] = {}
         for why in retired:
             counts[why] = counts.get(why, 0) + 1
-        parts = ", ".join(f"{n} {why}" for why, n in sorted(counts.items(), key=lambda kv: -kv[1]))
-        lines.append(f"  retired:    {len(retired)} sources ({parts})")
+        lines.append(f"  retired:    {len(retired)} sources stopped paying off")
+        lines.extend(
+            f"{_INDENT}{why} ({counts[why]} source{'' if counts[why] == 1 else 's'})" for why in sorted(counts)
+        )
 
     analyses = s.get("analyses") or {}
     if analyses:
-        parts = ", ".join(f"{n} {c}" for c, n in sorted(analyses.items(), key=lambda kv: -kv[1]))
+        parts = ", ".join(f"{analyses[c]} {c}" for c in _in_order(analyses, CLASSIFICATIONS))
         lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")
         # Fetching outruns analysis, so a run that stops on a target
         # leaves pages it paid for and never judged. One fetched 78 and
@@ -553,7 +632,8 @@ def _format_summary(s: dict[str, Any]) -> str:
     # differently once you know nine accounts were gone or refused.
     refused = s.get("not_content") or {}
     if refused:
-        parts = ", ".join(f"{n} {kind}" for kind, n in sorted(refused.items(), key=lambda kv: -kv[1]))
+        kinds = tuple(p.value for p in PageProblem)
+        parts = ", ".join(f"{refused[k]} {k}" for k in _in_order(refused, kinds))
         lines.append(f"  no content: {sum(refused.values())} pages ({parts})")
 
     # An adapter that stops recognising a platform's markup shows up as
@@ -574,6 +654,7 @@ def _format_summary(s: dict[str, Any]) -> str:
         lines.append(f"  duration:   {s['duration_sec']}s")
     # After the numbers, which are what a reader came for.
     lines.extend(_refusal_advice(s))
+    lines.extend(_own_seed_lines(s))
     lines.extend(_proposed_seed_lines(s))
     return "\n".join(lines)
 

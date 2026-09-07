@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import dataclasses
 import datetime
 import logging
 import time
@@ -30,13 +29,13 @@ from crawlme.digest.feed.base import FeedDependencyError, PageProblem
 from crawlme.digest.fetcher import Fetcher
 from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
 from crawlme.llm import TokenBudget
-from crawlme.logging import setup_logging
+from crawlme.logging import setup_logging, where
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.scheduler.stop_conds import RELEVANCE_WINDOW, check_stop, why_retire
+from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -50,13 +49,15 @@ from crawlme.schemas import (
     RankDecision,
     RankHistorySummary,
 )
-from crawlme.state.context import CrawlContext, CrawlCounters, RunStats
+from crawlme.state.context import CrawlContext, Ledger, Limits, PageBook, Progress, SeedState
 from crawlme.state.events import EventEmitter, EventType
 from crawlme.storage.contracts import CrawlDb
 
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_INTERVAL = 10
+
+
 # How many candidates the rank pump takes out of the buffer at once,
 # and therefore how long anything waits to become fetchable: nothing in
 # a drained batch reaches the frontier until all of it is scored.
@@ -129,33 +130,6 @@ def _endorsed_href(link: str) -> str | None:
     return None
 
 
-@dataclasses.dataclass
-class _SeedTally:
-    """What one seed got read, and whether it is still worth reading.
-
-    Both signals are per seed because both questions are. A crawl over
-    five accounts interleaves five walks, so "the last twenty pages" and
-    "five stale pages in a row" span accounts that have nothing to do
-    with each other. Read globally they were unusable, which is why the
-    time horizon armed only for a single seed and why one run stopped
-    for diminishing returns with three sources still producing.
-    """
-
-    pages: int = 0
-    candidates: int = 0
-    scored: int = 0
-    wanted: int = 0
-    relevant: int = 0
-    stale: int = 0
-    retired: str = ""
-    window: collections.deque[bool] = dataclasses.field(
-        default_factory=lambda: collections.deque(maxlen=RELEVANCE_WINDOW)
-    )
-
-    def as_tuple(self) -> tuple[int, int, int, int, int]:
-        return (self.relevant, self.pages, self.scored, self.candidates, self.wanted)
-
-
 class CrawlScheduler:
     """Orchestrator that wires all v0.1 modules together.
 
@@ -209,7 +183,7 @@ class CrawlScheduler:
         # The run context: one mutable object holding the stop-condition
         # counters and the report statistics.  The factory injects it;
         # a bare scheduler creates its own so tests stay cheap.
-        self._ctx = context or CrawlContext(counters=CrawlCounters(), stats=RunStats())
+        self._ctx = context or CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
         if analyzer is not None:
             # Every successful analysis persists and counts here,
             # including ones that only succeeded on a background retry.
@@ -238,32 +212,24 @@ class CrawlScheduler:
         # Maps url_key -> {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
-        # canonical URL -> url_key, for endorsed links to inherit their
-        # source page's depth.
-        self._url_key_of: dict[str, str] = {}
-        # url_key -> the seed it descends from, so a candidate found on a
-        # page inherits that page's seed rather than pointing at the page
-        # itself.  Grouping on the immediate parent would make fairness
+        # What is known about each page fetched: the seed it descends
+        # from, whether it was a listing, and the verdict. Grouping on
+        # the immediate parent rather than the seed would make fairness
         # mean "a turn from every page fetched", which a crawl generates
         # itself and without bound.
-        self._seed_of: dict[str, str] = {}
+        self._pages = PageBook()
         # How many the model named. Proposing none and losing them all
         # in verification are different failures.
         self._seeds_asked: int | None = None
         # url -> why it was turned away. A proposal costs a fetch either
         # way, so the reason is what makes the spend arguable.
         self._rejected_seeds: list[tuple[str, str]] = []
-        # Two halves of one vote, emptied as each pair completes.
-        self._verdict_of: dict[str, bool] = {}
-        self._listing_of: dict[str, bool] = {}
-        # Pages already asked for, per seed, against _MAX_LISTING_PAGES.
-        self._pages_of_listing: dict[str, int] = {}
         # Seeds this run proposed, and what each was worth. Nothing
         # stores them, so the report is the only place they show.
         self._proposed_seeds: dict[str, tuple[str, str]] = {}
         # What each seed actually got read. "nothing" said the same thing
         # for a seed crawled and empty and one barely opened.
-        self._tally_by_seed: dict[str, _SeedTally] = collections.defaultdict(_SeedTally)
+        self._seeds: dict[str, SeedState] = collections.defaultdict(SeedState)
         self._events: EventEmitter | None = None
 
     # seed ingestion --------------------------------------------------
@@ -298,7 +264,7 @@ class CrawlScheduler:
         self._seeds_asked = n_proposed
         self._rejected_seeds = rejected
         for c in proposed:
-            # url_key, the shape _seed_of counts under.
+            # url_key, the shape the page book counts under.
             key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
             self._proposed_seeds[key] = (c.url.canonical, str(c.signals.get("why", "")))
         return proposed
@@ -339,12 +305,13 @@ class CrawlScheduler:
                     seed_ext=c.seed_ext,
                 )
             )
+            self._seeds[url.url_key].url = url.canonical
             n_ingested += 1
         if items:
             await self._frontier.push_batch(items)
         if self._events and n_ingested > 0:
             self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
-        logger.info("ingest.seeds total=%d ingested=%d", len(candidates), n_ingested)
+        logger.info("starting from %d seed%s", n_ingested, "" if n_ingested == 1 else "s")
         return n_ingested
 
     # public API -------------------------------------------------------
@@ -362,11 +329,11 @@ class CrawlScheduler:
 
         The TokenBudget sink calls here after every LLM call, so the
         BUDGET_TOKENS stop condition sees fresh numbers while the pumps
-        run.  Usage recorded before run() survives its _counters reset
+        run.  Usage recorded before run() survives the context reset
         through _tokens_used_start.
         """
         self._tokens_used_start = total
-        self._counters.tokens_used = total
+        self._ctx.progress.tokens_used = total
 
     async def run(self, goal: CrawlGoal, task: CrawlTask) -> None:
         self._goal = goal
@@ -376,8 +343,7 @@ class CrawlScheduler:
 
         setup_logging(self._cfg)
         logger.info(
-            "task.start task_id=%s pages=%d tokens=%d duration=%ds",
-            task.task_id,
+            "crawling, at most %d pages or %d tokens or %ds",
             goal.max_pages,
             goal.max_tokens,
             goal.max_duration_sec,
@@ -405,19 +371,19 @@ class CrawlScheduler:
         reason = task.stopping_reason or "none"
         self._reconcile()
         logger.info(
-            "task.done task_id=%s pages=%d tokens=%d reason=%s",
-            task.task_id,
-            self._counters.pages_fetched,
-            self._counters.tokens_used,
+            "finished after %d pages and %d tokens: %s",
+            self._ctx.progress.pages_fetched,
+            self._ctx.progress.tokens_used,
             reason,
         )
         if self._events:
             self._events.emit(
                 EventType.STOPPED,
-                {"reason": reason, "pages_fetched": self._counters.pages_fetched},
+                {"reason": reason, "pages_fetched": self._ctx.progress.pages_fetched},
             )
         # Final task row: state, counters, and the stop reason.
-        task.counters = {"tokens_used": self._counters.tokens_used, "pages_fetched": self._counters.pages_fetched}
+        prog = self._ctx.progress
+        task.counters = {"tokens_used": prog.tokens_used, "pages_fetched": prog.pages_fetched}
         self._storage.save_task(task.model_dump(mode="json"))
         # Deliberately not a finally: on KeyboardInterrupt the CLI runs
         # pause() (which checkpoints through this storage) before its
@@ -436,8 +402,8 @@ class CrawlScheduler:
         for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 logger.error("pump.died error=%s", r)
-                if not self._counters.fatal_error:
-                    self._counters.fatal_error = str(r)
+                if not self._ctx.progress.fatal_error:
+                    self._ctx.progress.fatal_error = str(r)
 
     async def _settle_inflight(self) -> None:
         """Let the fetches already in the air finish before anything closes.
@@ -453,7 +419,7 @@ class CrawlScheduler:
         if not self._inflight:
             return
         pending = set(self._inflight)
-        logger.info("task.settling in_flight=%d", len(pending))
+        logger.debug("task.settling in_flight=%d", len(pending))
         _, still = await asyncio.wait(pending, timeout=_SETTLE_TIMEOUT)
         if still:
             # Past the backstop: whatever is left was not going to
@@ -477,7 +443,7 @@ class CrawlScheduler:
     def _on_analysis(self, result: AnalysisResult) -> None:
         """Analyzer sink: persist, tally, and keep the endorsed links."""
         self._storage.save_analysis(result.model_dump(mode="json"))
-        by_class = self._ctx.stats.analyses_by_class
+        by_class = self._ctx.ledger.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
         fb = result.feedback
         if fb.endorsed_links and fb.url:
@@ -489,9 +455,10 @@ class CrawlScheduler:
         # facade until v0.3.0 removed it, and the prompt kept reading a
         # list nothing filled any more.
         if result.classification == "RELEVANT":
-            seed = self._seed_of.get(self._url_key_of.get(fb.url or "", ""), "")
+            rec = self._pages.by_url(fb.url or "")
+            seed = rec.seed if rec else ""
             if seed:
-                self._tally_by_seed[seed].relevant += 1
+                self._seeds[seed].funnel.relevant += 1
             self._relevant_pages.append(
                 {
                     "url": fb.url,
@@ -499,6 +466,8 @@ class CrawlScheduler:
                     "relevance": round(result.relevance_score, 2),
                 }
             )
+            # The one line the run exists to produce.
+            logger.info("found: %s (%s)", fb.title or "untitled", where(fb.url or ""))
         # Backfill the judgment into the source page's context so the LLM
         # ranker can tell a link off a RELEVANT article from a link off a
         # help page.  Retries land here through the same sink, so a late
@@ -512,13 +481,17 @@ class CrawlScheduler:
                 "summary": result.summary or "",
             },
         )
-        relevant = result.relevance_score >= self._counters.relevance_threshold
+        relevant = result.relevance_score >= self._ctx.limits.relevance_threshold
         # The same judgement answers both questions the run asks: the
         # window says whether this is still working, the tally says
         # whether it is enough. Only the tally belongs here, because the
         # window admits some pages and not others.
-        self._counters.relevant_found += relevant
-        self._verdict_of[result.url_key] = relevant
+        self._ctx.progress.relevant_found += relevant
+        rec = self._pages.of(result.url_key)
+        rec.relevant = relevant
+        # Answered, whatever the answer. The gap between this and
+        # fetched is a run that stopped before the analyzer got there.
+        self._seeds[rec.seed].funnel.judged += 1
         self._cast_relevance_vote(result.url_key)
 
     def _cast_relevance_vote(self, url_key: str) -> None:
@@ -533,15 +506,15 @@ class CrawlScheduler:
         The verdict and the listing flag arrive in either order, so the
         vote is cast by whichever completes the pair.
         """
-        if url_key not in self._verdict_of or url_key not in self._listing_of:
+        rec = self._pages.of(url_key)
+        if not rec.ready():
             return
-        relevant = self._verdict_of.pop(url_key)
-        if self._listing_of.pop(url_key):
+        rec.counted = True
+        if rec.listing:
             return
-        seed = self._seed_of.get(url_key, "")
-        tally = self._tally_by_seed[seed]
-        tally.window.append(relevant)
-        self._maybe_retire(seed, tally)
+        state = self._seeds[rec.seed]
+        state.window.append(bool(rec.relevant))
+        self._maybe_retire(rec.seed, state)
 
     def _note_page_age(self, page: Page, seed: str) -> None:
         """Track how many of one source's pages in a row fell outside the
@@ -557,19 +530,18 @@ class CrawlScheduler:
         and retirement -- which ignores an empty seed -- could not fire
         at all.
         """
-        counters = self._counters
-        if counters.since is None or page.published_at is None:
+        if self._ctx.limits.since is None or page.published_at is None:
             return
-        tally = self._tally_by_seed[seed]
-        if page.published_at >= counters.since:
-            tally.stale = 0
+        state = self._seeds[seed]
+        if page.published_at >= self._ctx.limits.since:
+            state.stale = 0
             return
-        tally.stale += 1
-        self._maybe_retire(seed, tally)
+        state.stale += 1
+        self._maybe_retire(seed, state)
 
-    def _maybe_retire(self, seed: str, tally: _SeedTally) -> None:
+    def _maybe_retire(self, seed: str, state: SeedState) -> None:
         """Act on stop_conds' answer. Whether to stop is not decided here."""
-        why = why_retire(tally.window, tally.stale)
+        why = why_retire(state.window, state.stale)
         if why is not None:
             self._retire_seed(seed, why)
 
@@ -579,11 +551,11 @@ class CrawlScheduler:
         Off under --recall, where reading the tail is the point of the
         mode rather than evidence the source is done.
         """
-        if not seed or self._counters.recall or self._tally_by_seed[seed].retired:
+        if not seed or self._ctx.limits.recall or self._seeds[seed].retired:
             return
-        self._tally_by_seed[seed].retired = why
+        self._seeds[seed].retired = why
         self._frontier.retire(seed)
-        logger.info("seed.retired seed=%s reason=%s", seed, why)
+        logger.info("done with one source: %s", why)
 
     def _record_page_context(self, url_key: str, fields: dict[str, Any]) -> None:
         """Merge per-page context that the ranker reads at rank time.
@@ -603,11 +575,11 @@ class CrawlScheduler:
         same thing, and overwriting would report whichever arrived last
         rather than what actually ended the run.
         """
-        stats = self._ctx.stats
-        stats.not_content[problem.value] = stats.not_content.get(problem.value, 0) + 1
-        if problem.refuses_the_run and not self._counters.refused_by:
-            self._counters.refused_by = problem.value
-            logger.warning("crawl.refused problem=%s pages=%d", problem.value, self._counters.pages_fetched)
+        ledger = self._ctx.ledger
+        ledger.not_content[problem.value] = ledger.not_content.get(problem.value, 0) + 1
+        if problem.refuses_the_run and not self._ctx.progress.refused_by:
+            self._ctx.progress.refused_by = problem.value
+            logger.warning("crawl.refused problem=%s pages=%d", problem.value, self._ctx.progress.pages_fetched)
 
     def summary(self) -> dict[str, Any]:
         """End-of-run statistics for the CLI's terminal report.
@@ -615,52 +587,55 @@ class CrawlScheduler:
         Everything reads from the run context; stages record into it
         as they work, so no merge step is needed here.
         """
-        counters = self._ctx.counters
-        stats = self._ctx.stats
+        ledger = self._ctx.ledger
         report: dict[str, Any] = {
-            "pages_fetched": counters.pages_fetched,
-            "tokens_used": counters.tokens_used,
-            "candidates_discovered": stats.links_discovered,
-            "candidates_ranked": stats.candidates_ranked,
-            "fetch_errors": stats.fetch_errors,
-            "analyses": dict(stats.analyses_by_class),
+            "pages_fetched": self._ctx.progress.pages_fetched,
+            "tokens_used": self._ctx.progress.tokens_used,
+            "candidates_discovered": ledger.links_discovered,
+            "candidates_ranked": ledger.candidates_ranked,
+            "fetch_errors": ledger.fetch_errors,
+            "analyses": dict(ledger.analyses_by_class),
+            # Every seed the run read, in the order it was given them,
+            # each with its own funnel. Asked for one seed at a time
+            # ("wanted 6 but found nothing") and answerable only here.
+            "seeds": {
+                key: {
+                    "url": st.url,
+                    "funnel": st.funnel.as_tuple(),
+                    "retired": st.retired,
+                    "proposed": key in self._proposed_seeds,
+                }
+                for key, st in self._seeds.items()
+                if st.url
+            },
             # url -> (why it was proposed, relevant pages found through it)
             "proposed_seeds": {
-                url: (why, self._tally_by_seed[key].as_tuple()) for key, (url, why) in self._proposed_seeds.items()
+                url: (why, self._seeds[key].funnel.as_tuple()) for key, (url, why) in self._proposed_seeds.items()
             },
             # Sources that stopped paying off, and why. A run now ends
             # by every source retiring, so without this it just reads as
             # a drained frontier.
-            "retired_seeds": sorted(t.retired for t in self._tally_by_seed.values() if t.retired),
+            "retired_seeds": sorted(st.retired for st in self._seeds.values() if st.retired),
             # The target, so the report can print the tally beside it.
-            "max_relevant": self._counters.max_relevant,
+            "max_relevant": self._ctx.limits.max_relevant,
             # None when the run never asked. A number means it did.
             "seeds_asked": self._seeds_asked,
             "rejected_seeds": self._rejected_seeds,
         }
-        if counters.started_at:
-            report["duration_sec"] = round(time.monotonic() - counters.started_at, 1)
-        if stats.not_content:
-            report["not_content"] = dict(stats.not_content)
-        if counters.listings_seen:
-            report["listings"] = [counters.listings_seen, counters.listings_empty]
-        if counters.listings_stale:
-            report["listings_stale"] = counters.listings_stale
+        if self._ctx.progress.started_at:
+            report["duration_sec"] = round(time.monotonic() - self._ctx.progress.started_at, 1)
+        if ledger.not_content:
+            report["not_content"] = dict(ledger.not_content)
+        if self._ctx.progress.listings_seen:
+            report["listings"] = [self._ctx.progress.listings_seen, self._ctx.progress.listings_empty]
+        if self._ctx.ledger.listings_stale:
+            report["listings_stale"] = self._ctx.ledger.listings_stale
         return report
 
     @property
     def context(self) -> CrawlContext:
         """The run context: the CLI reads it for the terminal report."""
         return self._ctx
-
-    @property
-    def _counters(self) -> CrawlCounters:
-        """Stop-condition counters; they live inside the run context."""
-        return self._ctx.counters
-
-    @_counters.setter
-    def _counters(self, counters: CrawlCounters) -> None:
-        self._ctx.counters = counters
 
     async def pause(self) -> None:
         """Stop taking work and settle what is already in the air.
@@ -673,7 +648,7 @@ class CrawlScheduler:
         fetches pending, printed "Task was destroyed but it is pending",
         and left its row in the database saying RUNNING for ever.
         """
-        logger.info("pause.requested inflight=%d", self._counters.in_flight)
+        logger.debug("pause.requested inflight=%d", self._ctx.progress.in_flight)
         self._state = "PAUSING"
         await self._settle_inflight()
         self._state = "PAUSED"
@@ -690,7 +665,7 @@ class CrawlScheduler:
         # Restore from latest checkpoint.
         snap = await self._load_latest_snapshot()
         if snap:
-            logger.info(
+            logger.debug(
                 "resume.restored heap=%d pending=%d visited=%d", len(snap.heap), len(snap.pending), len(snap.visited)
             )
             self._frontier.restore(snap)
@@ -701,7 +676,7 @@ class CrawlScheduler:
             self._task.state = "RUNNING"
         if self._events:
             self._events.emit(EventType.TASK_RESUMED)
-        self._counters.started_at = time.monotonic()
+        self._ctx.progress.started_at = time.monotonic()
         self._pump_tasks = [
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
@@ -730,12 +705,12 @@ class CrawlScheduler:
         """
         left_frontier = self._frontier.size
         left_buffer = self._frontier.waiting_size
-        stats = self._ctx.stats
-        logger.info(
+        ledger = self._ctx.ledger
+        logger.debug(
             "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
-            stats.links_discovered,
-            stats.candidates_ranked,
-            self._counters.pages_fetched,
+            ledger.links_discovered,
+            ledger.candidates_ranked,
+            self._ctx.progress.pages_fetched,
             left_frontier,
             left_buffer,
         )
@@ -755,16 +730,16 @@ class CrawlScheduler:
         Asked at the head of the analysis queue, the overshoot is
         bounded by what is already calling.
         """
-        c = self._counters
-        return c.max_relevant > 0 and c.relevant_found >= c.max_relevant
+        lim, prog = self._ctx.limits, self._ctx.progress
+        return lim.max_relevant > 0 and prog.relevant_found >= lim.max_relevant
 
     def _record_stop_reason(self) -> None:
         """Name why the run is ending, for a path that bypassed the check."""
         if self._task is None or self._task.stopping_reason:
             return
-        reasons = check_stop(self._task, self._frontier, self._counters)
+        reasons = check_stop(self._task, self._frontier, self._ctx.limits, self._ctx.progress)
         self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
-        logger.info("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._counters.pages_fetched)
+        logger.debug("stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self._ctx.progress.pages_fetched)
 
     # fetch loop -------------------------------------------------------
 
@@ -774,19 +749,19 @@ class CrawlScheduler:
             reasons = check_stop(
                 self._task,  # type: ignore[arg-type]
                 self._frontier,
-                self._counters,
+                self._ctx.limits,
+                self._ctx.progress,
             )
             if reasons:
                 codes = "+".join(r.code for r in reasons)
                 self._task.stopping_reason = codes  # type: ignore[union-attr]
                 self._state = "STOPPING"
                 logger.info(
-                    "stop.triggered reasons=%s pages=%d frontier=%d buffer=%d inflight=%d",
+                    "stopping: %s, after %d pages (%d still queued, %d in the air)",
                     codes,
-                    self._counters.pages_fetched,
-                    self._frontier.size,
-                    self._frontier.waiting_size,
-                    self._counters.in_flight,
+                    self._ctx.progress.pages_fetched,
+                    self._frontier.size + self._frontier.waiting_size,
+                    self._ctx.progress.in_flight,
                 )
                 await self._frontier.waiting.wake()
                 break
@@ -798,8 +773,8 @@ class CrawlScheduler:
             # pages).  Failed in-flight fetches release their slot, so we
             # wait here rather than break.
             if (
-                self._counters.max_pages > 0
-                and self._counters.pages_fetched + self._counters.in_flight >= self._counters.max_pages
+                self._ctx.limits.max_pages > 0
+                and self._ctx.progress.pages_fetched + self._ctx.progress.in_flight >= self._ctx.limits.max_pages
             ):
                 await asyncio.sleep(_POP_SLEEP)
                 continue
@@ -808,14 +783,14 @@ class CrawlScheduler:
             # analysis, so without this the pump keeps dispatching into
             # a queue. One run parked 46 tasks and abandoned 33 of them
             # unjudged. The width leaves each stage a short queue.
-            if self._counters.in_flight >= self._cfg.fetch_concurrency + 2 * self._cfg.llm_concurrency:
+            if self._ctx.progress.in_flight >= self._cfg.fetch_concurrency + 2 * self._cfg.llm_concurrency:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
             item = await self._frontier.pop_next(
                 now=_utcnow(),
                 next_allowed=None if self._cfg.ignore_robots else self._robots.next_allowed_at,
-                global_budget=self._counters.max_pages,
+                global_budget=self._ctx.limits.max_pages,
             )
             if item is None:
                 if self._frontier.scoring > 0:
@@ -832,13 +807,13 @@ class CrawlScheduler:
                     # pages with its only seed still waiting.  Items a
                     # gate refuses outright are not a reason to wait,
                     # because nothing about them will change.
-                    if self._counters.in_flight == 0 and self._frontier.cooling == 0:
+                    if self._ctx.progress.in_flight == 0 and self._frontier.cooling == 0:
                         # The loop leaves here without going back to the
                         # stop check at the top, so the reason has to be
                         # recorded on the way out or the run reports
                         # "completed" with no cause at all.
                         self._record_stop_reason()
-                        logger.info("fetch_pump.exhausted frontier=0 buffer=0")
+                        logger.debug("fetch_pump.exhausted frontier=0 buffer=0")
                         await self._frontier.waiting.wake()
                         break
                     # Nothing waiting to be scored, but either a fetch is
@@ -846,7 +821,7 @@ class CrawlScheduler:
                     # is coming.  Wake the rank pump in case it is blocked
                     # on wait_until so it can observe state changes.
                     await self._frontier.waiting.wake()
-                elif self._frontier.size == 0 and self._counters.in_flight == 0:
+                elif self._frontier.size == 0 and self._ctx.progress.in_flight == 0:
                     # Buffer has items but nothing is fetching: the rank
                     # pump may be asleep on a stale predicate (frontier was
                     # non-empty when it last checked).  Wake it.
@@ -857,7 +832,7 @@ class CrawlScheduler:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
-            self._counters.in_flight = self._counters.in_flight + 1
+            self._ctx.progress.in_flight = self._ctx.progress.in_flight + 1
             # Held, not fired and forgotten.  Unheld, these outlived the
             # run: the pumps returned, aclose() shut the storage and the
             # analyzer, and seven tasks went on writing into both.
@@ -931,7 +906,7 @@ class CrawlScheduler:
         at 1.0 a six-page budget went entirely on listings without
         reading one post.
         """
-        pages = self._pages_of_listing.get(seed, 0)
+        pages = self._seeds[seed].listing_pages
         if pages >= _MAX_LISTING_PAGES:
             logger.debug("listing.page_cap seed=%s pages=%d", seed, pages)
             return
@@ -941,7 +916,7 @@ class CrawlScheduler:
         if decision.value != "allow":
             logger.debug("listing.next_dropped url=%s reason=%s", url.canonical, why)
             return
-        self._pages_of_listing[seed] = pages + 1
+        self._seeds[seed].listing_pages = pages + 1
         await self._frontier.push_batch(
             [
                 FrontierItem(
@@ -955,7 +930,7 @@ class CrawlScheduler:
                 )
             ]
         )
-        logger.info("listing.next_page url=%s page=%d", url.canonical, pages + 2)
+        logger.debug("listing.next_page url=%s page=%d", url.canonical, pages + 2)
 
     async def _inject_endorsed(self) -> None:
         """Push analyzer-endorsed links straight into the frontier.
@@ -981,7 +956,7 @@ class CrawlScheduler:
                 logger.debug("endorsed.unusable link=%r source=%s", link[:80], source_url)
                 continue
             url = self._canonicalizer.canonicalize(usable, source_url)
-            source_key = self._url_key_of.get(source_url, "")
+            source_key = self._pages.key_of(source_url)
             source_depth = int(self._page_contexts.get(source_key, {}).get("depth", 0))
             candidate = Candidate(url=url, depth=source_depth + 1, discovered_at=_utcnow())
             decision, _ = self._prefilter.check(candidate, self._goal, ctx)
@@ -997,12 +972,12 @@ class CrawlScheduler:
                     reg_domain=url.reg_domain,
                     # A shop's own site endorsed from an account belongs
                     # to that account's share, not to a share of its own.
-                    seed_url_key=self._seed_of.get(source_key, source_key),
+                    seed_url_key=self._pages.seed_of(source_key, source_key),
                 )
             )
         if items:
             await self._frontier.push_batch(items)
-            logger.info("endorsed.injected count=%d", len(items))
+            logger.debug("endorsed.injected count=%d", len(items))
 
     async def _fetch_and_extract(self, item: FrontierItem) -> tuple[FetchResult, Page] | None:
         """Download and parse one page while holding a fetch slot.
@@ -1017,11 +992,15 @@ class CrawlScheduler:
         # host so the lookup finds what the fetch stored.
         await self._ensure_robots(_extract_domain(item.url.canonical))
         if not self._robots.allow_fetch(item.url.canonical):
-            logger.info("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
-            self._ctx.stats.robots_blocked += 1
+            logger.debug("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
+            self._ctx.ledger.robots_blocked += 1
             await self._frontier.record_outcome(item, "SKIPPED")
             return None
         async with self._fetch_sem:
+            # Said before the wait. A browser fetch of one page has
+            # measured 12 to 22 seconds, and naming it only afterwards
+            # leaves that whole time looking like nothing is happening.
+            logger.info("fetching %s", where(item.url.canonical))
             try:
                 result = await self._fetcher.fetch(item)
                 self._robots.record_response(domain, result.status_code, self._robots.crawl_delay(domain))
@@ -1039,13 +1018,13 @@ class CrawlScheduler:
                         "created_at": _utcnow().isoformat(),
                     }
                 )
-                self._ctx.stats.fetch_errors += 1
+                self._ctx.ledger.fetch_errors += 1
                 await self._frontier.record_outcome(item, "FAILED")
                 return None
 
             # Extract content: offload to thread pool with a timeout.
             raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
-            logger.info("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
+            logger.debug("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
             await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
             try:
                 page = await asyncio.wait_for(
@@ -1055,11 +1034,11 @@ class CrawlScheduler:
             except asyncio.TimeoutError:
                 logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 await self._frontier.record_outcome(item, "SKIPPED")
-                self._counters.pages_fetched = self._counters.pages_fetched + 1
+                self._ctx.progress.pages_fetched = self._ctx.progress.pages_fetched + 1
                 return None
             page.payload_paths = await asyncio.to_thread(self._save_payloads, item.url_key, result)
             self._storage.save_page(page)
-            self._note_page_age(page, self._seed_of.get(item.url_key, item.seed_url_key or item.url_key))
+            self._note_page_age(page, self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key))
             return result, page
 
     def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
@@ -1106,8 +1085,11 @@ class CrawlScheduler:
                     # At the head of the queue, not before it. What is
                     # ahead can meet the target while this one waits.
                     if not self._enough_found():
-                        self._url_key_of[page.url.canonical] = page.url_key
-                        self._seed_of[page.url_key] = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+                        self._pages.open(
+                            page.url_key,
+                            page.url.canonical,
+                            self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
+                        )
                         await self._analyzer.analyze(page, self._goal)
             if self._events:
                 self._events.emit(
@@ -1135,30 +1117,31 @@ class CrawlScheduler:
                 # format fails identically, so carrying on would spend
                 # the whole budget producing nothing and report success.
                 logger.error("fetch.adapter_dependency url_key=%s: %s", item.url_key, e)
-                self._counters.fatal_error = str(e)
+                self._ctx.progress.fatal_error = str(e)
                 return
             candidates = harvest.candidates
             if harvest.problem is not None:
                 self._note_not_content(harvest.problem)
             if harvest.listing:
-                self._counters.listings_seen += 1
-                self._counters.listings_empty += int(not candidates)
-                self._counters.listings_stale += int(harvest.degraded)
-            self._listing_of[page.url_key] = harvest.listing
+                self._ctx.progress.listings_seen += 1
+                self._ctx.progress.listings_empty += int(not candidates)
+                self._ctx.ledger.listings_stale += int(harvest.degraded)
+                logger.info("read %d posts from %s", len(candidates), where(page.url.canonical))
+            self._pages.of(page.url_key).listing = harvest.listing
             self._cast_relevance_vote(page.url_key)
             # Every candidate belongs to the seed its page belonged to,
             # however many hops back.  Recorded here because this is the
             # only place that holds both ends of the link.
-            seed = self._seed_of.get(item.url_key, item.seed_url_key or item.url_key)
+            seed = self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key)
             for c in candidates:
                 c.seed_url_key = seed
                 # Descendants inherit it, or the smaller share would
                 # hold for the seed alone.
                 c.seed_ext = item.seed_ext
-            tally = self._tally_by_seed[seed]
-            tally.pages += 1
-            tally.candidates += len(candidates)
-            self._ctx.stats.links_discovered += len(candidates)
+            funnel = self._seeds[seed].funnel
+            funnel.fetched += 1
+            funnel.discovered += len(candidates)
+            self._ctx.ledger.links_discovered += len(candidates)
             logger.debug(
                 "extracted url_key=%s title=%r links=%d status=%s",
                 page.url_key,
@@ -1178,8 +1161,7 @@ class CrawlScheduler:
                     "depth": item.depth,
                 },
             )
-            self._url_key_of[page.url.canonical] = page.url_key
-            self._seed_of[page.url_key] = seed
+            self._pages.open(page.url_key, page.url.canonical, seed)
             ctx = self._frontier.get_prefilter_context(
                 allow_fetch=lambda url: self._robots.allow_fetch(url),
             )
@@ -1198,7 +1180,7 @@ class CrawlScheduler:
                 # Progress pulse: large pages take a while to persist.
                 total = n_allowed + n_filtered
                 if total % 500 == 0:
-                    logger.info("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(candidates))
+                    logger.debug("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(candidates))
             logger.debug(
                 "prefilter url_key=%s total=%d allowed=%d filtered=%d",
                 page.url_key,
@@ -1216,24 +1198,24 @@ class CrawlScheduler:
 
             await self._frontier.record_outcome(item, "COMPLETED")
 
-            self._counters.pages_fetched = self._counters.pages_fetched + 1
-            n = self._counters.pages_fetched
-            logger.info(
+            self._ctx.progress.pages_fetched = self._ctx.progress.pages_fetched + 1
+            n = self._ctx.progress.pages_fetched
+            logger.debug(
                 "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
                 n,
                 page.url_key,
                 page.title,
                 len(candidates),
                 n_allowed,
-                (time.monotonic() - self._counters.started_at),
+                (time.monotonic() - self._ctx.progress.started_at),
             )
 
             # Periodic checkpoint.
-            if self._counters.pages_fetched % _CHECKPOINT_INTERVAL == 0:
+            if self._ctx.progress.pages_fetched % _CHECKPOINT_INTERVAL == 0:
                 await self._checkpoint()
 
         finally:
-            self._counters.in_flight = max(0, self._counters.in_flight - 1)
+            self._ctx.progress.in_flight = max(0, self._ctx.progress.in_flight - 1)
 
     # rank loop --------------------------------------------------------
 
@@ -1263,7 +1245,7 @@ class CrawlScheduler:
             finally:
                 self._frontier.finish_ranking(len(batch))
                 ranked_total += len(batch)
-                self._ctx.stats.candidates_ranked = ranked_total
+                self._ctx.ledger.candidates_ranked = ranked_total
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         """Score one drained batch and push what survives to the frontier."""
@@ -1294,7 +1276,7 @@ class CrawlScheduler:
 
         n_dropped = sum(1 for d in decisions if d.dropped)
         n_kept = len(decisions) - n_dropped
-        logger.info(
+        logger.debug(
             "rank.batch candidates=%d kept=%d dropped=%d",
             len(batch),
             n_kept,
@@ -1306,9 +1288,9 @@ class CrawlScheduler:
             self._storage.save_rank_decision(d)
             scored = _find_candidate(batch, d.candidate_id)
             if scored is not None:
-                tally = self._tally_by_seed[scored.seed_url_key]
-                tally.scored += 1
-                tally.wanted += not d.dropped
+                funnel = self._seeds[scored.seed_url_key].funnel
+                funnel.scored += 1
+                funnel.wanted += not d.dropped
             if d.dropped:
                 continue
             c = _find_candidate(batch, d.candidate_id)
@@ -1350,7 +1332,7 @@ class CrawlScheduler:
             }
         )
         if self._events:
-            self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self._counters.pages_fetched})
+            self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self._ctx.progress.pages_fetched})
 
     async def _load_latest_snapshot(self) -> FrontierSnapshot | None:
         if self._task is None:
