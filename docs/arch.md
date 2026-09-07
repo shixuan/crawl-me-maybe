@@ -103,9 +103,9 @@ engine only knows as a Protocol, filled in by the factory.
 
  Cross-cutting, used by every layer above:
    schemas/   the shared vocabulary, plain pydantic, no dependencies
-   llm/       LLMClient · TokenBudget (input / output / cached / thinking,
-              each counted separately)
-   state/     CrawlContext (counters + stats) · EventEmitter
+   llm/       LLMClient · TokenBudget (input / output / cached / thinking
+              each counted separately, and the bill split per stage)
+   state/     CrawlContext (limits + progress + ledger) · EventEmitter
    config.py  Settings: defaults → .env → env → flag
 ```
 
@@ -270,7 +270,7 @@ loop while state == "RUNNING":
         # went into cooldown and the run reported success having fetched nothing.
       sleep(0.2); continue
 
-  counters.in_flight++
+  progress.in_flight++
   asyncio.create_task(_handle_fetch(item))  # not awaited
 
 _handle_fetch(item):
@@ -293,7 +293,7 @@ _handle_fetch(item):
       DROP  → c.status = "FILTERED_OUT"
 
   frontier.record_outcome(item, COMPLETED)
-  counters.pages_fetched++
+  progress.pages_fetched++
   if pages_fetched % CHECKPOINT_INTERVAL == 0 → checkpoint()
 ```
 
@@ -307,7 +307,7 @@ loop while state == "RUNNING":
     # (scoring), or the stop checks read "being scored" as "nothing left"
   ... finally: frontier.finish_ranking(len(batch))
 
-  history = RankHistorySummary(pages_seen=counters.pages_fetched)
+  history = RankHistorySummary(goal=..., relevant_pages=what analysis established)
   decisions = ranker.rank_batch(goal, batch, history, page_contexts)
     # or, with no ranker, one flat priority per candidate
 
@@ -436,8 +436,8 @@ handles pause/resume/stop, and checkpoints automatically.
   and imports no implementation
 - `_page_contexts` caches `{title, link_count}` per page so the ranker can use
   per-page signals
-- `CrawlCounters` is a `@dataclass` rather than a dict — typed, attribute access,
-  mutable by design
+- `CrawlContext` holds the run's state in three parts, split by who reads them
+  (see the schema section), rather than one bag every stage writes into
 - `PreFilterContext` comes from `frontier.get_prefilter_context(**overrides)`, so
   the engine never reaches into the frontier's private fields
 - `ingest_seeds()` is separate: seeds face only dedup/blacklist/protocol/scope and
@@ -657,8 +657,8 @@ answer, and **a rate-limited run reported a quiet week, every week**.
 
 ## Data model
 
-Core objects are pydantic models (serialisable, validated); counters are a
-`@dataclass` (mutable, updated constantly).
+Core objects are pydantic models (serialisable, validated); the run's own state
+is a `@dataclass` (mutable, updated constantly).
 
 | Model | Kind | What it holds |
 |-------|------|---------------|
@@ -674,26 +674,45 @@ Core objects are pydantic models (serialisable, validated); counters are a
 | `RankHistorySummary` | BaseModel | A compact "what has been seen so far" |
 | `CrawlTask` | BaseModel | Task lifecycle state |
 | `FrontierSnapshot` | BaseModel | The checkpoint payload: heap, pending, visited, budgets |
-| `CrawlCounters` | **dataclass** | Runtime counters |
+| `CrawlContext` | **dataclass** | The run's state, in three parts: `Limits`, `Progress`, `Ledger` |
 
 ```python
 @dataclasses.dataclass
-class CrawlCounters:
-    max_pages: int = 0
-    max_tokens: int = 0
-    max_duration_sec: int = 0
-    relevance_threshold: float = 0.7
-    pages_fetched: int = 0
-    tokens_used: int = 0
-    started_at: float = 0.0
-    in_flight: int = 0
-    fatal_error: str = ""
-    # Diagnostic mode: nothing is discarded, the rejects rank last
-    recall: bool = False
-    # Time horizon; the whole check sleeps when since is None.  The
-    # streak that reads it lives per seed, in the scheduler's tally.
-    since: datetime | None = None
+class CrawlContext:
+    limits: Limits      # what the run was told, fixed for its lifetime
+    progress: Progress  # what a stop condition may read
+    ledger: Ledger      # everything else the report wants
 ```
+
+The split is by reader, not by subject. `check_stop(task, frontier, limits,
+progress)` is not handed the `Ledger`, so a statistic nothing stops on cannot be
+read there and cannot quietly become a stopping criterion. The boundary holds by
+signature rather than by care.
+
+`Limits` is frozen: the goal is read once and never edited mid-run. `Progress`
+carries only what a check may consult (`pages_fetched`, `tokens_used`,
+`in_flight`, `relevant_found`, `started_at`, `fatal_error`, `refused_by`, and
+`listings_seen` / `listings_empty` for ADAPTER_EMPTY), and every field there is
+in fact read by one.
+`Ledger` carries the rest, including `seeds: dict[str, SeedState]`, one entry per
+seed holding that seed's `Funnel` and its retirement state.
+
+```python
+@dataclasses.dataclass
+class Funnel:
+    discovered: int = 0  # links this seed put in front of the ranker
+    scored: int = 0      # of those, how many were ranked
+    wanted: int = 0      # of those, how many the ranker kept
+    fetched: int = 0     # of those, how many were downloaded
+    judged: int = 0      # of those, how many the analyzer answered on
+    relevant: int = 0    # of those, how many were results
+```
+
+The stages are monotonically decreasing on purpose, so every gap says something:
+`scored` short of `discovered` is a rotation that never reached them, `judged`
+short of `fetched` is a run that stopped before the analyzer got there. Read as
+one number, "7 pages, wanted 6, nothing" once looked like a content judgement
+when six of the seven were never looked at.
 
 ---
 
@@ -714,7 +733,7 @@ fire**; it returns every reason that did.
 | Adapter failure | three or more listings read, none yielding anything | plus ADAPTER_EMPTY |
 | Platform refusal | the first BLOCKED page | RATE_LIMITED |
 | Platform refusal | the first LOGIN_REQUIRED page | LOGIN_REQUIRED |
-| Fatal | `counters.fatal_error` is set | FATAL |
+| Fatal | `progress.fatal_error` is set | FATAL |
 
 **GOAL_SATISFIED was removed.** It stopped the whole run once the relevance window
 held N hits, but "stop after N" contradicts "find as many as the budget allows",
@@ -846,13 +865,20 @@ having completed with nothing ranked. Both pumps are gathered with
 
 ## Observability
 
-- **Structured logs** — JSON lines with `task_id` / `url_key` / `stage` / `event`
+- **Logs** — two levels of the same events. INFO says what happened in words,
+  naming a page by its address; DEBUG counts the same event and adds the
+  mechanics that have no readable form. The rule lives in the module docstring of
+  `logging/config.py`, which is the only place it is written down
 - **Event stream** — the append-only `events` table, covering the state machine
-- **Counters** — live on `CrawlCounters`: `pages_fetched`, `tokens_used`, `in_flight`
+- **Counters** — live on `CrawlContext`: `progress` for what a stop condition
+  reads, `ledger` for what only the report reads
 - **Token accounting** — `TokenBudget` separates input, output, the input a
   provider served from its cache, and the output the model spent thinking. A total
   that does not separate them is not a bill: cached input costs about a tenth of
-  fresh input, and on one measured run 84% of all output was thinking
+  fresh input, and on one measured run 84% of all output was thinking. It also
+  keeps the bill per stage (`Stage.ANALYSIS`, `RANKING`, `GOAL`, `SEEDS`), which
+  is what says which stage to argue with. The label rides on the client, since a
+  client belongs to one consumer; the budget is shared by all of them
 
 ---
 
