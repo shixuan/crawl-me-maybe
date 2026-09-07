@@ -220,6 +220,31 @@ async def test_prompt_history():
     assert "Rust internals deep dive" in client.calls[0]["prompt"]
 
 
+@pytest.mark.asyncio
+async def test_summary_beats_title():
+    """The title is whatever the page put in its head tag. Instagram
+    puts the same word there for every page, so the loop carried a
+    constant while the summary sat unused in the same record."""
+    history = RankHistorySummary(
+        relevant_pages=[{"title": "Instagram", "url": "https://x/1", "summary": "Free tote with any purchase"}]
+    )
+    client = _StubClient([_resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), _candidates(1), history)
+    prompt = client.calls[0]["prompt"]
+    assert "Free tote with any purchase" in prompt
+    assert "- Instagram" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_repeated_findings_collapse():
+    """Five identical lines are not five findings, and a block that says
+    one word five times reads as feedback while carrying none."""
+    history = RankHistorySummary(relevant_pages=[{"title": "Instagram", "url": f"https://x/{i}"} for i in range(5)])
+    client = _StubClient([_resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), _candidates(1), history)
+    assert client.calls[0]["prompt"].count("- Instagram") == 1
+
+
 async def _prompt_with_source(src: dict) -> str:
     client = _StubClient([_resp(_rankings_json(1))])
     cands = _candidates(1)

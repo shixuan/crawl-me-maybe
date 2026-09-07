@@ -463,6 +463,10 @@ class CrawlScheduler:
                 {
                     "url": fb.url,
                     "title": fb.title,
+                    # What the ranker is actually shown. Without it the
+                    # loop carried the page's title, which the platform
+                    # this run targets sets to the same word every time.
+                    "summary": result.summary or "",
                     "relevance": round(result.relevance_score, 2),
                 }
             )

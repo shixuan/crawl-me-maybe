@@ -821,6 +821,8 @@ async def test_verdict_to_rank():
     await sched._rank_and_enqueue([Candidate(url=url)])
 
     assert [p["title"] for p in captured["history"].relevant_pages] == ["Post 0", "Post 2"]
+    # The summary rides along, or the ranker sees only the head tag.
+    assert all("summary" in p for p in captured["history"].relevant_pages)
 
 
 def test_seen_bounded():

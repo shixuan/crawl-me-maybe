@@ -252,9 +252,16 @@ def _build_prompt(
     lines = ["## Goal", goal.prompt]
     lines.extend(_window_lines(goal))
     if history.relevant_pages:
-        lines.append("## Seen so far")
+        # Deduplicated, because identical lines are not five findings.
+        # Instagram titles every page "Instagram", so this block once
+        # said that word five times and called itself feedback.
+        seen: list[str] = []
         for entry in history.relevant_pages[:_MAX_RELEVANT]:
-            lines.append(f"- {_summarize_page(entry)}")
+            line = f"- {_summarize_page(entry)}"
+            if line not in seen:
+                seen.append(line)
+        lines.append("## Seen so far")
+        lines.extend(seen)
     lines.append(f"## Candidate links ({len(candidates)})")
     pc = page_contexts or {}
     for c in candidates:
@@ -309,8 +316,14 @@ def _age_of(posted_at: datetime.datetime) -> str:
 
 
 def _summarize_page(entry: dict[str, Any]) -> str:
-    """One line per prior relevant page, from whatever fields exist."""
-    for key in ("title", "url", "summary"):
+    """One line per prior relevant page, from whatever fields exist.
+
+    The summary leads because it is what analysis established. The title
+    is whatever the page put in its head tag, which on a platform that
+    serves one title for every page is a constant, and the fallback
+    chain used to reach it first.
+    """
+    for key in ("summary", "title", "url"):
         value = entry.get(key)
         if value:
             return _trunc(str(value))
