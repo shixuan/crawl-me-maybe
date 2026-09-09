@@ -288,13 +288,14 @@ def print_replay_summary(r: ReplayReport) -> None:
 def _goal_from_row(row: dict[str, Any]) -> CrawlGoal:
     """Rebuild a CrawlGoal from a stored row.
 
-    save_goal stores the JSON-shaped fields (keywords,
-    extraction_spec) as JSON text columns, so they must be decoded
-    before validation.
+    save_goal stores the JSON-shaped fields (keywords, extraction_spec,
+    constraints) as JSON text columns, so they must be decoded before
+    validation.
     """
     data = dict(row)
     data["keywords"] = json.loads(data.get("keywords") or "[]")
     data["extraction_spec"] = json.loads(data["extraction_spec"]) if data.get("extraction_spec") else None
+    data["constraints"] = json.loads(data["constraints"]) if data.get("constraints") else None
     return CrawlGoal.model_validate(data)
 
 

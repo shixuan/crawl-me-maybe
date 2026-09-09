@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # ranks it last, and the page budget decides where to stop.  Off by
     # default because a link graph without a hard filter grows without
     # bound; a feed is finite, so the trade is available there.
+    # Below this a ranked candidate is not fetched. Zero refuses nothing.
+    # Raise it to spend the page budget on fewer, better candidates.
+    rank_threshold: float = 0.0
     recall: bool = False
     # The analysis stage: one LLM call per fetched page, returning a
     # verdict, the fields the goal asked for, and the evidence behind

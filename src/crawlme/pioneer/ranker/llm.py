@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 from typing import Any
 
 from crawlme.config import Settings
@@ -52,31 +53,60 @@ _NEUTRAL_PRIORITY = 0.5
 # Below anything the model scores itself, so a rejection is read last
 # rather than not at all.  Not zero: a candidate nobody has an opinion
 # about should still outrank one the model argued against.
-_DEMOTED_PRIORITY = 0.01
-_DROP_TAG = "llm_drop"
-_DEMOTED_TAG = "llm_drop_demoted"
+# Below this a candidate is refused. Zero refuses nothing, because a
+# score is never negative, which is also what --recall means.
+_KEEP_EVERYTHING = 0.0
+# How far a failed condition is held away from zero, so that failing one
+# and failing three stay different numbers.
+_CONDITION_FLOOR = 0.01
 # At most this many previously-relevant pages are shown to the model.
 _MAX_RELEVANT = 5
 
-_SYSTEM = (
+# Judged one candidate at a time, against the goal's own conditions.
+#
+# The old contract asked the model to compare the batch against itself,
+# which made a score mean "better than these nineteen" rather than
+# anything fixed. One measured batch scored every candidate at 0.50 or
+# above and produced 2 relevant pages out of 20, while a batch with a
+# similar mean produced 6 out of 7. A comparison cannot be thresholded
+# and cannot be read across runs; a judgement about one page can.
+#
+# The conditions come from the goal enhancer, so the factors change with
+# the goal and this module never names one.
+_SYSTEM_HEAD = (
     "You decide which links a web crawler should fetch under a limited budget, and in "
-    "what order. "
-    "You see a batch of candidate links plus the crawl goal and what the crawl found "
-    "so far, so compare the candidates against each other, not in isolation. Reply "
-    'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0}], '
-    '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]}. '
-    "Include every candidate id exactly once, either in rankings or in "
-    "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
-    "clicked earlier, so use the full 0.0 to 1.0 range, and no rationale: the "
-    "priority is the whole answer for something you are keeping. candidates_to_drop "
-    "holds the ones that would not answer the goal, each with a short rationale "
-    "saying why, because a rejection is the one a reader has to be able to argue "
-    "with. Drop a candidate when what you can see is enough to say it will not "
-    "answer, not only when it is obvious junk. Being unsure is not such a reason: "
-    "a candidate you cannot rule out belongs in rankings with a low priority, never "
-    "in candidates_to_drop. If none of the batch would answer, put every id in "
-    "candidates_to_drop."
+    "what order. You see a batch of candidate links plus the crawl goal and what the "
+    "crawl found so far. "
+    "Judge each candidate on its own against the goal, not against the other "
+    "candidates in the batch: the same text must get the same scores whichever batch "
+    "it arrives in. Reply with JSON only, no prose."
 )
+
+_SYSTEM_TAIL = (
+    " Score only from what the candidate itself shows. A candidate that shows too "
+    "little to tell scores in the middle, never at either end: the low end is for "
+    "what you can see does not answer, and being unsure is not that."
+)
+
+
+def _system_for(goal: CrawlGoal) -> str:
+    """The contract, named after the goal's own conditions."""
+    conds = goal.constraints or {}
+    if conds:
+        keys = ", ".join(f'"{k}": 0.0' for k in conds)
+        body = (
+            f' Format: {{"rankings": [{{"id": "<id>", "match": 0.0, {keys}}}]}}. '
+            "match is how well this candidate answers the goal overall, 0.0 to 1.0. "
+            "Each remaining field scores how far the candidate satisfies that one "
+            "condition, listed under ## Conditions, also 0.0 to 1.0."
+        )
+    else:
+        body = (
+            ' Format: {"rankings": [{"id": "<id>", "match": 0.0}]}. '
+            "match is how well this candidate answers the goal, 0.0 to 1.0."
+        )
+    return _SYSTEM_HEAD + body + " Include every candidate id exactly once." + _SYSTEM_TAIL
+
 
 _REPAIR_SUFFIX = (
     "\n\nYour previous answer was not valid JSON. Reply with JSON only, no prose, in the exact format requested."
@@ -99,12 +129,12 @@ class LLMRanker:
         self,
         client: LLMClient,
         batch_size: int = _BATCH_SIZE,
-        demote_dropped: bool = False,
+        threshold: float = _KEEP_EVERYTHING,
         max_batch_chars: int = _MAX_BATCH_CHARS,
     ) -> None:
         self._client = client
         self._batch_size = batch_size
-        self._demote_dropped = demote_dropped
+        self._threshold = threshold
         self._max_batch_chars = max_batch_chars
         # Lowered whenever a reply runs out of room, so the cost of
         # learning the right size is paid once rather than per batch.
@@ -127,7 +157,10 @@ class LLMRanker:
         )
         if client is None:
             return None
-        return cls(client, demote_dropped=settings.recall, max_batch_chars=settings.llm_max_batch_chars)
+        # --recall is the threshold at zero: the diagnostic mode exists
+        # to read the rejects, so it must not create any.
+        threshold = _KEEP_EVERYTHING if settings.recall else settings.rank_threshold
+        return cls(client, threshold=threshold, max_batch_chars=settings.llm_max_batch_chars)
 
     async def rank_batch(
         self,
@@ -196,7 +229,7 @@ class LLMRanker:
         page_contexts: dict[str, dict[str, Any]] | None,
     ) -> list[RankDecision]:
         prompt = _build_prompt(goal, chunk, history, page_contexts)
-        resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
+        resp = await self._client.chat(prompt, system=_system_for(goal), json_mode=True)
         data = _parse_response(resp.content)
         if data is None:
             # A reply that used the whole ceiling was cut off mid-JSON.
@@ -219,27 +252,27 @@ class LLMRanker:
                 # split.
                 logger.warning("llm.rank one candidate overruns the ceiling, retrying with more room")
                 resp = await self._client.chat(
-                    prompt, system=_SYSTEM, max_tokens=resp.output_tokens * 2, json_mode=True
+                    prompt, system=_system_for(goal), max_tokens=resp.output_tokens * 2, json_mode=True
                 )
             else:
                 logger.warning(
                     "llm.rank unparseable json for %d candidates, retrying once with a stricter instruction",
                     len(chunk),
                 )
-                resp = await self._client.chat(prompt + _REPAIR_SUFFIX, system=_SYSTEM, json_mode=True)
+                resp = await self._client.chat(prompt + _REPAIR_SUFFIX, system=_system_for(goal), json_mode=True)
             data = _parse_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {len(chunk)} candidates after repair retry")
 
         tokens = resp.input_tokens + resp.output_tokens
-        decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow(), demote_dropped=self._demote_dropped)
+        decisions = _to_decisions(chunk, data, goal=goal, tokens_used=tokens, now=_utcnow(), threshold=self._threshold)
         kept = sum(1 for d in decisions if not d.dropped)
         logger.debug(
-            "llm.rank batch=%d kept=%d %s=%d model=%s tokens=+%d",
+            "llm.rank batch=%d kept=%d dropped=%d threshold=%.2f model=%s tokens=+%d",
             len(chunk),
             kept,
-            "demoted" if self._demote_dropped else "dropped",
-            sum(1 for d in decisions if (d.rationale or "").startswith(_DROP_TAG)),
+            len(decisions) - kept,
+            self._threshold,
             resp.model,
             tokens,
         )
@@ -255,6 +288,7 @@ def _build_prompt(
     """Assemble the user prompt: goal, fields to collect, prior findings, candidate batch."""
     lines = ["## Goal", goal.goal_statement or goal.prompt]
     lines.extend(_window_lines(goal))
+    lines.extend(_condition_lines(goal))
     lines.extend(_extract_lines(goal))
     if history.relevant_pages:
         # Deduplicated, because identical lines are not five findings.
@@ -304,6 +338,19 @@ def _extract_lines(goal: CrawlGoal) -> list[str]:
     if not fields:
         return []
     return ["## Extract", *(f"- {name}: {desc}" for name, desc in fields.items())]
+
+
+def _condition_lines(goal: CrawlGoal) -> list[str]:
+    """The goal's own conditions, one per line, named as they are scored.
+
+    Named rather than described in prose because each name is a key in
+    the reply, and the score is only readable next to the condition it
+    answers.
+    """
+    conds = goal.constraints or {}
+    if not conds:
+        return []
+    return ["## Conditions"] + [f"- {name}: {text}" for name, text in conds.items()]
 
 
 def _window_lines(goal: CrawlGoal) -> list[str]:
@@ -394,96 +441,53 @@ def _to_decisions(
     candidates: list[Candidate],
     data: dict[str, Any],
     *,
+    goal: CrawlGoal,
     tokens_used: int,
     now: datetime.datetime,
-    demote_dropped: bool = False,
+    threshold: float = _KEEP_EVERYTHING,
 ) -> list[RankDecision]:
-    """Turn the parsed response into one decision per candidate.
+    """One decision per candidate, from its own factor scores.
 
-    Candidates in rankings are kept with the model's priority (clamped
-    to [0, 1]); candidates in candidates_to_drop are dropped; ids the
-    model did not mention are kept with a neutral priority.
+    The model no longer says what to drop. It scores, and *threshold*
+    decides, so how much a run refuses is a number it is given rather
+    than one model's mood: measured drop rates for the same goal ran
+    from 51% to 69% with nobody able to move them.
 
-    Under *demote_dropped* a rejection becomes the lowest priority there
-    is instead of a removal. What the model would have discarded is then
-    read last and only if the page budget reaches it, so the run's own
-    limit decides where to stop rather than one model's yes or no. It
-    costs a fetch for everything the model doubted, which is the point:
-    a wrong keep is a page you skim, a wrong drop is a result you never
-    learn existed.
+    A candidate the model did not mention keeps a neutral priority and
+    is never refused on silence.
     """
-    scored: dict[str, tuple[float, str]] = {}
-    raw_rankings = data.get("rankings")
-    if isinstance(raw_rankings, list):
-        for r in raw_rankings:
-            if not isinstance(r, dict):
-                continue
-            cid = r.get("id")
-            if not isinstance(cid, str) or not cid:
-                continue
-            raw_priority = r.get("priority")
-            if isinstance(raw_priority, bool):
-                raw_priority = None  # bool is an int subclass; reject it
-            if not isinstance(raw_priority, (int, float)):
-                continue
-            priority = max(0.0, min(1.0, float(raw_priority)))
-            rationale = r.get("rationale")
-            rationale = str(rationale).strip() if isinstance(rationale, str) else ""
-            scored[cid] = (round(priority, 4), rationale)
-
-    # A rejection carries its reason, so a mistaken one can be read back
-    # rather than guessed at.  Bare ids stay valid: the older shape, and
-    # what a model returns when it ignores the instruction.
-    drops: dict[str, str] = {}
-    raw_drops = data.get("candidates_to_drop")
-    if isinstance(raw_drops, list):
-        for d in raw_drops:
-            if isinstance(d, str) and d:
-                drops[d] = ""
-            elif isinstance(d, dict):
-                did = d.get("id")
-                if isinstance(did, str) and did:
-                    why = d.get("rationale")
-                    drops[did] = str(why).strip() if isinstance(why, str) else ""
-    for cid in set(scored):
-        drops.pop(cid, None)  # rankings win when an id lands in both
-    drop_ids = set(drops)
-
-    known_ids = {c.candidate_id for c in candidates}
-    unknown = (set(scored) | drop_ids) - known_ids
+    conds = tuple(goal.constraints or {})
+    scored = _parse_scores(data, conds)
+    unknown = set(scored) - {c.candidate_id for c in candidates}
     if unknown:
         logger.warning("llm.rank unknown_ids=%s", sorted(unknown))
 
     missing = 0
     decisions: list[RankDecision] = []
     for c in candidates:
-        cid = c.candidate_id
-        if cid in scored:
-            priority, rationale = scored[cid]
-            dropped = False
-            if not rationale:
-                rationale = f"llm_priority={priority:.4f}"
-        elif cid in drop_ids:
-            # The tag stays in front of the reason: it is what marks the
-            # decision as a rejection for anything counting them later,
-            # and the reason is what makes a mistaken one readable.
-            tag = _DEMOTED_TAG if demote_dropped else _DROP_TAG
-            why = drops[cid]
-            rationale = f"{tag}: {why}" if why else tag
-            priority, dropped = (_DEMOTED_PRIORITY, False) if demote_dropped else (0.0, True)
-        else:
-            priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
+        factors = scored.get(c.candidate_id)
+        if factors is None:
+            factors = {}
             missing += 1
-        # One line per candidate, not per batch. A batch line says 30
-        # were scored and never which link got which number, which is
-        # the only part a reader can argue with.
+            priority, dropped = _NEUTRAL_PRIORITY, False
+        else:
+            priority = _combine(factors, conds)
+            dropped = priority < threshold
+        rationale = _rationale(factors, conds) or "no_opinion"
         logger.info("scored %.2f %s%s", priority, where(c.url.canonical), _aside(rationale))
-        logger.debug("rank.scored url_key=%s priority=%.2f dropped=%s", c.url.url_key, priority, dropped)
+        logger.debug(
+            "rank.scored url_key=%s priority=%.2f factors=%s dropped=%s",
+            c.url.url_key,
+            priority,
+            rationale,
+            dropped,
+        )
         decisions.append(
             RankDecision(
-                candidate_id=cid,
+                candidate_id=c.candidate_id,
                 url_key=c.url.url_key,
                 priority=priority,
+                factors=factors,
                 dropped=dropped,
                 ranker="llm",
                 rationale=rationale,
@@ -494,3 +498,64 @@ def _to_decisions(
     if missing:
         logger.warning("llm.rank missing_ids=%d kept at neutral priority", missing)
     return decisions
+
+
+def _parse_scores(data: dict[str, Any], conds: tuple[str, ...]) -> dict[str, dict[str, float]]:
+    """id -> every factor it was scored on, clamped to [0, 1]."""
+    out: dict[str, dict[str, float]] = {}
+    raw = data.get("rankings")
+    if not isinstance(raw, list):
+        return out
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        cid = r.get("id")
+        if not isinstance(cid, str) or not cid:
+            continue
+        got = {
+            k: _clamp01(r[k])
+            for k in ("match", *conds)
+            if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)
+        }
+        if got:
+            out[cid] = got
+    return out
+
+
+def _combine(factors: dict[str, float], conds: tuple[str, ...]) -> float:
+    """Overall match, discounted by how far the conditions are met.
+
+    The conditions are a conjunction, so their product is what they
+    jointly say. Taken raw that product shrinks with the number of
+    conditions -- all of them at 0.8 gives 0.64 for two and 0.33 for
+    five -- which would make one threshold strict on a detailed goal and
+    loose on a broad one. The geometric mean is that product normalised
+    by how many there are, so all-at-0.8 is 0.8 whatever the count. It
+    is a monotone transform, so nothing is reordered: comparing the
+    geometric mean against t is the same decision as comparing the raw
+    product against t**k.
+
+    Floored rather than allowed to reach zero. One failed condition
+    should sink a candidate, but a candidate that fails one is not the
+    same as a candidate that fails three, and at zero they are
+    indistinguishable for ever after.
+    """
+    match = factors.get("match", _NEUTRAL_PRIORITY)
+    met = [factors[k] for k in conds if k in factors]
+    if not met:
+        return round(match, 4)
+    logs = sum(math.log(max(c, _CONDITION_FLOOR)) for c in met)
+    return round(match * math.exp(logs / len(met)), 4)
+
+
+def _rationale(factors: dict[str, float], conds: tuple[str, ...]) -> str:
+    """The scores as one readable line, so a priority can be argued with."""
+    if not factors:
+        return ""
+    return " ".join(f"{k}={factors[k]:.2f}" for k in ("match", *conds) if k in factors)
+
+
+def _clamp01(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, min(1.0, float(value)))

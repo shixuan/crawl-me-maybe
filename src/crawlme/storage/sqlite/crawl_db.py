@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     depth_limit INTEGER DEFAULT 5,
     domain_budget INTEGER DEFAULT 50,
     extraction_spec TEXT,
+    constraints     TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS rank_decisions (
     candidate_id   TEXT PRIMARY KEY,
     url_key        TEXT DEFAULT '',
     priority       REAL DEFAULT 0.0,
+    factors        TEXT DEFAULT '{}',
     dropped        INTEGER DEFAULT 0,
     rationale      TEXT,
     ranker         TEXT DEFAULT 'rule',
@@ -272,8 +274,8 @@ class SqliteCrawlDb:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
             "max_pages, max_tokens, max_duration_sec, "
-            "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "relevance_threshold, depth_limit, domain_budget, extraction_spec, constraints, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
@@ -287,6 +289,7 @@ class SqliteCrawlDb:
                 goal_json.get("depth_limit", 5),
                 goal_json.get("domain_budget", 50),
                 json.dumps(goal_json.get("extraction_spec")),
+                json.dumps(goal_json.get("constraints")),
                 goal_json.get("created_at", ""),
             ),
         )
@@ -394,13 +397,14 @@ class SqliteCrawlDb:
 
     def save_rank_decision(self, rd: RankDecision) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO rank_decisions(candidate_id, url_key, priority, "
+            "INSERT OR REPLACE INTO rank_decisions(candidate_id, url_key, priority, factors, "
             "dropped, rationale, ranker, tokens_used, decided_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rd.candidate_id,
                 rd.url_key,
                 rd.priority,
+                json.dumps(rd.factors),
                 1 if rd.dropped else 0,
                 rd.rationale,
                 rd.ranker,

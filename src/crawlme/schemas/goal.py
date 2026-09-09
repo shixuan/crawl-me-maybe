@@ -39,6 +39,10 @@ class CrawlGoal(BaseModel):
     depth_limit: int = 5
     domain_budget: int = 50
     extraction_spec: dict[str, Any] | None = None
+    # What a page must satisfy to count, named by the goal enhancer. The
+    # ranker scores each candidate against every entry, so the factors
+    # come from the goal rather than from the ranker's own guesses.
+    constraints: dict[str, str] | None = None
     created_at: datetime.datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="after")

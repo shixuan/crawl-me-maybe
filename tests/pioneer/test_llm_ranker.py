@@ -65,14 +65,15 @@ def _candidate(cid: str, **kw) -> Candidate:
     )
 
 
-def _rankings_json(n: int, *, drop: list[str] | None = None, priority: float = 0.8) -> str:
-    rankings = ", ".join(f'{{"id": "c{i}", "priority": {priority}, "rationale": "because {i}"}}' for i in range(n))
-    drops = ", ".join(f'"{d}"' for d in (drop or []))
-    return f'{{"rankings": [{rankings}], "candidates_to_drop": [{drops}]}}'
+def _rankings_json(n: int, *, match: float = 0.8, extra: dict[str, float] | None = None) -> str:
+    """A reply in the scoring contract: one entry per id, no drop list."""
+    fields = "".join(f', "{k}": {v}' for k, v in (extra or {}).items())
+    rankings = ", ".join(f'{{"id": "c{i}", "match": {match}{fields}}}' for i in range(n))
+    return f'{{"rankings": [{rankings}]}}'
 
 
-def _ranker(client: _StubClient, batch_size: int = 30, demote_dropped: bool = False) -> LLMRanker:
-    return LLMRanker(client, batch_size=batch_size, demote_dropped=demote_dropped)
+def _ranker(client: _StubClient, batch_size: int = 30, threshold: float = 0.0) -> LLMRanker:
+    return LLMRanker(client, batch_size=batch_size, threshold=threshold)
 
 
 @pytest.mark.asyncio
@@ -84,27 +85,38 @@ async def test_ranks_batch():
     assert by_id["c0"].priority == pytest.approx(0.8)
     assert by_id["c0"].dropped is False
     assert by_id["c0"].ranker == "llm"
-    assert by_id["c0"].rationale == "because 0"
+    assert by_id["c0"].rationale == "match=0.80"
     assert by_id["c0"].tokens_used == 160
     assert by_id["c1"].url_key == "k1"
 
 
 @pytest.mark.asyncio
-async def test_drop_list():
-    client = _StubClient([_resp(_rankings_json(1, drop=["c1"]))])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-    by_id = {d.candidate_id: d for d in decisions}
-    assert by_id["c1"].dropped is True
-    assert by_id["c1"].priority == 0.0
-    assert by_id["c1"].rationale == "llm_drop"
+async def test_threshold_refuses():
+    """Who refuses is the run, not the model. Measured drop rates for one
+    goal ran from 51% to 69% with nobody able to move them."""
+    client = _StubClient([_resp(_rankings_json(2, match=0.3))])
+    decisions = await _ranker(client, threshold=0.5).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+    assert all(d.dropped for d in decisions)
 
 
 @pytest.mark.asyncio
-async def test_drop_all_junk():
-    content = '{"rankings": [], "candidates_to_drop": ["c0", "c1"]}'
-    client = _StubClient([_resp(content)])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-    assert all(d.dropped for d in decisions)
+async def test_zero_threshold_keeps_all():
+    """--recall is the threshold at zero: a mode for reading the rejects
+    must not create any."""
+    client = _StubClient([_resp(_rankings_json(2, match=0.0))])
+    decisions = await _ranker(client, threshold=0.0).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+    assert not any(d.dropped for d in decisions)
+
+
+@pytest.mark.asyncio
+async def test_silence_is_never_refused():
+    """A candidate the model skipped was not judged, and refusing on
+    silence would turn an omission into a verdict."""
+    client = _StubClient([_resp(_rankings_json(1))])
+    decisions = await _ranker(client, threshold=0.9).rank_batch(_goal(), _candidates(2), RankHistorySummary())
+    by_id = {d.candidate_id: d for d in decisions}
+    assert by_id["c1"].dropped is False
+    assert by_id["c1"].rationale == "no_opinion"
 
 
 _NEUTRAL = (0.5, False, "no_opinion")
@@ -113,30 +125,21 @@ _NEUTRAL = (0.5, False, "no_opinion")
 @pytest.mark.parametrize(
     ("content", "n", "expected"),
     [
-        # An id in both lists is ranked, not dropped.
-        ('{"rankings": [{"id": "c0", "priority": 0.7}], "candidates_to_drop": ["c0"]}', 1, {"c0": (0.7, False, None)}),
         # An id the reply never mentions falls to a neutral keep.
         (_rankings_json(1), 2, {"c1": _NEUTRAL}),
         # Ids that do not exist are ignored, leaving both unmentioned.
+        ('{"rankings": [{"id": "ghost", "match": 0.9}]}', 2, {"c0": _NEUTRAL, "c1": _NEUTRAL}),
+        # Out of range on both ends.
         (
-            '{"rankings": [{"id": "ghost", "priority": 0.9}], "candidates_to_drop": ["phantom"]}',
-            2,
-            {"c0": _NEUTRAL, "c1": _NEUTRAL},
-        ),
-        (
-            '{"rankings": [{"id": "c0", "priority": 1.7}, {"id": "c1", "priority": -0.3}], "candidates_to_drop": []}',
+            '{"rankings": [{"id": "c0", "match": 1.7}, {"id": "c1", "match": -0.3}]}',
             2,
             {"c0": (1.0, False, None), "c1": (0.0, False, None)},
         ),
-        # True is not a priority, however happily JSON carries it.
-        ('{"rankings": [{"id": "c0", "priority": true}], "candidates_to_drop": []}', 1, {"c0": _NEUTRAL}),
+        # True is not a score, however happily JSON carries it.
+        ('{"rankings": [{"id": "c0", "match": true}]}', 1, {"c0": _NEUTRAL}),
         # Prose around the JSON, and trailing commas inside it.
-        ("Here are the scores:\n" + _rankings_json(1) + "\nHope that helps.", 1, {"c0": (0.8, False, "because 0")}),
-        (
-            '{"rankings": [{"id": "c0", "priority": 0.6,},], "candidates_to_drop": [],}',
-            1,
-            {"c0": (0.6, False, None)},
-        ),
+        ("Here are the scores:\n" + _rankings_json(1) + "\nHope that helps.", 1, {"c0": (0.8, False, None)}),
+        ('{"rankings": [{"id": "c0", "match": 0.6,},],}', 1, {"c0": (0.6, False, None)}),
     ],
 )
 @pytest.mark.asyncio
@@ -207,8 +210,8 @@ async def test_prompt_shape():
     assert "c0:" in call["prompt"] and "c1:" in call["prompt"]
     assert "anchor: link 0" in call["prompt"]
     assert "depth: 1" in call["prompt"]
-    assert "compare" in call["system"]
-    assert "candidates_to_drop" in call["system"]
+    assert "on its own" in call["system"], "scores must not be relative to the batch"
+    assert "candidates_to_drop" not in call["system"]
 
 
 @pytest.mark.asyncio
@@ -345,72 +348,6 @@ async def test_retry_stricter():
 # recall mode ------------------------------------------------------------
 
 
-async def test_recall_demotes():
-    """A wrong keep is a page you skim; a wrong drop you never learn about.
-
-    The model still says what it doubts, and that still sinks the
-    candidate. What changes is who stops the work: the page budget
-    rather than one model's yes or no.
-    """
-    body = '{"rankings": [{"id": "c0", "priority": 0.9}], "candidates_to_drop": ["c1"]}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-
-    by_id = {d.candidate_id: d for d in decisions}
-    assert by_id["c1"].dropped is False
-    assert by_id["c1"].priority < by_id["c0"].priority
-    assert by_id["c1"].rationale == "llm_drop_demoted"
-
-
-async def test_reject_lowest():
-    """Silence is weaker evidence than an argument against."""
-    body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-
-    by_id = {d.candidate_id: d for d in decisions}
-    assert by_id["c0"].rationale == "no_opinion"
-    assert by_id["c1"].priority < by_id["c0"].priority
-
-
-async def test_reject_dropped():
-    body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-    assert {d.candidate_id for d in decisions if d.dropped} == {"c1"}
-
-
-async def test_reject_reason():
-    """Every misjudged drop was a black box: no reason was ever stored.
-
-    Reading back why the model rejected something is what decides
-    whether the fix belongs in the goal the user wrote or in how the
-    ranker is asked to judge, instead of guessing between the two.
-    """
-    body = '{"rankings": [], "candidates_to_drop": [{"id": "c0", "rationale": "a toy shop, not food"}]}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-
-    assert decisions[0].dropped is True
-    assert decisions[0].rationale == "llm_drop: a toy shop, not food"
-
-
-async def test_bare_id_reject():
-    """What a model returns when it ignores the shape it was asked for."""
-    client = _StubClient([_resp('{"rankings": [], "candidates_to_drop": ["c0"]}')])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-    assert decisions[0].dropped is True
-    assert decisions[0].rationale == "llm_drop"
-
-
-async def test_demote_reason():
-    body = '{"rankings": [], "candidates_to_drop": [{"id": "c0", "rationale": "weaker than the rest"}]}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client, demote_dropped=True).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-    assert decisions[0].rationale == "llm_drop_demoted: weaker than the rest"
-    assert decisions[0].dropped is False
-
-
 # whole candidates, split batches -----------------------------------------
 
 
@@ -451,26 +388,71 @@ async def test_proxies_capped():
     assert "z" * 500 not in client.calls[0]["prompt"]
 
 
-async def test_kept_no_reason():
-    """Its priority is the whole answer, and prose is what overran.
-
-    Rationales for a batch of twenty-one were most of an 8k reply; a
-    rejection still carries one, because that is the judgement a reader
-    has to be able to argue with.
-    """
-    body = '{"rankings": [{"id": "c0", "priority": 0.8}], "candidates_to_drop": []}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-    assert decisions[0].dropped is False
-    assert decisions[0].rationale == "llm_priority=0.8000", "the score stands in for words"
-
-
-async def test_reason_on_drop():
+async def test_scores_stand_in_for_words():
+    """The score is the whole answer, and prose is what overran: the
+    rationales for a batch of twenty-one were most of an 8k reply."""
     client = _StubClient([_resp(_rankings_json(1))])
-    await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    assert decisions[0].rationale == "match=0.80"
+    assert decisions[0].factors == {"match": 0.8}
+
+
+@pytest.mark.asyncio
+async def test_conditions_become_factors():
+    """The factors are the goal's own conditions, so a different goal
+    gets different ones and this module never names any."""
+    goal = _goal()
+    goal.constraints = {"region": "in the GTA", "category": "non-food"}
+    client = _StubClient([_resp(_rankings_json(1, match=0.8, extra={"region": 1.0, "category": 0.5}))])
+    decisions = await _ranker(client).rank_batch(goal, _candidates(1), RankHistorySummary())
+
     system = client.calls[0]["system"]
-    assert '"rankings": [{"id": "<id>", "priority": 0.0}]' in system
-    assert '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]' in system
+    assert '"region": 0.0' in system and '"category": 0.0' in system
+    assert "## Conditions" in client.calls[0]["prompt"]
+    # 0.8 discounted by the geometric mean of 1.0 and 0.5.
+    assert decisions[0].priority == pytest.approx(0.8 * (1.0 * 0.5) ** 0.5, abs=1e-4)
+    assert decisions[0].factors["region"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_score_ignores_how_many_conditions():
+    """One threshold has to mean the same thing on a detailed goal and a
+    broad one. A raw product of conditions all at 0.8 gives 0.64 for two
+    and 0.33 for five, which would make it stricter the more the goal
+    says."""
+    seen = []
+    for k in (2, 5):
+        goal = _goal()
+        goal.constraints = {f"c{i}": f"condition {i}" for i in range(k)}
+        extra = {f"c{i}": 0.8 for i in range(k)}
+        client = _StubClient([_resp(_rankings_json(1, match=1.0, extra=extra))])
+        decisions = await _ranker(client).rank_batch(goal, _candidates(1), RankHistorySummary())
+        seen.append(decisions[0].priority)
+    assert seen[0] == pytest.approx(0.8, abs=1e-3)
+    assert seen[0] == pytest.approx(seen[1], abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_failures_stay_apart():
+    """One failed condition should sink a candidate, but failing one is
+    not failing three, and at zero the two are the same for ever."""
+    out = []
+    for zeros in (1, 3):
+        goal = _goal()
+        goal.constraints = {f"c{i}": f"condition {i}" for i in range(3)}
+        extra = {f"c{i}": (0.0 if i < zeros else 1.0) for i in range(3)}
+        client = _StubClient([_resp(_rankings_json(1, match=1.0, extra=extra))])
+        decisions = await _ranker(client).rank_batch(goal, _candidates(1), RankHistorySummary())
+        out.append(decisions[0].priority)
+    assert 0 < out[1] < out[0] < 0.25
+
+
+@pytest.mark.asyncio
+async def test_no_conditions_keeps_the_match():
+    """A goal that states no conditions scores the way it always did."""
+    client = _StubClient([_resp(_rankings_json(1, match=0.7))])
+    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
+    assert decisions[0].priority == pytest.approx(0.7)
 
 
 def _hours_ago(h: float):

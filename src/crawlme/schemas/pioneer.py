@@ -81,6 +81,9 @@ class RankDecision(BaseModel):
     candidate_id: str
     url_key: str = ""
     priority: float = 0.0
+    # Every factor's own score, kept so a priority can be taken apart
+    # afterwards. A single number cannot say which condition failed.
+    factors: dict[str, float] = Field(default_factory=dict)
     dropped: bool = False
     rationale: str | None = None
     ranker: str = "rule"

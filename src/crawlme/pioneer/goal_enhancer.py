@@ -29,6 +29,26 @@ logger = logging.getLogger(__name__)
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
+def _parse_constraints(raw: object) -> dict[str, str] | None:
+    """Validate the conditions, or return None when the goal states none.
+
+    Held to the same shape as the extraction fields, and for the same
+    reason: these names become the ranker's factor names, and a factor
+    called whatever the model felt like is one nobody can compare across
+    runs.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    clean: dict[str, str] = {}
+    for name, desc in raw.items():
+        if not isinstance(name, str) or not _FIELD_NAME.fullmatch(name.strip()):
+            continue
+        text = str(desc).strip() if isinstance(desc, str) else ""
+        if text:
+            clean[name.strip()] = text
+    return dict(list(clean.items())[:_MAX_CONSTRAINTS]) or None
+
+
 def _extract_keywords(prompt: str) -> list[str]:
     """Bare tokenization, used when the model call fails."""
     return list(dict.fromkeys(w.lower() for w in _WORD_RE.findall(prompt)))
@@ -38,6 +58,9 @@ _MAX_KEYWORDS = 12
 _MAX_SPEC_FIELDS = 8
 _MAX_SPEC_DESC = 200
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+# Same cap as the extraction fields: a goal with more conditions than
+# this is one nobody could read the scores of either.
+_MAX_CONSTRAINTS = 8
 _SINCE_MAX_AGE_DAYS = 3650
 
 # The model cannot know today's date on its own, and time-window goals
@@ -56,6 +79,12 @@ _SYSTEM = (
     "goal asks for particular pieces of information out of each page; a goal that asks "
     "to find pages on a subject gets null. Take the fields from the goal's own wording "
     "and stay in its own domain. At most 8 fields. "
+    "constraints names the conditions a page must satisfy to count at all, as "
+    '{"<snake_case_name>": "<the condition, stated so it can be checked against one page>"}. '
+    "These are the goal's filters rather than what to collect: a place, a category, a kind "
+    "of subject, a kind of event. List each condition the goal states, one entry each, "
+    "neither merged nor split, in English whatever the prompt's language. A goal that "
+    "states no conditions gets null. At most 8. "
     "Keep every constraint of the original prompt: never narrow the goal."
 )
 
@@ -67,6 +96,10 @@ class EnhancedGoal:
     statement: str
     keywords: list[str]
     since: datetime.datetime | None
+    # What a page must satisfy to count, one entry per condition the goal
+    # states. The ranker scores a candidate against each of them, so this
+    # is the goal's own decomposition rather than one this code invents.
+    constraints: dict[str, str] | None = None
     # None means this goal asks to find pages, not to collect fields out
     # of them, and the analyzer keeps its existing shape.
     extraction_spec: dict[str, Any] | None = None
@@ -115,15 +148,19 @@ class GoalEnhancer:
         if parsed is None:
             logger.warning("goal.enhance unparseable json, using raw prompt")
             return None
-        statement, keywords, since, spec = parsed
+        statement, keywords, since, spec, constraints = parsed
         if not statement:
             logger.warning("goal.enhance empty statement, using raw prompt")
             return None
         if not keywords:
             keywords = _extract_keywords(goal.prompt)
-        return EnhancedGoal(statement=statement, keywords=keywords, since=since, extraction_spec=spec)
+        return EnhancedGoal(
+            statement=statement, keywords=keywords, since=since, extraction_spec=spec, constraints=constraints
+        )
 
-    def _parse(self, content: str) -> tuple[str, list[str], datetime.datetime | None, dict[str, Any] | None] | None:
+    def _parse(
+        self, content: str
+    ) -> tuple[str, list[str], datetime.datetime | None, dict[str, Any] | None, dict[str, str] | None] | None:
         """Parse the LLM's JSON, tolerating prose wrapped around it."""
         data = parse_json_response(content)
         if data is None:
@@ -140,7 +177,7 @@ class GoalEnhancer:
             keywords = []
         since = self._parse_since(data.get("since"))
         spec = self._parse_spec(data.get("extraction_spec"))
-        return statement, keywords, since, spec
+        return statement, keywords, since, spec, _parse_constraints(data.get("constraints"))
 
     def _parse_spec(self, raw: object) -> dict[str, Any] | None:
         """Validate the field list, or return None to extract nothing.
