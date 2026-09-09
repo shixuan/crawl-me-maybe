@@ -28,7 +28,7 @@ import httpx
 from crawlme.config import Settings
 from crawlme.llm.budget import TokenBudget
 from crawlme.llm.errors import LLMError
-from crawlme.llm.reasoning import effort_for
+from crawlme.llm.reasoning import effort_for, step_down
 
 logger = logging.getLogger(__name__)
 
@@ -300,21 +300,46 @@ class LLMClient:
                         self._budget.record(
                             input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
                         )
+                    # Thought away the whole allowance and said nothing.
+                    # The fix is not more room, it is less thinking, and
+                    # leaving it to the next run means paying twice for
+                    # the same silence.
+                    lower = self._quieter()
+                    if not content and thinking_tokens > 0 and lower:
+                        logger.warning(
+                            "llm.chat.thinking_only out=%d ceiling=%d; asking again at reasoning=%s",
+                            output_tokens,
+                            ceiling,
+                            lower,
+                        )
+                        if self._budget is not None:
+                            self._budget.check()
+                        resp = await self._complete(messages, ceiling, json_mode, effort=lower)
+                        content = (resp.choices[0].message.content or "").strip()
+                        usage = resp.usage
+                        input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                        output_tokens = getattr(usage, "completion_tokens", 0) or 0
+                        cached_tokens = _cached_input(usage)
+                        thinking_tokens = _reasoning_output(resp, usage)
+                        if self._budget is not None:
+                            self._budget.record(
+                                input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
+                            )
                     # An empty answer counts too. A model that thinks
                     # away the whole allowance stops one token under the
                     # ceiling, which read as a healthy reply that would
                     # not parse.
                     truncated = output_tokens >= ceiling or (not content and output_tokens > 0)
                     if truncated:
+                        # Thinking down is no longer advice to give: the
+                        # step-down above has already tried it, or the
+                        # model has nowhere lower to go.
                         logger.warning(
-                            "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; nothing left for the "
-                            "answer (turn thinking down for this stage, or raise LLM_MAX_OUTPUT_TOKENS)"
-                            if not content
-                            else "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; the reply is cut short "
-                            "(raise LLM_MAX_OUTPUT_TOKENS)",
+                            "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; %s (raise LLM_MAX_OUTPUT_TOKENS)",
                             output_tokens,
                             thinking_tokens,
                             ceiling,
+                            "nothing left for the answer" if not content else "the reply is cut short",
                         )
                     # Wall clock around the await, which on a busy loop
                     # includes waiting to be scheduled. Named for what it
@@ -357,7 +382,21 @@ class LLMClient:
                         await _sleep(delay)
         raise LLMError(f"LLM call failed after {_LLM_MAX_RETRIES + 1} attempts: {last_err}") from last_err
 
-    async def _complete(self, messages: list[dict[str, str]], max_tokens: int, json_mode: bool) -> Any:
+    def _quieter(self) -> str:
+        """The effort to retry at, or empty when retrying cannot help.
+
+        Empty covers both ends: a model that does not take the parameter
+        at all, and one already at the floor.
+        """
+        lower = step_down(self._reasoning_effort)
+        if not lower:
+            return ""
+        quieter = effort_for(self._model, lower)
+        return quieter if quieter != effort_for(self._model, self._reasoning_effort) else ""
+
+    async def _complete(
+        self, messages: list[dict[str, str]], max_tokens: int, json_mode: bool, effort: str = ""
+    ) -> Any:
         litellm = _litellm_module()
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -371,7 +410,7 @@ class LLMClient:
             kwargs["api_base"] = self._base_url
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        effort = effort_for(self._model, self._reasoning_effort)
-        if effort:
-            kwargs["reasoning_effort"] = effort
+        sending = effort or effort_for(self._model, self._reasoning_effort)
+        if sending:
+            kwargs["reasoning_effort"] = sending
         return await litellm.acompletion(**kwargs)
