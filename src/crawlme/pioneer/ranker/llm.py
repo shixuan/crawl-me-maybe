@@ -5,8 +5,8 @@ survivors (at most _BATCH_SIZE per call) is sent to the LLM in a single
 request.  The model sees the goal, what the crawl found so far, and the
 whole batch at once, so it compares links against each other instead of
 judging each in isolation.  The response carries a priority and
-rationale per candidate, a drop list for clear junk, and optional new
-search suggestions.
+rationale per candidate and a drop list for the ones that would not
+answer the goal.
 
 Failure policy.  An LLMError (provider failure, token budget
 exhausted) propagates.  Nothing catches it any more, since the stages
@@ -29,7 +29,7 @@ from typing import Any
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
-from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
+from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary, spec_fields
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,8 @@ _DEMOTED_TAG = "llm_drop_demoted"
 _MAX_RELEVANT = 5
 
 _SYSTEM = (
-    "You are a link priority evaluator for a web crawler. Your task is not to judge "
-    "whether a link is relevant, but which link to click first under a limited budget. "
+    "You decide which links a web crawler should fetch under a limited budget, and in "
+    "what order. "
     "You see a batch of candidate links plus the crawl goal and what the crawl found "
     "so far, so compare the candidates against each other, not in isolation. Reply "
     'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0}], '
@@ -69,9 +69,13 @@ _SYSTEM = (
     "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
     "clicked earlier, so use the full 0.0 to 1.0 range, and no rationale: the "
     "priority is the whole answer for something you are keeping. candidates_to_drop "
-    "holds clear junk under the goal, each with a short rationale saying what makes "
-    "it junk, because a rejection is the one a reader has to be able to argue with. "
-    "If the whole batch is junk, put every id in candidates_to_drop."
+    "holds the ones that would not answer the goal, each with a short rationale "
+    "saying why, because a rejection is the one a reader has to be able to argue "
+    "with. Drop a candidate when what you can see is enough to say it will not "
+    "answer, not only when it is obvious junk. Being unsure is not such a reason: "
+    "a candidate you cannot rule out belongs in rankings with a low priority, never "
+    "in candidates_to_drop. If none of the batch would answer, put every id in "
+    "candidates_to_drop."
 )
 
 _REPAIR_SUFFIX = (
@@ -248,9 +252,10 @@ def _build_prompt(
     history: RankHistorySummary,
     page_contexts: dict[str, dict[str, Any]] | None,
 ) -> str:
-    """Assemble the user prompt: goal, prior findings, candidate batch."""
-    lines = ["## Goal", goal.prompt]
+    """Assemble the user prompt: goal, fields to collect, prior findings, candidate batch."""
+    lines = ["## Goal", goal.goal_statement or goal.prompt]
     lines.extend(_window_lines(goal))
+    lines.extend(_extract_lines(goal))
     if history.relevant_pages:
         # Deduplicated, because identical lines are not five findings.
         # Instagram titles every page "Instagram", so this block once
@@ -285,6 +290,20 @@ def _build_prompt(
             lines.append(f"  source page: {_build_source_line(src, str(source_title))}")
         lines.append(f"  depth: {c.depth}")
     return "\n".join(lines)
+
+
+def _extract_lines(goal: CrawlGoal) -> list[str]:
+    """The fields the analyzer will look for, said here too.
+
+    The two stages used to judge different goals, the ranker the user's
+    raw wording and the analyzer the enhanced statement plus these
+    fields.  A candidate that plainly cannot yield them is one the
+    analyzer will reject, and the ranker had no way to know that.
+    """
+    fields = spec_fields(goal.extraction_spec)
+    if not fields:
+        return []
+    return ["## Extract", *(f"- {name}: {desc}" for name, desc in fields.items())]
 
 
 def _window_lines(goal: CrawlGoal) -> list[str]:

@@ -518,3 +518,44 @@ def test_no_window() -> None:
     """Most goals have none, and an empty heading is a line per call."""
     prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "Window" not in prompt
+
+
+def test_goal_statement_wins() -> None:
+    """The analyzer judges the enhanced statement, so the ranker has to
+    judge it too, or the two stages score different goals."""
+    goal = CrawlGoal(prompt="raw words", goal_statement="the enhanced statement")
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert "the enhanced statement" in prompt
+    assert "raw words" not in prompt
+
+
+def test_prompt_used_without_statement() -> None:
+    """A run without the Goal Enhancer still has to say what it wants."""
+    prompt = _build_prompt(CrawlGoal(prompt="raw words"), [_candidate("c1")], RankHistorySummary(), {})
+    assert "raw words" in prompt
+
+
+def test_extract_fields_shown() -> None:
+    """A candidate that cannot yield the fields is one the analyzer will
+    reject, and the ranker could not see them at all."""
+    goal = CrawlGoal(
+        prompt="g",
+        extraction_spec={"fields": {"deadline": "when the offer ends"}},
+    )
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert "## Extract" in prompt
+    assert "- deadline: when the offer ends" in prompt
+
+
+def test_no_fields_no_block() -> None:
+    """A goal that asks to find pages collects nothing."""
+    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    assert "## Extract" not in prompt
+
+
+def test_extract_before_candidates() -> None:
+    """Fixed for the whole run, so it sits ahead of anything that
+    changes per call and stays inside the cached prefix."""
+    goal = CrawlGoal(prompt="g", extraction_spec={"fields": {"deadline": "d"}})
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert prompt.index("## Extract") < prompt.index("## Candidate links")
