@@ -55,38 +55,50 @@ _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0
 # Bump when the prompt changes in a way that changes outputs, so
 # stored analyses stay comparable across versions.
-_PROMPT_VERSION = "v2.5"
-
 _MAX_TAGS = 8
 _MAX_ENDORSED = 5
 
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
 
+# What the classes mean, said once and shared by both prompts.
+_JUDGEMENT = (
+    "classification: RELEVANT means the page directly satisfies the goal; HUB means the "
+    "page itself is thin but links toward the goal, a feed or index page included; "
+    "IRRELEVANT means unrelated; NAVIGATION means menus, login pages, category indexes. "
+    "relevance_score is how well the page satisfies the goal, hub_score is how good this "
+    "page is as a link source for the goal, both 0.0 to 1.0. summary is one or two "
+    "sentences. tags describe the content. endorsed_links are up to 5 URLs from the page "
+    "text that you would click yourself."
+)
+
+_PROMPT_VERSION = "v2.6"
+
+# One judgement, three answer shapes. Two thirds of this stage's bill is
+# what the model writes, and for a page that will be discarded every
+# field after the verdict is written and then thrown away.
 _SYSTEM = (
     "You analyze web pages for a goal-directed crawler. You get the crawl goal, the page "
-    "URL, title, and text. Classify the page, summarize what it offers, and produce "
-    "feedback signals the crawler's scheduler uses. Reply with JSON only, no prose. "
-    'Format: {"classification": "<RELEVANT|HUB|AGGREGATOR|IRRELEVANT|NAVIGATION>", '
-    '"relevance_score": 0.0, "hub_score": 0.0, "summary": "...", "tags": ["..."], '
-    '"endorsed_links": ["..."]}. '
-    "classification: RELEVANT means the page directly satisfies the goal; HUB means the "
-    "page itself is thin but links toward the goal; AGGREGATOR means a link aggregator "
-    "like a Hacker News front page; IRRELEVANT means unrelated; NAVIGATION means menus, "
-    "login pages, category indexes. relevance_score is how well the page satisfies the "
-    "goal, hub_score is how good this page is as a link source for the goal, both 0.0 to "
-    "1.0. summary is one or two sentences. tags describe the content. "
-    "endorsed_links are up to 5 URLs from the page text that you would "
-    "click yourself."
+    "URL, title, and text. Classify the page, and describe it only as far as the "
+    "classification warrants. Reply with JSON only, no prose. "
+    "For a page you discard, reply exactly "
+    '{"classification": "<IRRELEVANT|NAVIGATION>", "relevance_score": 0.0, "hub_score": 0.0} '
+    "and nothing more, because the page is thrown away and no other field is ever read. "
+    "For a page worth keeping only for where it points, reply "
+    '{"classification": "HUB", "relevance_score": 0.0, "hub_score": 0.0, '
+    '"endorsed_links": ["..."]}, with no summary and no tags. '
+    "For a page that answers the goal, reply "
+    '{"classification": "RELEVANT", "relevance_score": 0.0, "hub_score": 0.0, '
+    '"summary": "...", "tags": ["..."], "endorsed_links": ["..."]}. ' + _JUDGEMENT
 )
 
 
 _EXTRACT_SYSTEM = (
     ' Also fill "extracted": {"<field>": {"value": "...", "evidence": "..."}} for the '
-    "fields listed under ## Extract. evidence must be copied verbatim from the page "
-    "text and must contain the value. Omit any field the page does not state: a field "
-    "you leave out is read as unknown, and that is the correct answer whenever the page "
-    "does not say. Never infer a value from what is likely, and never use the goal's "
-    "own wording as evidence."
+    "fields listed under ## Extract, on a RELEVANT page only. evidence must be copied "
+    "verbatim from the page text and must contain the value. Omit any field the page "
+    "does not state: a field you leave out is read as unknown, and that is the correct "
+    "answer whenever the page does not say. Never infer a value from what is likely, "
+    "and never use the goal's own wording as evidence."
 )
 
 

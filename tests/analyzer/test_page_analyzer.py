@@ -514,3 +514,63 @@ def test_window_told() -> None:
 def test_window_absent() -> None:
     prompt = _build_prompt(CrawlGoal(prompt="g"), _page(), "body", 3000)
     assert "out of scope" not in prompt
+
+
+def _contract(analyzer_goal=None):
+    from crawlme.analyzer.page_analyzer import _system_for
+
+    return _system_for(analyzer_goal or _goal())
+
+
+def test_discard_shape_asks_for_nothing_else():
+    """Two thirds of this stage's bill is what the model writes, and on a
+    page that will be thrown away every field after the verdict is
+    written and then discarded."""
+    system = _contract()
+    discard = system[system.index("For a page you discard") : system.index("For a page worth keeping")]
+    assert '"classification"' in discard and '"relevance_score"' in discard
+    assert "summary" not in discard and "tags" not in discard
+
+
+def test_hub_shape_keeps_only_links():
+    """A hub is read for where it points, not for what it says."""
+    system = _contract()
+    hub = system[system.index("For a page worth keeping") : system.index("For a page that answers")]
+    assert '"endorsed_links"' in hub
+    assert '"summary"' not in hub
+
+
+def test_every_shape_names_its_fields():
+    """Without the key names the model invents its own, and the parser
+    degrades an unrecognised payload to UNKNOWN without complaining."""
+    system = _contract()
+    for shape in ("For a page you discard", "For a page worth keeping", "For a page that answers"):
+        rest = system[system.index(shape) :]
+        assert '"classification"' in rest[:400], shape
+
+
+def test_extraction_is_scoped_to_keepers():
+    """A hub has no merchant or deadline on it, so asking for fields
+    there is waste by definition."""
+    goal = _goal()
+    goal.extraction_spec = {"fields": {"merchant": "who is running it"}}
+    system = _contract(goal)
+    assert "RELEVANT page only" in system
+
+
+@pytest.mark.asyncio
+async def test_results_name_their_prompt():
+    """Rows written by the old contract and the new one sit in the same
+    table, so they have to say which one produced them."""
+    client = _StubClient([_resp(_valid_json())])
+    result = await PageAnalyzer(client).analyze(_page(), _goal())
+    assert result is not None and result.prompt_version == "v2.6"
+
+
+def test_aggregator_is_gone():
+    """It named the same thing HUB did, nothing read them apart, and the
+    model chose it zero times in three runs."""
+    from crawlme.schemas import CLASSIFICATIONS
+
+    assert "AGGREGATOR" not in CLASSIFICATIONS
+    assert "AGGREGATOR" not in _contract()

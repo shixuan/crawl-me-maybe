@@ -12,8 +12,13 @@ from crawlme.schemas.core import _new_id, _utcnow
 # Declaration order is display order: the report walks this rather
 # than sorting by count, so the same line reads the same way every run
 # and the two verdicts a reader looks for come first.
-Classification = Literal["RELEVANT", "IRRELEVANT", "HUB", "AGGREGATOR", "NAVIGATION", "UNKNOWN"]
-CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "HUB", "AGGREGATOR", "NAVIGATION", "UNKNOWN")
+# AGGREGATOR was folded into HUB. Both named a page kept for its links,
+# nothing ever read them apart, and in three runs the model chose it zero
+# times: the difference it asked for was between "aggregates for this
+# goal" and "aggregates for everyone", which is not a distinction a
+# crawler acts on.
+Classification = Literal["RELEVANT", "IRRELEVANT", "HUB", "NAVIGATION", "UNKNOWN"]
+CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "HUB", "NAVIGATION", "UNKNOWN")
 
 
 class ExtractedField(BaseModel):
