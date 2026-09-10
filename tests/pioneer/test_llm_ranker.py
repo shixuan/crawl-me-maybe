@@ -269,11 +269,11 @@ async def _prompt_with_source(src: dict) -> str:
             "Compiler Blog [RELEVANT 0.90] — A deep dive into borrow checking.",
         ),
         # A judgement with no summary still contributes its classification.
-        ({"title": "Nav", "classification": "NAVIGATION", "relevance": 0.0}, "Nav [NAVIGATION 0.00]"),
+        ({"title": "Nav", "classification": "IRRELEVANT", "relevance": 0.0}, "Nav [IRRELEVANT 0.00]"),
         # Batches carry thirty candidates, so a summary has to stay short.
         (
-            {"title": "T", "classification": "HUB", "relevance": 0.5, "summary": "x" * 200},
-            "T [HUB 0.50] — " + "x" * 60 + "...",
+            {"title": "T", "classification": "RELEVANT", "relevance": 0.5, "summary": "x" * 200},
+            "T [RELEVANT 0.50] — " + "x" * 60 + "...",
         ),
     ],
 )

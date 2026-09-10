@@ -104,32 +104,6 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _endorsed_href(link: str) -> str | None:
-    """Normalize one analyzer-endorsed link, or reject it.
-
-    Endorsements are copied out of page text by a model, so unlike a
-    harvested href they are not guaranteed to be links at all.  A bare
-    host resolved against the page it was found on becomes a path on the
-    wrong site: a run endorsed "www.mollyteaca.com" from an Instagram
-    profile and fetched instagram.com/mollytea_canada/www.mollyteaca.com,
-    which Instagram answered 200 for, as it does for any path.  A page
-    that does not exist then cost a fetch, an analysis, and a slot in the
-    page budget.
-
-    A leading "www." is the one bare host worth rescuing rather than
-    dropping: no relative path starts that way.  Anything else has to
-    look like a link already.
-    """
-    href = link.strip()
-    if not href:
-        return None
-    if href.startswith(("http://", "https://", "/")):
-        return href
-    if href.lower().startswith("www."):
-        return f"https://{href}"
-    return None
-
-
 class CrawlScheduler:
     """Orchestrator that wires all v0.1 modules together.
 
@@ -168,13 +142,9 @@ class CrawlScheduler:
         # post permalinks. Defaults to links so a bare scheduler
         # behaves as it always did.
         self._harvester: Harvester = harvester or PageHarvester(canonicalizer)
-        # The analyzer, or None when the subsystem is off.  It reads a
-        # fetched page and returns a verdict with the evidence behind
-        # it; the endorsed links it names are the only way a crawl
-        # leaves the platform it started on, so they are collected here
-        # and injected at the next enqueue.
+        # The analyzer, or None when the subsystem is off. It reads a
+        # fetched page and returns a verdict with the evidence behind it.
         self._analyzer = analyzer
-        self._endorsed: collections.deque[tuple[str, str]] = collections.deque()
         # The pages judged relevant so far, newest last, for the ranker's
         # "seen so far" section.  Bounded, because the prompt shows only
         # the last few and an unbounded list would grow for a whole run
@@ -441,13 +411,11 @@ class CrawlScheduler:
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
-        """Analyzer sink: persist, tally, and keep the endorsed links."""
+        """Analyzer sink: persist and tally."""
         self._storage.save_analysis(result.model_dump(mode="json"))
         by_class = self._ctx.ledger.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
         fb = result.feedback
-        if fb.endorsed_links and fb.url:
-            self._endorsed.extend((link, fb.url) for link in fb.endorsed_links)
         # What the ranker is told about the run so far.  This is the
         # analysis half of the loop: ranking predicts, analysis
         # establishes, and what analysis established goes back into the
@@ -749,7 +717,6 @@ class CrawlScheduler:
 
     async def _fetch_pump(self) -> None:
         while self._state == "RUNNING":
-            await self._inject_endorsed()
             reasons = check_stop(
                 self._task,  # type: ignore[arg-type]
                 self._frontier,
@@ -936,53 +903,6 @@ class CrawlScheduler:
         )
         logger.debug("listing.next_page url=%s page=%d", url.canonical, pages + 2)
 
-    async def _inject_endorsed(self) -> None:
-        """Push analyzer-endorsed links straight into the frontier.
-
-        The analyzer "would click" these links itself, so they skip the
-        ranking funnel and enter at full priority.  They still pass the
-        prefilter (dedup, scope, robots, depth), so an endorsement can
-        never override the crawler's hard rules.
-        """
-        if self._goal is None or not self._endorsed:
-            return
-        endorsed = list(self._endorsed)
-        self._endorsed.clear()
-        if not endorsed:
-            return
-        ctx = self._frontier.get_prefilter_context(
-            allow_fetch=lambda url: self._robots.allow_fetch(url),
-        )
-        items: list[FrontierItem] = []
-        for link, source_url in endorsed:
-            usable = _endorsed_href(link)
-            if usable is None:
-                logger.debug("endorsed.unusable link=%r source=%s", link[:80], source_url)
-                continue
-            url = self._canonicalizer.canonicalize(usable, source_url)
-            source_key = self._pages.key_of(source_url)
-            source_depth = int(self._page_contexts.get(source_key, {}).get("depth", 0))
-            candidate = Candidate(url=url, depth=source_depth + 1, discovered_at=_utcnow())
-            decision, _ = self._prefilter.check(candidate, self._goal, ctx)
-            if decision.value != "allow":
-                continue
-            items.append(
-                FrontierItem(
-                    url=url,
-                    url_key=url.url_key,
-                    priority=1.0,
-                    score_source="endorsed",
-                    depth=source_depth + 1,
-                    reg_domain=url.reg_domain,
-                    # A shop's own site endorsed from an account belongs
-                    # to that account's share, not to a share of its own.
-                    seed_url_key=self._pages.seed_of(source_key, source_key),
-                )
-            )
-        if items:
-            await self._frontier.push_batch(items)
-            logger.debug("endorsed.injected count=%d", len(items))
-
     async def _fetch_and_extract(self, item: FrontierItem) -> tuple[FetchResult, Page] | None:
         """Download and parse one page while holding a fetch slot.
 
@@ -1154,8 +1074,7 @@ class CrawlScheduler:
                 page.extraction_status,
             )
 
-            # Record page context for the ranker, plus the URL and
-            # depth an endorsed link is resolved against.
+            # Record page context for the ranker.
             self._record_page_context(
                 page.url_key,
                 {

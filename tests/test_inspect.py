@@ -42,7 +42,6 @@ def _analysis(url_key: str, goal_id: str, classification: str, relevance: float)
         "classification": classification,
         "relevance_score": relevance,
         "summary": f"summary of {url_key}",
-        "feedback": {"hub_score": 0.4},
         "model": "stub-model",
         "prompt_version": "v2.4",
         "tokens_used": 10,
@@ -153,7 +152,6 @@ async def test_cmd_json(tmp_path, monkeypatch, capsys):
     assert len(rows) == 3
     assert rows[0]["url"] == "https://example.com/a"
     assert rows[0]["classification"] == "RELEVANT"
-    assert rows[0]["hub_score"] == 0.4
     assert rows[0]["title"]
 
 

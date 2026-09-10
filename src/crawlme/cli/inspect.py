@@ -167,7 +167,6 @@ def _export(data: InspectData, fmt: str) -> None:
     rows: list[dict[str, Any]] = []
     for a in data.analyses:
         page = pages_by_key.get(a.get("url_key"))
-        feedback = json.loads(a.get("feedback_json") or "{}")
         rows.append(
             {
                 "url": json.loads(page["url_json"]).get("canonical", "") if page else "",
@@ -177,7 +176,6 @@ def _export(data: InspectData, fmt: str) -> None:
                 "goal_id": a.get("goal_id", ""),
                 "classification": a.get("classification", "UNKNOWN"),
                 "relevance_score": a.get("relevance_score", 0.0),
-                "hub_score": feedback.get("hub_score", 0.0),
                 "summary": a.get("summary") or "",
                 "tags": json.loads(a.get("tags_json") or "[]"),
                 "extracted": json.loads(a.get("extracted_json") or "{}"),
@@ -201,7 +199,6 @@ def _export(data: InspectData, fmt: str) -> None:
         "goal_id",
         "classification",
         "relevance_score",
-        "hub_score",
         "summary",
         "tags",
         "model",

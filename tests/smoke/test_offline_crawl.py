@@ -268,8 +268,6 @@ class _ScriptedLLM:
                     "tags": ["rust"],
                     "topics": ["memory safety"],
                     "entities": [],
-                    "hub_score": 0.2,
-                    "endorsed_links": [],
                 }
             )
         else:

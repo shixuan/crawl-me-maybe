@@ -58,10 +58,9 @@ def _page(text: str = "The Rust compiler borrow checker explained in detail.") -
 
 def _valid_json() -> str:
     return (
-        '{"classification": "RELEVANT", "relevance_score": 0.9, "hub_score": 0.3, '
+        '{"classification": "RELEVANT", "relevance_score": 0.9, '
         '"summary": "Explains the borrow checker.", "tags": ["rust", "compiler"], '
-        '"topics": ["borrow checking"], "entities": ["rustc"], '
-        '"endorsed_links": ["https://example.com/next"]}'
+        '"topics": ["borrow checking"], "entities": ["rustc"]}'
     )
 
 
@@ -90,8 +89,6 @@ async def test_full_result():
     # Feedback carries the scheduler-facing signals.
     fb = result.feedback
     assert fb.classification == "RELEVANT"
-    assert fb.hub_score == pytest.approx(0.3)
-    assert fb.endorsed_links == ["https://example.com/next"]
     assert fb.domain == "example.com"
     # Page identity rides along so the feedback signals can build the
     # ranker's "seen so far" history without the Page itself.
@@ -111,7 +108,7 @@ async def test_prompt_shape():
     assert "Borrow Checker Deep Dive" in call["prompt"]
     assert "borrow checker" in call["prompt"]
     assert "RELEVANT" in call["system"]
-    assert "endorsed_links" in call["system"]
+    assert "relevance_score" in call["system"]
 
 
 @pytest.mark.asyncio
@@ -155,22 +152,21 @@ async def test_prose_json():
 
 
 @pytest.mark.parametrize(
-    ("content", "classification", "relevance", "hub"),
+    ("content", "classification", "relevance"),
     [
         # A label outside the vocabulary degrades rather than guesses.
-        ('{"classification": "totally-relevant", "relevance_score": 0.5}', "UNKNOWN", 0.5, 0.0),
-        ('{"classification": "HUB", "relevance_score": 1.7, "hub_score": -0.3}', "HUB", 1.0, 0.0),
+        ('{"classification": "totally-relevant", "relevance_score": 0.5}', "UNKNOWN", 0.5),
+        ('{"classification": "IRRELEVANT", "relevance_score": 1.7}', "IRRELEVANT", 1.0),
         # True is not a score, however happily JSON carries it.
-        ('{"classification": "HUB", "relevance_score": true, "hub_score": false}', "HUB", 0.0, 0.0),
+        ('{"classification": "IRRELEVANT", "relevance_score": true}', "IRRELEVANT", 0.0),
     ],
 )
 @pytest.mark.asyncio
-async def test_field_coercion(content, classification, relevance, hub):
+async def test_field_coercion(content, classification, relevance):
     result = await _analyzer(_StubClient([_resp(content)])).analyze(_page(), _goal())
     assert result is not None
     assert result.classification == classification
     assert result.relevance_score == relevance
-    assert result.feedback.hub_score == hub
 
 
 @pytest.mark.asyncio
@@ -182,23 +178,21 @@ async def test_missing_fields():
     assert result.classification == "UNKNOWN"
     assert result.summary == ""
     assert result.tags == []
-    assert result.feedback.endorsed_links == []
 
 
 @pytest.mark.asyncio
 async def test_lists_capped():
     topics = ", ".join('"t"' for _ in range(15))
     content = (
-        '{"classification": "HUB", "tags": ["a", "a", "b", "c", "d", "e", "f", "g", "h", "i"], '
+        '{"classification": "RELEVANT", "tags": ["a", "a", "b", "c", "d", "e", "f", "g", "h", "i"], '
         f'"topics": [{topics}], '
         '"entities": ["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", "e11"], '
-        '"endorsed_links": ["u1", "u1", "u2", "u3", "u4", "u5", "u6", 42]}'
+        '"summary": "s"}'
     )
     client = _StubClient([_resp(content)])
     result = await _analyzer(client).analyze(_page(), _goal())
     assert result is not None
     assert result.tags == ["a", "b", "c", "d", "e", "f", "g", "h"]  # 8 cap, deduped
-    assert result.feedback.endorsed_links == ["u1", "u2", "u3", "u4", "u5"]  # 5 cap, non-str dropped
 
 
 # -- failure and retry policy --------------------------------------------
@@ -527,26 +521,29 @@ def test_discard_shape_asks_for_nothing_else():
     page that will be thrown away every field after the verdict is
     written and then discarded."""
     system = _contract()
-    discard = system[system.index("For a page you discard") : system.index("For a page worth keeping")]
+    discard = system[system.index("For a page you discard") : system.index("For a page that answers")]
     assert '"classification"' in discard and '"relevance_score"' in discard
     assert "summary" not in discard and "tags" not in discard
 
 
-def test_hub_shape_keeps_only_links():
-    """A hub is read for where it points, not for what it says."""
-    system = _contract()
-    hub = system[system.index("For a page worth keeping") : system.index("For a page that answers")]
-    assert '"endorsed_links"' in hub
-    assert '"summary"' not in hub
-
-
-def test_every_shape_names_its_fields():
+def test_both_shapes_name_their_fields():
     """Without the key names the model invents its own, and the parser
     degrades an unrecognised payload to UNKNOWN without complaining."""
     system = _contract()
-    for shape in ("For a page you discard", "For a page worth keeping", "For a page that answers"):
+    for shape in ("For a page you discard", "For a page that answers"):
         rest = system[system.index(shape) :]
         assert '"classification"' in rest[:400], shape
+
+
+def test_no_class_for_links_alone():
+    """HUB named a page kept for its links. Seven runs fetched 17 pages
+    on the analyzer's endorsement and got one result, against 25% on the
+    pages the ranker chose, so the class and the links both went."""
+    from crawlme.schemas import CLASSIFICATIONS
+
+    assert CLASSIFICATIONS == ("RELEVANT", "IRRELEVANT", "UNKNOWN")
+    system = _contract()
+    assert "HUB" not in system and "endorsed_links" not in system
 
 
 def test_extraction_is_scoped_to_keepers():
