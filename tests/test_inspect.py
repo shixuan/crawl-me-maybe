@@ -125,7 +125,8 @@ async def test_cmd_summary(tmp_path, monkeypatch, capsys):
     assert "task:      task1" in out
     assert "pages:     3 fetched" in out
     assert "2 RELEVANT" in out
-    assert "top relevant:" in out
+    # Results are grouped by whether they have run out, not ranked by score.
+    assert "still open (" in out or "no date given (" in out
     assert "Title a" in out  # highest relevance first
 
 
