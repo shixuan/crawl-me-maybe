@@ -12,12 +12,9 @@ from crawlme.schemas.core import _new_id, _utcnow
 # Declaration order is display order: the report walks this rather than
 # sorting by count, so the same line reads the same way every run.
 #
-# Two verdicts and a fallback. HUB and AGGREGATOR both named a page kept
-# for the links on it, and seven runs showed what that bought: 17 pages
-# fetched on the analyzer's endorsement, one of them a result, against a
-# 25% hit rate on the pages the ranker chose. NAVIGATION named menus and
-# login pages, appeared 9 times in 732 verdicts, and no branch ever read
-# it. A page is a result or it is not.
+# Two verdicts and a fallback. A page kept for its links used to have its
+# own verdict and bought 17 fetches for one result, against 25% on the
+# pages the ranker chose. A page is a result or it is not.
 Classification = Literal["RELEVANT", "IRRELEVANT", "UNKNOWN"]
 CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "UNKNOWN")
 

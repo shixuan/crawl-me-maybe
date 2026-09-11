@@ -155,12 +155,8 @@ def _build_browser_fetcher(settings: Settings) -> Fetcher:
     """
     from crawlme.digest.fetcher import PlaywrightFetcher
 
-    # A feed adapter is the only thing that knows which of a page's
-    # own requests carries the posts.  Without one, nothing is kept
-    # and the browser behaves exactly as it did before.
-    # However many the greediest enabled adapter asks for.  Nothing
-    # to scroll on a page nobody claims, and scrolling costs only the
-    # page's own next request.
+    # However many the greediest enabled adapter asks for.  Nothing to
+    # scroll on a page nobody claims.
     scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)
     return PlaywrightFetcher(
         storage_state=settings.browser_storage_state or None,

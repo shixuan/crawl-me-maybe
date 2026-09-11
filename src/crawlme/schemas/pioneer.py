@@ -35,11 +35,9 @@ class Candidate(BaseModel):
     # these a smaller share of its turns.
     seed_ext: bool = False
     # When the source says this was published, if it says so at all.
-    # Typed rather than left in the bag because the funnel scores on it
-    # and the time window filters on it, and a key read by name would
-    # fail silently on a typo: the score would simply be the default and
-    # nothing would say why.  Every feed has a publication time; a link
-    # has none, so None is the ordinary case.
+    # Typed rather than left in the bag because a key read by name fails
+    # silently on a typo, taking the default with nothing to say why.
+    # A link has no publication time, so None is ordinary.
     posted_at: datetime.datetime | None = None
     # Source-specific signals the funnel's factor set and the analyzer
     # pick from: hashtags, account, and whatever the next platform

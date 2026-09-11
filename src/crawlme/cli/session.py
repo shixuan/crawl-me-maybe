@@ -7,13 +7,12 @@ browser holds, for every site.  This opens a real browser at the
 platform, waits while a person logs in, and saves what the session
 became.
 
-Credentials never come near this process: they are typed into the
-platform's own page, in a browser window, and what lands on disk is the
-session that login produced.
+Credentials never come near this process.  They are typed into the
+platform's own page, and what lands on disk is the session that login
+produced.
 
-Deliberately its own command rather than something ``crawl run`` does on
-demand.  A crawl that stops halfway to open a window and wait for a
-human is a crawl that cannot run unattended, which is most of them.
+Its own command rather than something ``crawl run`` does on demand: a
+crawl that stops halfway to wait for a human cannot run unattended.
 """
 
 from __future__ import annotations

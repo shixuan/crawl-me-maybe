@@ -1,24 +1,17 @@
 """A local, read-only window onto what a crawl found.
 
-The crawler already stores every judgement it made and the page text
-backing each extracted field.  Until now nothing read it back: the
-results existed only as rows, or as whatever ``crawl inspect --export``
-printed to a terminal.  This serves them as a page you can filter.
-
-It is deliberately read-only and deliberately local.  Nothing here
-writes to a run database, and the server binds to the loopback address
-only, because a run database holds whatever a logged-in session could
-see and that is nobody else's business.
+Deliberately read-only and deliberately local.  Nothing here writes to
+a run database, and the server binds to the loopback address only,
+because a run database holds whatever a logged-in session could see.
 
     python dashboard/serve.py            # then open http://127.0.0.1:8765
     python dashboard/serve.py --port 9000 --results-dir ./results
 
-Reading is done with sqlite3 directly rather than through the storage
-layer: that layer is async and owns a write queue, neither of which a
-request handler wants, and the queries here are the same joins the
-inspect command already makes.  The one import from the package is the
-rule for grouping results by when they run, shared with inspect so the
-two cannot disagree.
+Reading goes through sqlite3 directly rather than the storage layer,
+which is async and owns a write queue, neither of which a request
+handler wants.  The one import from the package is the rule for
+grouping results by when they run, shared with inspect so the two
+cannot disagree.
 """
 
 from __future__ import annotations

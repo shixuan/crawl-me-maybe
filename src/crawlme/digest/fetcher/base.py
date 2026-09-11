@@ -24,17 +24,12 @@ from crawlme.schemas import FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
 
-# How the crawler names itself when nothing else was configured.  It
-# says what it is and where to find whoever ran it, which is the only
-# thing a User-Agent is good for from the far end.  Claiming to be a
-# browser instead would contradict the rest of the project, and the
-# platforms that turn crawlers away are not fooled by the string alone.
+# How the crawler names itself when nothing else was configured, and the
+# one place the name is written.  It says what it is and where to find
+# whoever ran it, which is all a User-Agent is good for from the far end.
 #
-# No version: nothing in the code reads one, so it would be a number
-# kept in step by hand with the one in pyproject, and it was already
-# four releases behind.  The address is the part that does the work.
-#
-# The settings default reads this, so the name is stated once here.
+# No version: nothing reads one, so it would be a number kept in step by
+# hand with pyproject, and it was already four releases behind.
 DEFAULT_UA = "crawl-me-maybe (research crawler; +https://github.com/crawl-me-maybe)"
 
 # Backoff is capped so a long retry cannot outlive the crawl itself.

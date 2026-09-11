@@ -58,22 +58,15 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_INTERVAL = 10
 
 
-# How many candidates the rank pump takes out of the buffer at once,
-# and therefore how long anything waits to become fetchable: nothing in
-# a drained batch reaches the frontier until all of it is scored.
+# How many candidates the rank pump takes out of the buffer at once, and
+# therefore how long anything waits to become fetchable: nothing in a
+# drained batch reaches the frontier until all of it is scored.
 #
-# It no longer decides coverage.  The buffer hands out a turn from each
-# seed, so a drain of any size is the same mix; before that it was
-# first-come-first-served and the size was the only thing standing
-# between one loud account and the whole run.
-#
-# What is left is latency against call count, and the measured rates
-# settle it: scoring supplies about twenty candidates a minute and
-# fetching consumes about nine, so there is no shortage of supply to
-# buy with a bigger batch.  There is a shortage of *early* supply --
-# fetching cannot start until the first batch lands -- so this is sized
-# to one of the ranker's own calls, which its character budget puts at
-# roughly twenty.
+# Coverage is the buffer's job, so what is left here is latency against
+# call count.  Scoring supplies about twenty candidates a minute and
+# fetching consumes about nine, so a bigger batch buys no supply that is
+# short.  Early supply is short, since fetching cannot start until the
+# first batch lands, so this is sized to one of the ranker's own calls.
 _RANK_BATCH_SIZE = 20
 # How many judged-relevant pages the ranker is reminded of.  Matches the
 # ranker's own cap: keeping more here would only be sliced off there.
@@ -771,12 +764,11 @@ class CrawlScheduler:
                     await asyncio.sleep(_POP_SLEEP)
                     continue
                 if self._frontier.waiting.is_empty:
-                    # A pop that returns nothing is not the same as an
-                    # empty frontier: an item whose cooldown has not
-                    # expired stays queued and comes back on its own.
-                    # Reading the first as the second ended a run at zero
-                    # pages with its only seed still waiting.  Items a
-                    # gate refuses outright are not a reason to wait,
+                    # A pop that returns nothing is not an empty
+                    # frontier: an item still cooling comes back on its
+                    # own, and reading the first as the second ended a
+                    # run at zero pages with its only seed waiting.
+                    # Items a gate refuses outright are different,
                     # because nothing about them will change.
                     if self._ctx.progress.in_flight == 0 and self._frontier.cooling == 0:
                         # The loop leaves here without going back to the
@@ -864,18 +856,15 @@ class CrawlScheduler:
     ) -> None:
         """The rest of a paged listing, at the depth it came from.
 
-        Same depth because it is more of the same listing rather than a
-        hop away from it, so counting it would spend the depth budget on
+        Same depth because it is more of the same listing rather than a hop
+        away from it, so counting it would spend the depth budget on
         standing still.
 
-        Capped per listing. A subreddit pages indefinitely, and left
-        alone one seed would take the whole run: pages arrive at the
-        depth of a seed, so nothing else stops them.
+        Capped per listing. A subreddit pages indefinitely, and pages arrive
+        at the depth of a seed, so nothing else would stop them.
 
-        Neutral priority, not the 1.0 an endorsement gets. More raw
-        material is worth less than a post the ranker already liked, and
-        at 1.0 a six-page budget went entirely on listings without
-        reading one post.
+        Neutral priority, not the 1.0 an endorsement gets. At 1.0 a six-page
+        budget went entirely on listings without reading one post.
         """
         pages = self._seeds[seed].listing_pages
         if pages >= _MAX_LISTING_PAGES:
@@ -989,18 +978,13 @@ class CrawlScheduler:
                 return
             result, page = fetched
 
-            # One LLM call per page: classification, summary, and the
-            # the fields it was asked to extract.  Failures park
-            # on the analyzer's own retry queue and never block this loop.
-            #
             # Deliberately outside the fetch slot.  Waiting on an LLM
             # while holding one made fetch_concurrency and llm_concurrency
             # nested rather than independent, so the inner limit throttled
             # the outer one and HTTP fetching stalled behind analysis.
             #
-            # It stays ahead of link extraction, though: the ranker reads
-            # this page's verdict out of the page context when it scores
-            # the links found below (2.9).
+            # It stays ahead of link extraction: the ranker reads this
+            # page's verdict when it scores the links found below.
             if self._analyzer is not None:
                 assert self._goal is not None
                 # Both maps before the call. The sink runs while this

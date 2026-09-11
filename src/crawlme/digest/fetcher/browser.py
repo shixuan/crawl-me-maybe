@@ -1,19 +1,16 @@
 """Fetch pages through a real browser, with an optional logged-in session.
 
 Same Fetcher contract as HttpFetcher, so the engine cannot tell them
-apart.  Two things justify the cost of a browser:
-
-  - the page builds its content with JavaScript, so the HTML that arrives
-    over HTTP is an empty shell
-  - the platform requires a session, and hands anonymous requests a login
-    wall instead of the content
+apart.  A browser earns its cost when the page builds itself with
+JavaScript, or when the platform hands anonymous requests a login wall
+instead of the content.
 
 The session comes from a storage_state JSON file the user exports
-themselves (`playwright codegen`, or a browser extension).  This module
-never sees a password and never logs anything in.
+themselves.  This module never sees a password and never logs anything
+in.
 
-playwright is an optional dependency and is imported lazily, so nothing
-here costs anything until a run actually asks for a browser:
+playwright is an optional dependency, imported lazily so nothing here
+costs anything until a run asks for a browser:
 
     pip install 'crawl-me-maybe[browser]'
     playwright install chromium
@@ -199,14 +196,11 @@ class PlaywrightFetcher:
                     response = await page.goto(item.url.canonical, wait_until=self._wait_until)
                 except PlaywrightTimeout:
                     # "networkidle" is a condition some pages never
-                    # reach: a platform that polls, streams, or throttles
-                    # keeps a request open forever.  Waiting it out still
-                    # rendered the page and still collected the payloads,
-                    # so the timeout says the condition failed, not that
-                    # the fetch did.  Take what is there and let the
-                    # downstream emptiness check decide -- discarding it
-                    # here threw away a page we had already paid for, and
-                    # then paid for it twice more on retry.
+                    # reach, because a platform that polls or streams
+                    # keeps a request open forever.  The page rendered
+                    # anyway, so the timeout says the condition failed
+                    # rather than the fetch.  Discarding it here threw
+                    # away a page already paid for, twice more on retry.
                     logger.info("%s was slow to settle, reading what it rendered", item.url.canonical)
                     response = None
                 if self._scrolls:

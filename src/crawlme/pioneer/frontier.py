@@ -1,46 +1,14 @@
 """The contract for the frontier, and the one thing that satisfies it.
 
-The frontier is the crawler's scheduling hub: it owns every URL that has
-been discovered and not yet read, and decides which one goes next.  It
-does not call AI and does not know page content; it only manages state.
+Owns every URL that has been discovered and not yet read, and decides
+which one goes next.  Calls no model and never sees page content.
 
-It holds that set in two halves, neither of which it implements itself:
-candidates waiting to be scored go to a Buffer (buffer.py), and scored
-ones waiting for a fetch slot to a PriorityQueue (queue.py).  What is
-left here -- gating, budgets, dedup, checkpoints -- is the same whatever
-the traversal, which is the point: a feed inherits all of it instead of
-growing a second copy.  See docs/refactor.md G2.
-
-The contract lives here beside its implementation because there is one
-implementation.  A second Frontier is what would justify splitting them
-into a package, and until then the split would only cost a reader a file
-to open.
-
-Gating (two levels)
--------------------
-Per-item gate: each FrontierItem has next_available_at, set by retry
-  backoff (exponential delay after 429/503) and by crawl-delay (minimum
-  interval between requests to one domain).  An item that is not due yet
-  is deferred and offered again later.
-
-Per-domain gate: the optional next_allowed callback (typically backed by
-  RobotsPolicy) answers "when is this domain next allowed?".  A cooling
-  domain defers its items with an updated next_available_at.
-
-Budget enforcement
-------------------
-Domain budget: past domain_budget successful fetches from one domain,
-  further items from it are dropped rather than deferred; they are never
-  coming back.
-
-Global budget: past global_budget fetches overall, the scan stops for
-  everyone and pop_next returns None, signalling the scheduler to stop.
-
-Snapshot / restore
-------------------
-snapshot() serialises the source's ordering plus the visited set, budget
-counters and sequence number into a FrontierSnapshot; restore() puts them
-back.  This is the foundation of pause/resume and crash recovery."""
+It holds that set in two halves it does not implement: candidates
+waiting to be scored go to a Buffer, scored ones waiting for a fetch
+slot to a PriorityQueue.  What is left here, the gating and budgets and
+dedup and checkpoints, is the same whatever the traversal, so a feed
+inherits all of it instead of growing a second copy.
+"""
 
 from __future__ import annotations
 
@@ -117,17 +85,15 @@ def _utcnow() -> datetime.datetime:
 class GatedFrontier:
     """Everything discovered and not yet fetched, in its two states.
 
-    A frontier is the set of URLs a crawl has found and not read, which
-    is both compartments here: candidates waiting for a score, and
-    scored candidates waiting for a fetch slot.  They stay apart because
-    an unscored candidate has no priority to sort by, and they stay
-    *here* because splitting them across two owners left the crawl with
-    two answers to "do I already have this URL" and a moment between
-    them where both said no.
+    Candidates waiting for a score, and scored candidates waiting for a
+    fetch slot.  They stay apart because an unscored candidate has no
+    priority to sort by, and they stay here because splitting them
+    across two owners left the crawl with two answers to "do I already
+    have this URL" and a moment between them where both said no.
 
     Owning both also means a checkpoint covers both.  When the waiting
     half lived outside, a run that stopped with eighty-seven candidates
-    still unscored resumed knowing nothing about them.
+    unscored resumed knowing nothing about them.
 
     It coordinates and does not implement: the rotation belongs to the
     Buffer, the heap and its cooldowns to the PriorityQueue.

@@ -1,22 +1,16 @@
 """PageAnalyzer: one LLM call per fetched page.
 
-The judgment it produces -- classification, relevance, summary, and the
-fields the goal declared with a quote behind each one -- is the product
-the user consumes.  It is stored in the analyses table and revisited by
-replay, which is why the row carries the prompt version and the model.
+The judgment it produces, classification and relevance and summary and
+the fields the goal declared with a quote behind each one, is the
+product the user consumes.  The row carries the prompt version and the
+model because replay revisits it.
 
-One thing travels back into the crawl from this call: the pages it
-judged relevant, which the ranker is reminded of when it scores the
-next batch.
+One thing travels back into the crawl: the pages judged relevant, which
+the ranker is reminded of when it scores the next batch.
 
-The stage is optional: the factory wires it only when analysis is
-enabled and there are credentials.
-
-Failure policy.  A failed analysis never blocks the crawl loop: the
-page is parked on an internal delayed re-analysis queue and retried a
-bounded number of times in the background.  Every successful analysis
-(both first try and retry) is published through the sink bound at
-construction time, which is how the AnalysisResult row gets persisted.
+A failed analysis never blocks the crawl loop.  The page is parked on a
+delayed queue and retried a bounded number of times, and every success
+from either path is published through the sink bound at construction.
 """
 
 from __future__ import annotations

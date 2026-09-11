@@ -132,22 +132,18 @@ def _body_text(payload: Payload) -> str:
 def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     """Read a grid into items, split by who posted them.
 
-    Whose grid this is comes out of the URL here rather than being handed
-    in, because reading an account out of a URL is as platform-shaped as
-    the markup is: the reserved segments that are not accounts are
-    Instagram's own list.
+    Whose grid this is comes out of the URL, because reading an account
+    out of a URL is as platform-shaped as the markup is.
 
     The payload is the better source when there is one: it states what
     each post says, who posted it and when, none of which the grid
-    renders. It also survives scrolling, and the grid does not -- the
-    markup drops items as they leave the viewport, so a page scrolled for
-    more posts ends up showing fewer of them.
+    renders. It also survives scrolling and the grid does not, since the
+    markup drops items as they leave the viewport, so a page scrolled
+    for more posts ends up showing fewer.
 
-    The markup is the fallback, and is all there is for a plain HTTP
-    fetch or after the platform changes its response shape. Then the only
-    text is Instagram's generated description of the image, which
-    describes the picture rather than the offer in it, and this returns
-    exactly what it always did.
+    The markup is the fallback, and all there is for a plain HTTP fetch.
+    Its only text is Instagram's generated description of the image,
+    which describes the picture rather than the offer in it.
     """
     handle = _account_from_url(url).strip("/").lower()
     posts = _posts_from_payloads(payloads)

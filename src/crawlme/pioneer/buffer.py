@@ -1,42 +1,19 @@
 """Candidate buffer: what gets scored next, and in what mix.
 
-This is where the scarce thing is decided.  Scoring costs an LLM call
-per batch, so whatever leaves here is what the crawl will ever have an
-opinion about; anything still sitting here when the run ends was never
-considered at all.
+Scoring costs a model call per batch, so whatever leaves here is what
+the crawl will ever have an opinion about.  Anything still sitting here
+when the run ends was never considered at all.
 
-Which makes the order it hands candidates out in a coverage decision,
-not a detail.  It used to be first-come-first-served, and a run over
-five accounts read fifty-three posts from one of them and none from
-three others: the first listing fetched filled the queue, and the run
-ended before the ranker reached anyone else.  Taking a turn from each
-seed instead costs nothing and is the whole fix -- fairness belongs
-here, upstream of the ranker, because this is the gate that binds.
+That makes the order it hands candidates out a coverage decision rather
+than a detail.  It was first-come-first-served once, and a run over five
+accounts read fifty-three posts from one of them and none from three
+others, because the first listing fetched filled the queue and the run
+ended before the ranker reached anyone else.  A turn from each seed
+costs nothing and is the whole fix.
 
-Ordering *after* the ranker is a different question with a different
-answer: there the scarce thing is the page budget, and the right way to
-spend it is the priority the ranker just produced.
-
-Candidates that pass PreFilter accumulate here, reached through the
-frontier that owns this half rather than directly: ready() says when a
-batch is worth scoring, drain(n) hands one out.
-
-The Buffer contract sits in this file with the one class that satisfies
-it.  A second way to choose who gets scored next is what would earn the
-two their own package; the seam is declared now because the frontier is
-built against it, not because a second one exists.
-
-Key behaviours:
-
-  1. Eviction   : when full, the lowest-quality candidate (by depth +
-                   position heuristic) is evicted to make room.
-  2. Dedup      : url_key checked against _seen; duplicates silently
-                   dropped.  _seen persists across drain().
-  3. Backpressure: add() never blocks; over-full is handled by eviction.
-                   wait_until() provides asyncio.Condition-based blocking
-                   for the rank loop to idle until ready() is true.
-
-ready() triggers:  size >= 100  |  non-empty > 30s  |  frontier hungry.
+Ordering after the ranker is a different question.  There the scarce
+thing is the page budget, and the way to spend it is the priority the
+ranker just produced.
 """
 
 from __future__ import annotations

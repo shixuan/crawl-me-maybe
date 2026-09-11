@@ -69,11 +69,6 @@ class Settings(BaseSettings):
     # rejected for not containing what was cut off.  Raise it for a model
     # with a larger context, lower it if a provider rejects the request.
     llm_max_batch_chars: int = 12_000
-    # How hard the model thinks before answering, for models that think.
-    # Empty sends nothing and takes the provider's default, which is what
-    # every run before this one paid for: measured on one crawl, 84% of
-    # output tokens were thinking, and thinking is billed as output and
-    # then discarded.
     # How hard the model thinks before answering, per stage. Named in
     # this project's words, off / low / medium / high, and translated
     # per model by llm.reasoning. Empty leaves the provider's default.
@@ -97,23 +92,17 @@ class Settings(BaseSettings):
     # They are held in memory before they reach disk, so this is the
     # difference between a heavy page and an out-of-memory machine.
     browser_max_payload_bytes: int = 8 * 1024 * 1024
-    # How many times a feed listing is asked for more of itself.  A
-    # listing hands out one screen, so a window measured in weeks is
-    # answered with the dozen most recent posts unless someone keeps
-    # asking.  Each scroll is one more request the page makes, so this is
-    # also the knob that trades coverage against how much a platform
-    # sees of the crawl.  Ignored outside feed mode: a link graph has
-    # nothing below the fold worth waiting for.
+    # How many times a feed listing is asked for more of itself.  One
+    # screen answers a window measured in weeks with a dozen posts, so
+    # this trades coverage against how much of the crawl a platform
+    # sees.  Ignored outside feed mode.
     feed_scrolls: int = 4
     user_agents: list[str] = [DEFAULT_UA]
 
     # --- Extract ---
-    # Timeout for trafilatura extraction + bs4 link parsing (per page).
-    # Trafilatura can degrade to O(n^2) or worse on pathological HTML
-    # (e.g. 6MB wikidata structured-data pages, giant ad-heavy news sites).
-    # This is a safety valve, not a content filter: a healthy page under
-    # a few MB should complete in <10 s.  Raise this if targeting
-    # deliberately large / rich pages.
+    # Per page, for trafilatura plus link parsing.  A safety valve, not a
+    # content filter: trafilatura degrades to O(n^2) on pathological HTML
+    # and a healthy page finishes well inside this.
     extract_timeout: float = 120.0
 
     # --- Frontier ---

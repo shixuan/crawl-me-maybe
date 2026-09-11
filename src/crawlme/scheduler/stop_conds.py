@@ -1,13 +1,12 @@
 """When to stop, at both scales this crawl has one.
 
-check_stop() answers it for the run: independent checks, each returning
-a StopReason or None, all of them run every iteration.  why_retire()
-answers it for one source, which is a different question with the same
-shape -- a feed is time-ordered and productive per account and never as
-a whole, so read globally neither signal meant anything.
+check_stop() answers it for the run, and why_retire() for one source,
+which is a different question with the same shape: a feed is
+time-ordered and productive per account and never as a whole, so read
+globally neither signal meant anything.
 
-Both live here so that "when does this stop" has one place to look.  The
-scheduler acts on the answers; it does not decide them.
+Both live here so that "when does this stop" has one place to look.
+The scheduler acts on the answers and does not decide them.
 
 Every check in _CHECKS must be reachable.  A check whose input is never
 written is worse than no check, because the capability looks present in

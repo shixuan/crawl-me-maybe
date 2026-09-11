@@ -1,18 +1,12 @@
 """LLM client wrapper.
 
-The single entry point for every LLM call in the system.  Wraps
-litellm so providers are interchangeable (OpenAI, Anthropic, anything
-OpenAI-compatible) and layers the house rules on top: a concurrency
+The single entry point for every LLM call.  Wraps litellm so providers
+are interchangeable, and layers the house rules on top: a concurrency
 cap, retries with backoff on transient failures, and token accounting
-on every response so the token budget can be tracked.
+on every response.
 
-litellm ships as a core dependency but is imported lazily on the first
-LLM call, so runs that never touch the LLM never pay the import cost.
-
-Retry policy: rate limits, timeouts, connection errors, and 5xx
-responses are transient and get 2 retries with exponential backoff.
-Everything else (auth errors, bad requests, content policy) raises
-immediately.
+litellm is a core dependency but is imported lazily on the first call,
+so a run that never touches a model never pays the import cost.
 """
 
 from __future__ import annotations

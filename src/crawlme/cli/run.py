@@ -278,15 +278,12 @@ def _check_session(args: argparse.Namespace) -> None:
     crawled the logged-out platform, which looks exactly like a platform
     with nothing on it.  Neither told anyone how to fix it.
 
-    A warning would have been the softer answer for the second one, and
-    the wrong one: it scrolls past, and what follows is a whole browser
-    run spent fetching login pages.  There is no flag to crawl a feed
-    anonymously because nobody has wanted one; the day someone does is
-    the day it earns its place.
+    A warning is the softer answer for the second and the wrong one, as
+    it scrolls past and what follows is a whole browser run spent
+    fetching login pages.
 
-    A link graph is left alone entirely.  It asks for no session, and
-    the advice for making one is feed-shaped, so offering it to a graph
-    crawl would point at a command that cannot serve it.
+    A link graph is left alone.  It asks for no session, and the advice
+    for making one is feed-shaped.
     """
     walled = _walled_platform(args)
     if args.session:
@@ -509,14 +506,11 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
     for url, (why, funnel) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
         found, judged, fetched, wanted, scored, discovered = funnel
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
-        # Without this, one crawled and empty and one the run never got
-        # to both said "nothing", and the same question came back three
-        # times over.
         # A funnel, so every gap says something: scored short of
         # discovered is a rotation that never reached it, judged short of
         # fetched is a run that stopped before the analyzer answered.
-        # Read as one number, "7 pages, wanted 6, nothing" once looked
-        # like a content judgement when six were never looked at.
+        # Without it, one crawled and empty and one the run never got to
+        # both said "nothing".
         out.append(
             f"                {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
         )

@@ -2,22 +2,15 @@
 
 Well, you definitely don't wanna get banned right?
 
-Three mechanisms work together to avoid overloading target servers:
+Three things hold a domain back: robots.txt, a crawl delay after each
+successful fetch, and a circuit breaker that blocks a domain outright
+once it has answered 429 or 503 enough times in a row.
 
-1. robots.txt cache: fetched once per host before the first request to it,
-   cached for TTL (default 24h), and read from the section written for this
-   crawler by name rather than the wildcard, which may be looser or stricter.
-   The engine loads it; this class only holds and answers.
-
-2. crawl-delay: after a successful fetch, the domain is gated until
-   `now + crawl_delay`.  The delay is the max of robots.txt Crawl-delay and
-   any adaptive backoff.
-
-3. Circuit breaker: if a domain returns 429/503 more than *circuit_threshold*
-   times in a row, it is blocked entirely for *circuit_cooldown* (default 10 min).
-   A successful (2xx) response resets the counter.
-
-All three can be bypassed with `ignore=True` (for development / intranet)."""
+robots.txt is read from the section written for this crawler by name
+rather than the wildcard, which may be looser or stricter.  The engine
+fetches it; this class only holds and answers.  All three can be
+bypassed with ignore=True, for development and intranets.
+"""
 
 from __future__ import annotations
 

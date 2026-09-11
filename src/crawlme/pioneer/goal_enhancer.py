@@ -106,13 +106,10 @@ class GoalEnhancer:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
             return None
         if not resp.content.strip():
-            # Distinct from unparseable: the model wrote nothing at all,
-            # which on a reasoning model means it used the whole budget
-            # thinking.  Saying so is the difference between a one-look
-            # diagnosis and a hunt.
-            # On a reasoning model an empty reply means the thinking
-            # used the whole ceiling.  Saying so is the difference
-            # between a one-look diagnosis and a hunt through the parser.
+            # Distinct from unparseable: on a reasoning model an empty
+            # reply means the thinking used the whole ceiling.  Saying so
+            # is the difference between a one-look diagnosis and a hunt
+            # through the parser.
             logger.warning("goal.enhance empty content (out=%d), using raw prompt", resp.output_tokens)
             return None
         parsed = self._parse(resp.content)
