@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
@@ -95,10 +96,11 @@ async def cmd_inspect(args: argparse.Namespace) -> None:
     if args.export:
         _export(data, args.export)
     else:
-        _print_summary(data)
+        horizon = read_cutoff(args.during, flag="--during", ahead=True).date() if args.during else None
+        _print_summary(data, horizon=horizon)
 
 
-def _print_summary(data: InspectData) -> None:
+def _print_summary(data: InspectData, *, horizon: datetime.date | None = None) -> None:
     """Render the inspect summary as aligned terminal lines."""
     goal = next((g for g in data.goals if g["goal_id"] == data.goal_id), None)
     by_class = Counter(a.get("classification", "UNKNOWN") for a in data.analyses)
@@ -140,22 +142,34 @@ def _print_summary(data: InspectData) -> None:
         key = a.get("url_key", "")
         if key not in best_by_key or a.get("relevance_score", 0.0) > best_by_key[key].get("relevance_score", 0.0):
             best_by_key[key] = a
-    lines.extend(_result_lines(best_by_key.values(), pages_by_key))
+    lines.extend(_result_lines(best_by_key.values(), pages_by_key, horizon=horizon))
     print("\n".join(lines))
 
 
-def _result_lines(analyses: Iterable[dict[str, Any]], pages_by_key: dict[str, Any]) -> list[str]:
+def _result_lines(
+    analyses: Iterable[dict[str, Any]],
+    pages_by_key: dict[str, Any],
+    *,
+    horizon: datetime.date | None = None,
+) -> list[str]:
     """The results, grouped by whether they have run out.
 
     Sorted by when they end rather than by score, because a reader
     coming to this asks what is still ahead of them. Nothing is hidden:
     a page that named no date is not a page that fails the dates, and
     across seven runs that was half of them.
+
+    *horizon* is how far ahead still counts as open. What starts after
+    it is split off rather than dropped, because how far ahead a reader
+    cares about is a preference and being wrong about it should cost a
+    heading, not a result. Something that only says when it ends is
+    already running, so it stays open however far off that end is.
     """
     today = datetime.datetime.now(datetime.timezone.utc).date()
     live: list[tuple[datetime.date | None, dict[str, Any]]] = []
     undated: list[dict[str, Any]] = []
     over: list[dict[str, Any]] = []
+    later: list[tuple[datetime.date, dict[str, Any]]] = []
     for a in analyses:
         ends = _as_date(a.get("ends_on"))
         starts = _as_date(a.get("starts_on"))
@@ -163,6 +177,8 @@ def _result_lines(analyses: Iterable[dict[str, Any]], pages_by_key: dict[str, An
             undated.append(a)
         elif ends is not None and ends < today:
             over.append(a)
+        elif horizon is not None and starts is not None and starts > horizon:
+            later.append((starts, a))
         else:
             live.append((ends, a))
     live.sort(key=lambda pair: (pair[0] is None, pair[0] or today))
@@ -174,6 +190,10 @@ def _result_lines(analyses: Iterable[dict[str, Any]], pages_by_key: dict[str, An
     if undated:
         out.append(f"no date given ({len(undated)}):")
         out += [_one_result(a, pages_by_key, None, today) for a in undated[:10]]
+    if later:
+        later.sort(key=lambda pair: pair[0])
+        out.append(f"starts after {horizon:%b %d} ({len(later)}):")
+        out += [_one_result(a, pages_by_key, starts, today, ahead=True) for starts, a in later[:10]]
     if over:
         out.append(f"already over ({len(over)}), newest first:")
         over.sort(key=lambda a: _as_date(a.get("ends_on")) or today, reverse=True)
@@ -182,15 +202,26 @@ def _result_lines(analyses: Iterable[dict[str, Any]], pages_by_key: dict[str, An
 
 
 def _one_result(
-    a: dict[str, Any], pages_by_key: dict[str, Any], ends: datetime.date | None, today: datetime.date
+    a: dict[str, Any],
+    pages_by_key: dict[str, Any],
+    when_on: datetime.date | None,
+    today: datetime.date,
+    *,
+    ahead: bool = False,
 ) -> str:
+    """One result line. *ahead* says the date is when it starts, not when it ends."""
     page = pages_by_key.get(str(a.get("url_key") or ""))
     url = json.loads(page["url_json"]).get("canonical", "") if page else ""
     title = (page.get("title") or "") if page else ""
     when = "no date"
-    if ends is not None:
-        days = (ends - today).days
-        when = f"{ends:%b %d}" + (f", {days}d left" if days > 0 else ", today" if days == 0 else f", {-days}d ago")
+    if when_on is not None:
+        days = (when_on - today).days
+        tail = (
+            f", in {days}d"
+            if ahead
+            else (f", {days}d left" if days > 0 else ", today" if days == 0 else f", {-days}d ago")
+        )
+        when = f"{when_on:%b %d}{tail}"
     return f"  {when:>18}  {a.get('relevance_score', 0.0):.2f}  {title} — {url}"
 
 

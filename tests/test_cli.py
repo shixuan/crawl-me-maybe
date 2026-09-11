@@ -324,36 +324,53 @@ def test_prints_summary(capsys):
     assert "7.5s" in out
 
 
-# --since parsing (2.8) -------------------------------------------------
+# reading a moment off the command line ---------------------------------
 
 
 def test_since_relative() -> None:
-    from crawlme.cli.run import _parse_since
+    from crawlme.cli.cutoff import read_cutoff
 
-    cutoff = _parse_since("1 week")
+    cutoff = read_cutoff("1 week", flag="--since")
     delta = datetime.datetime.now(datetime.timezone.utc) - cutoff
     assert 6.9 < delta.days + delta.seconds / 86400 < 7.1
 
 
 def test_since_absolute() -> None:
-    from crawlme.cli.run import _parse_since
+    from crawlme.cli.cutoff import read_cutoff
 
-    cutoff = _parse_since("2026-08-01")
+    cutoff = read_cutoff("2026-08-01", flag="--since")
     assert cutoff.tzinfo is not None
     assert (cutoff.year, cutoff.month, cutoff.day) == (2026, 8, 1)
 
 
 def test_since_plural() -> None:
-    from crawlme.cli.run import _parse_since
+    from crawlme.cli.cutoff import read_cutoff
 
-    assert (_parse_since("1 day") - _parse_since("1 days")).total_seconds() < 1
+    assert (read_cutoff("1 day", flag="--since") - read_cutoff("1 days", flag="--since")).total_seconds() < 1
+
+
+def test_offset_turns_around() -> None:
+    """The same words mean a week back for what was published and a week
+    forward for what is still to come."""
+    from crawlme.cli.cutoff import read_cutoff
+
+    back = read_cutoff("1 week", flag="--since")
+    ahead = read_cutoff("1 week", flag="--during", ahead=True)
+    assert back < datetime.datetime.now(datetime.timezone.utc) < ahead
+    assert 13.9 < (ahead - back).days + 0.1 < 14.2
+
+
+def test_a_written_date_has_no_direction() -> None:
+    from crawlme.cli.cutoff import read_cutoff
+
+    assert read_cutoff("2026-08-01", flag="--during", ahead=True) == read_cutoff("2026-08-01", flag="--since")
 
 
 def test_since_garbage() -> None:
-    from crawlme.cli.run import _parse_since
+    from crawlme.cli.cutoff import read_cutoff
 
     with pytest.raises(ValueError):
-        _parse_since("whenever")
+        read_cutoff("whenever", flag="--since")
 
 
 # where the entry points come from ---------------------------------------

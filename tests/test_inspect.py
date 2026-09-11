@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 from pathlib import Path
 
 import pytest
 
-from crawlme.cli.inspect import InspectError, cmd_inspect, inspect_task
+from crawlme.cli.inspect import InspectError, _result_lines, cmd_inspect, inspect_task
 from crawlme.config import Settings
 from crawlme.schemas import URL, CrawlGoal, CrawlTask, Page
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
@@ -119,7 +120,7 @@ async def test_cmd_summary(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
-    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export=None))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, during=None, export=None))
 
     out = capsys.readouterr().out
     assert "task:      task1" in out
@@ -135,7 +136,7 @@ async def test_cmd_goal_roles(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
-    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export=None))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, during=None, export=None))
 
     out = capsys.readouterr().out
     assert "(original)" in out  # the selected goal line
@@ -147,7 +148,7 @@ async def test_cmd_json(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
-    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export="json"))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, during=None, export="json"))
 
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 3
@@ -161,7 +162,7 @@ async def test_cmd_csv(tmp_path, monkeypatch, capsys):
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
 
-    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export="csv"))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, during=None, export="csv"))
 
     out = capsys.readouterr().out
     lines = out.strip().splitlines()
@@ -198,7 +199,7 @@ async def test_json_evidence(tmp_path, monkeypatch, capsys):
     await db.close()
 
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
-    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export="json"))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, during=None, export="json"))
     rows = json.loads(capsys.readouterr().out)
 
     row = next(r for r in rows if r["analyzed_at"] == "2026-01-02T00:00:00Z")
@@ -214,6 +215,55 @@ async def test_csv_no_fields(tmp_path, monkeypatch, capsys):
     set; inventing one per export would make two exports disagree."""
     await _write_run(tmp_path, "20260101_000001")
     monkeypatch.setattr("crawlme.cli.inspect.Settings", lambda: _cfg(tmp_path))
-    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, export="csv"))
+    await cmd_inspect(argparse.Namespace(task_id="task1", goal=None, during=None, export="csv"))
     header = capsys.readouterr().out.splitlines()[0]
     assert "extracted" not in header
+
+
+# --- the window a reader cares about --------------------------------
+
+
+def _dated(key: str, starts: str | None, ends: str | None) -> dict[str, object]:
+    return {"url_key": key, "relevance_score": 0.9, "starts_on": starts, "ends_on": ends}
+
+
+def _day(offset: int) -> str:
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    return (today + datetime.timedelta(days=offset)).isoformat()
+
+
+def test_without_a_window_everything_open_stays_together() -> None:
+    lines = _result_lines([_dated("a", _day(2), _day(3)), _dated("b", _day(40), _day(41))], {})
+    assert "still open (2):" in lines
+    assert not any(line.startswith("starts after") for line in lines)
+
+
+def test_a_window_splits_off_what_starts_later() -> None:
+    horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
+    lines = _result_lines([_dated("a", _day(2), _day(3)), _dated("b", _day(40), _day(41))], {}, horizon=horizon)
+    assert "still open (1):" in lines
+    assert any(line.startswith("starts after") and "(1)" in line for line in lines)
+
+
+def test_a_window_hides_nothing() -> None:
+    horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
+    analyses = [
+        _dated("open", _day(1), _day(2)),
+        _dated("later", _day(40), _day(41)),
+        _dated("undated", None, None),
+        _dated("over", _day(-9), _day(-8)),
+    ]
+    lines = _result_lines(analyses, {}, horizon=horizon)
+    assert len([line for line in lines if line.startswith("  ")]) == len(analyses)
+
+
+def test_an_end_without_a_start_is_already_running() -> None:
+    horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
+    lines = _result_lines([_dated("a", None, _day(60))], {}, horizon=horizon)
+    assert "still open (1):" in lines
+
+
+def test_a_later_result_reads_as_a_start() -> None:
+    horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
+    lines = _result_lines([_dated("a", _day(40), _day(41))], {}, horizon=horizon)
+    assert any("in 40d" in line for line in lines)
