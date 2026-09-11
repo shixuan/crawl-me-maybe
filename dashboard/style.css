@@ -306,6 +306,22 @@ body {
   padding: 3px 10px;
 }
 
+/* A result that is not simply ahead of the reader says so, quietly. */
+.when-tag {
+  font-family: var(--rounded);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--pink-edge);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.runs {
+  font-weight: 600;
+  color: var(--pink-deep);
+}
+
 .result-sub {
   margin: 8px 0 0;
   font-size: 12.5px;

@@ -26,7 +26,6 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
-from crawlme.analyzer.dates import read_range
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
@@ -41,6 +40,7 @@ from crawlme.schemas import (
     spec_time_field,
     spec_version,
 )
+from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
 

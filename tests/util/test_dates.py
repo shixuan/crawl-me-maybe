@@ -6,7 +6,7 @@ import datetime
 
 import pytest
 
-from crawlme.analyzer.dates import DateRange, read_dates, read_range
+from crawlme.util.dates import LATER, OPEN, OVER, UNDATED, DateRange, group_of, read_dates, read_range
 
 SAID_ON = datetime.datetime(2026, 9, 2, tzinfo=datetime.timezone.utc)
 D = datetime.date
@@ -69,16 +69,51 @@ def test_wording_without_a_date_is_not_a_date():
     assert read_range("until further notice", said_on=SAID_ON) is None
 
 
-def test_overlap_not_containment():
-    """The question is whether it can still be caught this week, and an
-    span that began a fortnight ago and closes on Wednesday answers yes."""
-    w = read_range("September 16, 2026", kind="until", said_on=SAID_ON)
-    assert w.overlaps(D(2026, 9, 12), D(2026, 9, 18))
-    assert not w.overlaps(D(2026, 9, 20), D(2026, 9, 26))
+# --- where a range sits relative to today ---------------------------
+
+TODAY = datetime.date(2026, 9, 11)
+HORIZON = datetime.date(2026, 9, 18)
 
 
-def test_window_out_of_range_both_ways():
-    past = read_range("August 20, 2026", kind="until", said_on=SAID_ON)
-    far = read_range("October 30, 2026", kind="on", said_on=SAID_ON)
-    assert not past.overlaps(D(2026, 9, 12), D(2026, 9, 18))
-    assert not far.overlaps(D(2026, 9, 12), D(2026, 9, 18))
+def d(iso: str) -> datetime.date:
+    return datetime.date.fromisoformat(iso)
+
+
+def test_no_dates_at_all_is_undated() -> None:
+    assert group_of(None, None, TODAY) == UNDATED
+
+
+def test_a_past_end_is_over() -> None:
+    assert group_of(d("2026-09-02"), d("2026-09-03"), TODAY) == OVER
+
+
+def test_an_end_alone_is_already_running() -> None:
+    assert group_of(None, d("2026-11-10"), TODAY, HORIZON) == OPEN
+
+
+def test_a_start_past_the_horizon_is_later() -> None:
+    assert group_of(d("2026-10-21"), d("2026-10-25"), TODAY, HORIZON) == LATER
+
+
+def test_a_start_inside_the_horizon_is_open() -> None:
+    assert group_of(d("2026-09-12"), d("2026-10-11"), TODAY, HORIZON) == OPEN
+
+
+def test_the_horizon_itself_is_inside() -> None:
+    assert group_of(HORIZON, HORIZON, TODAY, HORIZON) == OPEN
+
+
+def test_without_a_horizon_nothing_is_later() -> None:
+    assert group_of(d("2027-01-01"), d("2027-01-02"), TODAY) == OPEN
+
+
+def test_over_beats_the_horizon() -> None:
+    assert group_of(d("2026-08-01"), d("2026-08-02"), TODAY, HORIZON) == OVER
+
+
+def test_a_start_alone_can_still_be_later() -> None:
+    assert group_of(d("2026-12-01"), None, TODAY, HORIZON) == LATER
+
+
+def test_ending_today_is_still_open() -> None:
+    assert group_of(None, TODAY, TODAY, HORIZON) == OPEN

@@ -23,6 +23,7 @@ from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.util.dates import LATER, OVER, UNDATED, group_of
 
 
 class InspectError(Exception):
@@ -173,11 +174,12 @@ def _result_lines(
     for a in analyses:
         ends = _as_date(a.get("ends_on"))
         starts = _as_date(a.get("starts_on"))
-        if ends is None and starts is None:
+        group = group_of(starts, ends, today, horizon)
+        if group == UNDATED:
             undated.append(a)
-        elif ends is not None and ends < today:
+        elif group == OVER:
             over.append(a)
-        elif horizon is not None and starts is not None and starts > horizon:
+        elif group == LATER and starts is not None:
             later.append((starts, a))
         else:
             live.append((ends, a))

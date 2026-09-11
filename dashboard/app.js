@@ -22,6 +22,8 @@ const state = {
   rows: [],
   fields: [],
   classes: new Set(), // empty means every class
+  whens: new Set(), // same, over the four ways a result sits in time
+  during: "", // days ahead that still count as open; "" is no window
   query: "",
   // "" = no requirement, ANY_FIELD = at least one field, otherwise the
   // name of the one field a result has to carry.
@@ -47,6 +49,43 @@ function when(iso) {
   if (isNaN(d)) return String(iso).slice(0, 16).replace("T", " ");
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/* -- when a result runs --------------------------------------------
+
+   The server already said whether each row is undated, over or open.
+   All that is left here is where the reader draws the line ahead of
+   them, which is a knob and needs no round trip. */
+
+const WHEN_LABELS = { open: "still open", later: "starts later", undated: "no date", over: "already over" };
+
+function horizonISO() {
+  if (!state.during) return "";
+  const d = new Date();
+  d.setDate(d.getDate() + Number(state.during));
+  // Built from the local parts on purpose. toISOString would convert to
+  // UTC first, which moves the line a day for anyone west of it.
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function day(iso) {
+  const d = new Date(`${iso}T00:00:00`);
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function runsFor(r) {
+  // Said the way the page said it, one end or two.
+  if (r.starts_on && r.ends_on) {
+    return r.starts_on === r.ends_on ? day(r.ends_on) : `${day(r.starts_on)} to ${day(r.ends_on)}`;
+  }
+  if (r.ends_on) return `until ${day(r.ends_on)}`;
+  if (r.starts_on) return `from ${day(r.starts_on)}`;
+  return "";
+}
+
+function whenOf(r, horizon) {
+  return r.when === "open" && r.starts_on && horizon && r.starts_on > horizon ? "later" : r.when;
 }
 
 function valueOf(field) {
@@ -106,6 +145,33 @@ function renderChips() {
   }
 }
 
+function renderWhenChips() {
+  const box = $("#when-chips");
+  box.innerHTML = "";
+  const horizon = horizonISO();
+  const counts = new Map();
+  for (const r of state.rows) {
+    const w = whenOf(r, horizon);
+    counts.set(w, (counts.get(w) || 0) + 1);
+  }
+  // Nothing to filter by when no run has read a date yet.
+  box.hidden = counts.size <= 1 && counts.has("undated");
+  for (const w of ["open", "later", "undated", "over"]) {
+    if (!counts.has(w)) continue;
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.innerHTML = `${escape(WHEN_LABELS[w])} &middot; ${counts.get(w)}`;
+    b.setAttribute("aria-pressed", String(state.whens.has(w)));
+    b.onclick = () => {
+      state.whens.has(w) ? state.whens.delete(w) : state.whens.add(w);
+      renderWhenChips();
+      renderCards();
+    };
+    box.append(b);
+  }
+}
+
 function renderFieldChoices() {
   // Two selects over the same list of declared fields, answering two
   // different questions: which field leads a card, and which field a
@@ -136,8 +202,10 @@ function fillFieldSelect(sel, leading, current) {
 
 function visible() {
   const q = state.query.trim().toLowerCase();
+  const horizon = horizonISO();
   let rows = state.rows;
   if (state.classes.size) rows = rows.filter((r) => state.classes.has(r.classification));
+  if (state.whens.size) rows = rows.filter((r) => state.whens.has(whenOf(r, horizon)));
   if (state.hasField === ANY_FIELD) {
     rows = rows.filter((r) => Object.keys(r.extracted || {}).length);
   } else if (state.hasField) {
@@ -160,6 +228,8 @@ function visible() {
     relevance: (a, b) => Number(b.relevance) - Number(a.relevance),
     published: (a, b) => String(b.published_at || "").localeCompare(String(a.published_at || "")),
     title: (a, b) => String(headlineOf(a)).localeCompare(String(headlineOf(b))),
+    // Soonest first, and anything with no end after everything that has one.
+    ends: (a, b) => (a.ends_on || "9999").localeCompare(b.ends_on || "9999"),
   }[state.sort];
   return [...rows].sort(by);
 }
@@ -191,6 +261,11 @@ function card(r) {
 
   const tags = (r.tags || []).map((t) => `<span class="tag">${escape(t)}</span>`).join("");
   const headline = headlineOf(r);
+  // Only the two that need explaining are marked. Still open is the
+  // expected case and needs no badge.
+  const group = whenOf(r, horizonISO());
+  const mark = group === "later" || group === "over" ? WHEN_LABELS[group] : "";
+  const runs = runsFor(r);
   const subtitle = r.title && r.title !== headline ? r.title : "";
 
   el.innerHTML = `
@@ -198,11 +273,13 @@ function card(r) {
       <h3 class="result-title"><a href="${escape(r.url)}" target="_blank" rel="noopener">${escape(headline)}</a></h3>
       <span class="score" title="relevance">${Number(r.relevance).toFixed(2)}</span>
       <span class="class-tag">${escape(r.classification.toLowerCase())}</span>
+      ${mark ? `<span class="when-tag">${escape(mark)}</span>` : ""}
     </div>
     <p class="result-sub">
       <a class="open" href="${escape(r.url)}" target="_blank" rel="noopener" title="${escape(r.url)}">open page</a>
       ${subtitle ? `<span>${escape(subtitle)}</span>` : ""}
       ${r.published_at ? `<span>${escape(when(r.published_at))}</span>` : ""}
+      ${runs ? `<span class="runs">${escape(runs)}</span>` : ""}
     </p>
     ${r.summary ? `<p class="summary">${escape(r.summary)}</p>` : ""}
     ${fields ? `<div class="fields">${fields}</div>` : ""}
@@ -234,8 +311,10 @@ function adopt(data) {
   $("#goal-prompt").textContent = goal.prompt || "";
   $("#goal-block").hidden = !goal.prompt;
   state.classes.clear();
+  state.whens.clear();
   renderFieldChoices();
   renderChips();
+  renderWhenChips();
   renderCards();
 }
 
@@ -268,6 +347,8 @@ async function boot() {
   $("#q").oninput = (e) => { state.query = e.target.value; renderCards(); };
   $("#has-field").onchange = (e) => { state.hasField = e.target.value; renderCards(); };
   $("#sort").onchange = (e) => { state.sort = e.target.value; renderCards(); };
+  // Moving the line only re-groups what is already here.
+  $("#during").onchange = (e) => { state.during = e.target.value; renderWhenChips(); renderCards(); };
   $("#headline").onchange = (e) => { state.headline = e.target.value; renderCards(); };
   $("#only-with-results").onchange = renderRuns;
 

@@ -16,7 +16,9 @@ see and that is nobody else's business.
 Reading is done with sqlite3 directly rather than through the storage
 layer: that layer is async and owns a write queue, neither of which a
 request handler wants, and the queries here are the same joins the
-inspect command already makes.
+inspect command already makes.  The one import from the package is the
+rule for grouping results by when they run, shared with inspect so the
+two cannot disagree.
 """
 
 from __future__ import annotations
@@ -26,11 +28,13 @@ import errno
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
+
+from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
 
@@ -87,6 +91,14 @@ def _runs(results_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _day(raw: Any) -> date | None:
+    """Dates come back from a run database as ISO text, or as nothing."""
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
 def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[str, Any]:
     """The pages-and-analyses join for one run, with evidence intact.
 
@@ -103,8 +115,14 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
         task = con.execute("SELECT * FROM crawl_tasks ORDER BY start_at DESC LIMIT 1").fetchone()
         chosen = goal_id or (task["goal_id"] if task else "")
         pages = {p["url_key"]: dict(p) for p in con.execute("SELECT * FROM pages")}
+        # No horizon here. That line is a knob on the page, and moving
+        # it needs no new data.
+        today = datetime.now(timezone.utc).date()
         rows = []
-        for a in con.execute("SELECT * FROM analyses WHERE goal_id = ? ORDER BY relevance_score DESC", (chosen,)):
+        for row in con.execute("SELECT * FROM analyses WHERE goal_id = ? ORDER BY relevance_score DESC", (chosen,)):
+            # A run from before the dates were stored has no such
+            # columns. A dict reads those as blank instead of raising.
+            a = dict(row)
             page = pages.get(a["url_key"], {})
             url = json.loads(page.get("url_json") or "{}")
             rows.append(
@@ -115,6 +133,9 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
                     "title": page.get("title") or "",
                     "text": (page.get("plain_text") or page.get("markdown") or "")[:2000],
                     "published_at": page.get("published_at") or "",
+                    "starts_on": a.get("starts_on") or "",
+                    "ends_on": a.get("ends_on") or "",
+                    "when": group_of(_day(a.get("starts_on")), _day(a.get("ends_on")), today),
                     "classification": a["classification"],
                     "relevance": a["relevance_score"],
                     "summary": a["summary"] or "",
