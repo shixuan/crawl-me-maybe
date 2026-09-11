@@ -84,6 +84,27 @@ def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:
     return {str(k): str(v) for k, v in fields.items() if isinstance(k, str)}
 
 
+def spec_time_field(spec: dict[str, Any] | None) -> tuple[str, str] | None:
+    """Which extracted field carries the event's time, and what it marks.
+
+    Returns (field name, "until" | "on"), or None when the goal has no
+    time dimension. Declared by the goal rather than guessed from the
+    field name, because the names are written per goal: one crawl calls
+    it deadline, the next event_date, and the difference between "shuts
+    on this day" and "happens on this day" is not in either name.
+    """
+    if not isinstance(spec, dict):
+        return None
+    raw = spec.get("time_field")
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name")
+    kind = raw.get("kind")
+    if not isinstance(name, str) or name not in spec_fields(spec):
+        return None
+    return name, ("on" if kind == "on" else "until")
+
+
 def spec_version(spec: dict[str, Any] | None) -> str:
     """A short name for one extraction spec, or "" when there is none.
 

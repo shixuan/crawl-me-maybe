@@ -68,6 +68,12 @@ class AnalysisResult(BaseModel):
     prompt_version: str = ""
     # Which field list produced `extracted`.  Part of what makes one
     # analysis the same as another, next to prompt_version and model.
+    # The dates the page gave for what it describes, out of the field the
+    # goal declared as its time. Either end may be open: an end alone is
+    # a deadline, a start alone has no stated finish. Both absent when
+    # the page named no date that could be resolved, about half of them.
+    starts_on: datetime.date | None = None
+    ends_on: datetime.date | None = None
     spec_version: str = ""
     tokens_used: int = 0
     analyzed_at: datetime.datetime = Field(default_factory=_utcnow)

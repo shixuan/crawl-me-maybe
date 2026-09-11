@@ -26,6 +26,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
+from crawlme.analyzer.dates import read_range
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
@@ -37,6 +38,7 @@ from crawlme.schemas import (
     ExtractedField,
     Page,
     spec_fields,
+    spec_time_field,
     spec_version,
 )
 
@@ -403,6 +405,7 @@ def _parse_analysis(
         structured_data=data,
         extracted=_parse_extracted(data, page, goal),
         spec_version=spec_version(goal.extraction_spec),
+        **_dates_from(data, page, goal),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
@@ -415,6 +418,28 @@ def _parse_analysis(
         prompt_version=_PROMPT_VERSION,
         tokens_used=tokens_used,
     )
+
+
+def _dates_from(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, Any]:
+    """When the page says its subject applies, if the goal declared a field for it.
+
+    Read here rather than at the report, because the reader wants one
+    answer per page and re-parsing a string in three places is three
+    chances to disagree about it.
+    """
+    declared = spec_time_field(goal.extraction_spec)
+    if declared is None:
+        return {}
+    name, kind = declared
+    field = (data.get("extracted") or {}).get(name) if isinstance(data.get("extracted"), dict) else None
+    said = str(field.get("value", "")) if isinstance(field, dict) else ""
+    found = read_range(said, kind=kind, said_on=page.published_at)
+    if found is None:
+        return {}
+    return {
+        "starts_on": found.start,
+        "ends_on": found.end,
+    }
 
 
 def _clamp01(value: object) -> float:

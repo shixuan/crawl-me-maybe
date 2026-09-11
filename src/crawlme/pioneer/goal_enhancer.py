@@ -56,6 +56,10 @@ _SYSTEM = (
     "goal asks for particular pieces of information out of each page; a goal that asks "
     "to find pages on a subject gets null. Take the fields from the goal's own wording "
     "and stay in its own domain. At most 8 fields. "
+    "When one of those fields carries when the thing is on, name it in the same spec as "
+    '"time_field": {"name": "<one of the field names>", "kind": "until" | "on"}. '
+    "Use until when the field marks the end of something, a deadline or an expiry, and on "
+    "when it marks when it happens, an event date. Omit time_field when no field carries a time. "
     "Keep every constraint of the original prompt: never narrow the goal."
 )
 
@@ -166,7 +170,18 @@ class GoalEnhancer:
             clean[key] = desc.strip()[:_MAX_SPEC_DESC]
             if len(clean) >= _MAX_SPEC_FIELDS:
                 break
-        return {"fields": clean} if clean else None
+        if not clean:
+            return None
+        spec: dict[str, Any] = {"fields": clean}
+        # Held to the surviving field names. A time_field naming a field
+        # that was dropped above would point at nothing, and the reader
+        # downstream cannot tell that from a goal with no time at all.
+        tf = raw.get("time_field")
+        if isinstance(tf, dict):
+            name = str(tf.get("name", "")).strip().lower()
+            if name in clean:
+                spec["time_field"] = {"name": name, "kind": "on" if tf.get("kind") == "on" else "until"}
+        return spec
 
     def _parse_since(self, raw: object) -> datetime.datetime | None:
         if not isinstance(raw, str) or not raw.strip():
