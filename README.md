@@ -95,26 +95,30 @@ crawl session ./ig-session.json --feed instagram
 crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
   --seeds ./accounts.json \
   --session ./ig-session.json \
-  --depth-limit 2 \
   --max-relevant 40 --page-budget 150 \
   --since '2 weeks' --ignore-robots
 ```
 
-Two, because that is what this goal needs: an account, a post, and the shop's
-own site where the deadline is usually written. Leaving it at the default of 5
-is not wrong, only more expensive -- past the shop the crawl is on the open web,
-where a budget goes quickly.
+`--since` bounds when the *post* was written. What the post *describes* is a
+different clock: a giveaway posted on Monday may run until the end of the month.
+Name the deadline in the prompt and the analyzer reads it, and the report groups
+what it found by whether it is still open. See **Two clocks** below.
 
-Then read what it found:
+Then read what it found, either as a page or in the terminal:
 
 ```bash
-python dashboard/serve.py
+python dashboard/serve.py     # then open http://127.0.0.1:8765
+crawl inspect <task-id> --during "1 week"
 ```
 
 | Flag | Values | Default | Meaning |
 |------|--------|---------|---------|
 | `--port` | int | `8765` | Bound on `127.0.0.1` only |
 | `--results-dir` | path | `results` | Where run directories live |
+
+The page filters what is already in the browser, so nothing but picking a run
+costs a request. That includes the window: `during` decides where "still open"
+ends, and moving it only re-groups what is on screen.
 
 ---
 
@@ -212,13 +216,19 @@ A visible browser needs a desktop: WSLg on WSL, an X display over SSH.
 
 ### `crawl inspect <task-id>`
 
-Read-only look at a finished run: goals, pages, analyses by classification,
-the top relevant pages.
+Read-only look at a finished run: goals, pages, analyses by classification, and
+the results grouped by whether what they describe is still ahead of you.
 
 | Flag | Values | Default | Meaning |
 |------|--------|---------|---------|
 | `--goal` | goal id | the task's own goal | Which goal's analyses to show |
+| `--during` | `"1 week"`, `"3 days"`, `2026-10-01` | none | How far ahead still counts as open. What starts past it is listed separately rather than dropped. Same syntax as `--since`, pointing the other way |
 | `--export` | `json` \| `csv` | none | Dump the pages-and-analyses join to stdout. `json` carries the extracted fields and their evidence; `csv` leaves them out, because every goal declares its own fields and there is no stable column set |
+
+Results are ordered by when they end, not by score, because the question a reader
+arrives with is what is still open. A page that named no date is not a page that
+failed the dates, so it gets its own group; across seven runs that was half of
+them.
 
 ### `crawl replay <task-id>`
 
@@ -268,6 +278,16 @@ frontier order.
 the page text before it is stored, and a field the page does not state is simply
 absent -- there is no "unknown". A page it discards stops at the verdict and
 writes no summary, because nothing downstream ever reads one.
+
+**Two clocks, and they are not the same one.** When a post was published bounds
+what is worth fetching and is known before anything is read, so `--since` can
+drop a candidate off a listing date alone. When the thing a post *describes*
+runs is knowable only after the page has been read, so it can never bound a
+fetch, only group what was found. Name a deadline or a date in the prompt and the
+analyzer reads it back out of the page; the report then separates what is still
+open from what is already over, and `--during` splits off what starts past the
+window you care about. Relative wording is refused rather than guessed at: "next
+week" in a three-week-old post means three weeks ago.
 
 **Fairness upstream of the ranker, priority downstream.** A turn from each seed
 keeps one loud account from spending the whole LLM budget. Priority decides only
@@ -320,5 +340,6 @@ See [`.env.example`](.env.example) for the full list.
 | v0.4 | ✅ | Reddit, a fetcher chosen per candidate, paged listings |
 | v0.5 | ✅ | Seed enhancement: the model names more sources, each verified before use. A source that stops paying off retires on its own, so a run ends when every one has |
 | v0.6 | ✅ | A cheaper token bill: a discarded page stops at the verdict, a reply that thought away its whole allowance is asked again with less thinking, and the ranker is shown what analysis found. HUB and analyzer-endorsed links removed, having bought one result in 17 fetches |
+| v0.7 | ✅ | Two clocks: the analyzer reads when the thing a post describes runs, and results are grouped by whether it is still open. A dashboard window to move that line |
 
 ---

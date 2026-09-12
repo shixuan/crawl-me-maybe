@@ -56,7 +56,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if args.session is not None:
         # The session alone: it says which context the platform is read
         # through, not that everything must be. Credentials mean nothing
-        # to the shop an analyser endorses off it.
+        # to a site the crawl reaches from there.
         cfg.browser_storage_state = args.session
     _check_session(args)
     _check_extras(cfg, args)

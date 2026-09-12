@@ -863,7 +863,7 @@ class CrawlScheduler:
         Capped per listing. A subreddit pages indefinitely, and pages arrive
         at the depth of a seed, so nothing else would stop them.
 
-        Neutral priority, not the 1.0 an endorsement gets. At 1.0 a six-page
+        Neutral priority, not the 1.0 a seed gets. At 1.0 a six-page
         budget went entirely on listings without reading one post.
         """
         pages = self._seeds[seed].listing_pages

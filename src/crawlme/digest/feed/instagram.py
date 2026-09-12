@@ -80,8 +80,8 @@ def claims_url(url: str) -> bool:
 
 
 def claims(page: Page, document: str) -> bool:
-    """Ours by host.  A crawl wanders off a platform routinely: an
-    analyzer endorses a shop's own site and that page arrives next."""
+    """Ours by host.  A crawl wanders off a platform routinely, so this
+    answers for the address rather than for the run."""
     return page.url.reg_domain == DOMAIN
 
 
