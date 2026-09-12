@@ -21,6 +21,7 @@ const state = {
   goalId: null,
   rows: [],
   fields: [],
+  classifications: [], // the analyzer's own order, so the chips never re-sort
   classes: new Set(), // empty means every class
   whens: new Set(), // same, over the four ways a result sits in time
   during: "", // days ahead that still count as open; "" is no window
@@ -124,12 +125,15 @@ function renderRuns() {
 function renderChips() {
   const box = $("#chips");
   box.innerHTML = "";
-  // Taken from the rows rather than a list kept here: the analyzer's
-  // vocabulary has grown before, and a class nobody predicted would
-  // otherwise be invisible and unfilterable.
+  // Counted off the rows rather than from a list kept here, because a
+  // class nobody predicted would otherwise be invisible and unfilterable.
+  // Ordered by what the analyzer declares, so relevant leads whatever the
+  // counts are; anything it did not declare follows, still shown.
   const counts = new Map();
   for (const r of state.rows) counts.set(r.classification, (counts.get(r.classification) || 0) + 1);
-  const present = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
+  const declared = state.classifications;
+  const rank = (c) => (declared.indexOf(c) < 0 ? declared.length : declared.indexOf(c));
+  const present = [...counts.keys()].sort((a, b) => rank(a) - rank(b) || counts.get(b) - counts.get(a));
   for (const c of present) {
     const b = document.createElement("button");
     b.className = "chip";
@@ -304,6 +308,7 @@ function adopt(data) {
   state.goalId = data.goal_id;
   state.rows = data.rows;
   state.fields = data.fields;
+  state.classifications = data.classifications || [];
   // The spec's first field leads unless the reader says otherwise; with
   // no spec at all there is nothing to lead with but the page's title.
   state.headline = data.fields.length ? data.fields[0] : TITLE_KEY;

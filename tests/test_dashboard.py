@@ -58,3 +58,10 @@ def test_an_end_alone_is_carried_as_running(tmp_path: Path) -> None:
     assert row["starts_on"] == ""
     assert row["ends_on"] == "2099-01-01"
     assert row["when"] == "open"
+
+
+def test_the_verdicts_come_out_in_declared_order(tmp_path: Path) -> None:
+    """Relevant leads whatever the counts are, as it does in the report."""
+    _run_db(tmp_path, dates=True)
+    order = serve._results(tmp_path, "20260101_000000")["classifications"]
+    assert order.index("RELEVANT") < order.index("IRRELEVANT")

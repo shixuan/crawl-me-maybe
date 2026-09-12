@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from crawlme.schemas.analysis import CLASSIFICATIONS
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
@@ -144,6 +145,9 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
             "goal_id": chosen,
             "goals": [{"goal_id": g["goal_id"], "prompt": g["prompt"]} for g in goals],
             "fields": list((spec or {}).get("fields", {}).keys()),
+            # Declared order, not order of arrival: the verdicts read the
+            # same way every run whatever the counts happen to be.
+            "classifications": list(CLASSIFICATIONS),
             "rows": rows,
         }
     finally:
