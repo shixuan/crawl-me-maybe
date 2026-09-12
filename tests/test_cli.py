@@ -978,11 +978,11 @@ def test_analyses_keep_a_fixed_order():
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
-            "pages_fetched": 60,
-            "analyses": {"NAVIGATION": 9, "IRRELEVANT": 44, "HUB": 5, "RELEVANT": 2},
+            "pages_fetched": 49,
+            "analyses": {"UNKNOWN": 3, "IRRELEVANT": 44, "RELEVANT": 2},
         }
     )
-    assert "60 (2 RELEVANT, 44 IRRELEVANT, 5 HUB, 9 NAVIGATION)" in out
+    assert "49 (2 RELEVANT, 44 IRRELEVANT, 3 UNKNOWN)" in out
 
 
 def test_own_seeds_get_their_own_funnel():

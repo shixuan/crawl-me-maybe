@@ -462,3 +462,63 @@ async def test_every_call_reports_its_wall_clock(monkeypatch, caplog):
     with caplog.at_level("DEBUG"):
         await LLMClient("m", api_key="k").chat("hi")
     assert "llm.chat.wall" in caplog.text
+
+
+# A model litellm knows takes reasoning_effort. "stub-model" does not,
+# so the step-down would be skipped for the right reason and the test
+# would pass without exercising anything.
+_THINKS = "deepseek/deepseek-v4-flash"
+
+
+def _thinking_resp(content: str, out_tok: int, thinking: int):
+    """A reply whose output went into reasoning rather than an answer."""
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=out_tok,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=thinking),
+        ),
+        model="stub-model",
+    )
+
+
+async def test_thinking_only_retried(monkeypatch):
+    """Thought away the whole allowance and answered nothing, so the
+    second try thinks less. More room would only buy a longer silence."""
+    stub = _StubLitellm([_thinking_resp("", 100, 100), _thinking_resp("ok", 20, 5)])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium")
+    resp = await client.chat("hi")
+    assert resp.content == "ok"
+    assert len(stub.kwargs) == 2
+    assert stub.kwargs[0]["reasoning_effort"] == "medium"
+    assert stub.kwargs[1]["reasoning_effort"] == "low"
+
+
+async def test_answer_not_retried(monkeypatch):
+    """A reply that says something is not a blowout, however long."""
+    stub = _StubLitellm([_thinking_resp("ok", 100, 95)])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium")
+    assert (await client.chat("hi")).content == "ok"
+    assert len(stub.kwargs) == 1
+
+
+async def test_floor_not_retried(monkeypatch):
+    """Already as quiet as it goes, so there is nowhere to step down to."""
+    stub = _StubLitellm([_thinking_resp("", 100, 100)])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="off")
+    assert (await client.chat("hi")).content == ""
+    assert len(stub.kwargs) == 1
+
+
+async def test_retry_billed(monkeypatch):
+    """Both calls are spent, so both are counted."""
+    stub = _StubLitellm([_thinking_resp("", 100, 100), _thinking_resp("ok", 20, 5)])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    budget = TokenBudget(limit=10_000)
+    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium", budget=budget)
+    await client.chat("hi")
+    assert budget.used == 10 + 100 + 10 + 20

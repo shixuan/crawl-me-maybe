@@ -55,6 +55,22 @@ def effort_for(model: str, wanted: str) -> str:
     return ""
 
 
+def step_down(wanted: str) -> str:
+    """The level below *wanted*, or empty when there is nowhere lower.
+
+    A model that thinks away the whole output allowance answers nothing.
+    Asking again at the same level buys the same silence and a bigger
+    ceiling buys a longer one, so the only move left is to think less.
+    A value this project has not heard of drops straight to the floor,
+    since there is no ladder to walk down.
+    """
+    if wanted == OFF:
+        return ""
+    if wanted in LEVELS:
+        return LEVELS[LEVELS.index(wanted) - 1]
+    return OFF
+
+
 def _takes_effort(model: str) -> bool:
     """Whether this model takes the parameter at all."""
     try:

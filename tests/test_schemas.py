@@ -101,7 +101,8 @@ def test_page_defaults():
 
 def test_feedback_defaults():
     af = AnalyzerFeedback()
-    assert (af.classification, af.relevance_score, af.endorsed_links) == ("UNKNOWN", 0.0, [])
+    assert (af.classification, af.relevance_score) == ("UNKNOWN", 0.0)
+    assert (af.domain, af.url, af.title) == ("", "", "")
 
 
 def test_analysis_defaults():

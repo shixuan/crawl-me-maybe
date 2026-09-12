@@ -13,7 +13,7 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.digest.harvest import Harvest
-from crawlme.scheduler.engine import CrawlScheduler, _endorsed_href
+from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.stop_conds import MAX_STALE_STREAK, RELEVANCE_WINDOW
 from crawlme.schemas import (
     URL,
@@ -265,27 +265,6 @@ async def test_aclose():
     analyzer.aclose.assert_awaited_once()
 
 
-def test_keeps_endorsed():
-    """The analyzer sink is where endorsed links enter the crawl."""
-    sched = _make_sched()
-    result = AnalysisResult(
-        page_id="p1",
-        url_key="k1",
-        feedback=AnalyzerFeedback(
-            classification="RELEVANT",
-            relevance_score=0.9,
-            domain="example.com",
-            url="https://example.com/x",
-            title="X",
-            endorsed_links=("https://shop.example/promotions",),
-        ),
-    )
-
-    sched._on_analysis(result)
-
-    assert list(sched._endorsed) == [("https://shop.example/promotions", "https://example.com/x")]
-
-
 def test_backfills_context():
     """2.9: the ranker reads the source page's verdict from here."""
     sched = _make_sched()
@@ -311,12 +290,12 @@ def test_backfills_context():
 def test_context_keeps_older():
     """analyze runs before link extraction, so the later write must merge."""
     sched = _make_sched()
-    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", classification="HUB", relevance_score=0.4))
+    sched._on_analysis(AnalysisResult(page_id="p1", url_key="k1", classification="IRRELEVANT", relevance_score=0.4))
 
     sched._record_page_context("k1", {"title": "T", "link_count": 3})
 
     ctx = sched._page_contexts["k1"]
-    assert ctx["classification"] == "HUB"
+    assert ctx["classification"] == "IRRELEVANT"
     assert ctx["title"] == "T"
 
 
@@ -355,48 +334,6 @@ def test_context_needs_key():
     sched = _make_sched()
     sched._record_page_context("", {"title": "T"})
     assert "" not in sched._page_contexts
-
-
-@pytest.mark.asyncio
-async def test_endorsed_top():
-    """Endorsed links skip ranking, resolve against their source page,
-    and enter the frontier at full priority."""
-    from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.pioneer.prefilter import Decision
-
-    sched = _make_sched(canonicalizer=Canonicalizer())
-    sched._endorsed.extend([("https://a.com/x", "https://src.com/page"), ("/rel", "https://src.com/page")])
-    sched._goal = _goal(max_pages=5)
-    sched._page_contexts["src-key"] = {"depth": 2}
-    sched._pages.open("src-key", "https://src.com/page", "")
-    sched._prefilter.check = MagicMock(return_value=(Decision.ALLOW, ""))
-    sched._frontier.push_batch = AsyncMock()
-
-    await sched._inject_endorsed()
-
-    sched._frontier.push_batch.assert_awaited_once()
-    items = sched._frontier.push_batch.call_args[0][0]
-    assert len(items) == 2
-    assert all(item.priority == 1.0 and item.score_source == "endorsed" for item in items)
-    assert items[0].url.canonical == "https://a.com/x"
-    assert items[1].url.canonical == "https://src.com/rel"  # relative link resolved
-    assert items[0].depth == 3  # source depth 2 + 1
-
-
-@pytest.mark.asyncio
-async def test_endorsed_drop():
-    """An endorsement never overrides the prefilter's hard rules."""
-    from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.pioneer.prefilter import Decision
-
-    sched = _make_sched(canonicalizer=Canonicalizer())
-    sched._endorsed.append(("https://a.com/x", "https://src.com/page"))
-    sched._goal = _goal(max_pages=5)
-    sched._prefilter.check = MagicMock(return_value=(Decision.DROP, "dedup"))
-
-    await sched._inject_endorsed()
-
-    sched._frontier.push_batch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -557,33 +494,6 @@ async def test_pump_quiet(caplog):
 
     wake.assert_not_called()
     assert "waking_rank" not in caplog.text
-
-
-# endorsed links ---------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("link", "expected"),
-    [
-        ("https://example.com/deals", "https://example.com/deals"),
-        ("http://example.com/x", "http://example.com/x"),
-        ("/promotions", "/promotions"),
-        ("www.mollyteaca.com", "https://www.mollyteaca.com"),
-        ("WWW.Example.COM", "https://WWW.Example.COM"),
-    ],
-)
-def test_endorsed_kept(link, expected):
-    assert _endorsed_href(link) == expected
-
-
-@pytest.mark.parametrize("link", ["mollyteaca.com", "click here", "", "   ", "see our site"])
-def test_endorsed_junk(link):
-    """Resolving it against the page would fabricate a URL.
-
-    Instagram answers 200 for any path, so the fabricated page looked
-    like a successful fetch and cost an analysis and a page of budget.
-    """
-    assert _endorsed_href(link) is None
 
 
 # end-of-run accounting ---------------------------------------------------
@@ -821,6 +731,8 @@ async def test_verdict_to_rank():
     await sched._rank_and_enqueue([Candidate(url=url)])
 
     assert [p["title"] for p in captured["history"].relevant_pages] == ["Post 0", "Post 2"]
+    # The summary rides along, or the ranker sees only the head tag.
+    assert all("summary" in p for p in captured["history"].relevant_pages)
 
 
 def test_seen_bounded():

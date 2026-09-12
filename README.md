@@ -81,11 +81,11 @@ says anything, and only the person crawling it knows that.
 enables the platform adapters, and it also defaults `--domain-budget 0`, since
 every candidate on a platform shares one host and a per-domain ceiling would be
 a ceiling on the crawl. The platform is read through the browser context holding
-the cookies; a site the analyser endorses from there is not, because the
-credentials mean nothing to it. How deep to go is left to `--depth-limit`, which
-has to cover the way out as well as the platform. Seeds on such a platform without one are refused,
-because a logged-out crawl fetches login pages and reports them as an empty
-platform.
+the cookies; anywhere else the crawl reaches is not, because the credentials
+mean nothing there. How deep to go is left to `--depth-limit`, which has to
+cover the way out as well as the platform. Seeds on such a platform without a
+session are refused, because a logged-out crawl fetches login pages and reports
+them as an empty platform.
 
 ```bash
 pip install -e '.[browser]' && playwright install chromium
@@ -157,7 +157,7 @@ the shop, the offer and the deadline") is what makes the analyzer extract them.
 
 | Flag | Values | Default | Meaning |
 |------|--------|---------|---------|
-| `--depth-limit` | int | `5` | Hops from a seed. A listing and its posts are two; a site an analyser endorsed off a post is three |
+| `--depth-limit` | int | `5` | Hops from a seed. A listing and its posts are two; a site linked from an ordinary page is one more |
 | `--since` | `"2 weeks"`, `"3 days"`, `2026-08-01` | none | Time window. Candidates a listing dated before it are dropped; with a single seed, the run also stops once content ages out |
 | `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry, which is once every source has retired. Use it when you want everything there is rather than a fixed number. Mutually exclusive with `--page-budget` |
 
@@ -250,7 +250,6 @@ flowchart TD
     links --> pre["Pre-filter<br>URL rules, zero LLM"]
     pre -->|"10-30 candidates"| rank["LLMRanker<br>one call per 20"]
     rank -->|"priority, or dropped"| FR
-    an -.->|"links worth following"| FR
 ```
 
 **Whoever claims the page reads it.** Instagram answers from the host, RSS from
@@ -267,8 +266,8 @@ frontier order.
 
 **Ranking predicts; analysis verifies.** Each extracted value is checked against
 the page text before it is stored, and a field the page does not state is simply
-absent -- there is no "unknown". The analyzer also names the links worth
-following, which is the only way a crawl leaves the platform it started on.
+absent -- there is no "unknown". A page it discards stops at the verdict and
+writes no summary, because nothing downstream ever reads one.
 
 **Fairness upstream of the ranker, priority downstream.** A turn from each seed
 keeps one loud account from spending the whole LLM budget. Priority decides only
@@ -320,5 +319,6 @@ See [`.env.example`](.env.example) for the full list.
 | v0.3 | ✅ | IG, Playwright with login state, feed traversal, extracted fields with evidence |
 | v0.4 | ✅ | Reddit, a fetcher chosen per candidate, paged listings |
 | v0.5 | ✅ | Seed enhancement: the model names more sources, each verified before use. A source that stops paying off retires on its own, so a run ends when every one has |
+| v0.6 | ✅ | A cheaper token bill: a discarded page stops at the verdict, a reply that thought away its whole allowance is asked again with less thinking, and the ranker is shown what analysis found. HUB and analyzer-endorsed links removed, having bought one result in 17 fetches |
 
 ---

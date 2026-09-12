@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.llm.reasoning import effort_for
+from crawlme.llm.reasoning import effort_for, step_down
 
 
 @pytest.fixture
@@ -92,3 +92,17 @@ def test_a_skipped_setting_is_announced(catalogue, caplog):
     with caplog.at_level("INFO"):
         assert effort_for("openai/gpt-7", "off") == ""
     assert "not known to take a thinking level" in caplog.text
+
+
+def test_step_down_ladder():
+    """One rung at a time, and empty at the bottom."""
+    assert step_down("high") == "medium"
+    assert step_down("medium") == "low"
+    assert step_down("low") == "off"
+    assert step_down("off") == ""
+
+
+def test_step_down_unknown():
+    """No ladder to walk, so go straight to the floor."""
+    assert step_down("") == "off"
+    assert step_down("furious") == "off"

@@ -9,11 +9,17 @@ from pydantic import BaseModel, Field
 
 from crawlme.schemas.core import _new_id, _utcnow
 
-# Declaration order is display order: the report walks this rather
-# than sorting by count, so the same line reads the same way every run
-# and the two verdicts a reader looks for come first.
-Classification = Literal["RELEVANT", "IRRELEVANT", "HUB", "AGGREGATOR", "NAVIGATION", "UNKNOWN"]
-CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "HUB", "AGGREGATOR", "NAVIGATION", "UNKNOWN")
+# Declaration order is display order: the report walks this rather than
+# sorting by count, so the same line reads the same way every run.
+#
+# Two verdicts and a fallback. HUB and AGGREGATOR both named a page kept
+# for the links on it, and seven runs showed what that bought: 17 pages
+# fetched on the analyzer's endorsement, one of them a result, against a
+# 25% hit rate on the pages the ranker chose. NAVIGATION named menus and
+# login pages, appeared 9 times in 732 verdicts, and no branch ever read
+# it. A page is a result or it is not.
+Classification = Literal["RELEVANT", "IRRELEVANT", "UNKNOWN"]
+CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "UNKNOWN")
 
 
 class ExtractedField(BaseModel):
@@ -36,13 +42,9 @@ class ExtractedField(BaseModel):
 class AnalyzerFeedback(BaseModel):
     classification: str = "UNKNOWN"
     relevance_score: float = 0.0
-    hub_score: float = 0.0
-    endorsed_links: list[str] = Field(default_factory=list)
     domain: str = ""
-    # Page identity the analyzer already holds at parse time.  The
-    # signal aggregation needs the readable URL for the ranker's "seen
-    # so far" history and the hub multiplier, and the title for the
-    # same history lines.
+    # Page identity the analyzer already holds at parse time. The
+    # ranker's "seen so far" history reads both.
     url: str = ""
     title: str = ""
 

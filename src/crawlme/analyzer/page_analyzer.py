@@ -5,10 +5,9 @@ fields the goal declared with a quote behind each one -- is the product
 the user consumes.  It is stored in the analyses table and revisited by
 replay, which is why the row carries the prompt version and the model.
 
-Two things travel back into the crawl from the same call: the pages it
+One thing travels back into the crawl from this call: the pages it
 judged relevant, which the ranker is reminded of when it scores the
-next batch, and the links it endorsed, which are the only way a run
-leaves the platform it started on.
+next batch.
 
 The stage is optional: the factory wires it only when analysis is
 enabled and there are credentials.
@@ -55,38 +54,43 @@ _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0
 # Bump when the prompt changes in a way that changes outputs, so
 # stored analyses stay comparable across versions.
-_PROMPT_VERSION = "v2.5"
-
 _MAX_TAGS = 8
-_MAX_ENDORSED = 5
 
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
 
+# What the classes mean, said once and shared by both prompts.
+_JUDGEMENT = (
+    "classification: RELEVANT means the page directly satisfies the goal, IRRELEVANT "
+    "means it does not, including menus, login pages and category indexes. "
+    "relevance_score is how well the page satisfies the goal, 0.0 to 1.0. summary is "
+    "one or two sentences. tags describe the content."
+)
+
+_PROMPT_VERSION = "v2.6"
+
+# One judgement, three answer shapes. Two thirds of this stage's bill is
+# what the model writes, and for a page that will be discarded every
+# field after the verdict is written and then thrown away.
 _SYSTEM = (
     "You analyze web pages for a goal-directed crawler. You get the crawl goal, the page "
-    "URL, title, and text. Classify the page, summarize what it offers, and produce "
-    "feedback signals the crawler's scheduler uses. Reply with JSON only, no prose. "
-    'Format: {"classification": "<RELEVANT|HUB|AGGREGATOR|IRRELEVANT|NAVIGATION>", '
-    '"relevance_score": 0.0, "hub_score": 0.0, "summary": "...", "tags": ["..."], '
-    '"endorsed_links": ["..."]}. '
-    "classification: RELEVANT means the page directly satisfies the goal; HUB means the "
-    "page itself is thin but links toward the goal; AGGREGATOR means a link aggregator "
-    "like a Hacker News front page; IRRELEVANT means unrelated; NAVIGATION means menus, "
-    "login pages, category indexes. relevance_score is how well the page satisfies the "
-    "goal, hub_score is how good this page is as a link source for the goal, both 0.0 to "
-    "1.0. summary is one or two sentences. tags describe the content. "
-    "endorsed_links are up to 5 URLs from the page text that you would "
-    "click yourself."
+    "URL, title, and text. Classify the page, and describe it only if it is worth "
+    "keeping. Reply with JSON only, no prose. "
+    "For a page you discard, reply exactly "
+    '{"classification": "IRRELEVANT", "relevance_score": 0.0} '
+    "and nothing more, because the page is thrown away and no other field is ever read. "
+    "For a page that answers the goal, reply "
+    '{"classification": "RELEVANT", "relevance_score": 0.0, "summary": "...", '
+    '"tags": ["..."]}. ' + _JUDGEMENT
 )
 
 
 _EXTRACT_SYSTEM = (
     ' Also fill "extracted": {"<field>": {"value": "...", "evidence": "..."}} for the '
-    "fields listed under ## Extract. evidence must be copied verbatim from the page "
-    "text and must contain the value. Omit any field the page does not state: a field "
-    "you leave out is read as unknown, and that is the correct answer whenever the page "
-    "does not say. Never infer a value from what is likely, and never use the goal's "
-    "own wording as evidence."
+    "fields listed under ## Extract, on a RELEVANT page only. evidence must be copied "
+    "verbatim from the page text and must contain the value. Omit any field the page "
+    "does not state: a field you leave out is read as unknown, and that is the correct "
+    "answer whenever the page does not say. Never infer a value from what is likely, "
+    "and never use the goal's own wording as evidence."
 )
 
 
@@ -226,11 +230,10 @@ class PageAnalyzer:
             result.relevance_score,
         )
         logger.debug(
-            "analysis.ok url_key=%s classification=%s relevance=%.2f hub=%.2f model=%s tokens=+%d",
+            "analysis.ok url_key=%s classification=%s relevance=%.2f model=%s tokens=+%d",
             page.url_key,
             result.classification,
             result.relevance_score,
-            result.feedback.hub_score,
             result.model,
             tokens,
         )
@@ -385,12 +388,10 @@ def _parse_analysis(
         classification = "UNKNOWN"
 
     relevance = _clamp01(data.get("relevance_score"))
-    hub = _clamp01(data.get("hub_score"))
     summary = data.get("summary")
     summary = str(summary).strip() if isinstance(summary, str) else ""
 
     tags = _str_list(data.get("tags"), _MAX_TAGS)
-    endorsed = _str_list(data.get("endorsed_links"), _MAX_ENDORSED)
 
     return AnalysisResult(
         page_id=page.page_id,
@@ -406,8 +407,6 @@ def _parse_analysis(
         feedback=AnalyzerFeedback(
             classification=classification,
             relevance_score=relevance,
-            hub_score=hub,
-            endorsed_links=endorsed,
             domain=page.url.reg_domain,
             url=page.url.canonical,
             title=page.title or "",

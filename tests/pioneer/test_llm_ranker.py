@@ -220,6 +220,31 @@ async def test_prompt_history():
     assert "Rust internals deep dive" in client.calls[0]["prompt"]
 
 
+@pytest.mark.asyncio
+async def test_summary_beats_title():
+    """The title is whatever the page put in its head tag. Instagram
+    puts the same word there for every page, so the loop carried a
+    constant while the summary sat unused in the same record."""
+    history = RankHistorySummary(
+        relevant_pages=[{"title": "Instagram", "url": "https://x/1", "summary": "Free tote with any purchase"}]
+    )
+    client = _StubClient([_resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), _candidates(1), history)
+    prompt = client.calls[0]["prompt"]
+    assert "Free tote with any purchase" in prompt
+    assert "- Instagram" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_repeated_findings_collapse():
+    """Five identical lines are not five findings, and a block that says
+    one word five times reads as feedback while carrying none."""
+    history = RankHistorySummary(relevant_pages=[{"title": "Instagram", "url": f"https://x/{i}"} for i in range(5)])
+    client = _StubClient([_resp(_rankings_json(1))])
+    await _ranker(client).rank_batch(_goal(), _candidates(1), history)
+    assert client.calls[0]["prompt"].count("- Instagram") == 1
+
+
 async def _prompt_with_source(src: dict) -> str:
     client = _StubClient([_resp(_rankings_json(1))])
     cands = _candidates(1)
@@ -244,11 +269,11 @@ async def _prompt_with_source(src: dict) -> str:
             "Compiler Blog [RELEVANT 0.90] — A deep dive into borrow checking.",
         ),
         # A judgement with no summary still contributes its classification.
-        ({"title": "Nav", "classification": "NAVIGATION", "relevance": 0.0}, "Nav [NAVIGATION 0.00]"),
+        ({"title": "Nav", "classification": "IRRELEVANT", "relevance": 0.0}, "Nav [IRRELEVANT 0.00]"),
         # Batches carry thirty candidates, so a summary has to stay short.
         (
-            {"title": "T", "classification": "HUB", "relevance": 0.5, "summary": "x" * 200},
-            "T [HUB 0.50] — " + "x" * 60 + "...",
+            {"title": "T", "classification": "RELEVANT", "relevance": 0.5, "summary": "x" * 200},
+            "T [RELEVANT 0.50] — " + "x" * 60 + "...",
         ),
     ],
 )
@@ -493,3 +518,44 @@ def test_no_window() -> None:
     """Most goals have none, and an empty heading is a line per call."""
     prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "Window" not in prompt
+
+
+def test_goal_statement_wins() -> None:
+    """The analyzer judges the enhanced statement, so the ranker has to
+    judge it too, or the two stages score different goals."""
+    goal = CrawlGoal(prompt="raw words", goal_statement="the enhanced statement")
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert "the enhanced statement" in prompt
+    assert "raw words" not in prompt
+
+
+def test_prompt_used_without_statement() -> None:
+    """A run without the Goal Enhancer still has to say what it wants."""
+    prompt = _build_prompt(CrawlGoal(prompt="raw words"), [_candidate("c1")], RankHistorySummary(), {})
+    assert "raw words" in prompt
+
+
+def test_extract_fields_shown() -> None:
+    """A candidate that cannot yield the fields is one the analyzer will
+    reject, and the ranker could not see them at all."""
+    goal = CrawlGoal(
+        prompt="g",
+        extraction_spec={"fields": {"deadline": "when the offer ends"}},
+    )
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert "## Extract" in prompt
+    assert "- deadline: when the offer ends" in prompt
+
+
+def test_no_fields_no_block() -> None:
+    """A goal that asks to find pages collects nothing."""
+    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    assert "## Extract" not in prompt
+
+
+def test_extract_before_candidates() -> None:
+    """Fixed for the whole run, so it sits ahead of anything that
+    changes per call and stays inside the cached prefix."""
+    goal = CrawlGoal(prompt="g", extraction_spec={"fields": {"deadline": "d"}})
+    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    assert prompt.index("## Extract") < prompt.index("## Candidate links")
