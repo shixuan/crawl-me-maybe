@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS analyses (
     goal_id         TEXT DEFAULT '',
     classification  TEXT DEFAULT 'UNKNOWN',
     relevance_score REAL DEFAULT 0.0,
+    starts_on       TEXT DEFAULT '',
+    ends_on         TEXT DEFAULT '',
     summary         TEXT,
     structured_data TEXT DEFAULT '{}',
     extracted_json  TEXT DEFAULT '{}',
@@ -423,9 +425,9 @@ class SqliteCrawlDb:
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         self._enqueue_write(
             "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
-            "classification, relevance_score, summary, structured_data, extracted_json, "
-            "tags_json, feedback_json, model, prompt_version, spec_version, tokens_used, "
-            "analyzed_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "classification, relevance_score, starts_on, ends_on, summary, structured_data, "
+            "extracted_json, tags_json, feedback_json, model, prompt_version, spec_version, "
+            "tokens_used, analyzed_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 analysis_json["analysis_id"],
                 analysis_json.get("page_id", ""),
@@ -433,6 +435,8 @@ class SqliteCrawlDb:
                 analysis_json.get("goal_id", ""),
                 analysis_json.get("classification", "UNKNOWN"),
                 analysis_json.get("relevance_score", 0.0),
+                analysis_json.get("starts_on") or "",
+                analysis_json.get("ends_on") or "",
                 analysis_json.get("summary"),
                 json.dumps(analysis_json.get("structured_data", {})),
                 json.dumps(analysis_json.get("extracted", {})),

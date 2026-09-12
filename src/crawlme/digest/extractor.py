@@ -33,6 +33,36 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+# Trafilatura emits some elements twice, once whole and once split a line
+# apiece, which its own deduplicate= cannot see. The window is capped
+# because the scan is quadratic: 5000 lines took 20 seconds without it.
+_REPEAT_WINDOW = 200
+_REPEAT_MIN_LINES = 2
+_REPEAT_MIN_CHARS = 100
+
+
+def _undoubled(text: str | None) -> str | None:
+    """*text* with any block that merely repeats the one before it gone."""
+    if not text:
+        return text
+    lines = text.split("\n")
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        k = min(len(kept), len(lines) - i, _REPEAT_WINDOW)
+        while k >= _REPEAT_MIN_LINES:
+            if lines[i] == kept[-k] and lines[i : i + k] == kept[-k:]:
+                if sum(len(x) + 1 for x in lines[i : i + k]) - 1 >= _REPEAT_MIN_CHARS:
+                    break
+            k -= 1
+        if k >= _REPEAT_MIN_LINES:
+            i += k
+            continue
+        kept.append(lines[i])
+        i += 1
+    return "\n".join(kept)
+
+
 class TrafExtractor:
     def extract(self, fetch_result: FetchResult, raw_html_path: str = "") -> Page:
         # trafilatura parses with libxml2 all the way through, so the
@@ -99,6 +129,9 @@ class TrafExtractor:
 
         if title is None:
             title = fetch_result.url.canonical
+
+        plain_text = _undoubled(plain_text)
+        markdown = _undoubled(markdown)
 
         text_blob = plain_text or ""
         text_hash = hashlib.sha256(text_blob.encode()).hexdigest()[:16]

@@ -5,41 +5,31 @@ investigation:
 
   ERROR    the run cannot go on, or a whole stage stopped working
   WARNING  the run is producing something wrong or incomplete and is
-           carrying on anyway. A reader who ignores it gets a report
-           that looks fine and is not
+           carrying on anyway
   INFO     what is happening, for the person who started the run. One
            line each time something is handled, naming it by its
            address. No url_keys, no byte counts, no ratios
   DEBUG    the same events counted rather than described, plus the
            mechanics that have no readable form
 
-Two tests. WARNING against INFO: would ignoring this line leave someone
-believing a result that is not true? Payloads dropped by their content
-type sat at DEBUG and five accounts were read weeks out of date without
-a word.
+WARNING against INFO: would ignoring this line leave someone believing
+a result that is not true? Payloads dropped by their content type sat
+at DEBUG, and five accounts were read weeks out of date without a word.
 
 INFO against DEBUG: would the person who typed the command understand
-this line and care? "read 63 posts from timhortons" passes. "kept=6
-bytes=2482493" does not, however much it helped whoever was debugging
-the day it was written.
+this line and care? "read 63 posts from timhortons" passes, "kept=6
+bytes=2482493" does not.
 
-Readable is not the same as sparse. Both levels run per item, and the
-split is vocabulary rather than density. A page fetched, a candidate
-scored, a page judged, each gets an INFO line in words and a DEBUG
-line in numbers. Moving the per-item lines to DEBUG alone left four
-workers running in parallel behind a terminal that printed once a
-minute, which reads as a stall, and a periodic "25 pages read" stood
-in for the work without showing any of it.
+Readable is not the same as sparse. Both levels run per item and the
+split is vocabulary, not density. Moving the per-item lines to DEBUG
+alone left four workers running behind a terminal that printed once a
+minute, which reads as a stall.
 
-INFO speaks when the wait begins, not when it ends. A line that only
-arrives with the answer says nothing for as long as the answer takes,
-and one seed proposal took over two minutes, which read as a hang and
-was interrupted twice. Anything that can take seconds announces itself
-first.
+INFO speaks when the wait begins, not when it ends. One seed proposal
+took over two minutes, which read as a hang and was interrupted twice.
 
 A field name says what it measured, not what it is about. `took` reads
-as the time a call spent and was the wall clock around an await, which
-on a busy loop is a different number.
+as the time a call spent and was the wall clock around an await.
 """
 
 from __future__ import annotations

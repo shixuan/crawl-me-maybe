@@ -1,19 +1,12 @@
 """Run-scoped context: the mutable state every pipeline stage shares.
 
-CrawlContext is the single object of a run that accumulates progress
-and statistics as components work.  It is created by the factory and
-injected at construction time; the engine resets it in place at the
-start of each run, so references held by stages never go stale.
+CrawlContext is the one object a run accumulates into.  The factory
+creates it and injects it at construction time, and the engine resets
+it in place at the start of each run, so references held by stages
+never go stale.
 
-  counters  : thresholds and live progress the stop conditions read
-              (unchanged from its life as a standalone CrawlCounters)
-  stats     : end-of-run report tallies (discovered, ranked, errors,
-              analyses)
-
-The context is deliberately a plain dataclass of plain data: it has
-one implementation and no behavior to polymorph, so it needs no
-protocol.  Future run-scoped concerns (live progress for the status
-command, feedback aggregates) become new typed fields here.
+It is split by who reads it rather than by what it counts.  See the
+class at the bottom of this file.
 """
 
 from __future__ import annotations

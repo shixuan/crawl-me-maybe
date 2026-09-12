@@ -1,20 +1,13 @@
 """Feed vocabulary, shared by every platform adapter.
 
 What a feed item is does not vary: a permalink, who posted it, what it
-says, and when. Only the markup that carries those varies, and that part
-is irreducible, so it lives in a per-platform adapter.
+says, and when. Only the markup carrying those varies, and that part is
+irreducible, so it lives in a per-platform adapter.
 
 This module holds the half that must not be rewritten per platform,
 because rewriting it is how two adapters start disagreeing about what a
-post is. Adapters produce FeedItem; the pipeline only ever sees Candidate.
-
-The FeedAdapter protocol below was deliberately absent while nothing
-asked questions of an adapter. What changed is not that a second
-platform arrived, but that harvesting needs to ask one ("is this page
-yours?"), and answering it inside a per-platform harvester would mean
-rewriting the whole collection flow per platform. The protocol carves
-only what is called today; the second platform will have opinions, and
-that is when to listen to them. See docs/refactor.md G5.
+post is. Adapters produce FeedItem; the pipeline only ever sees
+Candidate.
 """
 
 from __future__ import annotations

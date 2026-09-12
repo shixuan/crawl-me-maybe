@@ -41,6 +41,7 @@
       </div>
 
       <div class="filter-row" id="chips"></div>
+      <div class="filter-row" id="when-chips"></div>
 
       <div class="filter-row meta-row">
         <span id="tally" class="tally"></span>
@@ -53,11 +54,22 @@
           <select id="headline" class="select"></select>
         </label>
         <label class="field">
+          <span class="field-label">during</span>
+          <select id="during" class="select">
+            <option value="">any time ahead</option>
+            <option value="7">next week</option>
+            <option value="14">next two weeks</option>
+            <option value="30">next month</option>
+            <option value="90">next three months</option>
+          </select>
+        </label>
+        <label class="field">
           <span class="field-label">sort</span>
           <select id="sort" class="select">
             <option value="relevance">relevance</option>
             <option value="published">published</option>
             <option value="title">title</option>
+            <option value="ends">when it ends</option>
           </select>
         </label>
         <select id="goal" class="select" hidden></select>

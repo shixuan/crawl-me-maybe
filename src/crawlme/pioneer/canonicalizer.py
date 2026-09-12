@@ -1,22 +1,12 @@
-"""URL canonicalization: normalize equivalent URLs into a single canonical form.
+"""URL canonicalization: equivalent URLs into a single canonical form.
 
-Returns a fully-populated URL object with scheme, host, path, query, domain,
-and reg_domain extracted.  The url_key field is a sha256[:16] fingerprint
-for deduplication.
+Returns a fully populated URL, whose url_key is a sha256[:16] of the
+canonical text and is what dedup compares.  The normalization steps run
+in a fixed order, since stripping a parameter before sorting and sorting
+before fingerprinting are not interchangeable.
 
-Normalization steps (order matters):
-  1. Resolve relative URLs against base
-  2. Lowercase scheme + host
-  3. Remove default ports (80/443)
-  4. Collapse duplicate slashes in path
-  5. Strip tracking parameters (utm_*, fbclid, gclid, etc.) and sort
-     remaining query params by key
-  6. Reassemble without fragment
-  7. sha256 fingerprint -> url_key
-
-reg_domain is computed by stripping common subdomains (www, m, api, etc.).
-For multi-part TLDs like .co.uk this heuristic is imperfect; a proper
-public-suffix-list lookup can replace it later.
+reg_domain strips common subdomains by hand.  For a multi-part TLD like
+.co.uk that is wrong, and the fix is a public-suffix lookup.
 """
 
 from __future__ import annotations

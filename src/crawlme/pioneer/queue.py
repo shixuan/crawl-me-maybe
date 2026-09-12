@@ -4,26 +4,9 @@ A max-heap on the priority the ranker produced, plus the two things a
 heap alone cannot express: an item held back until a rate limit passes,
 and an item aged upward so that a low score cannot wait forever.
 
-This was a swappable seam for a while, with a fair-rotation ordering
-beside this one, on the theory that a run over several seeds wants a
-turn from each.  It does -- but upstream, over which candidates get
-scored at all, because an LLM call per batch is the scarce thing and
-whatever never leaves the buffer is never considered.  By the time an
-item reaches here it has been scored and the only question left is
-which score goes first, so there is one structure here and no plug.
-
-The Frontier used to be six things at once: ordering, per-item gating,
-budget enforcement, dedup state, counters, and checkpointing.  Only the
-first of those is specific to how a source is traversed.  One run wants the best candidate anywhere; another
-wants a turn taken from each seed.  The other five are identical either way, and duplicating them per
-traversal is how the two halves drift apart.
-
-So an Ordering answers one question, "who is next", and the Frontier
-shell keeps everything else.  The shell hands down a gate function
-because only it knows about robots delays and budgets, and the source
-calls it while scanning because only the source knows its own order.
-
-See docs/refactor.md G2 and G6.
+Fairness between seeds is not decided here.  By the time an item
+reaches this queue it has been scored, and the only question left is
+which score goes first.  See buffer.py, which is the gate that binds.
 """
 
 from __future__ import annotations

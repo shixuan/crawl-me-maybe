@@ -1,26 +1,18 @@
 """Smoke crawls: broad, shallow, hermetic, and safe to run on every push.
 
-Broad because they touch every layer from argv to SQLite. Shallow because
-they assert that the machine ran and produced plausible rows, not that its
-judgements are any good. That is the deal a smoke test makes, and it is
-why these live here rather than in tests/e2e/: they crawl a site this
-process serves to itself, with the LLM scripted or off, so nothing here
-depends on the outside world.
+Broad because they touch every layer from argv to SQLite, shallow
+because they assert that the machine ran and produced plausible rows,
+not that its judgements are any good. They crawl a site this process
+serves to itself, with the LLM scripted or off, so nothing here depends
+on the outside world. The live ones stay in tests/e2e/ and out of CI.
 
-The real end-to-end tests, against live Wikipedia, stay in tests/e2e/ and
-stay out of CI.
-
-Two levels, because they fail differently:
-
-  1. The CLI in a subprocess, LLM off. Covers argument parsing, the
-     factory, the whole pump, teardown, and the process exit code. That
-     last one matters: a non-daemon aiosqlite worker thread once kept the
-     interpreter alive after a run finished, and a log tail looks perfect
-     when that happens.
-  2. The pipeline in-process with a scripted LLM. Covers the stages the
-     first one skips: goal enhancement, LLM re-ranking, page analysis,
-     and the analyses they produce. No tokens are spent because no real
-     client is ever built.
+Two levels, because they fail differently. The CLI in a subprocess with
+the LLM off covers argument parsing, the factory, the pump, teardown,
+and the exit code; that last one matters, because a non-daemon aiosqlite
+worker thread once kept the interpreter alive after a run finished and a
+log tail looks perfect when that happens. The pipeline in-process with a
+scripted LLM covers what the first skips: enhancement, re-ranking and
+analysis, without spending a token.
 """
 
 from __future__ import annotations

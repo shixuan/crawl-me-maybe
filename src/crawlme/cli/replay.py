@@ -1,20 +1,16 @@
 """Replay: re-run the analysis stage over a completed task's pages.
 
-The pages table is the frozen corpus of a run; replay produces new
-judgments over it without touching anything else.  It never writes to
-any table but analyses (plus one new crawl_goals row when a fresh
-prompt is given), and it never goes through the steering subsystem
-(the analyzer is called directly): a replay prompt has not been
-validated by a live crawl, so its signals must not pollute
-results/feedback.db.
+The pages table is the frozen corpus of a run, and replay produces new
+judgments over it without touching anything else.  It writes only to
+analyses, plus one crawl_goals row when given a fresh prompt, and it
+calls the analyzer directly rather than going through steering: a
+replay prompt has not been validated by a live crawl, so its signals
+must not reach feedback.db.
 
-Idempotency.  A page's analysis identity is (url_key, goal_id,
-prompt_version, model).  Before each analyze, replay checks whether
-that identity already exists and skips it, so replay-of-replay is a
-no-op.  Goal ids are content-derived (sha256 of the prompt), so
-replaying the same prompt twice is a no-op too.  --force skips the
-check and appends new rows for variance studies (old rows are never
-touched; the identity columns simply repeat).
+An analysis is identified by (url_key, goal_id, prompt_version, model)
+and an existing one is skipped, so replaying twice is a no-op; goal ids
+are a hash of the prompt, so the same prompt is the same goal.  --force
+appends instead, for variance studies, and never touches the old rows.
 """
 
 from __future__ import annotations

@@ -244,7 +244,7 @@ user submits a prompt
 
 ```
 loop while state == "RUNNING":
-  check_stop(task, frontier, counters)
+  check_stop(task, frontier, limits, progress)
     → independent checks, all of which can fire; returns every StopReason that did
     → any hit → state = "STOPPING", wake rank_pump, break
 
@@ -377,11 +377,14 @@ crawl replay <task-id> [--prompt "new goal"] [--limit N] [--max-tokens N] [--for
 ### Inspect
 
 ```
-crawl inspect <task-id> [--goal <goal_id>] [--export json|csv]
+crawl inspect <task-id> [--goal <goal_id>] [--during <window>] [--export json|csv]
   → read-only: task / run / pages / goals (marked original or replay) /
-    the classification spread per goal / top relevant pages, deduplicated by url
+    the classification spread per goal / the results, deduplicated by url
+  → results are grouped by when what they describe runs, not by score:
+    still open / no date given / already over, and with --during a fourth
+    group for what starts past that line.  Nothing is ever hidden
   → --export writes the pages⋈analyses join to stdout (url, title, class,
-    relevance, summary, tags, model, timestamp)
+    relevance, starts_on, ends_on, summary, tags, model, timestamp)
 ```
 
 ### Feed traversal
@@ -593,6 +596,14 @@ Answers "if only so many more links can be read, which ones?".
 **Without LLM credentials this stage does not exist**, and candidates enqueue flat
 in the order the frontier hands them out.
 
+### util/
+
+Self-contained helpers that import nothing else in the package.  `util/dates.py`
+is the only one: it reads a date range out of text, and answers which group a
+range falls in relative to today and an optional horizon (`undated` / `over` /
+`open` / `later`).  Two readers ask that second question, `crawl inspect` and the
+dashboard, which is why it is one function rather than one per reader.
+
 ### RobotsPolicy
 
 Per-domain fetch policy, three mechanisms together:
@@ -621,6 +632,19 @@ The methods take pydantic models rather than dicts:
 
 Every write goes through a single-consumer `asyncio.Queue`, committing every 200
 writes, so there is no concurrent-write race.
+
+### Dashboard
+
+`dashboard/serve.py`, standard library only, bound to the loopback address.  It
+opens a run database read-only and serves the results as a page you can filter:
+by classification, by full-text search, by which declared field a result carries,
+and by when what it describes runs.
+
+Two rules shape it.  Everything after the first request is a local filter, so a
+run is fetched once when it is selected and no knob costs a round trip.  And the
+grouping rule is imported from `util/dates.py` rather than rewritten in
+JavaScript, so the page and `crawl inspect` cannot disagree about what is still
+open; all the browser decides is where the reader draws the line ahead of them.
 
 ### EventEmitter
 
@@ -668,7 +692,7 @@ is a `@dataclass` (mutable, updated constantly).
 | `FrontierItem` | BaseModel | An enqueued item: priority, retry state, domain gating |
 | `FetchResult` | BaseModel | Status code, redirect chain, raw bytes |
 | `Page` | BaseModel | The parsed page: markdown, `raw_html_path`, `published_at` (None when the page does not state one) |
-| `AnalysisResult` | BaseModel | The verdict, the summary, and the extracted fields with their evidence |
+| `AnalysisResult` | BaseModel | The verdict, the summary, the extracted fields with their evidence, and `starts_on` / `ends_on` when the page said when the thing it describes runs |
 | `RankDecision` | BaseModel | priority, rationale, which ranker, dropped flag |
 | `RankHistorySummary` | BaseModel | A compact "what has been seen so far" |
 | `CrawlTask` | BaseModel | Task lifecycle state |

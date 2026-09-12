@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.digest.extractor import TrafExtractor
+from crawlme.digest.extractor import TrafExtractor, _undoubled
 from crawlme.schemas import URL, FetchResult
 
 SAMPLE_HTML = b"""<!DOCTYPE html>
@@ -149,3 +149,50 @@ def test_title_tag(extractor: TrafExtractor) -> None:
 def test_title_from_url(extractor: TrafExtractor) -> None:
     page = extractor.extract(_result(b"<html><body><p>No title here at all, just prose.</p></body></html>"))
     assert page.title == "https://example.com/page"
+
+
+# --- a block that merely repeats the one before it -------------------
+
+
+def test_a_repeated_block_is_dropped():
+    """Trafilatura emits some elements twice, once whole and once per line."""
+    caption = [
+        "the shop at the mall opens on Friday and we have prepared some opening gifts",
+        "the first fifty customers each day will receive a limited edition tote bag",
+    ]
+    text = "\n".join(["a headline nobody repeats", *caption, *caption])
+    assert _undoubled(text) == "\n".join(["a headline nobody repeats", *caption])
+
+
+def test_the_page_still_says_everything_once():
+    lines = [
+        "a line of body text that is comfortably long enough to clear the floor",
+        "and a second line beside it that is also reasonably long",
+    ]
+    assert _undoubled("\n".join(lines * 3)) == "\n".join(lines)
+
+
+def test_a_short_repeat_is_left_alone():
+    """Two "Reply" in a row is the page talking, not the parser stuttering."""
+    text = "\n".join(["Reply", "Reply", "Reply"])
+    assert _undoubled(text) == text
+
+
+def test_a_single_repeated_line_is_left_alone():
+    text = "\n".join(["a line long enough to pass the character floor on its own", "x", "x"])
+    assert _undoubled(text) == text
+
+
+def test_repeats_that_are_not_adjacent_stay():
+    """Only what directly follows its own copy is a parser artefact."""
+    block = [
+        "a line of body text that is comfortably long enough to clear the floor",
+        "and its neighbour, also long enough to matter for this check",
+    ]
+    text = "\n".join([*block, "something else entirely in between", *block])
+    assert _undoubled(text) == text
+
+
+def test_nothing_to_do_is_left_untouched():
+    assert _undoubled("") == ""
+    assert _undoubled(None) is None

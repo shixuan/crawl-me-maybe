@@ -169,17 +169,14 @@ def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[
 
     A listing states roughly when each item was posted, so a post older
     than the window can be skipped before paying a request to read it.
-    That saving is the whole reason a feed still wants a funnel.
 
     Only a *stated* date drops anything. An unknown date is not an old
     one, and platforms leave it out often enough to matter: four of the
-    twelve entries on the page this was written against carried no date
-    at all. Guessing there would silently discard fresh posts.
+    twelve entries on the page this was written against carried none.
 
     This is the per-candidate half of the time window. The stale streak
     is the other half and retires one source, which is right only for a
-    strictly ordered one; a monitoring run over many accounts must not
-    stop because one quiet account's posts came up first.
+    strictly ordered one.
     """
     if goal.since is None or c.posted_at is None:
         return None

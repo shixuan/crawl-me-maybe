@@ -1,22 +1,16 @@
 """PageAnalyzer: one LLM call per fetched page.
 
-The judgment it produces -- classification, relevance, summary, and the
-fields the goal declared with a quote behind each one -- is the product
-the user consumes.  It is stored in the analyses table and revisited by
-replay, which is why the row carries the prompt version and the model.
+The judgment it produces, classification and relevance and summary and
+the fields the goal declared with a quote behind each one, is the
+product the user consumes.  The row carries the prompt version and the
+model because replay revisits it.
 
-One thing travels back into the crawl from this call: the pages it
-judged relevant, which the ranker is reminded of when it scores the
-next batch.
+One thing travels back into the crawl: the pages judged relevant, which
+the ranker is reminded of when it scores the next batch.
 
-The stage is optional: the factory wires it only when analysis is
-enabled and there are credentials.
-
-Failure policy.  A failed analysis never blocks the crawl loop: the
-page is parked on an internal delayed re-analysis queue and retried a
-bounded number of times in the background.  Every successful analysis
-(both first try and retry) is published through the sink bound at
-construction time, which is how the AnalysisResult row gets persisted.
+A failed analysis never blocks the crawl loop.  The page is parked on a
+delayed queue and retried a bounded number of times, and every success
+from either path is published through the sink bound at construction.
 """
 
 from __future__ import annotations
@@ -37,8 +31,10 @@ from crawlme.schemas import (
     ExtractedField,
     Page,
     spec_fields,
+    spec_time_field,
     spec_version,
 )
+from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +399,7 @@ def _parse_analysis(
         structured_data=data,
         extracted=_parse_extracted(data, page, goal),
         spec_version=spec_version(goal.extraction_spec),
+        **_dates_from(data, page, goal),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
@@ -415,6 +412,28 @@ def _parse_analysis(
         prompt_version=_PROMPT_VERSION,
         tokens_used=tokens_used,
     )
+
+
+def _dates_from(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, Any]:
+    """When the page says its subject applies, if the goal declared a field for it.
+
+    Read here rather than at the report, because the reader wants one
+    answer per page and re-parsing a string in three places is three
+    chances to disagree about it.
+    """
+    declared = spec_time_field(goal.extraction_spec)
+    if declared is None:
+        return {}
+    name, kind = declared
+    field = (data.get("extracted") or {}).get(name) if isinstance(data.get("extracted"), dict) else None
+    said = str(field.get("value", "")) if isinstance(field, dict) else ""
+    found = read_range(said, kind=kind, said_on=page.published_at)
+    if found is None:
+        return {}
+    return {
+        "starts_on": found.start,
+        "ends_on": found.end,
+    }
 
 
 def _clamp01(value: object) -> float:

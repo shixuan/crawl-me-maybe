@@ -1,20 +1,18 @@
 """Harvest: what candidates does a fetched page yield?
 
-The engine used to call the link extractor directly, which quietly meant
-"a page yields the links in it". That is true of a link graph and false
-of a feed, where a listing yields post permalinks and a post yields
-nothing at all, because a post is a leaf whose content is the product.
+Calling the link extractor directly quietly meant "a page yields the
+links in it".  That is true of a link graph and false of a feed, where
+a listing yields post permalinks and a post yields nothing at all,
+because a post is a leaf whose content is the product.
 
 Which reading applies is a question about the page, not about the run,
 so the page is offered to each adapter and the first to claim it does
-the reading. Nobody claiming is the ordinary case and the graph's
-answer: read the links. The engine still owns everything around it:
-pre-filtering, buffering, persistence and counters are the same either
-way.
+the reading.  Nobody claiming is the ordinary case and the graph's
+answer: read the links.
 
-Parsing is deliberately sync so the engine can keep running it in a
-worker thread under a timeout, the way a pathological page has to lose
-its links rather than stall the crawl.
+Parsing is deliberately sync so the engine can run it in a worker
+thread under a timeout, the way a pathological page has to lose its
+links rather than stall the crawl.
 """
 
 from __future__ import annotations

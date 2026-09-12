@@ -131,6 +131,12 @@ def main() -> None:
         "--goal",
         help="Which goal's analyses to show (default: the task's original goal)",
     )
+    inspect_p.add_argument(
+        "--during",
+        default=None,
+        help="How far ahead to count as still open, e.g. '1 week' or '2026-10-01'. "
+        "Results running past it are listed separately; nothing is hidden",
+    )
     inspect_p.add_argument("--export", choices=["json", "csv"], help="Dump the pages-and-analyses join to stdout")
 
     # replay ---------------------------------------------------------

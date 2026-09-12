@@ -1,19 +1,10 @@
 """Ranker protocol: the single interface for all ranking strategies.
 
-Contract (duck-typed, no inheritance required):
-
-  1. rank_batch() takes a candidate batch and returns one RankDecision
-     per input candidate (matched by candidate_id).
-  2. Rejected candidates must still appear in the output with
-     dropped=True, so every candidate that reaches a ranker leaves an
-     audit trail.
-  3. Non-dropped decisions are returned sorted by priority descending
-     (convention, not enforced).
-  4. aclose() releases stage-owned resources (connections, model
-     clients); implementations without resources may no-op.
-
-Sub-rankers ignore parameters they don't use.  One implementation is
-left; the funnel that chained several is gone.
+Duck-typed, no inheritance required.  Two things the signature cannot
+say: a rejected candidate still comes back, with dropped=True, so every
+candidate that reaches a ranker leaves an audit trail; and the kept
+ones come back sorted by priority descending, by convention rather than
+by enforcement.
 """
 
 from __future__ import annotations

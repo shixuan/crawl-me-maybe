@@ -1,51 +1,14 @@
 """HTTP fetch worker.
 
-Takes a FrontierItem (essentially a URL) and downloads the page.  This is the
-only module in the system that touches the network, and it deliberately knows
-nothing about crawling strategy, ranking, or content analysis.
+Downloads what the frontier hands it.  The only module that touches the
+network, and it knows nothing about strategy, ranking or analysis.
 
-Error handling
---------------
-Responses are classified into three buckets:
-
-    Transient (retryable)
-        5xx server errors, connection timeouts, DNS failures, 429 rate
-        limits, and attempts that exceed the total deadline (below).
-        Exponential backoff: 2^attempt seconds, capped at 60s.  For 429
-        specifically, the Retry-After header is respected before retrying.
-
-    Permanent (fatal)
-        4xx client errors (except 429).  These raise FetchError immediately
-        without retrying: the page doesn't exist, we're forbidden, etc.
-
-    Success (2xx, 3xx)
-        Returned normally.  3xx redirects are followed manually (not via
-        httpx's follow_redirects) so we can record the full redirect chain
-        in FetchResult.redirects.
-
-Total deadline
---------------
-Per-phase timeouts (connect/read) are not enough: a host that trickles a
-few bytes every couple of seconds resets the read timer forever.  Each
-attempt therefore runs under asyncio.wait_for with a hard total deadline
-(default: connect + read + 10s).  Hitting it counts as transient.
-
-_TransientError is an internal signal used in _do_fetch to tell the outer
-fetch() retry loop to back off and try again.  It never escapes the module.
-
-Redirect handling
------------------
-httpx's built-in follow_redirects discards the intermediate hops.  We need
-the full chain for canonicalization and link-graph tracking, so we follow
-manually: loop on 3xx, resolve Location relative to the current URL, append
-to redirects, and repeat until we land on a non-3xx response.  Chains are
-capped at 10 hops and cycles are detected (permanent FetchError, no retry).
-
-User-Agent rotation
--------------------
-A UA is picked at random from the configured pool for each request to reduce
-the chance of being fingerprint-blocked.  The default pool is a single
-Chrome/Win UA; pass a longer list for production use."""
+Two things are done the long way on purpose.  Redirects are followed by
+hand, because httpx's follow_redirects discards the intermediate hops and
+canonicalization needs the whole chain.  And every attempt runs under a
+hard total deadline, because per-phase timeouts never fire against a host
+that trickles a few bytes at a time and resets the read timer forever.
+"""
 
 from __future__ import annotations
 

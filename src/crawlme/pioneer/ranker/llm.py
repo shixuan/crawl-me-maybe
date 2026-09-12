@@ -1,23 +1,15 @@
-"""LLMRanker: batched LLM fine-ranking, the final funnel stage (v0.2).
+"""LLMRanker: batched LLM fine-ranking, the final funnel stage.
 
-RuleRanker is the relaxed pre-filter; LLMRanker decides.  Each batch of
-survivors (at most _BATCH_SIZE per call) is sent to the LLM in a single
-request.  The model sees the goal, what the crawl found so far, and the
-whole batch at once, so it compares links against each other instead of
-judging each in isolation.  The response carries a priority and
-rationale per candidate and a drop list for the ones that would not
-answer the goal.
+RuleRanker is the relaxed pre-filter; this one decides.  A batch goes to
+the model in one request so it compares links against each other rather
+than judging each alone, and comes back with a priority per candidate
+plus a drop list.
 
-Failure policy.  An LLMError (provider failure, token budget
-exhausted) propagates.  Nothing catches it any more, since the stages
-that used to stand behind this one are gone, so the scheduler reads a
-dead rank pump as fatal and ends the run saying why.  An unparseable
-JSON response gets one repair retry with a stricter instruction; if
-that also fails, the batch fails the same way.
-
-Partial responses are tolerated fail-open.  Candidates the model did
-not mention in either list are kept with a neutral priority, because
-the house rule is to over-crawl rather than lose good links.
+Two failure policies, opposite on purpose.  An LLMError propagates and
+the scheduler ends the run saying why, because a rank pump that has
+stopped will quietly starve everything downstream.  But a response that
+simply forgets a candidate keeps it at a neutral priority, because the
+house rule is to over-crawl rather than lose good links.
 """
 
 from __future__ import annotations
@@ -200,14 +192,11 @@ class LLMRanker:
         data = _parse_response(resp.content)
         if data is None:
             # A reply that used the whole ceiling was cut off mid-JSON.
-            # Raising the ceiling was the first answer and the wrong one:
-            # the reply has to be that long because the batch is that
-            # big, so a bigger ceiling buys another slow call that runs
-            # out too.  One run spent four of them, 33k wasted output
-            # tokens, and 284 seconds -- half its total time -- doubling
-            # its way through the same twenty-one candidates.
-            #
-            # The ceiling belongs to the model; the batch size is ours.
+            # Raising the ceiling was the first answer and the wrong one.
+            # The reply is long because the batch is big, so a bigger
+            # ceiling buys another slow call that also runs out: one run
+            # spent four of them, 33k output tokens and half its total
+            # time, on the same twenty-one candidates.
             if resp.truncated and len(chunk) > 1:
                 await self._halve_batches(len(chunk))
                 mid = len(chunk) // 2

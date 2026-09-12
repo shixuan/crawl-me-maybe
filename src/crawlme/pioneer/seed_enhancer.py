@@ -1,21 +1,18 @@
 """Seed Enhancer: one LLM call per task, at task start.
 
 Turns the seeds a user named into a wider set of the same kind, so a
-crawl reaches sources the user did not think of. Off unless asked for.
-
-Same shape as the Goal Enhancer beside it: one call, inert without
-credentials, and additive -- the seeds given stay exactly as they were
-and keep the larger share of the crawl.
+crawl reaches sources the user did not think of. Off unless asked for,
+and additive: the seeds given stay as they were and keep the larger
+share of the crawl.
 
 The model is asked where to look, never what is there. Asked for
 content it reports what other people said about a source, which is
-anti-correlated with what is worth finding; asked for sources, the
-crawl still reads them first-hand.
+anti-correlated with what is worth finding.
 
 Proposals are not trusted. Measured over four real goals, roughly a
-third of what came back did not exist -- brands that are real under
-account names that are not. Each one is fetched and read before it is
-used, and only what a harvester gets something out of survives.
+third of what came back did not exist, real brands under account names
+that are not. Each is fetched and read before it is used, and only what
+a harvester gets something out of survives.
 """
 
 from __future__ import annotations
@@ -175,20 +172,20 @@ async def verify(
     """Keep the proposals a crawl would get something out of.
 
     Asked by reading one page, not by guessing from the address. A
-    platform answers 200 for accounts that do not exist, and the invented
+    platform answers 200 for accounts that do not exist and the invented
     ones look plausible, so nothing short of fetching separates them.
-    What decides is the question the harvester already answers: is there
+    What decides is what the harvester already answers: is there
     anything here to follow.
 
-    Whether it is worth reading past that is not asked here. It was, on
-    a sample of twenty captions, and the answer was wrong whenever the
-    fetch came back thin: three real accounts were turned away on three
-    leftover posts each. Retiring a source answers the same question on
-    pages actually read, so this asks only what one fetch can settle.
+    Whether it is worth reading past that is not asked. It was once, and
+    on a sample of twenty captions the answer was wrong whenever the
+    fetch came back thin: three real accounts turned away on three
+    leftover posts each. Retiring a source asks the same question later,
+    on pages actually read.
 
     Payloads are kept and handed on. A grid drops posts as they scroll
     out of view, so an adapter reading markup alone reports a busy
-    account as empty, and the seed would be discarded for being real.
+    account as empty and the seed would be discarded for being real.
     """
     from crawlme.schemas import Candidate, FetchResult, FrontierItem, Page
 

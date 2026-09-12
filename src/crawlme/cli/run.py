@@ -10,7 +10,6 @@ re-analysis.
 from __future__ import annotations
 
 import argparse
-import datetime
 import importlib.util
 import json
 import logging
@@ -18,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from crawlme.cli.cutoff import read_cutoff
 from crawlme.config import Settings
 from crawlme.digest.feed import ADAPTERS
 from crawlme.digest.feed.base import PageProblem
@@ -33,40 +33,6 @@ from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CLASSIFICATIONS, CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
-
-
-# Relative windows accepted by --since, in days.  Months and years are
-# the calendar-free approximations a crawl budget can live with.
-_SINCE_UNITS = {
-    "day": 1,
-    "days": 1,
-    "week": 7,
-    "weeks": 7,
-    "month": 30,
-    "months": 30,
-    "year": 365,
-    "years": 365,
-}
-
-
-def _parse_since(text: str) -> datetime.datetime:
-    """Read --since as either a relative window or an absolute date.
-
-    Returns an aware UTC cutoff so it compares directly against the
-    publication times the extractor pulls off pages.
-    """
-    raw = text.strip().lower()
-    parts = raw.split()
-    if len(parts) == 2 and parts[0].isdigit() and parts[1] in _SINCE_UNITS:
-        days = int(parts[0]) * _SINCE_UNITS[parts[1]]
-        return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
-    try:
-        parsed = datetime.datetime.fromisoformat(raw)
-    except ValueError:
-        raise ValueError(f"cannot read --since {text!r}, use '1 week' or '2026-08-01'") from None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-    return parsed.astimezone(datetime.timezone.utc)
 
 
 async def cmd_run(args: argparse.Namespace) -> None:
@@ -90,7 +56,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if args.session is not None:
         # The session alone: it says which context the platform is read
         # through, not that everything must be. Credentials mean nothing
-        # to the shop an analyser endorses off it.
+        # to a site the crawl reaches from there.
         cfg.browser_storage_state = args.session
     _check_session(args)
     _check_extras(cfg, args)
@@ -127,7 +93,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         goal.domain_budget = args.domain_budget
     if args.since is not None:
         try:
-            goal.since = _parse_since(args.since)
+            goal.since = read_cutoff(args.since, flag="--since")
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -312,15 +278,12 @@ def _check_session(args: argparse.Namespace) -> None:
     crawled the logged-out platform, which looks exactly like a platform
     with nothing on it.  Neither told anyone how to fix it.
 
-    A warning would have been the softer answer for the second one, and
-    the wrong one: it scrolls past, and what follows is a whole browser
-    run spent fetching login pages.  There is no flag to crawl a feed
-    anonymously because nobody has wanted one; the day someone does is
-    the day it earns its place.
+    A warning is the softer answer for the second and the wrong one, as
+    it scrolls past and what follows is a whole browser run spent
+    fetching login pages.
 
-    A link graph is left alone entirely.  It asks for no session, and
-    the advice for making one is feed-shaped, so offering it to a graph
-    crawl would point at a command that cannot serve it.
+    A link graph is left alone.  It asks for no session, and the advice
+    for making one is feed-shaped.
     """
     walled = _walled_platform(args)
     if args.session:
@@ -543,14 +506,11 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
     for url, (why, funnel) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
         found, judged, fetched, wanted, scored, discovered = funnel
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
-        # Without this, one crawled and empty and one the run never got
-        # to both said "nothing", and the same question came back three
-        # times over.
         # A funnel, so every gap says something: scored short of
         # discovered is a rotation that never reached it, judged short of
         # fetched is a run that stopped before the analyzer answered.
-        # Read as one number, "7 pages, wanted 6, nothing" once looked
-        # like a content judgement when six were never looked at.
+        # Without it, one crawled and empty and one the run never got to
+        # both said "nothing".
         out.append(
             f"                {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
         )

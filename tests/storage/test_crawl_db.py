@@ -210,6 +210,30 @@ def test_analysis_roundtrip(storage):
     assert '"relevance_score": 0.6' in results[0]["feedback_json"]
 
 
+def test_analysis_keeps_the_dates_it_read(storage):
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "classification": "RELEVANT",
+            "starts_on": "2026-10-01",
+            "ends_on": "2026-10-05",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    results = _run(storage.get_analyses_by_url_key("abc"))
+    assert results[0]["starts_on"] == "2026-10-01"
+    assert results[0]["ends_on"] == "2026-10-05"
+
+
+def test_an_analysis_without_dates_stores_blanks(storage):
+    storage.save_analysis({"analysis_id": "a1", "url_key": "abc", "analyzed_at": "2026-01-01T00:00:00Z"})
+    _run(storage._write_queue.join())
+    results = _run(storage.get_analyses_by_url_key("abc"))
+    assert results[0]["starts_on"] == ""
+
+
 def test_has_analysis(storage):
     storage.save_analysis(
         {

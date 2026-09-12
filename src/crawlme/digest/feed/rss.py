@@ -1,19 +1,15 @@
 """RSS/Atom: the one feed whose shape is a format, not a platform.
 
-Every other adapter here knows one site's markup.  This one knows a
-document type that any site can serve, so it claims pages by what the
-document is rather than by where it came from.  That is also why it
-cannot claim a URL: measured against seven real feeds, only one ended in
-``.rss`` -- the rest were ``/feed``, ``/rss``, ``feed.xml``, ``atom.xml``,
-``/feed/rss/``.  Content type is no better, arriving as four different
-strings.  The root element is the only reliable signal, and it is only
-readable once the document is in hand.
+Every other adapter knows one site's markup.  This one knows a document
+type any site can serve, which is why it cannot claim a URL: measured
+against seven real feeds, only one ended in ``.rss``, the rest being
+``/feed``, ``/rss``, ``feed.xml``, ``atom.xml``, ``/feed/rss/``.  Content
+type arrives as four different strings.  The root element is the only
+reliable signal and it is readable only once the document is in hand.
 
-A feed inverts the shape the other adapters have.  A listing there is
-weak and its items are strong; here the listing carries the posts
-themselves -- title, publication time, author, and for a self post the
-whole body -- so what it yields is already worth ranking before anything
-else is fetched.
+A feed also inverts the usual shape.  Elsewhere a listing is weak and
+its items are strong; here the listing carries the posts themselves, so
+what it yields is worth ranking before anything else is fetched.
 
 Needs feedparser, an optional extra: pip install 'crawl-me-maybe[rss]'.
 """
@@ -106,12 +102,11 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     try:
         import feedparser
     except ImportError as e:  # pragma: no cover - depends on the install
-        # Loud, not empty.  An empty listing is what a feed with nothing
-        # new in it also returns, so degrading quietly here makes a
-        # missing package indistinguishable from a quiet week -- and the
-        # run reports success having read nothing.  The seed-side
-        # preflight guesses from the URL and is knowingly wrong five
-        # times in seven, so this is the check that actually holds.
+        # Loud, not empty.  A feed with nothing new in it also returns
+        # an empty listing, so degrading quietly would make a missing
+        # package indistinguishable from a quiet week.  The seed-side
+        # preflight guesses from the URL and is wrong five times in
+        # seven, so this is the check that holds.
         raise FeedDependencyError(
             "reading a feed requires the 'feedparser' package: pip install 'crawl-me-maybe[rss]'"
         ) from e
