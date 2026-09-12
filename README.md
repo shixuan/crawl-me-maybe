@@ -338,8 +338,6 @@ See [`.env.example`](.env.example) for the full list.
 | v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
 | v0.3 | ✅ | IG, Playwright with login state, feed traversal, extracted fields with evidence |
 | v0.4 | ✅ | Reddit, a fetcher chosen per candidate, paged listings |
-| v0.5 | ✅ | Seed enhancement: the model names more sources, each verified before use. A source that stops paying off retires on its own, so a run ends when every one has |
-| v0.6 | ✅ | A cheaper token bill: a discarded page stops at the verdict, a reply that thought away its whole allowance is asked again with less thinking, and the ranker is shown what analysis found. HUB and analyzer-endorsed links removed, having bought one result in 17 fetches |
-| v0.7 | ✅ | Two clocks: the analyzer reads when the thing a post describes runs, and results are grouped by whether it is still open. A dashboard window to move that line |
+| v0.5 | ✅ | Seed enhancement, time window |
 
 ---
