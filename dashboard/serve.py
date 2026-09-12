@@ -1,18 +1,6 @@
-"""A local, read-only window onto what a crawl found.
+"""Serve stored crawl results read-only on loopback.
 
-Deliberately read-only and deliberately local.  Nothing here writes to
-a run database, and the server binds to the loopback address only,
-because a run database holds whatever a logged-in session could see.
-
-    python dashboard/serve.py            # then open http://127.0.0.1:8765
-    python dashboard/serve.py --port 9000 --results-dir ./results
-
-Reading goes through sqlite3 directly rather than the storage layer,
-which is async and owns a write queue, neither of which a request
-handler wants.  The one import from the package is the rule for
-grouping results by when they run, shared with inspect so the two
-cannot disagree.
-"""
+Run with python dashboard/serve.py [--port 8765] [--results-dir results]."""
 
 from __future__ import annotations
 
@@ -41,12 +29,7 @@ def _connect(db: Path) -> sqlite3.Connection:
 
 
 def _runs(results_dir: Path) -> list[dict[str, Any]]:
-    """One entry per run directory that holds a readable database.
-
-    A run whose database is missing or half-written is skipped rather
-    than raised on: the directory is created before the crawl starts, so
-    an in-progress or crashed run is a normal thing to find here.
-    """
+    """List runs with readable databases, skipping incomplete or missing task records."""
     out: list[dict[str, Any]] = []
     for db in sorted(results_dir.glob("*/db/crawl.db"), reverse=True):
         try:
@@ -94,12 +77,7 @@ def _day(raw: Any) -> date | None:
 
 
 def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[str, Any]:
-    """The pages-and-analyses join for one run, with evidence intact.
-
-    Same join the inspect command exports, kept here rather than
-    imported because that one is shaped for a terminal and a file, and
-    this one has to stay cheap enough to re-request while filtering.
-    """
+    """Join a goal analyses with page content, evidence and event dates."""
     db = results_dir / run / "db" / "crawl.db"
     if not db.is_file():
         raise FileNotFoundError(run)
@@ -162,7 +140,7 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kw: Any) -> None:
         super().__init__(*args, directory=str(HERE), **kw)
 
-    def do_GET(self) -> None:  # noqa: N802  (the stdlib spells it this way)
+    def do_GET(self) -> None:
         path = urlparse(self.path).path
         if not path.startswith("/api/"):
             super().do_GET()

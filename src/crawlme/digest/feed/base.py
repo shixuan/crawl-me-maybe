@@ -1,14 +1,4 @@
-"""Feed vocabulary, shared by every platform adapter.
-
-What a feed item is does not vary: a permalink, who posted it, what it
-says, and when. Only the markup carrying those varies, and that part is
-irreducible, so it lives in a per-platform adapter.
-
-This module holds the half that must not be rewritten per platform,
-because rewriting it is how two adapters start disagreeing about what a
-post is. Adapters produce FeedItem; the pipeline only ever sees
-Candidate.
-"""
+"""Shared feed types and the platform adapter contract."""
 
 from __future__ import annotations
 
@@ -21,21 +11,11 @@ from crawlme.schemas import URL, Candidate, Page, Payload
 
 
 class FeedDependencyError(RuntimeError):
-    """An adapter cannot read its format because a package is missing.
-
-    Separate from PageProblem because it is not about the page at all:
-    every later page of that format fails identically, so it ends the
-    run rather than being counted alongside deleted accounts.
-    """
+    """A missing adapter dependency that prevents further processing of this format."""
 
 
 class PageProblem(str, enum.Enum):
-    """Why a fetched page holds no content.
-
-    Platforms answer a wrong or gone identifier with a full, healthy page
-    rather than a 404, so this has to be decided from the body. Treating
-    those as empty results would read as "quiet this week", every week.
-    """
+    """Content-level failures reported by platform adapters."""
 
     UNAVAILABLE = "unavailable"
     BLOCKED = "blocked"
@@ -43,28 +23,13 @@ class PageProblem(str, enum.Enum):
 
     @property
     def refuses_the_run(self) -> bool:
-        """Whether this is about the crawl rather than about one page.
-
-        A gone account is a fact about that account: the other
-        twenty-nine are still worth reading.  A block or a dead session
-        is a fact about us, and every request after it is wasted at
-        best and another strike against the account at worst.
-
-        Written as an exclusion so that a fourth kind stops the run
-        until somebody decides it should not.  Being loud about an
-        unfamiliar refusal is the cheaper mistake.
-        """
+        """Treat unavailable pages as local failures and other refusals as run-wide."""
         return self is not PageProblem.UNAVAILABLE
 
 
 @dataclass(frozen=True)
 class FeedItem:
-    """One post, typed at the adapter edge.
-
-    The pipeline never sees this: to_candidate() converts at the
-    boundary, so storage and the engine keep one Candidate shape no
-    matter which platform produced it. See docs/refactor.md G4.
-    """
+    """Adapter output converted to Candidate at the harvester boundary."""
 
     permalink: str
     platform: str
@@ -81,9 +46,7 @@ class FeedItem:
         if self.author:
             extra["account"] = self.author
 
-        # The permalink as stated. A harvester canonicalizes it before
-        # the candidate goes anywhere, which is what gives it the same
-        # url_key shape as the rest of the crawl.
+        # The harvester canonicalizes this URL before enqueueing.
         return Candidate(
             url=URL(
                 raw=self.permalink,
@@ -102,30 +65,13 @@ class FeedItem:
 
 @dataclass(frozen=True)
 class Listing:
-    """What a profile or hashtag page yields, split by owner.
-
-    A listing mixes the account's own posts with posts that merely
-    mention it, and the latter can outnumber the former. Both are worth
-    having, but conflating them lets one monitored account's results bleed
-    into another's.
-
-    Items rather than bare permalinks, because a listing carries a weak
-    signal worth keeping: who posted, roughly when, and a generated
-    description. That is exactly what decides whether a post is worth
-    spending a request on.
-    """
+    """Listing entries split between the source owner and other authors."""
 
     own: list[FeedItem] = field(default_factory=list)
     others: list[FeedItem] = field(default_factory=list)
-    # Where the rest of this listing is, if the platform pages. Scrolling
-    # does not reach it: a rendered feed unmounts what scrolls past, so
-    # the DOM holds a sliding window and asking for more of it loses as
-    # much as it gains.
+    # Optional continuation URL for paged listings.
     next_url: str = ""
-    # Whether the account's own posts came from the platform's own answer
-    # or only from the markup. Measured on one account, the markup was
-    # between four and thirty-seven days behind, so a listing read that
-    # way is stale rather than short and nothing downstream can tell.
+    # The adapter reports potentially incomplete or stale listing content.
     degraded: bool = False
 
     @property
@@ -145,14 +91,7 @@ def _utcnow() -> datetime.datetime:
 
 
 class FeedAdapter(Protocol):
-    """One platform's answer to "what is on this page?".
-
-    Everything platform-shaped lives behind this: which host the platform
-    serves, how it says a page is gone, and how its markup carries a
-    listing or a single item. Everything platform-neutral — deciding a
-    page is not ours, turning items into candidates, marking who posted
-    what — stays in the harvester, written once.
-    """
+    """Platform-specific recognition, failure detection and parsing. No fetching."""
 
     # Platform name, stamped onto every candidate's signals.
     PLATFORM: str
@@ -160,87 +99,37 @@ class FeedAdapter(Protocol):
     # from anything a crawl wandered onto.
     DOMAIN: str
 
-    # How many times to ask a listing for more of itself.  A listing
-    # hands out one screen, so a window of weeks otherwise sees a dozen
-    # posts.  Zero for anything that states everything at once.
+    # Nonzero requests scrolling; Settings.feed_scrolls sets the actual limit.
     SCROLLS: int
 
-    # Whether the platform's pages arrive as markup or as a script that
-    # builds it.  Separate from NEEDS_SESSION because the two are not
-    # the same requirement: Reddit is readable by anyone and still
-    # needs a browser, and plain HTTP gets an eight-kilobyte shell that
-    # carries none of the platform's own elements.
+    # Rendering and authentication are independent adapter requirements.
     NEEDS_RENDERING: bool
 
-    # Whether reading this platform at all requires a logged-in
-    # session.  A crawl of a walled platform without one fetches login
-    # pages and reports them as a platform with nothing on it.
+    # Require saved login state before enabling this adapter.
     NEEDS_SESSION: bool
 
     def next_page(self, html: str, url: str) -> str:
-        """The rest of this listing, or "" when there is no more.
-
-        Only the platform knows how it pages, and the answer has to come
-        from the page just fetched because a cursor names a position in
-        it.
-        """
+        """Return the next listing URL, or an empty string when exhausted."""
         ...
 
     def claims_url(self, url: str) -> bool:
-        """Whether this URL is ours, judged before anything is fetched.
-
-        Weaker than claims() on purpose: some platforms are recognisable
-        from the address and some are not, and a run has to be refused
-        before it starts rather than after it has paid for a page.  An
-        adapter that cannot tell answers False, and is simply not
-        consulted at that point.
-        """
+        """Recognize an address before fetching; return False if the document is needed."""
         ...
 
     def claims(self, page: Page, document: str) -> bool:
-        """Whether this page is one of ours.
-
-        Given both the page and the bytes it arrived as, because the two
-        adapters that exist answer from different halves: one knows its
-        host, the other knows its document's root element and nothing
-        about where it was served from.
-
-        Asked of the adapter rather than decided outside it, because
-        what makes a page a platform's page is exactly the kind of
-        knowledge an adapter exists to hold: a domain for one platform,
-        a document's root element for another.
-
-        A page nobody claims is not an error.  It is a page, and a page
-        with links on it is what a link graph reads.
-        """
+        """Recognize a fetched page from its URL and document."""
         ...
 
     def problem(self, html: str) -> PageProblem | None:
-        """Why this page holds no content, or None if it does."""
+        """Return a recognized content-level failure, or None if none is detected."""
         ...
 
     def keeps_payload(self, url: str, content_type: str) -> bool:
-        """Whether a response the page fetched is worth keeping.
-
-        Answered per platform because only the platform knows which of
-        its own requests carries the posts. Answering False to everything
-        is valid and costs nothing: a platform whose text is already in
-        the document has no use for this.
-        """
+        """Select page sub-responses whose content the adapter needs."""
         ...
 
     def parse_listing(self, html: str, url: str, payloads: list[Payload]) -> Listing:
-        """Read a listing page into items, split by who posted them.
-
-        Takes the page URL, not an account: reading one out of the other
-        is as platform-shaped as the markup.
-
-        `payloads` is what the page fetched for itself, and is empty
-        whenever nothing kept it -- a plain HTTP fetch, or a run that did
-        not ask. An adapter must still return its best answer from the
-        markup alone in that case, so richer text is an upgrade and never
-        a requirement.
-        """
+        """Read listing entries and their owners. Fall back to markup if payloads are absent."""
         ...
 
     def parse_item(self, html: str, url: str) -> FeedItem | None:

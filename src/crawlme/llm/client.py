@@ -1,13 +1,4 @@
-"""LLM client wrapper.
-
-The single entry point for every LLM call.  Wraps litellm so providers
-are interchangeable, and layers the house rules on top: a concurrency
-cap, retries with backoff on transient failures, and token accounting
-on every response.
-
-litellm is a core dependency but is imported lazily on the first call,
-so a run that never touches a model never pays the import cost.
-"""
+"""Lazy LiteLLM access with concurrency limits, retries and token accounting."""
 
 from __future__ import annotations
 
@@ -26,9 +17,7 @@ from crawlme.llm.reasoning import effort_for, step_down
 
 logger = logging.getLogger(__name__)
 
-# One call, generation included. A thinking model spends most of it
-# thinking, so this and the output ceiling bound the same wait from two
-# sides. Eight calls timed out at 60s, all of them analysing a page.
+# Total deadline for an LLM request, including generation.
 _LLM_TIMEOUT = 90.0
 _LLM_MAX_RETRIES = 2
 _LLM_RETRY_BASE = 1.0
@@ -43,23 +32,12 @@ class LLMResponse:
     input_tokens: int
     output_tokens: int
     model: str
-    # The reply used the whole output ceiling, so it is very likely cut
-    # short.  Callers see this before they see unparseable JSON, which
-    # is what stops a budget problem from being read as a parser one.
+    # Expose likely truncation so callers can distinguish it from malformed JSON.
     truncated: bool = False
 
 
 def _cached_input(usage: Any) -> int:
-    """Input tokens the provider served from its prefix cache.
-
-    Providers disagree on where they put this.  DeepSeek returns
-    ``prompt_cache_hit_tokens`` at the top level; the OpenAI shape nests
-    it under ``prompt_tokens_details.cached_tokens``.  A provider that
-    reports neither gets 0, which reads as "not measured" rather than
-    "nothing was cached" -- the distinction matters, because a run whose
-    fixed prompt is a third of its spend is a very different bill
-    depending on which is true.
-    """
+    """Read cached-input usage across provider response shapes; return 0 if unreported."""
     direct = getattr(usage, "prompt_cache_hit_tokens", None)
     if direct is not None:
         return int(direct)
@@ -76,13 +54,7 @@ def _cached_input(usage: Any) -> int:
 
 
 def _reasoning_output(resp: Any, usage: Any) -> int:
-    """Output tokens the model spent thinking rather than answering.
-
-    Billed as output, discarded on arrival: only the JSON that follows
-    is ever read.  Worth its own number because a stage whose answer is
-    one score and one clause can be spending most of its output on
-    working that answer out.
-    """
+    """Read reasoning-token usage, which is part of output usage."""
     details = getattr(usage, "completion_tokens_details", None)
     if details is not None:
         n = getattr(details, "reasoning_tokens", None)
@@ -110,15 +82,7 @@ def litellm_loaded() -> bool:
 
 
 async def close_litellm_clients() -> None:
-    """Tear down litellm's cached async clients while the loop is alive.
-
-    litellm caches aiohttp/httpx clients that are only torn down when
-    the event loop closes, and asyncio then logs a scary SSL error
-    after the task is already finished.  Close them while the loop is
-    still alive, then give the logging worker a beat to drain.  Only
-    relevant when litellm was loaded; best-effort because the cleanup
-    helper is a litellm internal.
-    """
+    """Best-effort cleanup of LiteLLM cached clients before the event loop closes."""
     if not litellm_loaded():
         return
     try:
@@ -146,9 +110,7 @@ def _litellm_module() -> Any:
 
 
 def _is_transient(exc: BaseException) -> bool:
-    # Auth problems are permanent no matter how litellm maps them.
-    # Missing credentials surfaces as InternalServerError, so classify
-    # by message as well as by type.
+    # Treat authentication failures as permanent even when mapped to a server error.
     if "credential" in str(exc).lower():
         return False
     if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
@@ -188,9 +150,7 @@ class LLMClient:
         reasoning_effort: str = "",
         stage: str = "",
     ) -> None:
-        # Which stage this client works for, so the shared budget can
-        # keep the bill split. A client belongs to one consumer, so it
-        # is set once here rather than passed at every call.
+        # Attribute all calls from this client to its LLM stage.
         self._stage = stage
         self._model = model
         self._api_key = api_key
@@ -257,17 +217,10 @@ class LLMClient:
         max_tokens: int | None = None,
         json_mode: bool = False,
     ) -> LLMResponse:
-        """One chat completion.
+        """Request a completion with optional JSON mode and a per-call output ceiling.
 
-        *json_mode* requests structured JSON output where the provider
-        supports it (OpenAI and compatible endpoints).
-
-        *max_tokens* defaults to the client's configured ceiling.  Call
-        sites are deliberately not each holding their own constant: the
-        right value follows from which model is configured, not from
-        which stage is asking, and three constants meant three separate
-        discoveries of the same problem.
-        """
+        max_tokens defaults to the client setting. Usage is recorded for each response,
+        including a lower-effort retry after a reasoning-only reply."""
         ceiling = max_tokens if max_tokens is not None else self._max_output_tokens
         messages: list[dict[str, str]] = []
         if system:
@@ -294,10 +247,7 @@ class LLMClient:
                         self._budget.record(
                             input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
                         )
-                    # Thought away the whole allowance and said nothing.
-                    # The fix is not more room, it is less thinking, and
-                    # leaving it to the next run means paying twice for
-                    # the same silence.
+                    # Retry an empty reasoning-only response once at lower effort.
                     lower = self._quieter()
                     if not content and thinking_tokens > 0 and lower:
                         logger.warning(
@@ -319,10 +269,7 @@ class LLMClient:
                             self._budget.record(
                                 input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
                             )
-                    # An empty answer counts too. A model that thinks
-                    # away the whole allowance stops one token under the
-                    # ceiling, which read as a healthy reply that would
-                    # not parse.
+                    # An empty response with output usage is treated as truncated.
                     truncated = output_tokens >= ceiling or (not content and output_tokens > 0)
                     if truncated:
                         # Thinking down is no longer advice to give: the
@@ -335,10 +282,7 @@ class LLMClient:
                             ceiling,
                             "nothing left for the answer" if not content else "the reply is cut short",
                         )
-                    # Wall clock around the await, which on a busy loop
-                    # includes waiting to be scheduled. Named for what it
-                    # measures: read as the call's own duration it says a
-                    # request outlived a timeout that did cut it off.
+                    # Elapsed wall time also includes event-loop scheduling delays.
                     logger.debug(
                         "llm.chat.wall %.1fs out=%d thinking=%d of %d",
                         elapsed,
@@ -350,12 +294,7 @@ class LLMClient:
                         content=content,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
-                        # The configured model wins over the reported one:
-                        # it is the knob the caller controls, and the
-                        # identity replay's idempotency check matches on.
-                        # Providers may report an alias for it (e.g.
-                        # deepseek-v4-flash for deepseek/deepseek-chat),
-                        # which would break replay-of-replay skipping.
+                        # Use the configured model for replay identity; provider aliases may differ.
                         model=str(self._model or getattr(resp, "model", "")),
                         truncated=truncated,
                     )

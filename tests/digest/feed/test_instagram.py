@@ -1,12 +1,4 @@
-"""Instagram markup, against shapes real captured pages actually use.
-
-The fixtures are trimmed from pages the Phase 0 probe saved, so nothing
-here is invented: the profile-scoped permalinks, the
-`"caption":{"text":...}` nesting, the `N likes, M comments - handle on
-DATE:` prefix and the ISO `<time datetime>` are all copied from what
-Instagram served. The captures themselves live under results/, which is
-gitignored, so CI runs on these distillations.
-"""
+"""Instagram parser tests using minimized markup from saved page captures."""
 
 from __future__ import annotations
 

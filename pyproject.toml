@@ -11,10 +11,10 @@ dependencies = [
     "trafilatura",
     "beautifulsoup4",
     "lxml",
-    # lxml 6 moved html.clean into its own distribution, and trafilatura
-    # still imports it.  Without this a fresh install collects nothing:
-    # nine test modules fail on import.  Named here rather than taken
-    # via trafilatura[all], which pulls a dozen packages for one module.
+    # Not optional: lxml 6 moved html.clean into its own distribution, and
+    # trafilatura's fallback reaches it through justext, so without this a
+    # fresh install cannot even collect the tests. Named here rather than
+    # taken via trafilatura[all], which pulls a dozen packages for one.
     "lxml_html_clean",
     "aiosqlite",
     "litellm>=1.40",

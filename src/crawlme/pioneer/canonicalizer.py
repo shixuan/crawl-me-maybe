@@ -1,13 +1,6 @@
-"""URL canonicalization: equivalent URLs into a single canonical form.
+"""Normalize URLs and derive their canonical identity.
 
-Returns a fully populated URL, whose url_key is a sha256[:16] of the
-canonical text and is what dedup compares.  The normalization steps run
-in a fixed order, since stripping a parameter before sorting and sorting
-before fingerprinting are not interchangeable.
-
-reg_domain strips common subdomains by hand.  For a multi-part TLD like
-.co.uk that is wrong, and the fix is a public-suffix lookup.
-"""
+Domain grouping is a heuristic, not a public-suffix lookup."""
 
 from __future__ import annotations
 
@@ -124,13 +117,7 @@ def _clean_query(query: str, strip_params: set[str]) -> str:
 
 
 def _extract_reg_domain(host: str) -> str:
-    """Best-effort registrable domain extraction.
-
-    Strips known subdomain prefixes and returns the shortest label chain
-    that is at least 2 labels long.  Not correct for multi-part TLDs
-    (e.g. example.co.uk -> returns co.uk instead of example.co.uk), but
-    good enough for v0.1 budget enforcement.
-    """
+    """Approximate a registrable domain; multi-part suffixes such as co.uk are not handled."""
     if not host:
         return ""
     labels = host.split(".")

@@ -1,19 +1,7 @@
-"""Smoke crawls: broad, shallow, hermetic, and safe to run on every push.
+"""Hermetic crawls against a local fixture server.
 
-Broad because they touch every layer from argv to SQLite, shallow
-because they assert that the machine ran and produced plausible rows,
-not that its judgements are any good. They crawl a site this process
-serves to itself, with the LLM scripted or off, so nothing here depends
-on the outside world. The live ones stay in tests/e2e/ and out of CI.
-
-Two levels, because they fail differently. The CLI in a subprocess with
-the LLM off covers argument parsing, the factory, the pump, teardown,
-and the exit code; that last one matters, because a non-daemon aiosqlite
-worker thread once kept the interpreter alive after a run finished and a
-log tail looks perfect when that happens. The pipeline in-process with a
-scripted LLM covers what the first skips: enhancement, re-ranking and
-analysis, without spending a token.
-"""
+Subprocess tests cover CLI startup and shutdown without an LLM. In-process tests
+use a scripted LLM to cover enhancement, ranking and analysis."""
 
 from __future__ import annotations
 

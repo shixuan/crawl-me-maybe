@@ -152,11 +152,7 @@ def test_link_roundtrip(storage):
 
 
 def test_link_keeps_time(storage):
-    """Ranking reads it live; without a column nothing can recompute it.
-
-    A quarter of the feed factor set is recency, and every offline
-    measurement of that factor set was missing it.
-    """
+    """Persist candidate publication time for inspection and re-use."""
     import datetime
 
     when = datetime.datetime(2026, 8, 20, 3, 54, 30, tzinfo=datetime.timezone.utc)

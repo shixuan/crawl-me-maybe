@@ -1,17 +1,4 @@
-"""CrawlScheduler: the orchestrator that wires all v0.1 modules together.
-
-Drives two concurrent asyncio tasks (fetch_pump + rank_pump), runs stop-condition
-checks each iteration, handles pause / resume / stop, and saves periodic
-checkpoints for crash recovery.
-
-v0.1 path (no LLM):
-  - Page Analyzer is skipped (v0.2)
-  - the feedback subsystem is absent (v0.2)
-  - tokens_used is fed externally via note_tokens_used (v0.2)
-  - there is no ranker at all, so the frontier's own order decides
-
-See docs/arch.md fetch_pump / rank_pump for the pseudocode this follows.
-"""
+"""Coordinate fetching, analysis, discovery and ranking through injected components."""
 
 from __future__ import annotations
 
@@ -58,24 +45,14 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_INTERVAL = 10
 
 
-# How many candidates the rank pump takes out of the buffer at once, and
-# therefore how long anything waits to become fetchable: nothing in a
-# drained batch reaches the frontier until all of it is scored.
-#
-# Coverage is the buffer's job, so what is left here is latency against
-# call count.  Scoring supplies about twenty candidates a minute and
-# fetching consumes about nine, so a bigger batch buys no supply that is
-# short.  Early supply is short, since fetching cannot start until the
-# first batch lands, so this is sized to one of the ranker's own calls.
+# Maximum candidates per rank-pump batch; smaller batches release fetchable work sooner.
 _RANK_BATCH_SIZE = 20
 # How many judged-relevant pages the ranker is reminded of.  Matches the
 # ranker's own cap: keeping more here would only be sliced off there.
 _SEEN_SO_FAR = 5
 _POP_SLEEP = 0.2
 
-# Pages of one listing a single seed may ask for. A subreddit pages
-# indefinitely, and its pages arrive at a seed's own depth, so nothing
-# else would stop one seed from taking the whole run.
+# Cap continuation pages per seed independently of traversal depth.
 _MAX_LISTING_PAGES = 5
 
 # How long a fetched robots.txt is trusted, and how long we wait for it.
@@ -86,10 +63,7 @@ _ROBOTS_TIMEOUT = 15.0
 # thought well of, above what it demoted.
 _LISTING_PAGE_PRIORITY = 0.5
 
-# How long a stopping run waits for the fetches already in the air.
-# Each is bounded by the fetch and extract timeouts and by one analyzer
-# call, so this is a backstop rather than the usual path: whatever is
-# still running when it expires was never going to finish.
+# Maximum wait for dispatched work during shutdown.
 _SETTLE_TIMEOUT = 120.0
 
 
@@ -98,12 +72,7 @@ def _utcnow() -> datetime.datetime:
 
 
 class CrawlScheduler:
-    """Orchestrator that wires all v0.1 modules together.
-
-    Accepts only interfaces (Protocols or simple concrete classes).
-    Call ``create_scheduler(settings)`` from ``crawlme.scheduler.factory``
-    to construct a fully-wired instance with default implementations.
-    """
+    """Run concurrent fetch and rank pumps over a shared frontier."""
 
     def __init__(
         self,
@@ -130,41 +99,27 @@ class CrawlScheduler:
         self._prefilter = prefilter
         self._ranker = ranker
         self._canonicalizer = canonicalizer
-        # What a page yields depends on the kind of source it came
-        # from: a link graph offers its links, a feed listing offers
-        # post permalinks. Defaults to links so a bare scheduler
-        # behaves as it always did.
+        # Default to ordinary links when no harvester is injected.
         self._harvester: Harvester = harvester or PageHarvester(canonicalizer)
         # The analyzer, or None when the subsystem is off. It reads a
         # fetched page and returns a verdict with the evidence behind it.
         self._analyzer = analyzer
-        # The pages judged relevant so far, newest last, for the ranker's
-        # "seen so far" section.  Bounded, because the prompt shows only
-        # the last few and an unbounded list would grow for a whole run
-        # to be sliced away every time.
+        # Bound the relevant-page history retained for ranking.
         self._relevant_pages: collections.deque[dict[str, Any]] = collections.deque(maxlen=_SEEN_SO_FAR)
-        # The run context: one mutable object holding the stop-condition
-        # counters and the report statistics.  The factory injects it;
-        # a bare scheduler creates its own so tests stay cheap.
+        # Keep context identity stable when the engine resets its state.
         self._ctx = context or CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
         if analyzer is not None:
             # Every successful analysis persists and counts here,
             # including ones that only succeeded on a background retry.
             analyzer.bind_sink(self._on_analysis)
 
-        # Fetching only.  llm_concurrency is enforced by the client that
-        # makes the calls; a second semaphore here was never awaited and
-        # read as though the engine were the one limiting them.
+        # This semaphore bounds fetch work only.
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
-        # The analysis queue, moved out of the client so the target
-        # check can sit at its head. Not the fetch slot, which would
-        # nest the two limits.
+        # Check the result target after acquiring an analysis slot.
         self._analysis_sem = asyncio.Semaphore(settings.llm_concurrency)
 
         self._state: str = "CREATED"
-        # LLM usage that landed before run() recreated the counters
-        # (the Goal Enhancer runs first).  run() seeds the fresh
-        # counters from this so the total survives the reset.
+        # Preserve pre-run enhancement usage when progress resets.
         self._tokens_used_start = 0
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
@@ -175,11 +130,7 @@ class CrawlScheduler:
         # Maps url_key -> {title, link_count} so the ranker can use per-page
         # signals (title_match F3 + position F7) instead of defaulting to 0.5.
         self._page_contexts: dict[str, dict[str, Any]] = {}
-        # What is known about each page fetched: the seed it descends
-        # from, whether it was a listing, and the verdict. Grouping on
-        # the immediate parent rather than the seed would make fairness
-        # mean "a turn from every page fetched", which a crawl generates
-        # itself and without bound.
+        # Track ownership by original seed, not immediate parent page.
         self._pages = PageBook()
         # How many the model named. Proposing none and losing them all
         # in verification are different failures.
@@ -200,16 +151,7 @@ class CrawlScheduler:
     async def enhance_seeds(
         self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
     ) -> list[Candidate]:
-        """More seeds of the same kind, verified before they are used.
-
-        Here rather than in the CLI because the parts it takes -- the
-        fetcher, the harvester, the store -- are this object's, and
-        handing them out would make the caller assemble a crawl to add
-        a seed to one.
-
-        Imported inside the branch, so a run that did not ask for this
-        never loads it.
-        """
+        """Propose and verify additional seeds when enabled."""
         if not self._cfg.enhance_seeds or not seeds:
             return []
         from crawlme.pioneer.seed_enhancer import enhance
@@ -238,12 +180,7 @@ class CrawlScheduler:
         candidates: list[Candidate],
         allowed_domains: set[str] | None = None,
     ) -> int:
-        """Canonicalize, pre-filter, and enqueue seed candidates.
-
-        Seeds only go through a subset of PreFilter rules (dedup, blacklist,
-        protocol, scope): we intentionally skip robots/extension/url-pattern/
-        depth/domain-budget since these are user-provided entry points.
-        """
+        """Canonicalize and filter seeds, then enqueue them at priority 1.0."""
         ctx = self._frontier.get_prefilter_context(
             allow_fetch=lambda url: True,  # seeds bypass robots
             allowed_domains=allowed_domains,
@@ -288,13 +225,7 @@ class CrawlScheduler:
         self._storage.attach_log_file()
 
     def note_tokens_used(self, total: int) -> None:
-        """Feed the shared LLM token counter from the outside.
-
-        The TokenBudget sink calls here after every LLM call, so the
-        BUDGET_TOKENS stop condition sees fresh numbers while the pumps
-        run.  Usage recorded before run() survives the context reset
-        through _tokens_used_start.
-        """
+        """Update progress from the shared token budget, including pre-run usage."""
         self._tokens_used_start = total
         self._ctx.progress.tokens_used = total
 
@@ -348,20 +279,11 @@ class CrawlScheduler:
         prog = self._ctx.progress
         task.counters = {"tokens_used": prog.tokens_used, "pages_fetched": prog.pages_fetched}
         self._storage.save_task(task.model_dump(mode="json"))
-        # Deliberately not a finally: on KeyboardInterrupt the CLI runs
-        # pause() (which checkpoints through this storage) before its
-        # own aclose(), so resources must still be open here.
+        # Keep resources open on KeyboardInterrupt so the CLI can checkpoint before closing.
         await self.aclose()
 
     def _note_pump_failures(self, results: list[Any]) -> None:
-        """Let a dead pump end the run instead of quietly ending its half.
-
-        Both pumps are gathered with return_exceptions, so one that died
-        left its exception in a list nobody read. A rank pump that lost
-        its provider stopped scoring, the run reached a stop condition
-        the ordinary way, and the report said it had completed with
-        nothing ranked.
-        """
+        """Record failed pumps as fatal so the run cannot silently lose a stage."""
         for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 logger.error("pump.died error=%s", r)
@@ -369,16 +291,7 @@ class CrawlScheduler:
                     self._ctx.progress.fatal_error = str(r)
 
     async def _settle_inflight(self) -> None:
-        """Let the fetches already in the air finish before anything closes.
-
-        The pumps returning is not the run being over: a fetch is its own
-        task, and each one still has a page to save and an analysis to
-        record.  One run stopped with seven of them running, closed the
-        storage and the analyzer underneath, and ended with seven pages
-        fetched, saved, and never analysed -- and with the analyzer's
-        retries for them still arriving in the log after the crawl had
-        reported itself complete.
-        """
+        """Await dispatched tasks before checkpointing or closing their resources."""
         if not self._inflight:
             return
         pending = set(self._inflight)
@@ -409,12 +322,7 @@ class CrawlScheduler:
         by_class = self._ctx.ledger.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
         fb = result.feedback
-        # What the ranker is told about the run so far.  This is the
-        # analysis half of the loop: ranking predicts, analysis
-        # establishes, and what analysis established goes back into the
-        # next prediction.  It reached the prompt through the steering
-        # facade until v0.3.0 removed it, and the prompt kept reading a
-        # list nothing filled any more.
+        # Feed relevant-page summaries into subsequent ranking prompts.
         if result.classification == "RELEVANT":
             rec = self._pages.by_url(fb.url or "")
             seed = rec.seed if rec else ""
@@ -424,20 +332,14 @@ class CrawlScheduler:
                 {
                     "url": fb.url,
                     "title": fb.title,
-                    # What the ranker is actually shown. Without it the
-                    # loop carried the page's title, which the platform
-                    # this run targets sets to the same word every time.
+                    # Use analysis summaries for ranking history.
                     "summary": result.summary or "",
                     "relevance": round(result.relevance_score, 2),
                 }
             )
             # The one line the run exists to produce.
             logger.info("found: %s (%s)", fb.title or "untitled", where(fb.url or ""))
-        # Backfill the judgment into the source page's context so the LLM
-        # ranker can tell a link off a RELEVANT article from a link off a
-        # help page.  Retries land here through the same sink, so a late
-        # success still informs whatever is ranked after it.  Candidates
-        # ranked before it keep the old behavior.
+        # Late retry results update context for future ranking batches.
         self._record_page_context(
             result.url_key,
             {
@@ -447,10 +349,7 @@ class CrawlScheduler:
             },
         )
         relevant = result.relevance_score >= self._ctx.limits.relevance_threshold
-        # The same judgement answers both questions the run asks: the
-        # window says whether this is still working, the tally says
-        # whether it is enough. Only the tally belongs here, because the
-        # window admits some pages and not others.
+        # The result tally counts all relevant pages; retirement votes exclude listings.
         self._ctx.progress.relevant_found += relevant
         rec = self._pages.of(result.url_key)
         rec.relevant = relevant
@@ -460,17 +359,7 @@ class CrawlScheduler:
         self._cast_relevance_vote(result.url_key)
 
     def _cast_relevance_vote(self, url_key: str) -> None:
-        """Let a page vote on whether the crawl is still finding things.
-
-        A listing does not vote. It is read for its links and can never
-        be an answer, so it only fills the window with certain misses.
-        Five seeds cost seven of twenty slots and stopped one run for
-        diminishing returns, which made --enhance-seeds work against
-        itself. Empty listings are ADAPTER_EMPTY's business, not this.
-
-        The verdict and the listing flag arrive in either order, so the
-        vote is cast by whichever completes the pair.
-        """
+        """Count each non-listing page once after its verdict and listing status arrive."""
         rec = self._pages.of(url_key)
         if not rec.ready():
             return
@@ -482,19 +371,9 @@ class CrawlScheduler:
         self._maybe_retire(rec.seed, state)
 
     def _note_page_age(self, page: Page, seed: str) -> None:
-        """Track how many of one source's pages in a row fell outside the
-        goal's window.
+        """Update a seed age streak from declared publication times.
 
-        Only pages that state a publication time move the streak.  A page
-        that says nothing is not evidence in either direction, so it
-        neither advances nor resets it.
-
-        The seed is handed in because this runs before the page is filed
-        under one. Looked up here it was always empty, so every source
-        shared a streak, fresh pages from one kept resetting another's,
-        and retirement -- which ignores an empty seed -- could not fire
-        at all.
-        """
+        Undated pages neither advance nor reset the streak."""
         if self._ctx.limits.since is None or page.published_at is None:
             return
         state = self._seeds[seed]
@@ -523,23 +402,13 @@ class CrawlScheduler:
         logger.info("done with one source: %s", why)
 
     def _record_page_context(self, url_key: str, fields: dict[str, Any]) -> None:
-        """Merge per-page context that the ranker reads at rank time.
-
-        Always a merge, never a replace.  The analyzer sink and the
-        link-extraction step both write here and they run in that order,
-        so assigning a fresh dict would drop the page's judgment.
-        """
+        """Merge analysis and extraction context for later ranking."""
         if not url_key:
             return
         self._page_contexts.setdefault(url_key, {}).update(fields)
 
     def _note_not_content(self, problem: PageProblem) -> None:
-        """Record a page that was not content, and stop if it was about us.
-
-        The first refusal aimed at the crawl wins: later ones say the
-        same thing, and overwriting would report whichever arrived last
-        rather than what actually ended the run.
-        """
+        """Count unavailable pages and record run-wide platform refusals."""
         ledger = self._ctx.ledger
         ledger.not_content[problem.value] = ledger.not_content.get(problem.value, 0) + 1
         if problem.refuses_the_run and not self._ctx.progress.refused_by:
@@ -560,9 +429,7 @@ class CrawlScheduler:
             "candidates_ranked": ledger.candidates_ranked,
             "fetch_errors": ledger.fetch_errors,
             "analyses": dict(ledger.analyses_by_class),
-            # Every seed the run read, in the order it was given them,
-            # each with its own funnel. Asked for one seed at a time
-            # ("wanted 6 but found nothing") and answerable only here.
+            # Preserve user seed order in the per-source report.
             "seeds": {
                 key: {
                     "url": st.url,
@@ -577,9 +444,7 @@ class CrawlScheduler:
             "proposed_seeds": {
                 url: (why, self._seeds[key].funnel.as_tuple()) for key, (url, why) in self._proposed_seeds.items()
             },
-            # Sources that stopped paying off, and why. A run now ends
-            # by every source retiring, so without this it just reads as
-            # a drained frontier.
+            # Report why each source retired.
             "retired_seeds": sorted(st.retired for st in self._seeds.values() if st.retired),
             # The target, so the report can print the tally beside it.
             "max_relevant": self._ctx.limits.max_relevant,
@@ -603,16 +468,7 @@ class CrawlScheduler:
         return self._ctx
 
     async def pause(self) -> None:
-        """Stop taking work and settle what is already in the air.
-
-        Settling is the same operation the normal exit performs, and for
-        the same reason: a fetch is its own task, holding a page to save
-        and an analysis to record.  Polling a counter used to stand in
-        for this, which works while the loop is healthy and does nothing
-        while it is being torn down -- an interrupted run left its
-        fetches pending, printed "Task was destroyed but it is pending",
-        and left its row in the database saying RUNNING for ever.
-        """
+        """Stop dispatch, settle in-flight work and persist a paused checkpoint."""
         logger.debug("pause.requested inflight=%d", self._ctx.progress.in_flight)
         self._state = "PAUSING"
         await self._settle_inflight()
@@ -654,20 +510,7 @@ class CrawlScheduler:
             self._task.state = "STOPPING"
 
     def _reconcile(self) -> None:
-        """Say what the run had against what it read, at the end.
-
-        A run that stops holding work reports success exactly like one
-        that finished: a missing session gave a COMPLETED with no pages,
-        a per-domain ceiling gave one with a hundred and sixty
-        candidates still queued, and a rank batch that landed after the
-        last fetch gave one that never opened the account it was asked
-        about.  None of them said so anywhere.
-
-        Whether leaving work behind is wrong depends on the reason -- a
-        page budget is supposed to stop early -- so this states the
-        numbers and leaves the judgement to whoever reads them, loudly
-        enough to be seen.
-        """
+        """Report fetched, pending and refused work alongside the stop reason."""
         left_frontier = self._frontier.size
         left_buffer = self._frontier.waiting_size
         ledger = self._ctx.ledger
@@ -688,13 +531,7 @@ class CrawlScheduler:
             )
 
     def _enough_found(self) -> bool:
-        """Whether the run already has the answers it asked for.
-
-        The stop only stops dispatch, and every task already out keeps
-        landing, so one run asked for fifteen and reported twenty-four.
-        Asked at the head of the analysis queue, the overshoot is
-        bounded by what is already calling.
-        """
+        """Check the result target before starting another analysis. In-flight calls may overshoot."""
         lim, prog = self._ctx.limits, self._ctx.progress
         return lim.max_relevant > 0 and prog.relevant_found >= lim.max_relevant
 
@@ -730,12 +567,7 @@ class CrawlScheduler:
                 await self._frontier.waiting.wake()
                 break
 
-            # Page budget gates pops, not just completions: committed
-            # in-flight fetches count against it, otherwise the pump keeps
-            # popping while fetches are in the air and overshoots max_pages
-            # by up to fetch_concurrency-1 (check_stop only sees landed
-            # pages).  Failed in-flight fetches release their slot, so we
-            # wait here rather than break.
+            # Count dispatched pages against the budget; wait for failed fetches to release slots.
             if (
                 self._ctx.limits.max_pages > 0
                 and self._ctx.progress.pages_fetched + self._ctx.progress.in_flight >= self._ctx.limits.max_pages
@@ -743,10 +575,7 @@ class CrawlScheduler:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
-            # Back-pressure. The fetch slot is released before the
-            # analysis, so without this the pump keeps dispatching into
-            # a queue. One run parked 46 tasks and abandoned 33 of them
-            # unjudged. The width leaves each stage a short queue.
+            # Bound dispatched tasks independently of the fetch and analysis semaphores.
             if self._ctx.progress.in_flight >= self._cfg.fetch_concurrency + 2 * self._cfg.llm_concurrency:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
@@ -758,36 +587,21 @@ class CrawlScheduler:
             )
             if item is None:
                 if self._frontier.scoring > 0:
-                    # A rank call holds the only candidates there are.
-                    # The rank pump is inside it, so it is neither asleep
-                    # nor able to act on a wake: waiting is the whole job.
+                    # A running rank call still holds pending work; wait for it to return.
                     await asyncio.sleep(_POP_SLEEP)
                     continue
                 if self._frontier.waiting.is_empty:
-                    # A pop that returns nothing is not an empty
-                    # frontier: an item still cooling comes back on its
-                    # own, and reading the first as the second ended a
-                    # run at zero pages with its only seed waiting.
-                    # Items a gate refuses outright are different,
-                    # because nothing about them will change.
+                    # Cooling items remain pending work even when no item can be popped now.
                     if self._ctx.progress.in_flight == 0 and self._frontier.cooling == 0:
-                        # The loop leaves here without going back to the
-                        # stop check at the top, so the reason has to be
-                        # recorded on the way out or the run reports
-                        # "completed" with no cause at all.
+                        # Record the stop reason before leaving this loop directly.
                         self._record_stop_reason()
                         logger.debug("fetch_pump.exhausted frontier=0 buffer=0")
                         await self._frontier.waiting.wake()
                         break
-                    # Nothing waiting to be scored, but either a fetch is
-                    # in the air or an item is cooling down, so more work
-                    # is coming.  Wake the rank pump in case it is blocked
-                    # on wait_until so it can observe state changes.
+                    # Wake ranking to observe state changes while fetching or cooldowns continue.
                     await self._frontier.waiting.wake()
                 elif self._frontier.size == 0 and self._ctx.progress.in_flight == 0:
-                    # Buffer has items but nothing is fetching: the rank
-                    # pump may be asleep on a stale predicate (frontier was
-                    # non-empty when it last checked).  Wake it.
+                    # Wake ranking when buffered work remains but fetching has no candidates.
                     logger.debug(
                         "fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size
                     )
@@ -796,9 +610,7 @@ class CrawlScheduler:
                 continue
 
             self._ctx.progress.in_flight = self._ctx.progress.in_flight + 1
-            # Held, not fired and forgotten.  Unheld, these outlived the
-            # run: the pumps returned, aclose() shut the storage and the
-            # analyzer, and seven tasks went on writing into both.
+            # Retain task handles so shutdown can await writes and analysis.
             task = asyncio.create_task(self._handle_fetch(item))
             self._inflight.add(task)
             task.add_done_callback(self._inflight.discard)
@@ -806,13 +618,9 @@ class CrawlScheduler:
         self._state = "STOPPING"
 
     async def _ensure_robots(self, domain: str) -> None:
-        """Read the domain's robots.txt once, before anything is asked of it.
+        """Fetch robots.txt before the first request to a host.
 
-        Here because it is the only place both async and ahead of a
-        request. The prefilter's check runs when a candidate is found,
-        which can be long before its domain is first reached, so it
-        answers "allowed" for a domain nothing has read yet.
-        """
+        Discovery-time pre-filtering may run before that host policy is known."""
         if not domain or not self._robots.is_cache_stale(domain):
             return
         cached = await self._storage.get_robots(domain)
@@ -826,12 +634,7 @@ class CrawlScheduler:
         )
 
     async def _fetch_robots(self, domain: str) -> str:
-        """The file, or "" when it cannot be had.
-
-        Empty parses to no rules, which allows everything. A 404 states
-        no policy, and a site briefly down must not have its whole
-        domain treated as forbidden.
-        """
+        """Fetch robots.txt; unavailable policies become empty rules and allow access."""
         url = f"https://{domain}/robots.txt"
         item = FrontierItem(
             url=URL(raw=url, canonical=url, url_key=url, reg_domain=domain),
@@ -854,18 +657,7 @@ class CrawlScheduler:
         ctx: PreFilterContext,
         seed: str,
     ) -> None:
-        """The rest of a paged listing, at the depth it came from.
-
-        Same depth because it is more of the same listing rather than a hop
-        away from it, so counting it would spend the depth budget on
-        standing still.
-
-        Capped per listing. A subreddit pages indefinitely, and pages arrive
-        at the depth of a seed, so nothing else would stop them.
-
-        Neutral priority, not the 1.0 a seed gets. At 1.0 a six-page
-        budget went entirely on listings without reading one post.
-        """
+        """Queue a capped listing continuation at the same depth and neutral priority."""
         pages = self._seeds[seed].listing_pages
         if pages >= _MAX_LISTING_PAGES:
             logger.debug("listing.page_cap seed=%s pages=%d", seed, pages)
@@ -893,16 +685,9 @@ class CrawlScheduler:
         logger.debug("listing.next_page url=%s page=%d", url.canonical, pages + 2)
 
     async def _fetch_and_extract(self, item: FrontierItem) -> tuple[FetchResult, Page] | None:
-        """Download and parse one page while holding a fetch slot.
-
-        The slot covers the network request and the parse it feeds,
-        and nothing else.  Returns None when the item is finished with,
-        either because it failed or because extraction timed out.
-        """
+        """Fetch and extract under a fetch slot. Return None on failure or extraction timeout."""
         domain = item.url.reg_domain or _extract_domain(item.url.canonical)
-        # robots.txt is served per host, and a host can differ from its
-        # registrable domain in both the file and the rules. Keyed by
-        # host so the lookup finds what the fetch stored.
+        # Key robots rules by host, which may differ from the budget domain.
         await self._ensure_robots(_extract_domain(item.url.canonical))
         if not self._robots.allow_fetch(item.url.canonical):
             logger.debug("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
@@ -910,9 +695,7 @@ class CrawlScheduler:
             await self._frontier.record_outcome(item, "SKIPPED")
             return None
         async with self._fetch_sem:
-            # Said before the wait. A browser fetch of one page has
-            # measured 12 to 22 seconds, and naming it only afterwards
-            # leaves that whole time looking like nothing is happening.
+            # Report fetching before awaiting network work.
             logger.info("fetching %s", where(item.url.canonical))
             try:
                 result = await self._fetcher.fetch(item)
@@ -955,12 +738,7 @@ class CrawlScheduler:
             return result, page
 
     def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
-        """Store what the page fetched for itself, beside the page.
-
-        Same treatment the raw HTML gets: the frozen copy is what a
-        harvester reads back, so a parser can be changed and rerun
-        against exactly what arrived.
-        """
+        """Save selected sub-responses beside the raw page for later parsing."""
         paths: list[str] = []
         for i, payload in enumerate(result.payloads):
             try:
@@ -978,13 +756,8 @@ class CrawlScheduler:
                 return
             result, page = fetched
 
-            # Deliberately outside the fetch slot.  Waiting on an LLM
-            # while holding one made fetch_concurrency and llm_concurrency
-            # nested rather than independent, so the inner limit throttled
-            # the outer one and HTTP fetching stalled behind analysis.
-            #
-            # It stays ahead of link extraction: the ranker reads this
-            # page's verdict when it scores the links found below.
+            # Analyze outside the fetch slot so LLM latency does not block fetching.
+            # Analyze before harvesting so new candidates can use the page verdict.
             if self._analyzer is not None:
                 assert self._goal is not None
                 # Both maps before the call. The sink runs while this
@@ -1009,9 +782,7 @@ class CrawlScheduler:
                     {"url_key": page.url_key, "title": page.title, "status": page.extraction_status},
                 )
 
-            # Extract links -> Candidates -> PreFilter -> Buffer.
-            # Bounded like the extraction step: a pathological page
-            # must lose its links, not stall the whole crawl.
+            # Bound harvesting separately so pathological HTML cannot stall the loop.
             try:
                 harvest = await asyncio.wait_for(
                     asyncio.to_thread(self._harvester.harvest, page, item.depth),
@@ -1021,9 +792,7 @@ class CrawlScheduler:
                 logger.warning("fetch.link_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
                 harvest = Harvest([])
             except FeedDependencyError as e:
-                # Not about this page: every later page of the same
-                # format fails identically, so carrying on would spend
-                # the whole budget producing nothing and report success.
+                # Missing format dependencies stop the run rather than producing empty listings.
                 logger.error("fetch.adapter_dependency url_key=%s: %s", item.url_key, e)
                 self._ctx.progress.fatal_error = str(e)
                 return
@@ -1037,9 +806,7 @@ class CrawlScheduler:
                 logger.info("read %d posts from %s", len(candidates), where(page.url.canonical))
             self._pages.of(page.url_key).listing = harvest.listing
             self._cast_relevance_vote(page.url_key)
-            # Every candidate belongs to the seed its page belonged to,
-            # however many hops back.  Recorded here because this is the
-            # only place that holds both ends of the link.
+            # Descendants inherit the original seed ownership.
             seed = self._pages.seed_of(item.url_key, item.seed_url_key or item.url_key)
             for c in candidates:
                 c.seed_url_key = seed
@@ -1162,10 +929,7 @@ class CrawlScheduler:
         )
         assert self._goal is not None
         if self._ranker is None:
-            # Without credentials there is no ranker.  The frontier
-            # already hands candidates out a turn per seed, oldest
-            # first, so passing them through at one flat priority keeps
-            # that order rather than inventing one.
+            # Without a ranker, preserve buffer order using a flat priority.
             decisions = [
                 RankDecision(
                     candidate_id=c.candidate_id,

@@ -1,10 +1,4 @@
-"""The inspect command: a read-only look at a task's results.
-
-No LLM, no writes: opens the run's database and renders what the task
-produced — goals, pages, analyses by classification, and the top
-relevant pages.  --export dumps the pages-and-analyses join (the
-product users consume) as json or csv.
-"""
+"""Read and export stored crawl results."""
 
 from __future__ import annotations
 
@@ -47,12 +41,7 @@ class InspectData:
 
 
 async def inspect_task(settings: Settings, task_id: str, *, goal_id: str | None = None) -> InspectData:
-    """Read one task's results out of its run database.
-
-    *goal_id* selects whose analyses to look at; None (the default)
-    means the task's original goal.  Replay goals are visible through
-    the returned goal rows and counts, so callers can list them.
-    """
+    """Read a task and its selected goal analyses without modifying the run database."""
     run_dir, task_row = await find_run_dir(settings.result_dir, task_id)
     storage = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await storage.start()
@@ -153,19 +142,10 @@ def _result_lines(
     *,
     horizon: datetime.date | None = None,
 ) -> list[str]:
-    """The results, grouped by whether they have run out.
+    """Group relevant results by event dates and show a limited number per group.
 
-    Sorted by when they end rather than by score, because a reader
-    coming to this asks what is still ahead of them. Nothing is hidden:
-    a page that named no date is not a page that fails the dates, and
-    across seven runs that was half of them.
-
-    *horizon* is how far ahead still counts as open. What starts after
-    it is split off rather than dropped, because how far ahead a reader
-    cares about is a preference and being wrong about it should cost a
-    heading, not a result. Something that only says when it ends is
-    already running, so it stays open however far off that end is.
-    """
+    A horizon separates later starts. Results with only an end remain open until
+    that end; results without dates get their own group."""
     today = datetime.datetime.now(datetime.timezone.utc).date()
     live: list[tuple[datetime.date | None, dict[str, Any]]] = []
     undated: list[dict[str, Any]] = []
@@ -240,16 +220,7 @@ def _as_date(raw: Any) -> datetime.date | None:
 
 
 def _export(data: InspectData, fmt: str) -> None:
-    """Dump the pages-and-analyses join to stdout.
-
-    The json form is the one meant to be read by something other than a
-    person: it carries the extracted fields with the page text backing
-    each one, so whatever renders it can show a value and let the reader
-    check it against the page.  csv stays flat and leaves them out —
-    every goal declares its own fields, so there is no stable column set
-    to flatten them into, and inventing one per export would make two
-    exports of the same run disagree.
-    """
+    """Export all analysis/page joins. JSON includes fields and evidence; CSV uses fixed columns."""
     pages_by_key = {p["url_key"]: p for p in data.pages}
     rows: list[dict[str, Any]] = []
     for a in data.analyses:

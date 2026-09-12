@@ -1,12 +1,4 @@
-"""HTML content extraction.
-
-Takes a raw HTML FetchResult, strips boilerplate (ads, nav, scripts, comments),
-and produces a clean Page with markdown body, plain text, title, and metadata.
-
-Uses trafilatura for the heavy lifting (boilerplate removal + markdown conversion)
-with BeautifulSoup as a fallback for title/metadata extraction when the HTML is
-malformed enough that trafilatura can't parse it.
-"""
+"""Extract page text with trafilatura and a BeautifulSoup fallback."""
 
 from __future__ import annotations
 
@@ -138,18 +130,10 @@ _DATE_FORMATS = ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d %B 
 
 
 def _extract_head_meta(html_str: str) -> tuple[str | None, datetime.datetime | None]:
-    """Declared title and publication time, from one parse of the document.
-
-    Both come from what the page states about itself rather than from its
-    body, and both are wanted on every page, so they share a parse.  That
-    parse is serialized behind the global libxml2 lock, so paying for it
-    twice would be paying twice for the same bytes.
-    """
+    """Read the title and declared publication time from one HTML parse."""
     try:
         with warnings.catch_warnings():
-            # A crawl reaches XML routinely now that a feed is a page
-            # like any other.  The parser copes; its advice is for a
-            # caller who chose the document, and this one did not.
+            # Feeds may reach this HTML metadata parser; suppress the expected XML warning.
             warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
             soup = BeautifulSoup(html_str, "lxml")
     except Exception:
@@ -160,18 +144,9 @@ def _extract_head_meta(html_str: str) -> tuple[str | None, datetime.datetime | N
 
 
 def _published_at_from(soup: BeautifulSoup) -> datetime.datetime | None:
-    """Publication time from meta tags, JSON-LD, or a <time> element.
+    """Read publication time from metadata, JSON-LD or time elements.
 
-    Only sources where the page *declares* its date are trusted.  Plenty
-    of pages simply do not say, and admitting that beats guessing.
-
-    Deliberately not reading trafilatura's own `date` attribute even
-    though it is free: it infers a date from body text, so a page whose
-    only date-like string is "Copyright 2024" comes back as 2024-01-01.
-    That guess would silently age real pages out of the window and fire
-    a source on a footer.  The extra parse is worth the correctness,
-    and trafilatura already parses this document three times anyway.
-    """
+    Do not use trafilatura date inference, which can mistake footer dates for publication."""
     for attr, value in _DATE_META:
         tag = soup.find("meta", attrs={attr: value})
         if tag is not None:
@@ -211,12 +186,7 @@ def _jsonld_date(blob: str) -> str:
 
 
 def _parse_date(raw: str) -> datetime.datetime | None:
-    """Tolerant date parsing, always returning an aware UTC datetime.
-
-    Absurd values are dropped rather than propagated.  A page claiming
-    1970 or 2099 is a template artifact, and letting it through would
-    poison the streak that retires a source.
-    """
+    """Parse a UTC timestamp; reject years before 1990 or more than a year ahead."""
     text = (raw or "").strip()
     if not text:
         return None

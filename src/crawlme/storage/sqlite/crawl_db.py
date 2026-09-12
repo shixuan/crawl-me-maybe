@@ -1,9 +1,4 @@
-"""SqliteCrawlDb: one crawl run's state in one SQLite file.
-
-Created per run under results/<timestamp>/db/crawl.db by
-SqliteCrawlDb.create().  Implements the CrawlDb contract from
-storage/contracts.py.
-"""
+"""Per-run SQLite state and raw page storage under results/<timestamp>/."""
 
 from __future__ import annotations
 
@@ -76,10 +71,7 @@ CREATE TABLE IF NOT EXISTS links (
     source_url_key  TEXT,
     depth           INTEGER DEFAULT 0,
     text            TEXT DEFAULT '',
-    -- When the source said this was published, if it said so at all.
-    -- Ranking reads it live, and without a column here nothing can be
-    -- recomputed afterwards: a quarter of the feed factor set was
-    -- missing from every offline measurement of it.
+    -- Source-declared publication time, when available.
     posted_at       TEXT DEFAULT '',
     signals_json    TEXT DEFAULT '{}',
     status          TEXT DEFAULT 'INGESTED',
@@ -233,9 +225,7 @@ class SqliteCrawlDb:
                         await self._conn.commit()
                         batch = 0
             except sqlite3.Error:
-                # Letting it propagate ends the task, so nothing calls
-                # task_done again and close() waits on join() forever:
-                # a schema mistake would surface as a silent hang.
+                # Keep the writer alive and complete queue items so close() cannot deadlock.
                 logger.exception("db.write_failed sql=%s", sql.split("(", 1)[0].strip())
             finally:
                 self._write_queue.task_done()
@@ -464,15 +454,7 @@ class SqliteCrawlDb:
         model: str = "",
         spec_version: str = "",
     ) -> bool:
-        """Whether an analysis with this identity already exists.
-
-        The identity is (url_key, goal_id, prompt_version, spec_version,
-        model); the model is only known after an LLM call, so callers
-        that run the provider default (no model configured) pass "" to
-        match any model instead.  spec_version is "" for a goal that asks
-        for no fields, which matches every analysis written before there
-        were any.
-        """
+        """Check (url_key, goal_id, prompt_version, spec_version, model). An empty model matches any."""
         cur = await self._execute_now(
             "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ? AND spec_version = ?",
             (url_key, goal_id, prompt_version, spec_version),

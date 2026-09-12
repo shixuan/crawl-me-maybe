@@ -1,7 +1,4 @@
-"""Scheduler factory: the single place where concrete implementations are chosen.
-
-Every concrete import lives here.  Engine itself depends only on Protocols.
-"""
+"""Select concrete implementations and assemble the crawl scheduler."""
 
 from __future__ import annotations
 
@@ -35,24 +32,12 @@ def create_scheduler(
     budget: TokenBudget | None = None,
     **overrides: Any,
 ) -> CrawlScheduler:
-    """Create a fully-wired CrawlScheduler.
+    """Assemble scheduler components with optional test overrides.
 
-    *settings* holds every knob (env + flag overrides, see config.py);
-    *goal* supplies the domain budget.  *llm_ranker* enables the v0.2
-    LLM fine-ranking stage.  *analyzer* is the optional analysis stage
-    of the feedback subsystem; None (the default) means "build it from
-    settings", so it exists whenever analysis_enabled is on and
-    degrades when no LLM credentials are configured.  Tests pass an
-    explicit stub instead.  *budget* is the shared token budget the
-    subsystem's analyzer must respect.  Pass keyword overrides to swap
-    individual components in tests:
-    ``create_scheduler(cfg, goal, fetcher=_MockFetcher())``.
-    """
+    A missing analyzer is built from settings when enabled and configured.
+    The supplied token budget is shared with that analyzer."""
     storage = SqliteCrawlDb.create(settings.result_dir)
-    # The run context: one mutable object that every stage records
-    # into (stop-condition counters + report statistics).  The engine
-    # resets it in place when run() starts, so the references handed
-    # out here stay valid for the scheduler's lifetime.
+    # Keep context identity stable when the engine resets its state.
     ctx = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
     canonicalizer = Canonicalizer()
     if analyzer is None and settings.analysis_enabled:
@@ -79,13 +64,7 @@ def create_scheduler(
 
 
 def _agent_name(settings: Settings) -> str:
-    """The token robots.txt would name us by.
-
-    The product name, not the whole string: a robots.txt section is
-    matched on a prefix of the User-Agent, and the version and contact
-    address that follow are not part of what an operator writes down.
-    The pool's first entry, since every entry names the same crawler.
-    """
+    """Read the crawler product token from the first configured User-Agent."""
     first = next(iter(settings.user_agents), "")
     return first.split("/")[0].split()[0] or "*"
 
@@ -103,19 +82,7 @@ def _payload_filter(settings: Settings) -> Callable[[str, str], bool] | None:
 
 
 def adapters_for(settings: Settings) -> list[FeedAdapter]:
-    """Which adapters this run may use, in the order they are asked.
-
-    An adapter that needs a session is left out when there is none, and
-    not to be tidy: without credentials it cannot read its platform, so
-    claiming a page would hand back a login wall, and one login wall
-    ends the whole run.  A link-graph crawl that merely touches such a
-    platform would be killed by it.
-
-    Everything else is always available.  A feed claims by the
-    document's root element, so it cannot mistake an HTML page for one,
-    and a crawl that reaches a feed should read it as a feed whatever it
-    was started for.
-    """
+    """Return registered adapters in priority order, excluding session-required ones without a session."""
     has_session = bool(settings.browser_storage_state)
     return [a for a in ADAPTERS if has_session or not a.NEEDS_SESSION]
 
@@ -125,12 +92,7 @@ def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harves
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:
-    """A browser where the run asked for one, and per candidate otherwise.
-
-    Asking for one gets it everywhere: a page belonging to no platform
-    can still need a script run, and only the user knows that. A session
-    is not that answer -- its cookies mean nothing off the platform.
-    """
+    """Force browser fetching when configured; otherwise dispatch per URL."""
     if settings.fetcher == "browser":
         return _build_browser_fetcher(settings)
     return DispatchingFetcher(
@@ -150,13 +112,10 @@ def _build_http_fetcher(settings: Settings) -> Fetcher:
 
 
 def _build_browser_fetcher(settings: Settings) -> Fetcher:
-    """Constructed, not started: playwright is imported at first launch,
-    so building one costs nothing and needs no install.
-    """
+    """Construct the lazy browser fetcher without importing or launching Playwright."""
     from crawlme.digest.fetcher import PlaywrightFetcher
 
-    # However many the greediest enabled adapter asks for.  Nothing to
-    # scroll on a page nobody claims.
+    # Enable scrolling if any adapter requests it; settings supply the limit.
     scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)
     return PlaywrightFetcher(
         storage_state=settings.browser_storage_state or None,
@@ -169,13 +128,5 @@ def _build_browser_fetcher(settings: Settings) -> Fetcher:
 
 
 def _build_ranker(settings: Settings, llm: Ranker | None = None) -> Ranker | None:
-    """The ranking stage, or None when there is nothing to rank with.
-
-    One stage is left.  The rule and embedding stages were removed
-    after seven crawls measured them: neither ever dropped a candidate,
-    and neither ordered better than a coin flip on most tasks.  Without
-    LLM credentials there is now no ranker at all, and the engine
-    fetches in the order the frontier hands candidates out -- a turn
-    from each seed, oldest first.
-    """
+    """Return the supplied ranker, or None for unranked crawling."""
     return llm

@@ -1,9 +1,4 @@
-"""Dates written in text, and where a range sits relative to today.
-
-Relative wording ("next week", "tomorrow") is refused on purpose. In
-a string written three weeks ago it means three weeks ago, and a date
-wrong by a fortnight looks perfectly reasonable.
-"""
+"""Parse explicit event dates and group date ranges. Relative phrases are not resolved."""
 
 from __future__ import annotations
 

@@ -173,14 +173,7 @@ def test_needs_document(tmp_path: Path) -> None:
 
 
 def test_unclaimed_graph(tmp_path: Path) -> None:
-    """A crawl wanders off: an analyzer endorses the shop's own site.
-
-    The adapter is not consulted there, so a site that happens to use the
-    platform's path shape cannot hand back candidates pointing at the
-    wrong host. What it does hand back is its own links, resolved against
-    its own base -- which is what a link graph reads, and what the older
-    "not my domain, return nothing" branch silently threw away.
-    """
+    """Unclaimed pages yield links resolved against their own host, even with platform-shaped paths."""
     trap = b"""<html><body>
     <a href="/p/AAA111/">looks like a post</a>
     <a href="/p/BBB222/">so does this</a>

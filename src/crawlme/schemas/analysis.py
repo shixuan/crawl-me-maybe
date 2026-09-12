@@ -1,4 +1,4 @@
-"""Analysis-stage models: page analyses and their steering payloads."""
+"""Page analyses, extracted fields and ranking feedback."""
 
 from __future__ import annotations
 
@@ -9,28 +9,13 @@ from pydantic import BaseModel, Field
 
 from crawlme.schemas.core import _new_id, _utcnow
 
-# Declaration order is display order: the report walks this rather than
-# sorting by count, so the same line reads the same way every run.
-#
-# Two verdicts and a fallback. A page kept for its links used to have its
-# own verdict and bought 17 fetches for one result, against 25% on the
-# pages the ranker chose. A page is a result or it is not.
+# Declaration order determines result display order.
 Classification = Literal["RELEVANT", "IRRELEVANT", "UNKNOWN"]
 CLASSIFICATIONS: tuple[str, ...] = ("RELEVANT", "IRRELEVANT", "UNKNOWN")
 
 
 class ExtractedField(BaseModel):
-    """One field the goal asked for, with the words that back it up.
-
-    `evidence` is a verbatim span of the page, checked against the stored
-    text before the field is kept.  A value whose evidence is not in the
-    page is not recorded at all, so everything that survives can be
-    pointed back at the page it came from.
-
-    There is no "unknown" state: a field the page does not state is
-    simply absent.  Saying nothing is what keeps a guessed deadline out
-    of a list someone is going to act on.
-    """
+    """A requested value and its source evidence. Fields with missing evidence are omitted."""
 
     value: str
     evidence: str
@@ -55,20 +40,13 @@ class AnalysisResult(BaseModel):
     relevance_score: float = 0.0
     summary: str | None = None
     structured_data: dict[str, Any] = Field(default_factory=dict[str, Any])
-    # Only the fields the goal's extraction_spec asked for, and only
-    # those whose evidence was found in the page.  Empty for a goal that
-    # declared no spec, which is every link-graph crawl.
+    # Declared fields whose evidence was found in the page text.
     extracted: dict[str, ExtractedField] = Field(default_factory=dict[str, "ExtractedField"])
     tags: list[str] = Field(default_factory=list)
     feedback: AnalyzerFeedback = Field(default_factory=AnalyzerFeedback)
     model: str = ""
     prompt_version: str = ""
-    # Which field list produced `extracted`.  Part of what makes one
-    # analysis the same as another, next to prompt_version and model.
-    # The dates the page gave for what it describes, out of the field the
-    # goal declared as its time. Either end may be open: an end alone is
-    # a deadline, a start alone has no stated finish. Both absent when
-    # the page named no date that could be resolved, about half of them.
+    # Event dates derived from the declared time field; either end may be absent.
     starts_on: datetime.date | None = None
     ends_on: datetime.date | None = None
     spec_version: str = ""

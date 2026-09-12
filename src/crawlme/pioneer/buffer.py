@@ -1,20 +1,4 @@
-"""Candidate buffer: what gets scored next, and in what mix.
-
-Scoring costs a model call per batch, so whatever leaves here is what
-the crawl will ever have an opinion about.  Anything still sitting here
-when the run ends was never considered at all.
-
-That makes the order it hands candidates out a coverage decision rather
-than a detail.  It was first-come-first-served once, and a run over five
-accounts read fifty-three posts from one of them and none from three
-others, because the first listing fetched filled the queue and the run
-ended before the ranker reached anyone else.  A turn from each seed
-costs nothing and is the whole fix.
-
-Ordering after the ranker is a different question.  There the scarce
-thing is the page budget, and the way to spend it is the priority the
-ranker just produced.
-"""
+"""Rotate unranked candidates between seeds before spending LLM tokens."""
 
 from __future__ import annotations
 
@@ -42,12 +26,7 @@ class Buffer(Protocol):
     def retire(self, seed_url_key: str) -> None: ...
 
     def contains(self, url_key: str) -> bool:
-        """Whether this URL is already waiting here.
-
-        Part of the contract because the frontier asks one dedup
-        question across both halves, and a half that cannot answer it
-        leaves the gap that made the same page arrive twice.
-        """
+        """Report whether the URL is waiting in this buffer."""
         ...
 
     def dump(self) -> dict[str, Any]:
@@ -72,18 +51,9 @@ _EXT_EVERY = 4
 
 
 def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[list[Candidate], str]:
-    """Up to *n*, one from each seed in turn, oldest first within a seed.
+    """Take up to n candidates across seeds, FIFO within each seed.
 
-    Returns what to hand out and which seed the next call should start
-    from.  Carrying that across calls is the whole point: a batch is
-    smaller than the seed list often enough to matter, and starting from
-    the front every time would let the first `n` seeds take every turn
-    and leave the rest exactly as starved as first-come-first-served
-    did, only with a larger cartel.
-
-    A seed that runs out stops being asked, so its unused turns go to
-    whoever still has candidates rather than being reserved and wasted.
-    """
+    Return the next seed position so rotation continues fairly across batches."""
     groups: dict[str, list[Candidate]] = {}
     for c in candidates:
         # They share one turn, so proposing more changes how deep each
@@ -127,22 +97,13 @@ class RoundRobinBuffer:
         self._seen: set[str] = set()
         self._cond = asyncio.Condition()
         self._last_added_at: float = 0.0
-        # Where the next drain resumes the rotation.  Without it every
-        # drain restarts at the first seed, and any seed past the batch
-        # size never gets a turn at all.
+        # Keep rotation position across batches so later seeds receive turns.
         self._next_seed: str = ""
-        # Seeds that stopped paying off. Their candidates stay in the
-        # buffer but never take a turn, so the ranker is not spent on
-        # them either.
+        # Retired seeds cannot add further work.
         self._retired: set[str] = set()
 
     def retire(self, seed_url_key: str) -> None:
-        """Drop what this seed left here, and refuse what it sends next.
-
-        Dropping matters as much as refusing: candidates left behind keep
-        the buffer non-empty, and a run whose sources have all retired
-        would then never read as drained.
-        """
+        """Drop pending candidates for a seed and refuse future additions from it."""
         self._retired.add(seed_url_key)
         self._candidates = [c for c in self._candidates if c.seed_url_key != seed_url_key]
 
@@ -171,11 +132,9 @@ class RoundRobinBuffer:
     # read / drain path ------------------------------------------------
 
     async def drain(self, n: int | None = None) -> list[Candidate]:
-        """Remove and return up to *n* candidates, a turn from each seed.
+        """Remove up to n candidates, rotating between seeds when taking a partial batch.
 
-        Within one seed the oldest goes first: among an account's own
-        posts there is nothing yet to prefer, since none of them have
-        been scored.
+        Taking the whole buffer preserves insertion order; within each seed, use FIFO.
         """
         async with self._cond:
             if n is None or n >= len(self._candidates):

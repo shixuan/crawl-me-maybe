@@ -424,13 +424,7 @@ async def test_spec_in_prompt():
 
 
 async def test_spec_version():
-    """A different field list is a different reading of the page.
-
-    It does not belong in goal_id: that is sha256(prompt), which is what
-    replay idempotency and the goal embedding cache rest on, and a
-    model-inferred spec would make the same prompt keep becoming a new
-    goal.  It is recorded next to prompt_version and model instead.
-    """
+    """Different field lists change spec_version without changing prompt-derived goal identity."""
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
     analyzer = _analyzer(client)
     first = await analyzer.analyze(_page(_OFFER_PAGE), _spec_goal())

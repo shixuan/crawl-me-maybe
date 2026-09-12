@@ -1,9 +1,4 @@
-"""The LLM access layer: client, token budget, and JSON parsing.
-
-Neutral infrastructure consumed by every LLM-using stage (Goal
-Enhancer, LLMRanker, PageAnalyzer), kept outside the state and
-pioneer layers so none of them owns it.
-"""
+"""Shared LLM client, token accounting and response parsing."""
 
 from crawlme.llm.budget import Stage, TokenBudget
 from crawlme.llm.client import LLMClient, LLMResponse, close_litellm_clients, litellm_loaded

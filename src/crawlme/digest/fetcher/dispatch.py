@@ -1,13 +1,4 @@
-"""One fetcher that picks another, per candidate.
-
-A platform serves a shell to a plain request, and a shell errors on
-nothing: the adapter does not claim it and the run reports a quiet
-week. Choosing once for the whole run means either that or paying the
-browser on every ordinary page.
-
-Nothing here starts a browser; the browser fetcher launches on first
-use, so both can be built unconditionally.
-"""
+"""Choose HTTP or lazy browser rendering from enabled adapters for each URL."""
 
 from __future__ import annotations
 
@@ -68,11 +59,7 @@ class DispatchingFetcher:
         return self._browser
 
     def _claimant(self, url: str) -> FeedAdapter | None:
-        """The adapter that claims this address, if any.
-
-        By address, not document: the document is what the fetch is for.
-        A feed answers no here and correctly lands on plain HTTP.
-        """
+        """Find a rendering adapter by URL before fetching the document."""
         for adapter in self._rendered:
             if adapter.claims_url(url):
                 return adapter

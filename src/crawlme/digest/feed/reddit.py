@@ -1,18 +1,4 @@
-"""Reddit: a listing of permalinks, a post, and the replies under it.
-
-The route was not obvious and three cheaper ones are closed.  A feed
-gives the title and a blurb and never the body; `old.reddit.com` answers
-with a login wall; appending `.json` to a permalink answers 403.  All
-three were measured with a browser user agent as well as ours, so none
-of it is the crawler being turned away for what it calls itself.  What
-is left is the same route Instagram takes: render the page.
-
-Unlike Instagram it needs no session, and unlike Instagram its markup
-says what things are.  Posts and comments are custom elements carrying
-their own attributes, so nothing here depends on a class name -- the
-obfuscated ones a rendered page is full of change without notice, and an
-adapter pinned to them fails silently.
-"""
+"""Parse rendered Reddit listing cards and post pages without a saved session."""
 
 from __future__ import annotations
 
@@ -44,10 +30,7 @@ NEEDS_RENDERING = True
 # is what separates a post from every other Reddit URL.
 _PERMALINK = re.compile(r'href="(/r/[^/"]+/comments/[^"?#]+)"')
 
-# One card on a listing.  It states the title, the score, how many
-# replies it drew and when it was posted, which is what decides whether
-# the post is worth a request of its own.  Reading only the href instead
-# leaves the ranker judging a slug.
+# Listing cards provide text and dates for ranking before fetching the post.
 _POST_CARD = re.compile(r"<shreddit-post\s([^>]*)>", re.S)
 
 # The thing id of a card, in page order. The last one is the cursor.
@@ -71,18 +54,7 @@ def claims_url(url: str) -> bool:
 
 
 def claims(page: Page, document: str) -> bool:
-    """The host says it is ours; the markup says we can read it.
-
-    Both, because the host alone is not enough here.  Reddit serves an
-    8KB shell to anything that does not run JavaScript, and that shell
-    carries none of these elements.  Claiming it anyway would mean
-    parsing nothing out of a page nobody else got to read, and a run
-    that fetched a subreddit with plain HTTP would report a quiet
-    week -- every week.
-
-    Not claiming it lets the page fall through to being read as a page,
-    which is at least honest about having found nothing in it.
-    """
+    """Require both the Reddit host and recognized rendered markup."""
     return claims_url(page.url.canonical) and "shreddit-" in document
 
 
@@ -101,17 +73,7 @@ def problem(html: str) -> PageProblem | None:
 
 
 def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
-    """Every post on the page, deduplicated, order kept.
-
-    A subreddit shows its own posts and nothing else, so all of them are
-    the listing's own -- there is no equivalent of a post that merely
-    tagged the account.
-
-    Each card is read for what it states about itself.  A permalink on
-    its own leaves the ranker deciding from a URL slug, and a run whose
-    seed was a busy subreddit dropped all fifty-two candidates that way:
-    the titles were there on the page it had already paid for.
-    """
+    """Read listing cards with text and dates, deduplicated in document order."""
     seen: dict[str, FeedItem] = {}
     for m in _POST_CARD.finditer(html):
         attrs = dict(_ATTR.findall(m.group(1)))
@@ -142,18 +104,9 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
 
 
 def parse_item(html: str, url: str = "") -> FeedItem | None:
-    """The post itself, which makes the page a leaf.
+    """Recognize post URLs, including link submissions with no body.
 
-    Decided from the address, not from the markup.  A subreddit listing
-    carries a <shreddit-post> element for every card on it, so asking
-    the markup answers yes for both kinds of page -- and a listing read
-    as an item is a leaf, which means every subreddit yields no
-    candidates at all while the run reports itself healthy.
-
-    A post with no body is still a post: a link submission carries its
-    title and nothing else, and treating that as "not an item" would
-    send the harvester looking for permalinks on a page that is one.
-    """
+    Listings also contain post elements, so markup alone cannot identify a leaf."""
     if not _POST_URL.search(url):
         return None
     body = _POST_BODY.search(html)
@@ -165,14 +118,7 @@ def parse_item(html: str, url: str = "") -> FeedItem | None:
 
 
 def next_page(html: str, url: str) -> str:
-    """`?after=<last post>`, which the rendered site still honours.
-
-    Measured over three pages of one subreddit: 79 posts each, 227 after
-    deduplication, so a cursor reaches roughly three times what one page
-    holds. The order it advances is the listing's, not time: all three
-    pages spanned the same month, which is why the stale streak cannot
-    retire a subreddit the way it retires a strictly ordered feed.
-    """
+    """Build a pagination cursor from the last post. Listing order need not be chronological."""
     if _POST_URL.search(url):
         return ""
     ids = _CARD_ID.findall(html)
@@ -198,12 +144,7 @@ def _unescape(raw: str) -> str:
 
 
 def _timestamp(raw: str | None) -> datetime.datetime | None:
-    """When the card says the post appeared, if it says so at all.
-
-    Recency is half of what ranking asks about a feed, and a candidate
-    without it is judged as though it had no date rather than as
-    something old.
-    """
+    """Read the publication time declared by a listing card, or None."""
     if not raw:
         return None
     # Reddit writes the offset without a colon, which fromisoformat

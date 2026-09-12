@@ -1,19 +1,4 @@
-"""Seed Enhancer: one LLM call per task, at task start.
-
-Turns the seeds a user named into a wider set of the same kind, so a
-crawl reaches sources the user did not think of. Off unless asked for,
-and additive: the seeds given stay as they were and keep the larger
-share of the crawl.
-
-The model is asked where to look, never what is there. Asked for
-content it reports what other people said about a source, which is
-anti-correlated with what is worth finding.
-
-Proposals are not trusted. Measured over four real goals, roughly a
-third of what came back did not exist, real brands under account names
-that are not. Each is fetched and read before it is used, and only what
-a harvester gets something out of survives.
-"""
+"""Propose additional seed URLs with an LLM and verify that they yield candidates."""
 
 from __future__ import annotations
 
@@ -47,10 +32,7 @@ _SYSTEM = (
     "seeds a user already chose, name more sources the crawl would otherwise miss. "
     "Reply with JSON only, no prose: "
     '{"seeds": [{"url": "...", "why": "one short clause"}]}. '
-    # No platform is named, and neither is a kind of organisation. What
-    # is asked for is what a source publishes, which holds for a source
-    # of any shape. Asked instead for the party the goal is about, it
-    # answered a non-food goal with coffee chains three times running.
+    # Ask for sources that publish relevant content without fixing a platform or organization type.
     "Judge a source by what it posts, not by who it is: name it only if its own recent "
     "posts would themselves be answers to the goal. An account that exists to post "
     "exactly this beats a brand that merely does it sometimes, and beats a directory "
@@ -62,21 +44,14 @@ _SYSTEM = (
 
 
 def how_many(given: int, low: int, high: int) -> int:
-    """How many to ask for, given how many the user named.
-
-    Sub-linear on purpose. One seed still deserves a few, and thirty
-    does not need thirty more: past a point the user's own coverage is
-    the better guide. Every proposal costs a verification fetch, and
-    they share one turn between them however many there are, so more of
-    them buys breadth and not attention.
-    """
+    """Return zero without seeds; otherwise scale logarithmically within configured bounds."""
     if given <= 0:
         return 0
     return max(low, min(high, round(4 + 2 * math.log2(given))))
 
 
 class SeedEnhancer:
-    """Propose seeds, then keep the ones a crawl can actually read."""
+    """Propose additional seed URLs with an optional LLM client."""
 
     def __init__(self, client: LLMClient | None) -> None:
         self._client = client
@@ -101,10 +76,7 @@ class SeedEnhancer:
             f"## Goal\n{goal.goal_statement or goal.prompt}\n\n"
             f"## Seeds already chosen\n" + "\n".join(f"- {s}" for s in seeds) + f"\n\n## Give at most {want}"
         )
-        # Said before the wait, not after it. This one call has taken
-        # over two minutes on a thinking model, and a line that only
-        # arrives with the answer leaves the terminal silent for all of
-        # it, which reads as a hang.
+        # Log before awaiting the proposal so startup progress is visible.
         logger.info("asking the model for up to %d more sources to try", want)
         try:
             resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
@@ -120,14 +92,9 @@ class SeedEnhancer:
 
 
 def _same_place(url: str) -> str:
-    """A key for telling two spellings of one address apart.
+    """Deduplicate proposed addresses ignoring scheme, www, trailing slash and case.
 
-    Not the crawl's url_key, which keeps the scheme, the www and the
-    path's case because on the open web those can all matter. Here they
-    do not: a model asked twice writes the same account four ways, and
-    each spelling costs a verification fetch and then a seed the user
-    already gave.
-    """
+    This is deliberately broader than canonical URL identity used for crawling."""
     stripped = re.sub(r"^https?://(www\.)?", "", url.strip(), flags=re.I)
     host, _, path = stripped.partition("/")
     return f"{host.lower()}/{path.rstrip('/').lower()}"
@@ -169,30 +136,14 @@ async def verify(
     storage: Any,
     canonicalizer: Any,
 ) -> tuple[list[Candidate], list[tuple[str, str]]]:
-    """Keep the proposals a crawl would get something out of.
+    """Fetch proposals and keep those whose harvester yields candidates.
 
-    Asked by reading one page, not by guessing from the address. A
-    platform answers 200 for accounts that do not exist and the invented
-    ones look plausible, so nothing short of fetching separates them.
-    What decides is what the harvester already answers: is there
-    anything here to follow.
-
-    Whether it is worth reading past that is not asked. It was once, and
-    on a sample of twenty captions the answer was wrong whenever the
-    fetch came back thin: three real accounts turned away on three
-    leftover posts each. Retiring a source asks the same question later,
-    on pages actually read.
-
-    Payloads are kept and handed on. A grid drops posts as they scroll
-    out of view, so an adapter reading markup alone reports a busy
-    account as empty and the seed would be discarded for being real.
-    """
+    Retain sub-responses for adapters that need them. Verification checks discovery,
+    not relevance; the crawl evaluates relevance after accepting a seed."""
     from crawlme.schemas import Candidate, FetchResult, FrontierItem, Page
 
     kept: list[Candidate] = []
-    # What was turned away and what turned it away. A proposal costs a
-    # fetch either way, and the reason is the only thing that says
-    # whether the model guessed an address or picked a poor source.
+    # Retain a reason for each rejected proposal.
     dropped: list[tuple[str, str]] = []
     for url, why in proposals:
         logger.info("checking %s", url)
@@ -243,12 +194,7 @@ async def enhance(
     storage: Any,
     canonicalizer: Any,
 ) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
-    """Propose seeds and hand back the ones that answered.
-
-    The count of proposals comes back with them, because none surviving
-    and none being proposed are different failures and a run that prints
-    neither looks like a run that was never asked.
-    """
+    """Return accepted seeds, proposal count and rejected (URL, reason) pairs."""
     want = how_many(len(seeds), settings.enhance_seeds_min, settings.enhance_seeds_max)
     proposals = await SeedEnhancer.from_settings(settings, budget=budget).propose(goal, seeds, want)
     if not proposals:

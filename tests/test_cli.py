@@ -729,14 +729,7 @@ def test_refused_exits_one(reason, code):
     ],
 )
 def test_session_sets_no_depth(_installed, tmp_path, flags, expected_depth):
-    """Two levels held only while a platform run could not leave the
-    platform.  It can now -- a listing, its posts, and a site an
-    analyser endorsed off one is already three -- so a depth of 1 would
-    drop the endorsement that is the whole way out.
-
-    Where to stop is the user's to say, and unsaid means the ordinary
-    default rather than a number the session picked for them.
-    """
+    """A session file must not change the configured traversal depth."""
     session = tmp_path / "state.json"
     session.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
     captured: dict = {}

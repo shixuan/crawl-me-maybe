@@ -1,14 +1,4 @@
-"""The contract for the frontier, and the one thing that satisfies it.
-
-Owns every URL that has been discovered and not yet read, and decides
-which one goes next.  Calls no model and never sees page content.
-
-It holds that set in two halves it does not implement: candidates
-waiting to be scored go to a Buffer, scored ones waiting for a fetch
-slot to a PriorityQueue.  What is left here, the gating and budgets and
-dedup and checkpoints, is the same whatever the traversal, so a feed
-inherits all of it instead of growing a second copy.
-"""
+"""Frontier contract and implementation for queued and unranked candidates."""
 
 from __future__ import annotations
 
@@ -36,7 +26,7 @@ class Frontier(Protocol):
     async def push_candidates(self, candidates: list[Candidate]) -> None: ...
 
     def retire(self, seed_url_key: str) -> None:
-        """Stop spending on one seed, in both halves."""
+        """Drop a seed's queued work and refuse new work; in-flight tasks continue."""
         ...
 
     def is_retired(self, seed_url_key: str) -> bool: ...
@@ -83,21 +73,7 @@ def _utcnow() -> datetime.datetime:
 
 
 class GatedFrontier:
-    """Everything discovered and not yet fetched, in its two states.
-
-    Candidates waiting for a score, and scored candidates waiting for a
-    fetch slot.  They stay apart because an unscored candidate has no
-    priority to sort by, and they stay here because splitting them
-    across two owners left the crawl with two answers to "do I already
-    have this URL" and a moment between them where both said no.
-
-    Owning both also means a checkpoint covers both.  When the waiting
-    half lived outside, a run that stopped with eighty-seven candidates
-    unscored resumed knowing nothing about them.
-
-    It coordinates and does not implement: the rotation belongs to the
-    Buffer, the heap and its cooldowns to the PriorityQueue.
-    """
+    """Own both candidate queues, deduplication, domain gates and snapshots."""
 
     def __init__(
         self,
@@ -107,39 +83,27 @@ class GatedFrontier:
         source: PriorityQueue | None = None,
         buffer: Buffer | None = None,
     ) -> None:
-        # Zero means no per-domain ceiling.  One is right for a link
-        # graph, where a single site can otherwise absorb the whole run;
-        # it is wrong for a feed, where every candidate shares the
-        # platform's domain and the ceiling becomes a hidden total that
-        # quietly overrides the page budget.
+        # Zero disables the per-domain page ceiling.
         self._domain_budget = domain_budget
-        # The unscored half.  Typed to the contract, not to the rotation:
-        # this package has already had two answers to "which candidate
-        # gets scored next" and will have others.
+        # Use the buffer contract independently of its scheduling strategy.
         self._waiting: Buffer = buffer if buffer is not None else RoundRobinBuffer()
         # Candidates out being scored: in neither half, still work.
         self._scoring = 0
-        # How many candidates that ceiling turned away.  A frontier can
-        # be empty because there was nothing left or because everything
-        # left was refused, and a run that cannot tell the difference
-        # reports the second as completion.
+        # Count domain refusals separately from natural frontier exhaustion.
         self.blocked_by_domain_budget = 0
         self._lock = asyncio.Lock()
         self._source: PriorityQueue = source or PriorityQueue(
             aging_window=aging_window,
             age_factor=age_factor,
         )
-        # Seeds that stopped paying off, either by going cold or by
-        # reading past the goal's window. Retiring one source is what a
-        # global streak could not do: it stops that walk without ending
-        # a run whose other sources are still producing.
+        # Retired seeds cannot add further work.
         self._retired: set[str] = set()
         self._visited: set[str] = set()
         self._domain_counters: dict[str, int] = {}
         self._global_counter: int = 0
 
     def retire(self, seed_url_key: str) -> None:
-        """Stop spending on one seed, in both halves."""
+        """Drop a seed's queued work and refuse new work; in-flight tasks continue."""
         self._retired.add(seed_url_key)
         self._waiting.retire(seed_url_key)
         self._source.discard_seed(seed_url_key)
@@ -150,24 +114,12 @@ class GatedFrontier:
     # the unscored half ------------------------------------------------
 
     async def push_candidates(self, candidates: list[Candidate]) -> None:
-        """Hold candidates until something scores them.
-
-        One question, asked once, covering both halves and what has
-        already been read.  When the halves had separate owners each
-        kept its own answer, and a candidate on its way from one to the
-        other was unknown to both.
-        """
+        """Buffer candidates that have not been visited, queued or retired."""
         fresh = [c for c in candidates if not self.holds(c.url.url_key)]
         await self._waiting.add(fresh)
 
     async def take_for_ranking(self, n: int) -> list[Candidate]:
-        """Hand out the next candidates to score, a turn from each seed.
-
-        Counted while they are gone.  Between leaving here and coming
-        back scored they are in neither half, and a run that read the
-        two halves as "nothing left" ended while its next batch was
-        still being scored.
-        """
+        """Take a batch from the buffer and account for ranking in progress."""
         batch = list(await self._waiting.drain(n))
         self._scoring += len(batch)
         return batch
@@ -198,9 +150,7 @@ class GatedFrontier:
 
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:
-            # Scored items come back from the ranker, which was handed
-            # them from the waiting half, so they are no longer held
-            # there: only the read set and the scored half can object.
+            # Candidates leave the buffer before ranking; dedup against visited and queued items here.
             fresh = [i for i in items if i.url_key not in self._visited and not self._source.contains(i.url_key)]
             await self._source.add(fresh)
 
@@ -291,13 +241,7 @@ class GatedFrontier:
         return self._source.size
 
     def snapshot(self, task_id: str = "") -> FrontierSnapshot:
-        """Store the ordering's state without reading into it.
-
-        Naming its keys here made the checkpoint a copy of one ordering's
-        internals: the moment the ordering became a composition of
-        others, `heap` was absent and every checkpoint saved an empty
-        queue, silently, and a resume began with nothing to fetch.
-        """
+        """Serialize queues and frontier state through their public snapshot methods."""
         return FrontierSnapshot(
             task_id=task_id,
             ordering=self._source.dump(),

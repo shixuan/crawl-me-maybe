@@ -1,16 +1,6 @@
-"""Goal Enhancer: one LLM call per task, at task start.
+"""Derive a goal statement, keywords, publication cutoff and extraction specification.
 
-Turns the raw user prompt into three artifacts the pipeline can use:
-a full goal statement (HyDE effect, bilingual
-for non-English prompts), a clean keyword list for the rule stage, and
-an optional time window for the future time-horizon condition.
-
-Degradation: when the LLM is not configured, fails, or returns
-unparseable JSON, enhance() returns None and every ranker keeps its
-built-in fallback (bare tokenization, raw prompt), so the crawl never
-blocks on the LLM.  The enhancement is additive: the original prompt
-stays on the goal and is always embedded alongside the statement.
-"""
+Return None when unavailable or unsuccessful so the original goal remains usable."""
 
 from __future__ import annotations
 
@@ -106,10 +96,7 @@ class GoalEnhancer:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
             return None
         if not resp.content.strip():
-            # Distinct from unparseable: on a reasoning model an empty
-            # reply means the thinking used the whole ceiling.  Saying so
-            # is the difference between a one-look diagnosis and a hunt
-            # through the parser.
+            # Report an empty completion separately from malformed JSON.
             logger.warning("goal.enhance empty content (out=%d), using raw prompt", resp.output_tokens)
             return None
         parsed = self._parse(resp.content)
@@ -144,14 +131,7 @@ class GoalEnhancer:
         return statement, keywords, since, spec
 
     def _parse_spec(self, raw: object) -> dict[str, Any] | None:
-        """Validate the field list, or return None to extract nothing.
-
-        Field names become keys the whole downstream depends on, so they
-        are held to a shape rather than taken as written: anything the
-        model invents that is not a plain snake_case name is dropped
-        instead of travelling into the analyzer's prompt and out into
-        stored results.
-        """
+        """Validate snake_case field names and the optional time-field declaration."""
         if not isinstance(raw, dict):
             return None
         fields = raw.get("fields")
@@ -170,9 +150,7 @@ class GoalEnhancer:
         if not clean:
             return None
         spec: dict[str, Any] = {"fields": clean}
-        # Held to the surviving field names. A time_field naming a field
-        # that was dropped above would point at nothing, and the reader
-        # downstream cannot tell that from a goal with no time at all.
+        # The time field must reference a validated field declaration.
         tf = raw.get("time_field")
         if isinstance(tf, dict):
             name = str(tf.get("name", "")).strip().lower()

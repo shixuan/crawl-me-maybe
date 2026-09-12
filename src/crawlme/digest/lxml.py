@@ -1,16 +1,7 @@
-"""One lock for every libxml2 entry point in the digest layer.
+"""Serialize digest-layer libxml2 access across extraction worker threads.
 
-libxml2 keeps a process-global XML dictionary that concurrent parsers
-share, and lxml exposes it without synchronization.  Simultaneous
-parses from several worker threads intermittently corrupt the heap and
-abort the whole process with SIGABRT.  Three core dumps over two days,
-all inside lxml/etree during concurrent extraction.
-
-Everything here that touches lxml, trafilatura extraction and
-BeautifulSoup link harvesting, takes this lock around the parse.  Only
-parsing is serialized; fetch and the model calls keep their own
-concurrency, so the crawl stays network-bound.
-"""
+Concurrent parsing has caused native crashes in this pipeline. Keep extraction
+and link parsing under the same lock; fetching and LLM calls remain concurrent."""
 
 import threading
 

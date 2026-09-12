@@ -1,18 +1,4 @@
-"""Instagram markup: selectors, quirks, and nothing else.
-
-Written against pages the Phase 0 probe actually captured rather than
-against a guess, because every pattern below is a heuristic over a layout
-nobody promised to keep stable.
-
-Two page shapes matter. A profile is a grid of permalinks carrying only
-Instagram's generated alt text, which names the author and the date but
-not what the post says. A post page carries the caption and an exact
-timestamp. That split is why a feed still wants a funnel: the grid is
-weak content and cheap, the caption is strong content and costs one
-request each.
-
-Nothing here fetches, so all of it is testable against saved pages.
-"""
+"""Parse Instagram post pages and listing payloads, with DOM fallback."""
 
 from __future__ import annotations
 
@@ -41,11 +27,8 @@ _LOGIN = ("loginform", "/accounts/login")
 # the bare form. Matching only one reports zero posts on a full page.
 _PERMALINK = re.compile(r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/([A-Za-z0-9_-]+)/?)"')
 
-# A grid entry is an anchor wrapping an img whose alt Instagram
-# generates: `Photo shared by NAME on August 13, 2026 tagging @x. May be
-# an image of tea and text.` It names the author, the day and roughly
-# what is pictured, but never what the post says. Window-bounded so a
-# missing alt cannot swallow the next entry's.
+# Bound the search so a missing alt attribute cannot consume the next entry.
+# Alt text describes the image and may name the author and date, not the caption.
 _GRID_ENTRY = re.compile(
     r'href="((?:/[A-Za-z0-9_.]+)?/(?:p|reel)/[A-Za-z0-9_-]+/?)"(?:(?!href=").){0,600}?alt="([^"]*)"',
     re.S,
@@ -60,9 +43,7 @@ _TIME_TAG = re.compile(r'<time[^>]*datetime="([^"]+)"')
 _POST_DESC = re.compile(r"([\d,]+)\s+likes?,\s*[\d,]+\s+comments?\s*-\s*([A-Za-z0-9_.]+)\s+on\s")
 
 
-# A grid hands out one screen at a time, so a window of weeks sees a
-# dozen posts without this.  Scrolling asks the page for its own next
-# page; nothing is forged.
+# Request additional grid pages through browser scrolling.
 SCROLLS = 4
 
 # Nothing here is readable logged out: the platform answers a stranger
@@ -103,25 +84,11 @@ def next_page(html: str, url: str) -> str:
 
 
 def keeps_payload(url: str, content_type: str) -> bool:
-    """The grid is built from a graphql answer, and that answer has the text.
-
-    The content type is not part of the question. Instagram labels the
-    grid's answer `text/javascript` and only the home timeline's
-    `application/json`, so asking for JSON kept the one answer with none
-    of this account's posts in it and dropped all four that had them.
-    Five accounts then read from markup up to 37 days out of date, and a
-    window of one month came back full of year-old posts.
-
-    The endpoint is the whole filter. What comes back is parsed by shape
-    and sorted by who posted, so an answer that is not a grid costs a
-    parse and nothing else.
-    """
+    """Keep GraphQL responses regardless of content type; grids may use text/javascript."""
     return "/graphql/query" in url
 
 
-# The answer carrying an account's own grid. The viewer's home timeline
-# comes back from the same endpoint under a different name, so a payload
-# arriving is not the question; this one arriving is.
+# Distinguish the requested account grid from the viewer home timeline.
 _GRID_ANSWER = "user_timeline_graphql_connection"
 
 
@@ -130,27 +97,14 @@ def _body_text(payload: Payload) -> str:
 
 
 def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
-    """Read a grid into items, split by who posted them.
+    """Read posts by shortcode and split them by owner.
 
-    Whose grid this is comes out of the URL, because reading an account
-    out of a URL is as platform-shaped as the markup is.
-
-    The payload is the better source when there is one: it states what
-    each post says, who posted it and when, none of which the grid
-    renders. It also survives scrolling and the grid does not, since the
-    markup drops items as they leave the viewport, so a page scrolled
-    for more posts ends up showing fewer.
-
-    The markup is the fallback, and all there is for a plain HTTP fetch.
-    Its only text is Instagram's generated description of the image,
-    which describes the picture rather than the offer in it.
-    """
+    Prefer payload captions and timestamps. DOM entries are a fallback because
+    scrolling can remove earlier posts from the rendered grid."""
     handle = _account_from_url(url).strip("/").lower()
     posts = _posts_from_payloads(payloads)
     alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
-    # Ownership is decided by the account a post belongs to, never by the
-    # name shown next to it: the grid's alt text carries a display name
-    # ("MollyTeaCanada") where the handle is what a listing is keyed on.
+    # Use the account handle for ownership; image alt text may contain only a display name.
     seen: dict[str, FeedItem] = {}
     owners: dict[str, str] = {}
 
@@ -183,10 +137,7 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
 
     own = [i for c, i in seen.items() if owners[c] == handle]
     others = [i for c, i in seen.items() if owners[c] != handle]
-    # Health, not parsing. Parsing stays shape-based because the
-    # connection is named for an API version and will be renamed; a
-    # rename makes this over-report staleness, which is noisy and safe,
-    # where reading the markup silently is neither.
+    # Use the expected connection name for diagnostics; parse posts by their shape.
     answered = any(_GRID_ANSWER in _body_text(pl) for pl in payloads)
     return Listing(own=own, others=others, degraded=not answered)
 
@@ -208,12 +159,7 @@ def _from_alt(alt: str) -> tuple[str, datetime.datetime | None]:
 
 
 def parse_item(html: str, url: str = "") -> FeedItem | None:
-    """Pull the caption and timestamp out of a post page.
-
-    Returns None for anything that is not a post page. A profile page
-    also carries an og:description, so parsing one as a post yields a
-    plausible-looking item whose "caption" is the profile bio.
-    """
+    """Read a post caption and timestamp. Require post markers to exclude profile bios."""
     if problem(html):
         return None
     description = html_module.unescape(_first(_OG_DESCRIPTION, html))
@@ -256,9 +202,7 @@ def _caption_from_json(html: str) -> str:
         return ""
 
 
-# `... on August 13, 2026: "caption`. The gap between the colon and the
-# quote is whatever the markup happened to wrap with, so it is matched
-# loosely rather than as a literal `: "`.
+# Allow variable whitespace before the caption quote in the description.
 _DESC_CAPTION = re.compile(r':\s*["\u201c](.*)', re.S)
 
 
@@ -294,13 +238,7 @@ class _Post:
 
 
 def _posts_from_payloads(payloads: list[Payload]) -> dict[str, _Post]:
-    """Map post code -> what the response says about it.
-
-    Found by shape rather than by path. The connection these live under
-    is named for an internal API version and will be renamed; a post is
-    recognisable without knowing where it sits, and looking for the shape
-    keeps one rename from emptying the result.
-    """
+    """Index payload posts by shortcode, retaining caption, author and timestamp."""
     out: dict[str, _Post] = {}
     for payload in payloads:
         try:

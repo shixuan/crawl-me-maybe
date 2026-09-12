@@ -1,12 +1,4 @@
-"""The storage layer's contracts: what persistence owes its consumers.
-
-Three protocols, one per storage concern.  Consumers (engine, ranker,
-feedback loop) code against these and never see an implementation; the
-factory is the only place that picks concrete stores.  Discipline
-rules: the contracts are dependency-free plain interfaces, and
-implementations live in the sqlite/ package (Postgres or Redis would
-become sibling packages).
-"""
+"""Persistence contract used by the scheduler; implementations live in storage subpackages."""
 
 from __future__ import annotations
 

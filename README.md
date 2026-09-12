@@ -11,333 +11,170 @@
 >
 > So crawl me, maybe?
 
-A goal-driven crawler. You say what you are looking for; it decides where to go, what to skip, and when to stop, inside a budget.
+A goal-driven crawler. You say what you are looking for; it decides where to go, what to skip, and when to stop, inside a budget
 
----
+## Install
 
-## Quick start
+Requires Python 3.10 or later. From this checkout:
 
 ```bash
 pip install -e .
 ```
 
-Four kinds of run, one command. What changes is what the seeds point at.
+Optional formats and browser support:
 
-Every example below carries `--ignore-robots`, because without it most of them
-fetch nothing. robots.txt is obeyed by default and read from the section
-written for this crawler by name, and plenty of sites -- Reddit among them --
-tell it not to read them. Whether to go anyway is a decision the flag makes you
-state, and it is yours to make.
+```bash
+pip install -e '.[rss,browser]'
+playwright install chromium
+```
 
-**A link graph.** Start anywhere, follow links, stop when you have enough.
+Configure the LLM using [`.env.example`](.env.example). Without an API key or base URL, the crawler fetches pages but skips goal enhancement, LLM ranking and analysis.
+
+## Quick start
+
+**Web pages**
 
 ```bash
 crawl run "recent funding news for AI startups" \
   --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-relevant 40 --page-budget 200 --ignore-robots
+  --max-relevant 40 --page-budget 200
 ```
 
-**A feed.** A feed URL is an ordinary seed: it is fetched once, and whichever
-adapter recognises the document reads it. An entry is not a bare link -- it
-carries the title, the publication time, and usually the post itself -- so the
-ranker judges the text before anything else is fetched.
+**RSS** requires the `rss` extra. Entries supply text and publication dates for ranking.
 
 ```bash
-pip install -e '.[rss]'
-
 crawl run "language features shipped this year, with the version that carries each" \
   --seeds "https://blog.rust-lang.org/feed.xml,https://go.dev/blog/feed.atom" \
-  --max-relevant 20 --ignore-robots
+  --max-relevant 20
 ```
 
-**A platform that needs a browser but no account.** Reddit builds its pages
-with a script, so plain HTTP gets the shell: no posts, no error, nothing to
-read. Nothing to pass, though -- the adapter says its pages need rendering, so
-those addresses go through a browser and everything else keeps taking the
-cheap route. A crawl that mixes the two pays for a browser only on the pages
-that need one, and one that never meets a platform never starts one.
-
-Reading Reddit needs no session: a subreddit is open to strangers.
+**Reddit** uses the `browser` extra. The adapter does not require a saved session.
 
 ```bash
-pip install -e '.[browser]' && playwright install chromium
-
-crawl run "what is worth doing in Toronto this weekend, with the event, the place and the date" \
+crawl run "Toronto events this weekend, with the place and date" \
   --seeds "https://www.reddit.com/r/askTO/" \
-  --max-relevant 20 --page-budget 60 --ignore-robots
+  --max-relevant 20 --page-budget 60
 ```
 
-Add `--enhance-seeds` and the model names more sources for the same goal --
-other subreddits here, other accounts on a platform, other feeds. Each one is
-fetched and read before the crawl uses it: about a third of what it names turns
-out not to exist. What survives gets a smaller share of the run than the seeds
-you named, and the report at the end says what each was worth.
-
-`--fetcher browser` still exists and still means *everything* through a
-browser. A page that is no platform at all can need a script run before it
-says anything, and only the person crawling it knows that.
-
-**A login-walled platform.** Log in once by hand; the session file is what
-enables the platform adapters, and it also defaults `--domain-budget 0`, since
-every candidate on a platform shares one host and a per-domain ceiling would be
-a ceiling on the crawl. The platform is read through the browser context holding
-the cookies; anywhere else the crawl reaches is not, because the credentials
-mean nothing there. How deep to go is left to `--depth-limit`, which has to
-cover the way out as well as the platform. Seeds on such a platform without a
-session are refused, because a logged-out crawl fetches login pages and reports
-them as an empty platform.
+**Instagram** requires the `browser` extra and a saved login session:
 
 ```bash
-pip install -e '.[browser]' && playwright install chromium
-
 crawl session ./ig-session.json --feed instagram
 
-crawl run "nearby merchants giving something away, with the shop, the offer and the deadline" \
-  --seeds ./accounts.json \
-  --session ./ig-session.json \
-  --max-relevant 40 --page-budget 150 \
-  --since '2 weeks' --ignore-robots
+crawl run "nearby merchants giving something away, with the shop, offer and deadline" \
+  --seeds "seeds.json" \
+  --session ig-session.json \
+  --max-relevant 40 --page-budget 150 --since "2 weeks"
 ```
 
-`--since` bounds when the *post* was written. What the post *describes* is a
-different clock: a giveaway posted on Monday may run until the end of the month.
-Name the deadline in the prompt and the analyzer reads it, and the report groups
-what it found by whether it is still open. See **Two clocks** below.
+The crawler obeys robots.txt by default. Use `--ignore-robots` to explicitly bypass its rules and crawl delays.
 
-Then read what it found, either as a page or in the terminal:
+Add `--enhance-seeds` to propose and verify additional sources. Use `--fetcher browser` to render all pages; otherwise fetching is selected per URL.
+
+**Read results** using the task ID printed by the run:
 
 ```bash
-python dashboard/serve.py     # then open http://127.0.0.1:8765
 crawl inspect <task-id> --during "1 week"
+crawl inspect <task-id> --export json
+python dashboard/serve.py
 ```
 
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--port` | int | `8765` | Bound on `127.0.0.1` only |
-| `--results-dir` | path | `results` | Where run directories live |
-
-The page filters what is already in the browser, so nothing but picking a run
-costs a request. That includes the window: `during` decides where "still open"
-ends, and moving it only re-groups what is on screen.
-
----
-
-## Optional installs
-
-The base install crawls a link graph. Two paths cost more than every user
-should carry, so they are extras, and the flags that need them say so before
-a run starts rather than failing partway through it.
-
-| Extra | Install | What it buys | Cost |
-|-------|---------|--------------|------|
-| `rss` | `pip install -e '.[rss]'` | Reading a feed among the seeds; its entries arrive with their own text | feedparser, 0.3MB |
-| `browser` | `pip install -e '.[browser]'`<br>then `playwright install chromium` | `--fetcher browser`, `--session`, `crawl session`, and any platform whose pages have to be rendered | 135MB package, ~650MB browser |
-
-Both together: `pip install -e '.[rss,browser]'`.
-
-Without them the crawl still runs; the flags that need them are refused,
-naming the flag you typed and the one command that fixes it. A platform met
-mid-crawl is the one case that is not refused: it degrades to plain HTTP and
-says so, because one unreachable link is not a reason to end a crawl.
-
----
+The dashboard serves at `http://127.0.0.1:8765`. Its options are `--port` (default `8765`) and `--results-dir` (default `results`). It supports filtering by classification, dates, text and extracted fields.
 
 ## CLI
 
 ### `crawl run "<prompt>"`
 
-The prompt is the goal, in your own words. Naming the fields you want ("with
-the shop, the offer and the deadline") is what makes the analyzer extract them.
+Name the fields you want in the prompt, such as “shop, offer and deadline”.
 
-**Where to start**
+| Flag | Default | Meaning |
+|---|---|---|
+| `--seeds` | none | Comma-separated URLs or a JSON file containing a URL list or `{"seeds": [...], "allowed_domains": [...]}` |
+| `--allowed-domains` | none | Comma-separated domain scope; overrides the seeds file |
+| `--enhance-seeds` | off | Propose additional sources and fetch them to verify they yield candidates |
+| `--depth-limit` | `5` | Maximum candidate depth; seeds start at `0` |
+| `--since` | none | Publication cutoff, e.g. `"2 weeks"` or `2026-08-01`; overrides a cutoff inferred from the prompt |
+| `--draining` | off | Disable the page limit; other budgets and stop conditions still apply |
+| `--fetcher` | per URL | `http` uses HTTP with automatic platform rendering; `browser` renders everything |
+| `--session` | none | Playwright storage-state file; enables Instagram and defaults the domain budget to unlimited |
+| `--ignore-robots` | off | Bypass robots.txt rules and requested delays |
+| `--max-relevant` | `0` | Stop after this many relevant results; `0` means no target; in-flight analysis may overshoot |
+| `--page-budget` | `500` | Maximum pages; `0` means unlimited; a positive value conflicts with `--draining` |
+| `--token-budget` | `500000` | Shared LLM token budget |
+| `--time-budget` | `3600` | Run duration in seconds |
+| `--domain-budget` | `50` | Pages per domain; `0` means unlimited |
+| `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement; URL filters still apply |
+| `--analysis` | `on` | `on` or `off`; per-page classification and field extraction |
+| `--analyzer-max-chars` | `3000` | Maximum page-text characters sent to the analyzer |
+| `--result-dir` | `results` | Parent directory for run output |
+| `--log-level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` or `OFF` |
 
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--seeds` | comma-separated URLs, or a path | *required in practice* | Where the crawl begins. Anything not starting with `http://` or `https://` is read as a JSON file: a list of URLs, or `{"seeds": [...], "allowed_domains": [...]}` |
-| `--allowed-domains` | comma-separated domains | none | Registrable domains the crawl may not leave. Outranks the same key in a seeds file |
-| `--enhance-seeds` | flag | off | Let the model name more sources whose own posts would answer the goal. Each is fetched and read before use, since two thirds of what it names does not exist. They take a smaller share of the crawl than yours, and the run prints what each was worth and what it turned away, so you can keep the good ones yourself |
-
-**How far to go**
-
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--depth-limit` | int | `5` | Hops from a seed. A listing and its posts are two; a site linked from an ordinary page is one more |
-| `--since` | `"2 weeks"`, `"3 days"`, `2026-08-01` | none | Time window. Candidates a listing dated before it are dropped; with a single seed, the run also stops once content ages out |
-| `--draining` | flag | off | Ignore the page budget and stop when the frontier runs dry, which is once every source has retired. Use it when you want everything there is rather than a fixed number. Mutually exclusive with `--page-budget` |
-
-**How to fetch**
-
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--fetcher` | `http` \| `browser` | per candidate | Left alone, each address takes the cheaper route its platform allows. `browser` forces one everywhere, for pages that are empty without a script run but belong to no platform |
-| `--session` | path | none | A Playwright `storage_state` file. Enables the platform adapters, sends their addresses through the browser context holding it, and defaults `--domain-budget 0` |
-| `--ignore-robots` | flag | off | Read the sites robots.txt asks this crawler not to read, and drop the delays it asks for. Reddit is one of them |
-
-**What to spend**
-
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--max-relevant` | int | `0` (no target) | Stop once this many pages are judged relevant. The only condition that states a goal rather than a ceiling |
-| `--page-budget` | int | `500` | Pages this run may read; `0` means no limit |
-| `--token-budget` | int | `500000` | LLM tokens across every stage |
-| `--time-budget` | int seconds | `3600` | Wall clock |
-| `--domain-budget` | int | `50`, or `0` with `--session` | Pages one registrable domain may contribute; `0` means no ceiling |
-
-**How to judge**
-
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--recall` | flag | off | Diagnostic. Nothing the ranker rejects is removed, only ranked last, so a finished run can be asked whether the rejections were right. Not for production: one measured run went from 87% to 37% hit rate |
-| `--analysis` | `on` \| `off` | `on` | Per-page analysis: one LLM call per page for a verdict and the goal's fields. `off` disables it |
-| `--analyzer-max-chars` | int | `3000` | Page text sent to the analyzer per page |
-
-**Everything else**
-
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--result-dir` | path | `results` | Where run directories go |
-| `--log-level` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` \| `CRITICAL` \| `OFF` | `INFO` | Overrides env `LOG_LEVEL` |
-
-Flags left off fall back to the environment, then to the defaults above.
+`--max-pages`, `--max-tokens` and `--max-duration` are aliases for the corresponding run budgets. Settings-backed options also accept environment values; CLI flags take precedence. See [Settings](src/crawlme/config.py) for those options.
 
 ### `crawl session <path>`
 
-Opens a real browser at the platform, waits while you log in, and saves the
-session. Your credentials are typed into the platform's own page and never
-reach this process; what lands on disk is the session that login produced.
+Opens a browser for manual login and saves its session state. Requires a desktop display.
 
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--feed` | `instagram` | the only walled platform | Which platform to open |
-| `--force` | flag | off | Replace an existing session file |
-| `--timeout` | int seconds | `600` | How long to wait for the login |
-
-A visible browser needs a desktop: WSLg on WSL, an X display over SSH.
+| Flag | Default | Meaning |
+|---|---|---|
+| `--feed` | `instagram` | Platform to log into |
+| `--force` | off | Replace an existing session file |
+| `--timeout` | `600` | Login timeout in seconds |
 
 ### `crawl inspect <task-id>`
 
-Read-only look at a finished run: goals, pages, analyses by classification, and
-the results grouped by whether what they describe is still ahead of you.
+Shows the goal, crawl counts and relevant results grouped by event dates.
 
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--goal` | goal id | the task's own goal | Which goal's analyses to show |
-| `--during` | `"1 week"`, `"3 days"`, `2026-10-01` | none | How far ahead still counts as open. What starts past it is listed separately rather than dropped. Same syntax as `--since`, pointing the other way |
-| `--export` | `json` \| `csv` | none | Dump the pages-and-analyses join to stdout. `json` carries the extracted fields and their evidence; `csv` leaves them out, because every goal declares its own fields and there is no stable column set |
+| Flag | Default | Meaning |
+|---|---|---|
+| `--goal` | original goal | Select another stored goal's analyses |
+| `--during` | none | Separate events starting beyond this future cutoff, e.g. `"1 week"` or `2026-10-01` |
+| `--export` | none | `json` includes extracted fields and evidence; `csv` exports fixed columns |
 
-Results are ordered by when they end, not by score, because the question a reader
-arrives with is what is still open. A page that named no date is not a page that
-failed the dates, so it gets its own group; across seven runs that was half of
-them.
+`--since` concerns **publication time** during crawling. `--during` concerns **event dates** in the results. Results with no date form a separate group; expired results remain visible. The terminal shows a limited number of results per group; export includes all rows.
 
 ### `crawl replay <task-id>`
 
-Re-analyze a finished run's stored pages under a new prompt. No fetching, so
-a better prompt costs only the analyzer.
+Re-analyzes stored page text without fetching pages. A new prompt also runs goal enhancement. Replay requires a compatible run database.
 
-| Flag | Values | Default | Meaning |
-|------|--------|---------|---------|
-| `--prompt` | string | the original | New goal; its analyses land under a new goal row |
-| `--limit` | int | all | Re-analyze at most this many pages |
-| `--max-tokens` | int | `500000` | Token budget for the replay |
-| `--analyzer-max-chars` | int | `3000` | Page text per analyzer call |
-| `--force` | flag | off | Re-analyze pages that already have an identical analysis |
-| `--log-level` | as above | `INFO` | |
-
-
----
+| Flag | Default | Meaning |
+|---|---|---|
+| `--prompt` | original prompt | Analyze under another goal |
+| `--limit` | all pages | Maximum pages to analyze |
+| `--max-tokens` | unlimited | Replay token budget |
+| `--analyzer-max-chars` | `3000` | Maximum page-text characters per analysis |
+| `--force` | off | Append analyses even when matching ones already exist |
+| `--log-level` | `INFO` | Logging level |
 
 ## How it works
 
 ```mermaid
-flowchart TD
-    seeds["your seeds"] --> FR
-    ext["--enhance-seeds<br>seeds it names itself, verified"] -.-> FR
-    FR[("Frontier<br>a turn from each seed")] --> fetch["fetch<br>whoever claims the page reads it"]
-    fetch --> an["Analyzer<br>verdict · extracted fields"]
-    an --> out(["results"])
-    fetch --> links["~200 links"]
-    links --> pre["Pre-filter<br>URL rules, zero LLM"]
-    pre -->|"10-30 candidates"| rank["LLMRanker<br>one call per 20"]
-    rank -->|"priority, or dropped"| FR
+flowchart LR
+    seeds[Seed URLs] --> frontier[Frontier]
+    frontier --> fetch[Fetch and extract]
+    fetch --> analyze[Analyze]
+    analyze --> results[Results with evidence]
+    analyze --> harvest[Discover candidates]
+    harvest --> filter[URL filters]
+    filter --> rank[LLM ranking]
+    rank --> frontier
 ```
 
-**Whoever claims the page reads it.** Instagram answers from the host, RSS from
-the document's root element. Nobody claiming is the ordinary case, and the
-answer then is to read the links. So one run holds posts, feed entries and
-ordinary web pages, and a new platform is one adapter, not a new mode.
+The frontier rotates unranked candidates between sources, then fetches by priority. Adapters discover feed entries and platform posts; ordinary pages supply links. Analysis checks field evidence against page text before storing it.
 
-**Two ranking stages, and only two.** Two cheap ones scoring keywords and cosine
-similarity sat between them, until seven crawls showed neither ever removed a
-candidate and neither ordered better than a coin flip. They were removed rather
-than tuned; the measurements are on `archive/embedding-investigation`. Without
-LLM credentials there is no ranking stage at all, and the crawl fetches in
-frontier order.
+The crawl stops on budgets, a result target, an empty frontier or a reported failure. Individual sources retire after sustained low relevance or old publication dates. Raw pages, analyses, ranking decisions and checkpoints are stored under `results/<timestamp>/`.
 
-**Ranking predicts; analysis verifies.** Each extracted value is checked against
-the page text before it is stored, and a field the page does not state is simply
-absent -- there is no "unknown". A page it discards stops at the verdict and
-writes no summary, because nothing downstream ever reads one.
+See [Architecture](docs/arch.md) for component boundaries and [Changelog](docs/CHANGELOG.md) for releases.
 
-**Two clocks, and they are not the same one.** When a post was published bounds
-what is worth fetching and is known before anything is read, so `--since` can
-drop a candidate off a listing date alone. When the thing a post *describes*
-runs is knowable only after the page has been read, so it can never bound a
-fetch, only group what was found. Name a deadline or a date in the prompt and the
-analyzer reads it back out of the page; the report then separates what is still
-open from what is already over, and `--during` splits off what starts past the
-window you care about. Relative wording is refused rather than guessed at: "next
-week" in a three-week-old post means three weeks ago.
+## Configuration and limitations
 
-**Fairness upstream of the ranker, priority downstream.** A turn from each seed
-keeps one loud account from spending the whole LLM budget. Priority decides only
-where the scarce page budget goes.
+Copy [`.env.example`](.env.example) to `.env` for credentials, model settings and tuning. Precedence for Settings-backed options is defaults → `.env` → environment → CLI.
 
-**Seeds it names itself are checked before use.** Two thirds of what the model
-names does not exist, in a shape a person cannot spot: the brand is real and the
-account name is invented. So each proposal is fetched and read, and only what
-answers survives. Whether it is worth reading past that is left to the run, which
-retires a source on pages it actually read rather than on a sample of captions.
-Nothing is stored -- the run prints what each turned out to be worth and what it
-turned away, and keeping one is your call.
+- Browser and feed support require their optional dependencies. Automatic dispatch falls back to HTTP with a warning if Playwright is absent.
+- Platform adapters depend on site markup and responses, which may change. Login or rate-limit refusals stop the run.
+- The analyzer reads a bounded text prefix. Extracted evidence is checked, but relevance and field values remain model judgments.
+- Event-date parsing supports explicit English month names and ISO dates; relative phrases such as “tomorrow” are not resolved.
 
-**A run says why it stopped.** Budgets, a target met, a drained frontier, plus
-`RATE_LIMITED`, `LOGIN_REQUIRED` and `ADAPTER_EMPTY`, which exist because silence
-was the bug. "Completed" never stands in for "found nothing and cannot say why".
+## License
 
-**A source that stops paying off retires by itself.** Reading past the goal's
-window, or a full window of its own pages with almost nothing to show, ends that
-source and not the run: a feed is ordered and productive per account and never as
-a whole, so counted across accounts neither signal meant anything. Retire them
-all and the frontier drains, which is how a run finishes without being told how
-many answers to expect.
-
-**Everything is recorded.** Which rule dropped a link, what the ranker scored
-it, which model and prompt version produced a judgment, and the sentence each
-extracted value came from. Raw HTML is kept, so a better prompt can re-judge a
-finished run without re-crawling.
-
----
-
-## Configuration
-
-Flags say what this run is doing; `.env` says what this machine and account can
-do — credentials, endpoints, which model, how much memory to spend. Everything
-has a default, so `.env` is optional.
-
-See [`.env.example`](.env.example) for the full list.
-
----
-
-## Status
-
-| Version | State | What it adds |
-|---------|-------|--------------|
-| v0.1 | ✅ | Full pipeline at zero LLM cost |
-| v0.1.1 | ❌ | (deprecated) EmbeddingRanker, semantic ranking on a local model. (see archive/embedding-investigation branch) |
-| v0.2 | ✅ | Goal Enhancer, LLMRanker, per-page analysis, replay, inspect, time horizon |
-| v0.3 | ✅ | IG, Playwright with login state, feed traversal, extracted fields with evidence |
-| v0.4 | ✅ | Reddit, a fetcher chosen per candidate, paged listings |
-| v0.5 | ✅ | Seed enhancement, time window |
-
----
+[MIT](LICENSE).

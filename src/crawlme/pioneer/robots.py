@@ -1,16 +1,6 @@
-"""Domain-level fetch policy.
+"""Cache robots rules and enforce crawl delays and rate-limit cooldowns.
 
-Well, you definitely don't wanna get banned right?
-
-Three things hold a domain back: robots.txt, a crawl delay after each
-successful fetch, and a circuit breaker that blocks a domain outright
-once it has answered 429 or 503 enough times in a row.
-
-robots.txt is read from the section written for this crawler by name
-rather than the wildcard, which may be looser or stricter.  The engine
-fetches it; this class only holds and answers.  All three can be
-bypassed with ignore=True, for development and intranets.
-"""
+The scheduler fetches robots.txt. ignore=True bypasses these policies."""
 
 from __future__ import annotations
 
@@ -28,10 +18,7 @@ class RobotsPolicy:
         circuit_threshold: int = 5,
         circuit_cooldown: datetime.timedelta = datetime.timedelta(minutes=10),
     ) -> None:
-        # The name to look up in robots.txt. A crawler that states one
-        # and then reads only the wildcard section ignores whatever was
-        # written for it, which may be looser or stricter than the
-        # wildcard, and is wrong either way.
+        # Match robots rules using the configured crawler product token.
         self._agent = agent
         self._ignore = ignore
         self._cache_ttl = cache_ttl
@@ -66,12 +53,7 @@ class RobotsPolicy:
         return rp.can_fetch(self._agent, url)
 
     def crawl_delay(self, domain: str) -> float:
-        """Seconds this domain asked to be left alone between requests.
-
-        Read from robots.txt rather than taken on trust from the caller,
-        which passed nothing and left every stated delay unobserved
-        while the module said it honoured them.
-        """
+        """Return the delay requested by this domain for the configured crawler agent."""
         if self._ignore:
             return 0.0
         rp = self._parsers.get(domain)
@@ -86,10 +68,7 @@ class RobotsPolicy:
             return 0.0
 
     def next_allowed_at(self, domain: str) -> datetime.datetime:
-        # Return epoch for unknown domains so the "allowed_at > now" gate
-        # never blocks them.  Returning _utcnow() here would cause a
-        # sub-millisecond race in _try_pop (the caller's `now` can be
-        # slightly before this method's `_utcnow()`).
+        # Epoch leaves unknown domains immediately eligible, avoiding races with caller time.
         return self._next_allowed.get(domain, _EPOCH)
 
     def record_response(self, domain: str, status: int, crawl_delay: float = 0) -> None:

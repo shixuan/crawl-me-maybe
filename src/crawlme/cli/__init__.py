@@ -1,15 +1,4 @@
-"""CLI entry point: argparse + dispatch, no third-party framework.
-
-Commands:
-  crawl run "<prompt>" [--max-pages N] [--seeds URL,...]
-  crawl inspect <task-id> [--goal G] [--export json|csv]
-  crawl replay <task-id> [--prompt "..."] [--limit N] [--max-tokens N] [--force]
-
-The command implementations live in this package's sibling modules:
-run.py carries the run path, inspect.py the read-only results view,
-replay.py re-analysis.  This module only parses flags and hands them
-over.
-"""
+"""Parse CLI arguments and dispatch run, inspect, replay and session commands."""
 
 from __future__ import annotations
 
@@ -32,10 +21,6 @@ def main() -> None:
     # run -------------------------------------------------------------
     run_p = sub.add_parser("run", help="Start a crawl task")
     run_p.add_argument("prompt", help="Crawl goal description")
-    # Two families, and the names say which is which.  A page budget is
-    # what the run may spend; it says nothing about how many answers that
-    # buys, and reading it as a target is how "sixty pages" came to mean
-    # twenty-two results.
     run_p.add_argument(
         "--max-relevant",
         type=int,
@@ -54,10 +39,6 @@ def main() -> None:
     )
     run_p.add_argument("--depth-limit", type=int, help="Max depth from seed (default: 5)")
     run_p.add_argument("--draining", action="store_true", help="Crawl until frontier drained (ignores --max-pages)")
-    # Where the entry points come from.  One flag per kind, each carrying
-    # its own argument, so "I want a file" cannot be said without saying
-    # which file -- the older --source/--source-path pair could, and a
-    # missing path silently became an empty manual list.
     run_p.add_argument(
         "--seeds",
         help="Comma-separated seed URLs, or the path to a JSON file holding a list of them. "
@@ -72,7 +53,7 @@ def main() -> None:
         "--analysis",
         choices=["on", "off"],
         default=None,
-        help="Per-page analysis and the steering it feeds; 'off' disables the whole subsystem",
+        help="Per-page relevance analysis and field extraction",
     )
     run_p.add_argument(
         "--analyzer-max-chars",
@@ -84,7 +65,7 @@ def main() -> None:
         "--since",
         default=None,
         help="Time window, e.g. '1 week' or '2026-08-01'. Skips candidates already "
-        "dated outside it; with a single seed, also stops once content ages out",
+        "dated outside it; retires each source after consecutive old pages",
     )
     run_p.add_argument(
         "--fetcher",
@@ -135,7 +116,7 @@ def main() -> None:
         "--during",
         default=None,
         help="How far ahead to count as still open, e.g. '1 week' or '2026-10-01'. "
-        "Results running past it are listed separately; nothing is hidden",
+        "Results starting after it are listed separately",
     )
     inspect_p.add_argument("--export", choices=["json", "csv"], help="Dump the pages-and-analyses join to stdout")
 

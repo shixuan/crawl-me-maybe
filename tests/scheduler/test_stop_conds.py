@@ -132,14 +132,7 @@ def test_drained(frontier_kw, in_flight, fires):
 
 @pytest.mark.parametrize("blocked", [7, 0])
 def test_ceiling_named(blocked):
-    """Both facts, because either one alone misreports the run.
-
-    A feed run ended at fifty pages with a hundred and sixty candidates
-    still waiting and reported only "completed": every one of them was
-    refused by a per-domain ceiling that, on one platform, is a total.
-    Reporting the ceiling *instead* then hid the opposite case, where a
-    graph crawl refuses thousands along the way and still finishes.
-    """
+    """Report domain refusals alongside natural exhaustion."""
     frontier = _frontier(size=0)
     frontier.blocked_by_domain_budget = blocked
     codes = _codes(check_stop(_task(), frontier, *_split(in_flight=0)))

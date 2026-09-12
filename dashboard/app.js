@@ -1,14 +1,4 @@
-/* crawl me maybe — dashboard.
-
-   Deliberately free of any vocabulary this crawler does not define.
-   What a goal is looking for is the goal's business, not this page's:
-   field names come from the run's extraction spec and are rendered as
-   they were declared, so a run about shops and a run about papers look
-   the same here and neither needed a line of code.
-
-   Filtering runs over rows already in memory: a run is a few dozen
-   results, so every keystroke can re-render without a round trip, and
-   the reader narrows things down instead of the crawler guessing. */
+/* Render fields from the run's extraction spec and filter loaded results locally. */
 
 const $ = (sel) => document.querySelector(sel);
 

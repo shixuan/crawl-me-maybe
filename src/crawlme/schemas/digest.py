@@ -11,16 +11,7 @@ from crawlme.schemas.core import URL, _new_id, _utcnow
 
 
 class Payload(BaseModel):
-    """One response the page fetched for itself, kept rather than dropped.
-
-    A rendered DOM is what a reader sees, which on a feed listing is
-    thumbnails: no post text at all. The text exists — the page asked an
-    API for it and used it to build the grid — and keeping that answer
-    costs no extra request, only the choice not to throw it away.
-
-    Empty for every fetcher that cannot observe sub-requests, and for
-    every run that did not ask to keep any.
-    """
+    """A selected browser sub-response retained for adapter parsing."""
 
     url: str = ""
     content_type: str = ""
@@ -59,10 +50,7 @@ class Page(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
     text_hash: str = ""
     text_len: int = 0
-    # Publication time as claimed by the page itself (meta tags, JSON-LD,
-    # <time>).  Best effort: None means the page did not say, which is
-    # different from "published long ago" and is treated as unknown by
-    # the streak that retires a source.
+    # Declared publication time; None leaves the source age streak unchanged.
     published_at: datetime.datetime | None = None
     extracted_at: datetime.datetime = Field(default_factory=_utcnow)
     extraction_status: ExtractionStatus = "OK"

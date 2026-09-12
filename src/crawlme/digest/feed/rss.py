@@ -1,18 +1,6 @@
-"""RSS/Atom: the one feed whose shape is a format, not a platform.
+"""Parse RSS and Atom entries with optional feedparser support.
 
-Every other adapter knows one site's markup.  This one knows a document
-type any site can serve, which is why it cannot claim a URL: measured
-against seven real feeds, only one ended in ``.rss``, the rest being
-``/feed``, ``/rss``, ``feed.xml``, ``atom.xml``, ``/feed/rss/``.  Content
-type arrives as four different strings.  The root element is the only
-reliable signal and it is readable only once the document is in hand.
-
-A feed also inverts the usual shape.  Elsewhere a listing is weak and
-its items are strong; here the listing carries the posts themselves, so
-what it yields is worth ranking before anything else is fetched.
-
-Needs feedparser, an optional extra: pip install 'crawl-me-maybe[rss]'.
-"""
+Feeds are recognized by their document root, not URL suffix or content type."""
 
 from __future__ import annotations
 
@@ -42,15 +30,11 @@ NEEDS_SESSION = False
 # A feed is markup already.
 NEEDS_RENDERING = False
 
-# The document's root, which is the only reliable way to know one.
-# Looked for near the top so a mention of the word later in a page
-# cannot make an HTML document read as a feed.
+# Match the root near the start to avoid claiming HTML that merely mentions RSS.
 _ROOT = re.compile(r"<\s*(rss|feed|rdf:RDF)\b", re.I)
 _HEAD_CHARS = 2000
 
-# Bodies shorter than this are the feed's own boilerplate rather than
-# the author's words: a link post reads "submitted by /u/name [link]
-# [comments]" and keeps its content at the far end of the link.
+# Treat very short entry bodies as insufficient content for ranking.
 _MIN_BODY_CHARS = 80
 
 _TAGS = re.compile(r"<[^>]+>")
@@ -58,12 +42,7 @@ _SPACE = re.compile(r"\s+")
 
 
 def claims_url(url: str) -> bool:
-    """Never: an address does not say whether it serves a feed.
-
-    Answering False leaves this adapter out of every check that runs
-    before a fetch, which is correct rather than merely safe.  Guessing
-    from a suffix would be wrong five times in seven.
-    """
+    """Return False because a URL alone cannot identify an RSS or Atom document."""
     return False
 
 
@@ -73,12 +52,7 @@ def claims(page: Page, document: str) -> bool:
 
 
 def problem(html: str) -> PageProblem | None:
-    """A feed that parses is content; one that does not is not ours.
-
-    Nothing here maps onto the walls the other adapters report: a feed
-    is served to strangers, so there is no login page to mistake for an
-    empty week.
-    """
+    """Return no platform refusal; feed recognition is handled by claims()."""
     return None
 
 
@@ -102,11 +76,7 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     try:
         import feedparser
     except ImportError as e:  # pragma: no cover - depends on the install
-        # Loud, not empty.  A feed with nothing new in it also returns
-        # an empty listing, so degrading quietly would make a missing
-        # package indistinguishable from a quiet week.  The seed-side
-        # preflight guesses from the URL and is wrong five times in
-        # seven, so this is the check that holds.
+        # A missing parser is a dependency failure, not an empty listing.
         raise FeedDependencyError(
             "reading a feed requires the 'feedparser' package: pip install 'crawl-me-maybe[rss]'"
         ) from e
@@ -157,12 +127,7 @@ def _body(entry: Any) -> str:
 
 
 def _published(entry: Any) -> datetime.datetime | None:
-    """When the entry says it was published, in UTC, or None.
-
-    None is the ordinary answer for a feed that omits the field, and it
-    has to stay distinguishable from a guess: the time window filters on
-    this, and an invented date would drop real posts silently.
-    """
+    """Read a declared entry publication time in UTC, or None."""
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not parsed:
         return None
