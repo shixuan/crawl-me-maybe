@@ -12,7 +12,7 @@ import datetime
 import pytest
 
 from crawlme.analyzer import PageAnalyzer
-from crawlme.analyzer.page_analyzer import _build_prompt, _parse_extracted
+from crawlme.analyzer.page_analyzer import _build_prompt, _parse_analysis, _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -571,3 +571,32 @@ def test_aggregator_is_gone():
 
     assert "AGGREGATOR" not in CLASSIFICATIONS
     assert "AGGREGATOR" not in _contract()
+
+
+@pytest.mark.parametrize("evidence", ["Offer ends August 16, 2027.", "invented evidence", ""])
+def test_dates_require_validated_evidence(evidence):
+    text = "Offer ends August 16, 2027."
+    goal = CrawlGoal(
+        prompt="find offers",
+        extraction_spec={
+            "fields": {"deadline": "when the offer ends"},
+            "time_field": {"name": "deadline", "kind": "until"},
+        },
+    )
+    result = _parse_analysis(
+        {
+            "classification": "RELEVANT",
+            "extracted": {"deadline": {"value": "August 16, 2027", "evidence": evidence}},
+        },
+        _page(text),
+        goal,
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.starts_on is None
+    if evidence == text:
+        assert result.ends_on == datetime.date(2027, 8, 16)
+        assert "deadline" in result.extracted
+    else:
+        assert result.ends_on is None
+        assert result.extracted == {}

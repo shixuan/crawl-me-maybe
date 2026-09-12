@@ -29,6 +29,13 @@ D = datetime.date
         ("July 24: 2:00 PM \u2013 9:00 PM; July 25: 10:00 AM \u2013 9:00 PM", (D(2026, 7, 24), D(2026, 7, 25))),
         # A bare month is the whole month, not a day in it.
         ("August", (D(2026, 8, 1), D(2026, 8, 31))),
+        ("August 2027", (D(2027, 8, 1), D(2027, 8, 31))),
+        ("August 15-16, 2027", (D(2027, 8, 15), D(2027, 8, 16))),
+        ("August 15\u201316, 2025", (D(2025, 8, 15), D(2025, 8, 16))),
+        ("2026-08-01 to September 20, 2026", (D(2026, 8, 1), D(2026, 9, 20))),
+        ("August 15-16 and September 20, 2026", (D(2026, 8, 15), D(2026, 9, 20))),
+        ("August 15-16, 2027; 2027-09-20; 25 Sep 2027", (D(2027, 8, 15), D(2027, 9, 25))),
+        ("August 29, 2027; September 2, 2027", (D(2027, 8, 29), D(2027, 9, 2))),
     ],
 )
 def test_reads_the_shapes_pages_use(text, expected):

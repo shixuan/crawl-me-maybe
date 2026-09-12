@@ -388,6 +388,7 @@ def _parse_analysis(
     summary = str(summary).strip() if isinstance(summary, str) else ""
 
     tags = _str_list(data.get("tags"), _MAX_TAGS)
+    extracted = _parse_extracted(data, page, goal)
 
     return AnalysisResult(
         page_id=page.page_id,
@@ -397,9 +398,9 @@ def _parse_analysis(
         relevance_score=relevance,
         summary=summary,
         structured_data=data,
-        extracted=_parse_extracted(data, page, goal),
+        extracted=extracted,
         spec_version=spec_version(goal.extraction_spec),
-        **_dates_from(data, page, goal),
+        **_dates_from(extracted, page, goal),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
@@ -414,7 +415,7 @@ def _parse_analysis(
     )
 
 
-def _dates_from(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, Any]:
+def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: CrawlGoal) -> dict[str, Any]:
     """When the page says its subject applies, if the goal declared a field for it.
 
     Read here rather than at the report, because the reader wants one
@@ -425,9 +426,10 @@ def _dates_from(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, 
     if declared is None:
         return {}
     name, kind = declared
-    field = (data.get("extracted") or {}).get(name) if isinstance(data.get("extracted"), dict) else None
-    said = str(field.get("value", "")) if isinstance(field, dict) else ""
-    found = read_range(said, kind=kind, said_on=page.published_at)
+    field = extracted.get(name)
+    if field is None:
+        return {}
+    found = read_range(field.value, kind=kind, said_on=page.published_at)
     if found is None:
         return {}
     return {
