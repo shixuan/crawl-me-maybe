@@ -90,10 +90,6 @@ engine only knows as a Protocol, filled in by the factory.
                           10 URL-level   20 per batch,
                           checks, no LLM absent without credentials
 
-    Side channel: ④'s endorsed_links ──► ⑦ ──► straight into ①, priority 1.0
-                  the only way out of the platform a run started on — a feed
-                  harvester only ever finds more of the same platform
-
  ┌────────────────────────────────────────────────────────────────────────┐
  │ Persistence: one timestamped directory per run, and no mutable state   │  storage/
  │ shared across runs                                                     │
@@ -385,7 +381,7 @@ crawl inspect <task-id> [--goal <goal_id>] [--export json|csv]
   → read-only: task / run / pages / goals (marked original or replay) /
     the classification spread per goal / top relevant pages, deduplicated by url
   → --export writes the pages⋈analyses join to stdout (url, title, class,
-    relevance, hub, summary, tags, model, timestamp)
+    relevance, summary, tags, model, timestamp)
 ```
 
 ### Feed traversal
@@ -544,18 +540,32 @@ A claimed listing yields post permalinks; a claimed post is a leaf. A feed entry
 arrives **carrying the post text**, so ranking judges content rather than guessing
 from an anchor.
 
+### Leaving the platform
+
+A feed run mostly does not.  A listing yields permalinks and an item yields
+nothing, because an item is a leaf whose text is the thing being looked for, so
+every candidate an Instagram run produces carries `reg_domain = instagram.com`.
+
+The analyzer used to name links worth following, which was the way out.  Seven
+runs measured what that bought: 17 pages fetched on its say-so, one of them a
+result, against a 25% hit rate on the pages the ranker chose.  It was removed.
+A crawl that has to reach a merchant's own site reaches it through a seed or
+through an ordinary page whose outlinks are read.
+
 ### PageAnalyzer
 
 One LLM call per page (text truncated to `ANALYZER_MAX_CHARS`, 3000 by default),
 producing:
 
-- a classification (RELEVANT / HUB / AGGREGATOR / IRRELEVANT / NAVIGATION), a
-  relevance score and a summary
-- the fields the goal declared, **each with a quote from the page**. A quote that
-  is not in the text throws the field away; so does a value that is a bare
-  negation ("no", "none"), because no sentence on a page can prove an absence —
-  and absence is already sayable, by the field not being there
-- `endorsed_links`, covered under **Endorsement** below
+- a classification (RELEVANT / IRRELEVANT, with UNKNOWN as the fallback) and a
+  relevance score. **A discarded page stops there.** Two thirds of this stage's
+  bill is what the model writes, and every field after the verdict on a page
+  that is thrown away is written and then never read
+- for a keeper, a summary, tags, and the fields the goal declared, **each with a
+  quote from the page**. A quote that is not in the text throws the field away;
+  so does a value that is a bare negation ("no", "none"), because no sentence on
+  a page can prove an absence, and absence is already sayable by the field not
+  being there
 
 Results go to the `analyses` table with `prompt_version`, `model` and
 `spec_version`, so replays can be compared.
@@ -582,17 +592,6 @@ Answers "if only so many more links can be read, which ones?".
 
 **Without LLM credentials this stage does not exist**, and candidates enqueue flat
 in the order the frontier hands them out.
-
-### Endorsement
-
-Alongside its verdict, the analyzer names the links on a page worth following.
-The engine collects them and, at the next enqueue, resolves each one, runs it
-through the PreFilter, and pushes it into the frontier at priority 1.0.
-
-**This is the only way a crawl leaves the platform it started on.** A feed
-harvester only ever finds more of the same platform — every candidate in an
-Instagram run carries `reg_domain = instagram.com` — so a merchant's own site is
-reachable only because the analyzer pointed at it.
 
 ### RobotsPolicy
 
@@ -851,6 +850,7 @@ Two categories throughout: transient (retry) and permanent (mark failed).
 | Domain | more than 5 consecutive failures | Circuit breaker, 10-minute cooldown |
 | Extract | parse failure | Degrade to DEGRADED/FAILED, do not interrupt |
 | Extract | timeout | `asyncio.wait_for`, mark SKIPPED |
+| Any LLM call | thought away the whole allowance, said nothing | Asked again one reasoning level lower; a bigger ceiling only buys a longer silence |
 | Rank | LLM failure | Retries inside the client, then propagates; a dead pump ends the run as FATAL |
 | Analyze | LLM failure | Background retry queue, up to 3 attempts; never blocks fetching |
 | Storage | write failure | Retry 3 times → checkpoint and PAUSE |
