@@ -165,7 +165,31 @@ body {
 .filters { margin-bottom: 18px; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
 .filter-row + .filter-row { margin-top: 12px; }
-.meta-row { justify-content: flex-start; }
+/* A grid, not a wrapping flex row: a long field name used to widen its
+   select and shove the rest onto another line, so the controls moved
+   under the pointer.  Fixed cells, and a long value is clipped. */
+.filter-row.meta-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: center;
+}
+
+.meta-row .tally,
+.meta-row #goal { grid-column: 1 / -1; }
+
+.meta-row .field { min-width: 0; }
+.meta-row .field-label { flex: none; }
+
+.meta-row .select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 640px) {
+  .filter-row.meta-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 .search {
   flex: 1;
@@ -317,9 +341,25 @@ body {
   padding: 2px 9px;
 }
 
-.runs {
-  font-weight: 600;
+/* Pushed to the far end of its line: it is the one thing on a card a
+   reader scans down a column for, so it has to sit at a fixed edge. */
+/* The middle of the line gives way rather than wrapping, so the date
+   stays on the same line as the text it belongs to. */
+.result-sub > span:not(.when-range) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.when-range {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--rounded);
+  font-weight: 700;
+  font-size: 15px;
   color: var(--pink-deep);
+  white-space: nowrap;
 }
 
 .result-sub {

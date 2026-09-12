@@ -279,7 +279,7 @@ function card(r) {
       <a class="open" href="${escape(r.url)}" target="_blank" rel="noopener" title="${escape(r.url)}">open page</a>
       ${subtitle ? `<span>${escape(subtitle)}</span>` : ""}
       ${r.published_at ? `<span>${escape(when(r.published_at))}</span>` : ""}
-      ${runs ? `<span class="runs">${escape(runs)}</span>` : ""}
+      ${runs ? `<span class="when-range">${escape(runs)}</span>` : ""}
     </p>
     ${r.summary ? `<p class="summary">${escape(r.summary)}</p>` : ""}
     ${fields ? `<div class="fields">${fields}</div>` : ""}
