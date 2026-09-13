@@ -150,17 +150,18 @@ Re-analyzes stored page text without fetching pages. A new prompt also runs goal
 
 ```mermaid
 flowchart LR
-    seeds[Seed URLs] --> frontier[Frontier]
-    frontier --> fetch[Fetch and extract]
-    fetch --> analyze[Analyze]
+    candidates[Discovered candidate URLs] --> filter[URL filters]
+    filter --> buffer[Unranked buffer]
+    buffer --> rank[LLM ranking]
+    rank -->|kept| queue[Priority queue]
+    queue --> fetch[Fetch and extract]
+    fetch --> analyze[Analyze current page]
     analyze --> results[Results with evidence]
-    analyze --> harvest[Discover candidates]
-    harvest --> filter[URL filters]
-    filter --> rank[LLM ranking]
-    rank --> frontier
+    analyze --> harvest[Discover URLs on current page]
+    harvest -. next candidates .-> candidates
 ```
 
-The frontier rotates unranked candidates between sources, then fetches by priority. Adapters discover feed entries and platform posts; ordinary pages supply links. Analysis checks field evidence against page text before storing it.
+Each discovered candidate is ranked before its page is fetched and analyzed. The frontier rotates unranked candidates between sources, then fetches kept candidates by priority. Seeds and listing continuation URLs enter the priority queue directly after filtering. Analysis checks field evidence against page text; discovery then supplies the next batch of candidate URLs.
 
 The crawl stops on budgets, a result target, an empty frontier or a reported failure. Individual sources retire after sustained low relevance or old publication dates. Raw pages, analyses, ranking decisions and checkpoints are stored under `results/<timestamp>/`.
 
