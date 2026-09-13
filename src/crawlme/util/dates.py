@@ -1,9 +1,4 @@
-"""Dates written in text, and where a range sits relative to today.
-
-Relative wording ("next week", "tomorrow") is refused on purpose. In
-a string written three weeks ago it means three weeks ago, and a date
-wrong by a fortnight looks perfectly reasonable.
-"""
+"""Parse explicit event dates and group date ranges. Relative phrases are not resolved."""
 
 from __future__ import annotations
 
@@ -19,7 +14,7 @@ _ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 #: "August 29", "Aug 29", "Aug.3", "August 29, 2026" -- the day may carry
 #: an ordinal suffix, and an abbreviation's dot may swallow the space.
 _MONTH_DAY = re.compile(
-    r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s*(\d{1,2})(?:st|nd|rd|th)?"
+    r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s*(\d{1,2})(?!\d)(?:st|nd|rd|th)?"
     r"(?:\s*,?\s*(\d{4}))?",
     re.IGNORECASE,
 )
@@ -33,7 +28,8 @@ _DAY_MONTH = re.compile(
 _MONTH_ONLY = re.compile(r"^\s*(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s*(\d{4})?\s*$", re.I)
 #: "August 15-16", including the en dash and em dash forms: one month, two days.
 _SAME_MONTH_RANGE = re.compile(
-    r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s+(\d{1,2})\s*[-\u2013\u2014]\s*(\d{1,2})\b",
+    r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s+(\d{1,2})\s*[-\u2013\u2014]\s*(\d{1,2})\b"
+    r"(?:\s*,?\s*(\d{4}))?",
     re.IGNORECASE,
 )
 
@@ -46,36 +42,37 @@ def read_dates(text: str, *, said_on: datetime.datetime | None = None) -> tuple[
     """
     if not text or not text.strip():
         return None
-    found: list[datetime.date] = []
-
-    for y, m, d in _ISO.findall(text):
-        if (day := _day(int(y), int(m), int(d))) is not None:
-            found.append(day)
-
-    if not found:
-        for mon, d1, d2 in _SAME_MONTH_RANGE.findall(text):
-            month = _MONTHS[mon.lower()]
-            for d in (d1, d2):
-                if (day := _day(_year_for(month, int(d), said_on), month, int(d))) is not None:
-                    found.append(day)
-
-    if not found:
-        for mon, d, year in _MONTH_DAY.findall(text):
-            month = _MONTHS[mon.lower()]
-            y = int(year) if year else _year_for(month, int(d), said_on)
-            if (day := _day(y, month, int(d))) is not None:
-                found.append(day)
-        for d, mon, year in _DAY_MONTH.findall(text):
-            month = _MONTHS[mon.lower()]
-            y = int(year) if year else _year_for(month, int(d), said_on)
-            if (day := _day(y, month, int(d))) is not None:
-                found.append(day)
-
-    if not found and (m := _MONTH_ONLY.match(text)):
+    if m := _MONTH_ONLY.fullmatch(text):
         month = _MONTHS[m.group(1).lower()]
         y = int(m.group(2)) if m.group(2) else _year_for(month, 1, said_on)
         last = calendar.monthrange(y, month)[1]
-        return datetime.date(y, month, 1), datetime.date(y, month, last)
+        first, end = _day(y, month, 1), _day(y, month, last)
+        return (first, end) if first is not None and end is not None else None
+    found: list[datetime.date] = []
+
+    # Consume complete matches so another format cannot reinterpret part
+    # of a range or its year, while still reading other dates in the text.
+    for pattern in (_ISO, _SAME_MONTH_RANGE, _MONTH_DAY, _DAY_MONTH):
+        for match in pattern.finditer(text):
+            if pattern is _ISO:
+                iso_year, iso_month, iso_day = map(int, match.groups())
+                if (day := _day(iso_year, iso_month, iso_day)) is not None:
+                    found.append(day)
+                continue
+            if pattern is _SAME_MONTH_RANGE:
+                mon, d1, d2, year = match.groups()
+                days = [d1, d2]
+            else:
+                mon, d, year = (
+                    match.groups() if pattern is _MONTH_DAY else (match.group(2), match.group(1), match.group(3))
+                )
+                days = [d]
+            month = _MONTHS[mon.lower()]
+            for d in days:
+                y = int(year) if year else _year_for(month, int(d), said_on)
+                if (day := _day(y, month, int(d))) is not None:
+                    found.append(day)
+        text = pattern.sub(lambda match: " " * len(match.group()), text)
 
     if not found:
         return None

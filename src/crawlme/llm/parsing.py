@@ -11,13 +11,7 @@ _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
 
 def parse_json_response(content: str) -> dict[str, Any] | None:
-    """Parse a JSON object out of an LLM response, tolerating slop.
-
-    Models often wrap the JSON in prose, so the first { ... } block is
-    extracted and parsed.  When that fails, trailing commas (the most
-    common malformation) are stripped and parsing is retried once.
-    Shared by every LLM consumer that expects structured output.
-    """
+    """Parse a JSON object, tolerating surrounding prose and retrying without trailing commas."""
     match = _JSON_BLOCK_RE.search(content)
     if match is None:
         return None

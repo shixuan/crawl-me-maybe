@@ -133,14 +133,7 @@ def test_text_no_chrome(extractor: TrafExtractor) -> None:
 
 
 def test_title_tag(extractor: TrafExtractor) -> None:
-    """Regression: the primary path never set a title.
-
-    It called .find() on trafilatura's XML *string*, so str.find returned
-    an int, .text raised, and a bare except swallowed it. Titles only ever
-    worked because the invalid output_format forced the BeautifulSoup
-    fallback to run. page.title feeds the ranker's title-match factor and
-    the LLM ranker's source-page line, so it silently degraded both.
-    """
+    """Read the HTML title on the primary extraction path, not only during fallback."""
     page = extractor.extract(_result(_NAV_HTML))
     assert page.title == "Real Title"
     assert page.extraction_status == "OK"

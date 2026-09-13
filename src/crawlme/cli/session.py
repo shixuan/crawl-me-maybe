@@ -1,19 +1,4 @@
-"""The session command: log in once, by hand, and keep the result.
-
-A logged-in crawl needs a Playwright ``storage_state`` file.  Producing
-one otherwise means writing a Playwright script or installing a cookie
-exporting extension, and those extensions can read every cookie the
-browser holds, for every site.  This opens a real browser at the
-platform, waits while a person logs in, and saves what the session
-became.
-
-Credentials never come near this process.  They are typed into the
-platform's own page, and what lands on disk is the session that login
-produced.
-
-Its own command rather than something ``crawl run`` does on demand: a
-crawl that stops halfway to wait for a human cannot run unattended.
-"""
+"""Open a browser for manual login and save Playwright storage state."""
 
 from __future__ import annotations
 
@@ -38,14 +23,7 @@ class SessionError(Exception):
 
 
 def _login_url(feed: str) -> str:
-    """Where to send the browser so the platform offers its login.
-
-    Derived from the adapter's domain rather than declared per platform:
-    a logged-out visitor to a login-walled front page gets the login
-    wall, which is the whole point.  A platform that needs a specific
-    address can declare one when it turns up; the second instance is
-    what earns the field.
-    """
+    """Return the platform homepage used for manual login."""
     adapter = FEEDS.get(feed)
     if adapter is None or not adapter.NEEDS_SESSION:
         raise SessionError(f"{feed} needs no session, so there is nothing to log in to")
@@ -71,14 +49,10 @@ def _typed_enter() -> bool:
 
 
 async def _wait_for_a_person(browser: Any, page: Any, timeout_sec: float) -> bool:
-    """Wait for Enter or for the window to go. False if neither came.
+    """Wait for Enter or tab/browser closure; return False on timeout.
 
-    Polled, not event-driven: a closed tab is neither a closed context
-    nor a disconnected browser, and the events cover only the latter two.
-
-    Nothing is read from the browser while it waits. Reading the session
-    opens a hidden page per stored origin, which flickers a tab and can
-    cut into the login itself.
+    This does not verify login. Poll because closing a tab need not close the browser.
+    Avoid reading storage state during login because it can open tabs.
     """
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -102,12 +76,7 @@ async def _read_state(context: Any) -> dict[str, Any] | None:
 
 
 async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
-    """Open a window, wait for a person, and hand back what login made.
-
-    Everything untestable lives here: a real browser and a real human.
-    What the caller does with the result -- judging whether that login
-    took, and writing it down -- is kept outside so it can be checked.
-    """
+    """Open the platform homepage and collect state when the manual login wait ends."""
     try:
         from playwright.async_api import async_playwright
     except ImportError as e:  # pragma: no cover - depends on the install
@@ -133,8 +102,7 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
         try:
             came = await _wait_for_a_person(browser, page, timeout_sec)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            # The login already happened by the time anyone reaches for
-            # Ctrl-C, and reading it out still works.
+            # Try to preserve any session established before the interruption.
             print("\ninterrupted; keeping the session the login produced", file=sys.stderr)
             came = True
         try:
@@ -156,11 +124,9 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
 
 
 async def capture(feed: str, out: Path, *, timeout_sec: int = 600) -> dict[str, Any]:
-    """Capture a logged-in session and write it to *out*."""
+    """Write browser storage state to *out*, rejecting states without cookies."""
     state = await _browser_state(feed, timeout_sec)
-    # The same thing the fetcher checks before a crawl: a state with no
-    # cookies loads fine and crawls logged out, which on a walled
-    # platform reads as an empty site rather than as a failed login.
+    # Cookie presence alone does not verify authentication.
     if not state.get("cookies"):
         raise SessionError("that browser was never logged in: the session it produced holds no cookies")
     out.parent.mkdir(parents=True, exist_ok=True)

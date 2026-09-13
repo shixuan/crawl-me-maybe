@@ -1,17 +1,7 @@
-"""PageAnalyzer: one LLM call per fetched page.
+"""Classify pages and extract fields with source evidence.
 
-The judgment it produces, classification and relevance and summary and
-the fields the goal declared with a quote behind each one, is the
-product the user consumes.  The row carries the prompt version and the
-model because replay revisits it.
-
-One thing travels back into the crawl: the pages judged relevant, which
-the ranker is reminded of when it scores the next batch.
-
-A failed analysis never blocks the crawl loop.  The page is parked on a
-delayed queue and retried a bounded number of times, and every success
-from either path is published through the sink bound at construction.
-"""
+Successful analyses are published through a sink. Failed calls enter a bounded
+retry queue; relevant-page summaries feed subsequent ranking."""
 
 from __future__ import annotations
 
@@ -38,12 +28,7 @@ from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
 
-# Response cap: a summary plus five short lists fit comfortably.
-# Default page-text cap sent to the model.  The 10-replicate
-# benchmark (benchmark/feedback/) picked 3000: the 6000-char window
-# misclassified long-form pages, while 3000 hits the intro zone and
-# wins on both precision and recall.  The knob lives in
-# Settings.analyzer_max_chars.
+# Default analyzer text limit; Settings can override it.
 _MAX_PAGE_CHARS = 3000
 # A page gets at most this many attempts, spaced by a fixed delay.
 _MAX_ATTEMPTS = 3
@@ -64,9 +49,7 @@ _JUDGEMENT = (
 
 _PROMPT_VERSION = "v2.6"
 
-# One judgement, three answer shapes. Two thirds of this stage's bill is
-# what the model writes, and for a page that will be discarded every
-# field after the verdict is written and then thrown away.
+# Request summaries and fields only for relevant pages.
 _SYSTEM = (
     "You analyze web pages for a goal-directed crawler. You get the crawl goal, the page "
     "URL, title, and text. Classify the page, and describe it only if it is worth "
@@ -103,14 +86,7 @@ class Analyzer(Protocol):
 
 
 class PageAnalyzer:
-    """Classifies and summarizes fetched pages with one LLM call each.
-
-    Failed analyses are parked on an internal delayed re-analysis
-    queue: analyze() returns None immediately and a background task
-    retries a bounded number of times, so the caller's loop never
-    waits on the LLM.  Every success (first try or retry) is handed to
-    the bound sink.
-    """
+    """Analyze pages with bounded retries and publish results through the bound sink."""
 
     def __init__(
         self,
@@ -127,16 +103,12 @@ class PageAnalyzer:
         self._sink: Callable[[AnalysisResult], None] | None = None
         self._pending: asyncio.Queue[tuple[Page, CrawlGoal, int]] = asyncio.Queue()
         self._drain_task: asyncio.Task[None] | None = None
-        # Parked pages not yet settled: items in the queue plus the one
-        # the drain task currently holds between retries.  drain_pending()
-        # waits on it.
+        # Count queued and active retries so drain_pending() waits for both.
         self._parked_count = 0
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> PageAnalyzer | None:
-        """Default-on with graceful auto-off, mirroring the other LLM
-        stages: without credentials there is nothing to call.  *budget*
-        is shared across all LLM consumers of the task."""
+        """Build from settings with the shared budget, or return None without LLM configuration."""
         client = LLMClient.from_settings_if_configured(
             settings,
             budget=budget,
@@ -154,9 +126,7 @@ class PageAnalyzer:
         self._sink = sink
 
     async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None:
-        """One analysis attempt.  On failure the page is parked for a
-        delayed background retry and None is returned, so the crawl
-        loop never blocks on the LLM."""
+        """Analyze a page; publish success or queue a failed call for bounded retries."""
         if not _page_text(page):
             logger.debug("analysis.skip_empty url_key=%s", page.url_key)
             return None
@@ -179,13 +149,7 @@ class PageAnalyzer:
             self._drain_task = None
 
     async def drain_pending(self) -> None:
-        """Wait until every parked page is settled (success or giveup).
-
-        The crawl loop never needs this: parked pages retry in the
-        background and the crawl moves on.  Batch consumers like replay
-        must wait, otherwise aclose() would cancel the drain and drop
-        pages mid-retry.
-        """
+        """Wait until all queued and currently retrying analyses have settled."""
         while self._parked_count > 0:
             if self._drain_task is None or self._drain_task.done():
                 # The drain died on an unexpected error; nothing will
@@ -289,9 +253,7 @@ def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str
     return "\n".join(lines)
 
 
-# Values that assert an absence.  Kept as a set rather than a pattern
-# because a field whose answer merely contains "no" ("no-sugar option")
-# is a real answer; only a bare negation is the unprovable one.
+# Reject bare negations, but preserve values such as "no-sugar option".
 _NEGATIONS = frozenset(
     {
         "no",
@@ -327,13 +289,7 @@ def _normalize(text: str) -> str:
 
 
 def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, ExtractedField]:
-    """Keep the declared fields whose evidence is really in the page.
-
-    The check is what makes a result something to act on rather than
-    something to trust.  A model that paraphrases the page, or quotes the
-    goal back, produces evidence that is not there, and the field is
-    dropped instead of stored.
-    """
+    """Keep declared, nonempty fields whose evidence appears in normalized page text."""
     fields = spec_fields(goal.extraction_spec)
     if not fields:
         return {}
@@ -354,11 +310,7 @@ def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[
             logger.debug("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
             continue
         if _normalize(value) in _NEGATIONS:
-            # A quote can only prove what a page says.  There is no
-            # sentence anywhere that proves an absence, so a field
-            # answering "no" is asserting something its evidence cannot
-            # support -- and absence is already sayable here, by the
-            # field not being present at all.
+            # Bare negations do not establish a field value; omit them.
             logger.debug("analysis.negative_claim url_key=%s field=%s", page.url_key, name)
             continue
         out[name] = ExtractedField(value=value, evidence=evidence)
@@ -388,6 +340,7 @@ def _parse_analysis(
     summary = str(summary).strip() if isinstance(summary, str) else ""
 
     tags = _str_list(data.get("tags"), _MAX_TAGS)
+    extracted = _parse_extracted(data, page, goal)
 
     return AnalysisResult(
         page_id=page.page_id,
@@ -397,9 +350,9 @@ def _parse_analysis(
         relevance_score=relevance,
         summary=summary,
         structured_data=data,
-        extracted=_parse_extracted(data, page, goal),
+        extracted=extracted,
         spec_version=spec_version(goal.extraction_spec),
-        **_dates_from(data, page, goal),
+        **_dates_from(extracted, page, goal),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
@@ -414,20 +367,16 @@ def _parse_analysis(
     )
 
 
-def _dates_from(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, Any]:
-    """When the page says its subject applies, if the goal declared a field for it.
-
-    Read here rather than at the report, because the reader wants one
-    answer per page and re-parsing a string in three places is three
-    chances to disagree about it.
-    """
+def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: CrawlGoal) -> dict[str, Any]:
+    """Derive event dates from the validated field declared by the goal."""
     declared = spec_time_field(goal.extraction_spec)
     if declared is None:
         return {}
     name, kind = declared
-    field = (data.get("extracted") or {}).get(name) if isinstance(data.get("extracted"), dict) else None
-    said = str(field.get("value", "")) if isinstance(field, dict) else ""
-    found = read_range(said, kind=kind, said_on=page.published_at)
+    field = extracted.get(name)
+    if field is None:
+        return {}
+    found = read_range(field.value, kind=kind, said_on=page.published_at)
     if found is None:
         return {}
     return {

@@ -1,16 +1,4 @@
-"""Configuration.
-
-One Settings class reads env vars / .env for every knob.  CLI flags
-override it at runtime, so the effective priority is:
-
-    defaults  ->  .env  ->  env vars  ->  CLI flags
-
-Documentation discipline: `.env.example` advertises only the set-once
-knobs (secrets, timeouts, deep tuning).  The per-run knobs (result_dir,
-ignore_robots, log_level) also exist here so flags can
-override them, but their env twins are deliberately undocumented.
-When both are given, the flag wins.
-"""
+"""Settings-backed options use defaults, .env, environment, then CLI overrides."""
 
 from __future__ import annotations
 
@@ -28,50 +16,26 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- Per-run knobs (flags are the documented entry; env twins exist
-    #    mechanically but are not advertised in .env.example) ---------
+    # Per-run settings
     result_dir: Path = Path("results")
     ignore_robots: bool = False
-    # Trade tokens for coverage: no stage removes a candidate, it only
-    # ranks it last, and the page budget decides where to stop.  Off by
-    # default because a link graph without a hard filter grows without
-    # bound; a feed is finite, so the trade is available there.
+    # Retain LLM rejections at low priority; deterministic filters still apply.
     recall: bool = False
-    # The analysis stage: one LLM call per fetched page, returning a
-    # verdict, the fields the goal asked for, and the evidence behind
-    # both.  On by default, degrades without credentials; --analysis
-    # off disables it for a clean baseline.
+    # Optional per-page relevance and field extraction; disabled without credentials.
     analysis_enabled: bool = True
-    # Page text sent to the analyzer per page, in characters.  The
-    # dominant analyzer cost driver.  Set to 3000 by the 10-replicate
-    # benchmark (benchmark/feedback/): on research-style tasks the
-    # 6000-char window was actively worse than no feedback at all,
-    # while 3000 won both precision and single-run recall.
+    # Maximum page-text characters sent to the analyzer.
     analyzer_max_chars: int = 3000
 
-    # --- LLM (v0.2+) ---
-    # On by default.  Degrades automatically: without a key and without
-    # a base url the LLM stages are skipped at wiring time, and runtime
-    # failures fall back to rule scoring.
+    # LLM stages are absent without a key or base URL.
     llm_model: str = ""  # "" = provider default (openai/gpt-4o-mini)
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_concurrency: int = 2
-    # Ceiling on one response, and on a reasoning model the thinking is
-    # spent out of it before any answer is written.  Too low and the
-    # reply comes back empty or half-finished, which reads like a broken
-    # parser rather than a budget.  A ceiling is not a cost: only tokens
-    # actually generated are billed, so headroom is free until used.
+    # Response token ceiling, including reasoning tokens where applicable.
     llm_max_output_tokens: int = 16384
-    # How much candidate text one ranking call may carry.  Candidates are
-    # never cut to fit: a batch that would exceed this is split into more
-    # calls, because a post whose only relevant line sits past a cut is
-    # rejected for not containing what was cut off.  Raise it for a model
-    # with a larger context, lower it if a provider rejects the request.
+    # Split ranking batches at this text limit without truncating candidates.
     llm_max_batch_chars: int = 12_000
-    # How hard the model thinks before answering, per stage. Named in
-    # this project's words, off / low / medium / high, and translated
-    # per model by llm.reasoning. Empty leaves the provider's default.
+    # Per-stage effort; empty leaves the provider default.
     llm_rank_reasoning_effort: str = ""
     llm_analyze_reasoning_effort: str = ""
     llm_enhance_reasoning_effort: str = ""
@@ -81,45 +45,28 @@ class Settings(BaseSettings):
     fetch_timeout_connect: float = 10.0
     fetch_timeout_read: float = 30.0
     fetch_max_retries: int = 3
-    # "http" is plain httpx; "browser" renders with Playwright, which is
-    # what a JS-built timeline or a login-walled platform needs.
+    # "http" dispatches per platform; "browser" renders every candidate.
     fetcher: str = "http"
-    # Path to a storage_state JSON the user exports themselves.  Empty
-    # means an anonymous browser.  Secrets stay out of flags: this is a
-    # path, and the file itself never enters the repo.
+    # Playwright storage-state path; empty uses an anonymous context.
     browser_storage_state: str = ""
-    # Ceiling on what one page load may keep of its own sub-responses.
-    # They are held in memory before they reach disk, so this is the
-    # difference between a heavy page and an out-of-memory machine.
+    # Per-page byte cap for sub-responses held in memory before storage.
     browser_max_payload_bytes: int = 8 * 1024 * 1024
-    # How many times a feed listing is asked for more of itself.  One
-    # screen answers a window measured in weeks with a dozen posts, so
-    # this trades coverage against how much of the crawl a platform
-    # sees.  Ignored outside feed mode.
+    # Maximum scrolls on platforms that request scrolling.
     feed_scrolls: int = 4
     user_agents: list[str] = [DEFAULT_UA]
 
-    # --- Extract ---
-    # Per page, for trafilatura plus link parsing.  A safety valve, not a
-    # content filter: trafilatura degrades to O(n^2) on pathological HTML
-    # and a healthy page finishes well inside this.
+    # Timeout for each extraction or link-harvesting operation, in seconds.
     extract_timeout: float = 120.0
 
     # --- Frontier ---
     candidate_buffer_size: int = 2_000
 
-    # --- Seed enhancement ---
-    # How many seeds the LLM may add: clamp(4 + 2*log2(yours), min, max).
-    # Bounds, not a count, because one seed deserves a few and thirty
-    # does not need thirty more.
+    # Proposal count is clamped between these bounds.
     enhance_seeds: bool = False
     enhance_seeds_min: int = 4
     enhance_seeds_max: int = 12
 
     # --- Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
-    # Documented dual knob: the --log-level flag overrides this default.
     log_level: str = "INFO"
-    # console for a person at a terminal, which is who runs this; json
-    # for a log collector, which is who reads it afterwards.
     log_format: str = "console"  # console | json

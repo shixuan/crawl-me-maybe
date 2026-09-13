@@ -1,13 +1,6 @@
-"""The queue of pages waiting to be fetched, and when each may go.
+"""Priority queue with cooldown gates and aging for low-priority items.
 
-A max-heap on the priority the ranker produced, plus the two things a
-heap alone cannot express: an item held back until a rate limit passes,
-and an item aged upward so that a low score cannot wait forever.
-
-Fairness between seeds is not decided here.  By the time an item
-reaches this queue it has been scored, and the only question left is
-which score goes first.  See buffer.py, which is the gate that binds.
-"""
+Seed rotation belongs to the unranked buffer."""
 
 from __future__ import annotations
 
@@ -24,14 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class Gate(enum.Enum):
-    """What the shell decided about one candidate item.
-
-    Four outcomes rather than a boolean, because the existing frontier
-    already distinguishes them and collapsing any two would change
-    behavior: a rate-limited item comes back later, a budget-exhausted
-    domain never does, and a spent global budget ends the scan for
-    everyone rather than for one item.
-    """
+    """Gate outcomes for taking, deferring or dropping an item, or stopping the scan."""
 
     TAKE = "take"
     DEFER = "defer"
@@ -53,25 +39,14 @@ def _next_seq() -> int:
 
 
 class PriorityQueue:
-    """Best-first ordering over a link graph.
-
-    Python's heapq is a min-heap and we want the highest priority first,
-    so the key is (-priority, seq, url_key); seq breaks ties in push
-    order.  Deferred items leave the heap entirely and live in a pending
-    list until their cooldown passes, which is why they are also removed
-    from the index: drain can then re-add them without a conflict.
-    """
+    """Best-first queue with lazy removal, cooldowns and periodic aging."""
 
     def __init__(self, *, aging_window: float = 600.0, age_factor: float = 1.0) -> None:
         self._aging_window = aging_window
         self._age_factor = age_factor
         self._heap: list[tuple[float, int, str]] = []
         self._items: dict[str, FrontierItem] = {}
-        # Three sets, one meaning each, so no count has to be inferred:
-        # queued and in the heap, cooling down, and handed out but not
-        # settled.  The heap keeps stale entries either way -- it cannot
-        # delete from the middle -- but nothing reads the heap to answer
-        # a question about membership or size.
+        # Track queued, deferred and in-flight items separately from stale heap entries.
         self._pending: list[FrontierItem] = []
         self._taken: set[str] = set()
 
@@ -82,12 +57,7 @@ class PriorityQueue:
 
     @property
     def cooling(self) -> int:
-        """Items held back by the clock, which time alone will release.
-
-        Distinct from items a gate refuses outright: a spent budget
-        refuses the same item forever, so a caller that waits for one of
-        those to become available waits for nothing.
-        """
+        """Count deferred items that may become available when time advances."""
         return len(self._pending)
 
     def contains(self, url_key: str) -> bool:
@@ -108,13 +78,7 @@ class PriorityQueue:
         self._pending = [i for i in self._pending if i.url_key != url_key]
 
     def discard_seed(self, seed_url_key: str) -> None:
-        """Forget everything queued for one seed.
-
-        Eagerly, not when the scan next reaches them: size counts what is
-        queued, and a run whose sources have all retired would otherwise
-        never read as drained. The heap entries left behind are stale and
-        the scan already drops those.
-        """
+        """Remove pending items belonging to a seed."""
         self._items = {k: i for k, i in self._items.items() if i.seed_url_key != seed_url_key}
         self._pending = [i for i in self._pending if i.seed_url_key != seed_url_key]
 
@@ -129,16 +93,10 @@ class PriorityQueue:
             heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
 
     async def take(self, now: datetime.datetime, gate: GateFn) -> FrontierItem | None:
-        """Highest-priority item the gate allows right now.
+        """Return the highest-priority item currently allowed by the gate.
 
-        Retries: a scan that finds nothing may still have cooled-down
-        items waiting, so draining them and rescanning beats returning
-        None while work is available.
-
-        Anything deferred during this call is held back from the retry.
-        Without that, a gate that defers for a reason other than the clock
-        livelocks: the item is already due, so drain returns it at once,
-        so the scan defers it again, forever.
+        Rescan after releasing cooled-down items, but exclude items deferred in this
+        call so a non-time-based deferral cannot cause an infinite loop.
         """
         deferred: set[str] = set()
         while True:
@@ -179,12 +137,7 @@ class PriorityQueue:
         return None
 
     def peek(self) -> FrontierItem | None:
-        """The heap's top, with dead entries cleared off it on the way.
-
-        Reports the stored priority rather than the aged one: aging is
-        applied when an item is taken, and recomputing it here for every
-        look would make a read cost as much as a write.
-        """
+        """Return the live heap top without checking gates or refreshing aging."""
         while self._heap:
             url_key = self._heap[0][2]
             item = self._items.get(url_key)
@@ -203,10 +156,7 @@ class PriorityQueue:
             if item.url_key not in self._items:
                 item.seq = _next_seq()
                 self._items[item.url_key] = item
-                # Aged for the ordering, not written back. A busy domain
-                # drains the same item many times, and writing it back
-                # aged the aged value again. Five passes lifted a 0.5 to
-                # a 1.0. It is written back once, when taken.
+                # Do not compound aging across deferred scans; persist it only when taking the item.
                 heapq.heappush(self._heap, (-self._effective_priority(item, now), item.seq, item.url_key))
         return len(ready) > 0
 
@@ -221,12 +171,7 @@ class PriorityQueue:
         return item.priority + self._age_factor * age_seconds / self._aging_window
 
     def dump(self) -> dict[str, Any]:
-        """State as plain data, the same shape in memory and on disk.
-
-        Returning models worked until a checkpoint was written and read
-        back, at which point load() was handed dicts and reached for an
-        attribute they do not have.
-        """
+        """Serialize ordering state, including deferred items."""
         heap_items = [self._items[k] for _, _, k in self._heap if k in self._items]
         return {
             "heap": [i.model_dump(mode="json") for i in heap_items],

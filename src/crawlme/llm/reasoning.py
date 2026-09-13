@@ -1,15 +1,6 @@
-"""How hard to think, said once and translated per model.
+"""Translate off/low/medium/high effort settings using provider capabilities.
 
-Configuration names an effort in this project's own words. What a
-provider accepts differs: DeepSeek turns thinking off with "none",
-GPT-5 rejects that value and calls its floor "minimal", and a model
-that does not think at all rejects the parameter itself. Naming the
-provider's word in configuration made one setting right for one model
-and an error for the rest.
-
-The vocabulary is off / low / medium / high, and empty leaves the
-provider's own default alone.
-"""
+An empty setting leaves the provider default unchanged."""
 
 from __future__ import annotations
 
@@ -48,22 +39,13 @@ def effort_for(model: str, wanted: str) -> str:
     for floor in _FLOORS:
         if _accepts(model, floor):
             return floor
-    # It thinks and will not be talked out of it. Sending a floor the
-    # model rejects would fail the call, and failing is worse than
-    # thinking.
+    # Omit an unsupported off value instead of sending an invalid parameter.
     logger.info("%s has no way to turn thinking off, leaving it on", model)
     return ""
 
 
 def step_down(wanted: str) -> str:
-    """The level below *wanted*, or empty when there is nowhere lower.
-
-    A model that thinks away the whole output allowance answers nothing.
-    Asking again at the same level buys the same silence and a bigger
-    ceiling buys a longer one, so the only move left is to think less.
-    A value this project has not heard of drops straight to the floor,
-    since there is no ladder to walk down.
-    """
+    """Return the next lower effort. Unknown values fall to off; off has no lower level."""
     if wanted == OFF:
         return ""
     if wanted in LEVELS:
@@ -85,12 +67,7 @@ def _takes_effort(model: str) -> bool:
 
 
 def _accepts(model: str, value: str) -> bool:
-    """Whether this model is known to reject *value*.
-
-    Unknown counts as accepted. litellm records the answer for a handful
-    of models and nothing for the rest, so treating silence as refusal
-    would turn thinking on everywhere it has not been catalogued.
-    """
+    """Return whether a value is accepted; assume acceptance when capability data is absent."""
     try:
         import litellm
 

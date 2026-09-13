@@ -12,7 +12,7 @@ import datetime
 import pytest
 
 from crawlme.analyzer import PageAnalyzer
-from crawlme.analyzer.page_analyzer import _build_prompt, _parse_extracted
+from crawlme.analyzer.page_analyzer import _build_prompt, _parse_analysis, _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -424,13 +424,7 @@ async def test_spec_in_prompt():
 
 
 async def test_spec_version():
-    """A different field list is a different reading of the page.
-
-    It does not belong in goal_id: that is sha256(prompt), which is what
-    replay idempotency and the goal embedding cache rest on, and a
-    model-inferred spec would make the same prompt keep becoming a new
-    goal.  It is recorded next to prompt_version and model instead.
-    """
+    """Different field lists change spec_version without changing prompt-derived goal identity."""
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
     analyzer = _analyzer(client)
     first = await analyzer.analyze(_page(_OFFER_PAGE), _spec_goal())
@@ -571,3 +565,32 @@ def test_aggregator_is_gone():
 
     assert "AGGREGATOR" not in CLASSIFICATIONS
     assert "AGGREGATOR" not in _contract()
+
+
+@pytest.mark.parametrize("evidence", ["Offer ends August 16, 2027.", "invented evidence", ""])
+def test_dates_require_validated_evidence(evidence):
+    text = "Offer ends August 16, 2027."
+    goal = CrawlGoal(
+        prompt="find offers",
+        extraction_spec={
+            "fields": {"deadline": "when the offer ends"},
+            "time_field": {"name": "deadline", "kind": "until"},
+        },
+    )
+    result = _parse_analysis(
+        {
+            "classification": "RELEVANT",
+            "extracted": {"deadline": {"value": "August 16, 2027", "evidence": evidence}},
+        },
+        _page(text),
+        goal,
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.starts_on is None
+    if evidence == text:
+        assert result.ends_on == datetime.date(2027, 8, 16)
+        assert "deadline" in result.extracted
+    else:
+        assert result.ends_on is None
+        assert result.extracted == {}

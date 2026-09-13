@@ -1,9 +1,4 @@
-"""Pre-filter: zero-LLM deterministic rules that discard junk candidates.
-
-Each rule is an independent callable returning (ALLOW | DROP, reason_str).
-Rules execute in priority order and short-circuit on first DROP.
-Fail-open on rule exceptions: a broken rule never blocks a candidate.
-"""
+"""Deterministic URL filters applied before candidate ranking."""
 
 from __future__ import annotations
 
@@ -24,12 +19,7 @@ _DEFAULT_BLACKLIST: frozenset[str] = frozenset({"wikidata.org"})
 
 
 def _load_blacklist() -> frozenset[str]:
-    """Domains to refuse, read from ``blacklist.json`` beside the run.
-
-    Kept out of ``src/`` so editing the list is not editing the crawler,
-    and read once at import: it decides every candidate the crawl ever
-    sees, and re-reading a file that often would cost more than the rule.
-    """
+    """Read blocked domains from blacklist.json in the working directory."""
     path = Path("blacklist.json")
     try:
         data = json.loads(path.read_text())
@@ -124,14 +114,7 @@ def protocol_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tupl
 
 
 def extension_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
-    """Not every address is a page worth fetching -- except the ones asked for.
-
-    The list guards against a crawl wandering into archives, images and
-    documents it found on a page.  A seed is not wandering: somebody
-    typed it.  And feeds are named exactly what this list refuses --
-    `feed.xml`, `/rss` -- so a run seeded with one lost it silently
-    before it was ever fetched.
-    """
+    """Reject non-page extensions unless the goal explicitly asks for that format."""
     if c.depth == 0:
         return None
     if _EXT_DENYLIST.search(c.url.canonical):
@@ -165,19 +148,7 @@ def negative_anchor_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) 
 
 
 def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[Decision, str] | None:
-    """Drop candidates a listing already dated outside the goal's window.
-
-    A listing states roughly when each item was posted, so a post older
-    than the window can be skipped before paying a request to read it.
-
-    Only a *stated* date drops anything. An unknown date is not an old
-    one, and platforms leave it out often enough to matter: four of the
-    twelve entries on the page this was written against carried none.
-
-    This is the per-candidate half of the time window. The stale streak
-    is the other half and retires one source, which is right only for a
-    strictly ordered one.
-    """
+    """Reject candidates with a known publication date before the goal cutoff."""
     if goal.since is None or c.posted_at is None:
         return None
     posted = c.posted_at

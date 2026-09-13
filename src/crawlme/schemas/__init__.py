@@ -1,9 +1,4 @@
-"""The neutral cross-layer vocabulary (see core.py for the rules).
-
-Every model the layers exchange lives here, organized by the layer
-that owns it.  This __init__ re-exports everything so the historical
-flat import surface keeps working unchanged.
-"""
+"""Shared Pydantic models exchanged between pipeline components."""
 
 from crawlme.schemas.analysis import (
     CLASSIFICATIONS,

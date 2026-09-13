@@ -1,11 +1,4 @@
-"""Ranker protocol: the single interface for all ranking strategies.
-
-Duck-typed, no inheritance required.  Two things the signature cannot
-say: a rejected candidate still comes back, with dropped=True, so every
-candidate that reaches a ranker leaves an audit trail; and the kept
-ones come back sorted by priority descending, by convention rather than
-by enforcement.
-"""
+"""Ranking contract for candidate batches."""
 
 from __future__ import annotations
 
@@ -15,13 +8,7 @@ from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySumma
 
 
 class Ranker(Protocol):
-    """Contract for pluggable ranking strategies.
-
-    Implementations receive a batch of candidates, the crawl goal, a
-    summary of what has been seen so far, and optional per-page context
-    so they can incorporate source-page signals (title match, position
-    bias) into the scoring decision.
-    """
+    """Score candidate batches using the goal, history and source-page context."""
 
     async def rank_batch(
         self,

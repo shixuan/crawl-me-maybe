@@ -1,9 +1,4 @@
-"""Reading a moment off the command line.
-
-Two flags name one, in opposite directions: what was published since,
-and what runs until. They take the same two forms, so they read it in
-one place rather than each growing its own idea of what "1 week" is.
-"""
+"""Parse absolute or relative CLI cutoffs for publication and event windows."""
 
 from __future__ import annotations
 
@@ -24,12 +19,9 @@ _UNITS = {
 
 
 def read_cutoff(text: str, *, flag: str, ahead: bool = False) -> datetime.datetime:
-    """A moment, written as an offset from now or as a date.
+    """Read an ISO date or a day/week/month/year offset.
 
-    *ahead* turns an offset around: "1 week" is a week back for what was
-    published, a week forward for what is still to come. A written date
-    is that date either way, because a date does not have a direction.
-    """
+    Offsets point backward unless ahead=True. Naive dates are interpreted as UTC."""
     raw = text.strip().lower()
     parts = raw.split()
     if len(parts) == 2 and parts[0].isdigit() and parts[1] in _UNITS:

@@ -1,36 +1,7 @@
-"""Setup function: wires the root logger from Settings.
+"""Configure console/file logging and buffer startup records.
 
-What belongs at each level, so the answer is not decided once per
-investigation:
-
-  ERROR    the run cannot go on, or a whole stage stopped working
-  WARNING  the run is producing something wrong or incomplete and is
-           carrying on anyway
-  INFO     what is happening, for the person who started the run. One
-           line each time something is handled, naming it by its
-           address. No url_keys, no byte counts, no ratios
-  DEBUG    the same events counted rather than described, plus the
-           mechanics that have no readable form
-
-WARNING against INFO: would ignoring this line leave someone believing
-a result that is not true? Payloads dropped by their content type sat
-at DEBUG, and five accounts were read weeks out of date without a word.
-
-INFO against DEBUG: would the person who typed the command understand
-this line and care? "read 63 posts from timhortons" passes, "kept=6
-bytes=2482493" does not.
-
-Readable is not the same as sparse. Both levels run per item and the
-split is vocabulary, not density. Moving the per-item lines to DEBUG
-alone left four workers running behind a terminal that printed once a
-minute, which reads as a stall.
-
-INFO speaks when the wait begins, not when it ends. One seed proposal
-took over two minutes, which read as a hang and was interrupted twice.
-
-A field name says what it measured, not what it is about. `took` reads
-as the time a call spent and was the wall clock around an await.
-"""
+ERROR reports failed stages; WARNING reports degraded results; INFO describes
+progress using readable addresses; DEBUG carries diagnostic counters and IDs."""
 
 from __future__ import annotations
 
@@ -46,20 +17,12 @@ if TYPE_CHECKING:
 
 
 _OFF = logging.CRITICAL + 10
-# Startup lines held for a file that does not exist yet. Enough for the
-# whole startup phase and small enough to forget about if no file ever
-# arrives.
+# Bound startup records retained before the log file is attached.
 _BACKLOG_LIMIT = 1000
 
 
 class _Backlog(logging.Handler):
-    """Keeps records until there is a file to put them in.
-
-    The run directory is named by the scheduler, so nothing can be
-    written to disk until it exists. Everything logged before that used
-    to reach the terminal alone, which is exactly the part a person
-    goes looking for afterwards, and afterwards the terminal is gone.
-    """
+    """Buffer startup records until the run log file exists."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -71,22 +34,9 @@ class _Backlog(logging.Handler):
 
 
 def setup_logging(settings: Settings, *, force: bool = False) -> None:
-    """Configure the root logger from *settings*.
+    """Configure handlers and levels; existing handlers are preserved unless force=True.
 
-    Idempotent: only configures once unless *force* is True.
-
-    Calling convention (two deliberate call sites):
-      - CLI: ``_cmd_run`` calls once with force=True AFTER applying
-        flag overrides, the single place where per-run log settings
-        land.  Never call before flags are known, or the flag values
-        will silently not apply (idempotency swallows the second call).
-      - engine.run(): calls again WITHOUT force as a safety net for
-        library users who never went through the CLI; in the CLI flow
-        this call is a no-op.
-
-    log_level values: DEBUG, INFO, WARNING, ERROR, CRITICAL, OFF.
-    OFF disables all output: no handler is added.
-    """
+    Apply CLI overrides before calling. OFF installs no handlers."""
     root = logging.getLogger()
     if root.handlers and not force:
         return
@@ -109,9 +59,7 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
     root.addHandler(h)
     root.addHandler(_Backlog())
 
-    # Quiet noisy third-party loggers. litellm attaches a handler of
-    # its own and never sets a level, so at INFO it announced every
-    # completion twice, once through its handler and once through ours.
+    # Suppress routine third-party logs and duplicate completion messages.
     for noisy in (
         "httpx",
         "httpcore",

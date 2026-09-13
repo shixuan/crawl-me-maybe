@@ -1,933 +1,200 @@
 # Architecture
 
----
+`crawlme` separates discovery, page processing, analysis and scheduling. Shared
+Pydantic models live in `schemas/`; the mutable run context lives in `state/`.
 
-## Design principles
+## Components
 
-Only these constrain the shape of the code:
-
-- **One job each, and no sideways calls.** The fetcher downloads, the extractor
-  extracts, the ranker orders. Modules never call each other; all coordination
-  happens in `CrawlScheduler`.
-- **The pipeline carries typed objects**, not strings. Every stage takes and
-  returns a pydantic model.
-- **Dependency injection.** The engine imports no concrete class, only Protocols;
-  `factory.py` is the single place that knows the implementations. Tests inject
-  with `create_scheduler(cfg, fetcher=mock)`.
-- **Resumable.** Whenever it exits, it can pick up from a `FrontierSnapshot`.
-- **Replayable.** Raw HTML is kept forever, so a better model or a better prompt
-  means re-analysing, not re-crawling.
-- **Cost control.** Everything free runs before anything that costs; LLM calls are
-  amortised over batches.
-- **Event-sourced.** Every state change appends an event. Replay, debugging and
-  incremental output are all built on that log.
-- **Able to answer "how do you know?"** Every extracted field carries a quote from
-  the page, and a quote that is not in the page throws the field away. The
-  extractor also refuses the `date` trafilatura offers for free, because it will
-  read "Copyright 2024" in a footer as a publication date. Better to admit not
-  knowing than to hand back a guess.
-
----
-
-## The whole thing
-
-> Both kinds of source can appear in one run: a feed seed yields posts, an
-> ordinary web seed yields outlinks, and they travel the same loop through the
-> same components. **The only difference is who claims the page at step ⑤** — not
-> a second code path.
->
-> **There is one ranking stage.** A rule ranker and an embedding ranker used to sit
-> between the pre-filter and the LLM, along with a steering layer that adjusted
-> priorities by domain reputation. All three were removed in v0.3.0; the reasoning
-> is at the top of `ranking.md`.
-
-### One picture
-
-A single `crawl run`, top to bottom. Boxes are the components that do the work,
-the right-hand column is the package each one lives in, and `*` marks a slot the
-engine only knows as a Protocol, filled in by the factory.
-
-```
-   crawl run "<goal>" --seeds … [--session …]                          cli/
-                    │
-                    ▼
-   GoalEnhancer     one LLM call: goal statement, keywords,          pioneer/
-                    which fields to extract
-                    │
-                    ▼
-   create_scheduler(settings, goal)                        scheduler/factory
-   the only place concrete classes are imported
-                    │
- ┌──────────────────▼─────────────────────────────────────────────────────┐
- │ CrawlScheduler       fetch_pump ∥ rank_pump, one half-loop each        │
- │                      they meet only at the Frontier                    │
- └──────────────────┬─────────────────────────────────────────────────────┘
-                    │
-    ┌───────────────▼──────────────────────────────────────────┐
-    │ Frontier*  everything found and not yet read, in halves  │  pioneer/
-    │                                                          │
-    │   ① PriorityQueue      scored, waiting for a fetch slot  │
-    │   ⑥ RoundRobinBuffer*  unscored, a turn per seed         │
-    └───┬─────────────────────────────────────────▲────────────┘
-        │ pop one                                 │ push_batch
-        ▼                                         │
-    ② Fetcher*      httpx, or Playwright where    │        digest/fetcher
-       │            the address needs rendering   │
-       ▼                                          │
-    ③ Extractor*    trafilatura → text            │        digest/
-       │                                          │
-       ▼                                          │
-    ④ Analyzer*     one LLM call: verdict,        │        analyzer/
-       │            summary, and the goal's       │
-       │            fields, each with a quote     │
-       ▼                                          │
-    ⑤ Harvester*    listing → post permalinks     │        digest/
-       │            ordinary page → outlinks      │
-       │            whichever FeedAdapter* claims │
-       │            it (instagram · reddit · rss) │
-       │                                          │
-       └──► back to ⑥ ──► ⑦ PreFilter ──► Ranker* ┘        pioneer/
-                          10 URL-level   20 per batch,
-                          checks, no LLM absent without credentials
-
- ┌────────────────────────────────────────────────────────────────────────┐
- │ Persistence: one timestamped directory per run, and no mutable state   │  storage/
- │ shared across runs                                                     │
- │   ③ → pages + raw HTML     ④ → analyses     ⑤ → links                  │
- │   ⑦ → rank_decisions       state changes → events                      │
- └────────────────────────────────────────────────────────────────────────┘
-
- Cross-cutting, used by every layer above:
-   schemas/   the shared vocabulary, plain pydantic, no dependencies
-   llm/       LLMClient · TokenBudget (input / output / cached / thinking
-              each counted separately, and the bill split per stage)
-   state/     CrawlContext (limits + progress + ledger) · EventEmitter
-   config.py  Settings: defaults → .env → env → flag
+```mermaid
+flowchart TB
+    cli["cli/run.py<br>settings, goal, shared token budget"] --> factory["scheduler/factory.py<br>component assembly"]
+    factory --> engine
+    subgraph engine["scheduler/engine.py · CrawlScheduler"]
+        fetchpump[fetch_pump]
+        rankpump[rank_pump]
+    end
+    subgraph pioneer["pioneer/"]
+        frontier["Frontier<br>priority queue + unranked buffer"]
+        filter[PreFilter]
+        ranker[LLMRanker]
+    end
+    subgraph digest["digest/"]
+        fetcher["Fetcher<br>HTTP / Playwright dispatch"]
+        extractor[TrafExtractor]
+        harvest["PageHarvester<br>feed adapters / web links"]
+    end
+    frontier --> fetchpump
+    fetchpump --> fetcher --> extractor
+    extractor --> analyzer["analyzer/PageAnalyzer"]
+    analyzer --> harvest --> filter --> frontier
+    frontier --> rankpump --> ranker --> frontier
+    analyzer -. feedback .-> ranker
+    engine --> storage["storage/sqlite/<br>pages, analyses, events, checkpoints"]
 ```
 
-How to read it:
+| Location | Responsibility |
+|---|---|
+| `cli/` | Parse commands, apply settings, build goals, report results |
+| `scheduler/factory.py` | Select and inject concrete implementations |
+| `scheduler/engine.py` | Coordinate components and persist their outputs |
+| `scheduler/stop_conds.py` | Decide run stopping and individual source retirement |
+| `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs; enhance goals and seeds |
+| `digest/` | Fetch, extract text and discover candidates |
+| `analyzer/` | Classify pages and extract fields with source evidence |
+| `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
+| `state/` | Run limits, progress, reporting counters and event emission |
+| `storage/` | Persistence contract and SQLite implementation |
+| `util/dates.py` | Parse event dates and assign result groups |
+| `dashboard/` | Local HTTP server and browser UI for stored results |
 
-- **The top half ①→②→③→④→⑤ is `fetch_pump`.** One page comes off the queue and
-  goes all the way through; it never waits for ranking.
-- **The bottom half ⑥→⑦→① is `rank_pump`.** The unscored half is ranked when it
-  has a batch, or has been non-empty for 30s, or the scored half is starving.
-- **The two coroutines meet only at the Frontier.** Exactly three pieces of state
-  are shared: the scored half (an `asyncio.Lock`), the unscored half (an
-  `asyncio.Condition`), and `page_contexts` (a plain dict only `fetch_pump` writes).
-- **`PriorityQueue` is two levels.** It does not order anything itself: it groups
-  by seed, gives each group its own queue, and uses another queue to decide whose
-  turn it is. The same algorithm therefore plugs in at either level, and
-  `--order best` is not a second code path — plug it in at the outer level and
-  "the best of the best group" *is* "the best overall".
-- **④ is the product, ⑦ is a prediction.** Ranking guesses which pages are worth
-  reading; analysis establishes what they actually were. Only the analysis carries
-  quotes from the page, and only it is what a user consumes.
+The scheduler depends on component contracts. The factory supplies implementations;
+`create_scheduler(..., fetcher=stub)` and other overrides support isolated tests.
+Simple policies such as URL canonicalization and pre-filtering use concrete classes.
 
-One line per layer:
+## Crawl lifecycle
 
-- **pioneer (discovery)** — decides where to go next: Canonicalizer, PreFilter,
-  Frontier, Ranker, RobotsPolicy, GoalEnhancer
-- **digest (processing)** — turns a page into content and candidates: Fetcher,
-  Extractor, Harvester, FeedAdapter
-- **analyzer (analysis, optional)** — one LLM call per page: verdict, summary,
-  fields with evidence. `--analysis off` and none of it is constructed
-- **scheduler (orchestration)** — the engine knows only Protocols, the factory is
-  the single assembly point, `stop_conds` decides when to stop
-- **storage (persistence)** — contracts in `contracts.py`, SQLite in `sqlite/`;
-  a different storage technology is a sibling package plus one factory change
+1. The CLI applies flags, validates dependencies and session settings, and creates
+   a goal, task, scheduler and shared `TokenBudget`.
+2. `GoalEnhancer` derives the goal statement, fields and optional publication
+   cutoff. An explicit `--since` overrides the inferred cutoff.
+3. Optional seed enhancement proposes URLs and verifies that fetched pages yield
+   candidates. Accepted proposals receive a smaller share of candidate rotation.
+4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
+5. `fetch_pump` dispatches pages while `rank_pump` scores newly discovered candidates.
+6. On exit, the scheduler settles in-flight work and pending analyses, records stop
+   reasons and a frontier checkpoint, then closes resources.
 
----
+Without LLM configuration, enhancement and analysis are absent and candidates are
+queued without LLM ranking. Deterministic URL filtering still runs.
 
-## Dependency injection: Protocol + Factory
+### Fetching and discovery
 
-The engine imports no concrete class; it depends only on Protocols. `factory.py`
-is the only module that knows every implementation.
+Each dispatched item is fetched, saved as raw HTML, extracted to a `Page`, and
+persisted before analysis. The harvester then reads the saved HTML and payloads.
 
-### Protocol → implementation
+- `DispatchingFetcher` chooses Playwright for enabled adapters that require
+  rendering and HTTP otherwise. `--fetcher browser` forces Playwright everywhere.
+- Playwright starts lazily, shares a browser context and opens a page per fetch.
+  Adapters select response payloads to retain and whether to scroll.
+- `TrafExtractor` uses trafilatura for text and Markdown, with BeautifulSoup as a
+  fallback. Publication dates come from declared metadata, JSON-LD or time tags.
+- `PageHarvester` asks adapters in order. A recognized post is a leaf. A listing
+  supplies post candidates and optional pagination. An unclaimed page supplies links.
+- Pagination keeps the listing's depth and has a per-listing cap. Discovered posts
+  and ordinary links increment depth.
+- Pre-filtering applies URL, scope, depth, duplication, robots and publication rules
+  before candidates enter the unranked buffer. Seeds bypass some traversal filters.
 
-| Module | Protocol | Implementation | What it is |
-|--------|----------|----------------|------------|
-| `storage/contracts.py` + `storage/sqlite/crawl_db.py` | `CrawlDb` | `SqliteCrawlDb` | Per-run crawl state (SQLite + an async write queue) |
-| `analyzer/page_analyzer.py` | `Analyzer` | `PageAnalyzer` | One LLM analysis per page |
-| `digest/feed/base.py` | `FeedAdapter` | `instagram` / `reddit` / `rss` | Whoever claims the page parses it |
-| `pioneer/frontier.py` | `Frontier` | `GatedFrontier` | Everything discovered and unread, both halves |
-| `pioneer/buffer.py` | `Buffer` | `RoundRobinBuffer` | The unscored half, a turn per seed |
-| `pioneer/queue.py` | — | `PriorityQueue` | The scored half, heapq plus cooldowns |
-| `digest/fetcher/` | `Fetcher` | `DispatchingFetcher` | Picks per candidate: httpx, or Playwright where the platform needs rendering |
-| `digest/extractor.py` | `Extractor` | `TrafExtractor` | trafilatura extraction |
-| `pioneer/ranker/base.py` | `Ranker` | `LLMRanker` | The only ranking stage; `None` without credentials |
-| `pioneer/prefilter.py` | — | `PreFilter` | No Protocol, used directly |
-| `pioneer/canonicalizer.py` | — | `Canonicalizer` | No Protocol, used directly |
-| `pioneer/robots.py` | — | `RobotsPolicy` | No Protocol, used directly |
+| Adapter | Recognition and content |
+|---|---|
+| Instagram | Host-based; requires a session and rendering. Listing payloads provide captions and timestamps, with DOM fallback |
+| Reddit | Host and rendered markup; listing cards provide post candidates and pagination |
+| RSS/Atom | Document root; entries provide content, links and publication dates; requires `feedparser` |
 
-PreFilter, Canonicalizer and RobotsPolicy are simple classes with little or no
-state to protect, so they get no Protocol layer.
+Adapters parse saved inputs and perform no network requests. Adding a platform
+requires implementing `FeedAdapter` and registering it in `digest/feed/__init__.py`.
 
-### Factory
+### Ranking and analysis
 
-```python
-# src/crawlme/scheduler/factory.py
-def create_scheduler(settings: Settings, goal=None, budget=None, **overrides: Any) -> CrawlScheduler:
-    kwargs = {
-        "settings": settings,
-        "storage": SqliteCrawlDb.create(settings.result_dir),
-        "frontier": GatedFrontier(
-            domain_budget=goal.domain_budget,
-            buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
-        ),
-        "fetcher": HttpFetcher(user_agents=..., connect_timeout=..., ...),
-        "extractor": TrafExtractor(),
-        "robots": RobotsPolicy(ignore=settings.ignore_robots),
-        "prefilter": PreFilter(),
-        "ranker": _build_ranker(settings, llm=llm_ranker),
-        "canonicalizer": Canonicalizer(),
-        "analyzer": analyzer,
-    }
-    kwargs.update(overrides)  # tests inject: create_scheduler(cfg, goal, fetcher=mock)
-    return CrawlScheduler(**kwargs)
+`RoundRobinBuffer` rotates candidate batches between seeds. `LLMRanker` uses the
+enhanced goal, requested fields, candidate text and previous analysis results.
+It splits calls by candidate count and text size. Truncated batches are subdivided;
+omitted candidates receive neutral priority. An unrecoverable ranker error stops
+the run. `--recall` retains rejected candidates at low priority.
 
-# _build_ranker(settings, llm):
-#   hands the llm straight back.  With credentials that is an LLMRanker, without
-#   them it is None -- the engine accepts having no ranker at all and enqueues
-#   candidates flat, in the order the frontier hands them out.
+`PageAnalyzer` requests a relevance verdict and, for relevant pages, a summary,
+tags and declared fields. Each field contains a value and a verbatim evidence span.
+The parser normalizes whitespace and checks evidence against `plain_text`; it does
+not independently verify the truth of the value. Unsupported fields are omitted.
+Failed analyses enter a bounded retry queue. Successful results reach the scheduler
+through a sink, including successes from delayed retries.
 
-# Configuration layering: every knob lives on Settings (readable from env/.env),
-# CLI flags override at runtime.  Precedence: defaults -> .env -> env -> flag.
-# .env.example documents the set-once knobs; the env twins of per-run knobs exist
-# but are not advertised, and a flag beats an env var.
+Analysis feeds relevant-page summaries back to ranking. It does not nominate links
+or bypass the harvester. Platform posts are leaves in the current traversal.
+
+### Event dates
+
+Publication time controls `--since` and source retirement. Event dates describe
+what a page announces and affect result grouping only.
+
+The goal's `extraction_spec.time_field` identifies a field and its meaning (`on`
+or `until`). Only validated fields produce `starts_on` and `ends_on`. The parser
+reads ISO dates and English month names. Explicit years take precedence; omitted
+years are resolved near publication, or against the current year when publication
+is unknown. Relative phrases are not resolved.
+
+`group_of()` assigns `undated`, `over`, `open` or `later`. An end date before today
+is `over`; a start beyond a supplied horizon is `later`. Without a horizon, future
+results remain `open`. The dashboard applies its selected horizon in the browser.
+
+## State and concurrency
+
+`CrawlContext` is retained across a scheduler reset; its parts are rebuilt:
+
+- `Limits` holds immutable run budgets and goal constraints.
+- `Progress` holds counters used by stopping policies.
+- `Ledger` holds reporting statistics and per-seed state.
+
+`PageBook` joins each page's seed, listing status and analysis verdict. These may
+arrive in different orders because analysis can retry. A completed non-listing
+record contributes one relevance vote to its seed.
+
+The frontier owns both the scored queue and unranked buffer. Scored work is gated
+by domain budgets and cooldowns. Ranking in progress and cooling items count as
+remaining work, so an empty immediate pop does not imply a drained frontier.
+
+Fetch and analysis concurrency have separate semaphores. Analysis does not hold a
+fetch slot. Dispatch counts in-flight pages against the page budget. The result
+target is checked before analysis, but already-running calls may overshoot it.
+Blocking extraction runs in worker threads; digest operations using libxml2 share
+`LXML_LOCK`. Extraction timeouts bound the await, not the lifetime of a running thread.
+
+## Stopping and checkpoints
+
+`check_stop(task, frontier, limits, progress)` returns all applicable reasons.
+Reporting-only counters are not passed to it.
+
+| Reason | Trigger |
+|---|---|
+| `BUDGET_PAGES`, `BUDGET_TOKENS`, `BUDGET_TIME` | A run budget is exhausted |
+| `MAX_RELEVANT` | The relevant-result target is met |
+| `FRONTIER_DRAINED` | No queued, buffered, scoring or in-flight work remains |
+| `DOMAIN_BUDGET` | A drained run refused candidates at a domain ceiling |
+| `USER_REQUESTED` | A stop was requested |
+| `RATE_LIMITED`, `LOGIN_REQUIRED` | An adapter reports a run-level refusal |
+| `ADAPTER_EMPTY` | A drained run read at least three listings and all yielded no candidates |
+| `FATAL` | A component reports an unrecoverable error |
+
+Sources retire independently after fewer than two relevant results in a full
+20-page window, or five consecutive dated pages older than `since`. Listings do
+not vote on relevance; undated pages neither advance nor reset the age streak.
+Retirement removes that seed's pending candidates. `--recall` disables retirement.
+
+The scheduler exposes pause, resume and stop methods. Pause settles in-flight
+work and saves a snapshot; resume restores the latest snapshot. The CLI does not
+expose a separate resume command.
+
+## Persistence and inspection
+
+Each run has its own directory:
+
+```text
+results/<timestamp>/
+  db/crawl.db
+  raw/<url_key>/<fetch_id>.html
+  raw/<url_key>/<fetch_id>.payload.<index>
+  log
 ```
 
-### CrawlScheduler.__init__
-
-```python
-class CrawlScheduler:
-    def __init__(
-        self, *,
-        settings: Settings,          # plain configuration
-        storage: CrawlDb,            # Protocol
-        frontier: Frontier,          # Protocol
-        fetcher: Fetcher,            # Protocol
-        extractor: Extractor,        # Protocol
-        robots: RobotsPolicy,        # concrete
-        prefilter: PreFilter,        # concrete
-        ranker: Ranker | None,       # Protocol; None = no credentials, no ranking
-        canonicalizer: Canonicalizer,# concrete
-        analyzer: Analyzer | None = None,  # Protocol; None = analysis off
-    ) -> None:
-```
-
-Every argument is required. No defaults, no `or Extractor()` fallbacks.
-
----
-
-## Core flows
-
-### Startup and seed ingestion
-
-```
-user submits a prompt
-  → CrawlGoal (goal_id, prompt, max_pages, max_tokens, ...)
-  → CrawlTask created (state=RUNNING)
-  → create_scheduler(settings)
-  → scheduler.ingest_seeds(goal, candidates, allowed_domains?):
-      for each Candidate:
-        canonicalizer.canonicalize(raw, base)
-        frontier.get_prefilter_context(allow_fetch=..., allowed_domains=...)
-        prefilter.check(c, goal, ctx)  # seeds only face dedup/blacklist/protocol/scope
-        → FrontierItem(priority=1.0, score_source="seed")
-      → frontier.push_batch(items)
-  → scheduler.run(goal, task):
-      starts fetch_pump and rank_pump as two asyncio coroutines
-```
-
-### fetch_pump
-
-```
-loop while state == "RUNNING":
-  check_stop(task, frontier, limits, progress)
-    → independent checks, all of which can fire; returns every StopReason that did
-    → any hit → state = "STOPPING", wake rank_pump, break
-
-  # Page budget, a hard ceiling: what is already promised (pages_fetched +
-  # in_flight) counts against it.  Without that, in-flight pages are invisible and
-  # concurrency overshoots max_pages by up to fetch_concurrency-1.
-  if pages_fetched + in_flight >= max_pages: sleep(0.2); continue
-    # A failed in-flight fetch gives its slot back, so wait rather than break --
-    # this neither under- nor over-fetches.
-
-  item = frontier.pop_next(now, next_allowed, global_budget)
-    # skips items whose domain is cooling; returns None when a domain or the
-    # global budget is spent
-  if item is None:
-      if frontier.scoring > 0 → sleep(0.2); continue   # a batch is out being scored
-      if the unscored half is empty and in_flight == 0 and frontier.cooling == 0 → break
-        # cooling holds items time will release on its own.  "Nothing pops" is not
-        # "nothing is left": once the host clock stepped backwards, the only seed
-        # went into cooldown and the run reported success having fetched nothing.
-      sleep(0.2); continue
-
-  progress.in_flight++
-  asyncio.create_task(_handle_fetch(item))  # not awaited
-
-_handle_fetch(item):
-  a semaphore bounds fetch concurrency
-  result = fetcher.fetch(item)                 # HTTP GET with retries
-  robots.record_response(domain, status)       # updates the domain cooldown
-  failure → record_outcome(item, FAILED) → return
-
-  storage.save_raw_html(url_key, item_id, raw)  # raw HTML to disk
-  page = extractor.extract(result, raw_path)    # trafilatura → Page
-  storage.save_page(page)
-
-  candidates = harvester.harvest(page, document)   # posts, or outlinks
-  ctx = frontier.get_prefilter_context(
-      allow_fetch=lambda url: robots.allow_fetch(url)
-  )
-  for each candidate:
-      decision, _ = prefilter.check(c, goal, ctx)
-      ALLOW → frontier.push_candidates([c]), storage.save_link(c)
-      DROP  → c.status = "FILTERED_OUT"
-
-  frontier.record_outcome(item, COMPLETED)
-  progress.pages_fetched++
-  if pages_fetched % CHECKPOINT_INTERVAL == 0 → checkpoint()
-```
-
-### rank_pump
-
-```
-loop while state == "RUNNING":
-  await frontier.waiting.wait_until(ready or state != RUNNING)
-  batch = frontier.take_for_ranking(RANK_BATCH_SIZE=20)
-    # while it is out, this batch is in neither half; the frontier counts it
-    # (scoring), or the stop checks read "being scored" as "nothing left"
-  ... finally: frontier.finish_ranking(len(batch))
-
-  history = RankHistorySummary(goal=..., relevant_pages=what analysis established)
-  decisions = ranker.rank_batch(goal, batch, history, page_contexts)
-    # or, with no ranker, one flat priority per candidate
-
-  for each decision:
-      storage.save_rank_decision(d)
-      if dropped → continue
-      → FrontierItem(priority=d.priority, score_source=d.ranker, ...)
-  frontier.push_batch(items)
-```
-
-`fetch_pump` and `rank_pump` are independent coroutines. Fetching never waits for
-ranking and ranking never waits for fetching. They coordinate on exactly two
-primitives: the Frontier's `asyncio.Lock` and the Buffer's `asyncio.Condition`.
-
-### The ranking funnel
-
-The most cost-sensitive stretch of the whole pipeline:
-
-```
-200+ raw links per page
-  ① Canonicalizer: normalise, fingerprint for dedup
-  ② PreFilter (rules only) → 10-30 left → the frontier's unscored half
-  ③ a ranking cycle fires when any of these holds:
-       a full batch, non-empty for 30s, the scored half starving
-  ④ LLMRanker.rank_batch (skipped without credentials; everything enqueues flat):
-       a. 20 candidates per batch, split further by character budget
-       b. the model scores each 0-1 with one clause of reasoning; the clearly
-          worthless go on a drop list
-       c. the score is the enqueue priority
-  ⑤ decisions go to frontier.push_batch
-```
-
-There is only the LLM stage. The two free stages that preceded it were removed;
-the reasoning is at the top of `ranking.md`.
-
-### Pause / resume / stop
-
-The engine supports it (the KeyboardInterrupt path uses it), but the CLI state
-commands are parked — they need a daemon.
-
-```
-pause():
-  stop popping; wait for in_flight to drain
-  checkpoint() → FrontierSnapshot to the database
-  state=PAUSED
-
-resume():
-  read the latest FrontierSnapshot → GatedFrontier.restore() rebuilds heap + buffer
-  → state=RUNNING
-
-crash recovery:
-  on startup, state=RUNNING with a snapshot present → resume automatically
-```
-
-### Replay
-
-```
-crawl replay <task-id> [--prompt "new goal"] [--limit N] [--max-tokens N] [--force]
-  → find_run_dir(task_id): scans results/<ts>/db/crawl.db (there is no task index)
-  → reads crawl_goals / crawl_tasks, list_pages() rebuilds Page objects from the
-    frozen corpus — nothing is re-fetched and nothing is re-extracted
-  → calls the analyzer per page, appending to analyses only
-  → idempotent: identity is (url_key, goal_id, prompt_version, model), so a
-    replay of a replay is a no-op.  --force skips the check and appends new rows;
-    old rows are never touched, which is what makes variance studies possible
-  → --prompt makes a new goal (goal_id = sha256(prompt)[:12], so the same text
-    reuses the already-enhanced goal row and GoalEnhancer runs only when the row
-    is missing).  The old goal is left alone.
-```
-
-### Inspect
-
-```
-crawl inspect <task-id> [--goal <goal_id>] [--during <window>] [--export json|csv]
-  → read-only: task / run / pages / goals (marked original or replay) /
-    the classification spread per goal / the results, deduplicated by url
-  → results are grouped by when what they describe runs, not by score:
-    still open / no date given / already over, and with --during a fourth
-    group for what starts past that line.  Nothing is ever hidden
-  → --export writes the pages⋈analyses join to stdout (url, title, class,
-    relevance, starts_on, ends_on, summary, tags, model, timestamp)
-```
-
-### Feed traversal
-
-Feeds and ordinary web pages travel the same loop through the same components;
-**the only difference is who claims the page**. What follows is specific to the
-feed side.
-
-**Two kinds of source, with different priorities:**
-
-| Mode | Entry point | Can deep search do it? | Priority |
-|------|-------------|------------------------|----------|
-| **Monitoring** | the timeline of a known account | **Structurally no** — it can only reach what others said about that account | First |
-| **Discovery** | hashtag or place tags | Yes, and cheaply, across a wide surface | Later, possibly delegated entirely |
-
-Monitoring is small (tens of accounts, once a week). The low request volume suits
-platform rate limits, and it hits exactly the gap the measurements found.
-Discovery is high volume and noisy, and is where the funnel genuinely strains.
-
-**Where seeds come from:** deep search can act as a `UrlSource` provider offering
-broad account and hashtag candidates, filtered by hand into a monitoring list; a
-user can also skip it entirely and name accounts directly, which is also the
-cheaper path in tokens. Note that links from deep search **should not be treated
-as seeds** — seeds skip most PreFilter rules and get priority 1.0 outright, while
-these are low-confidence candidates.
-
-**Platform preconditions:** a platform like Instagram needs browser rendering plus
-a logged-in session (`storage_state`) the user supplies. Without a session the
-platform simply serves no content, and no crawler architecture gets around that.
-The real operational risk is the account, not the technology, so the fetch budget
-is naturally small — which reinforces something that runs against the
-graph-traversal instinct of "fetch more, get more": **extraction quality matters
-more than coverage**.
-
----
-
-## Modules
-
-Every replaceable module sits behind a `typing.Protocol`. Simple stateless classes
-(PreFilter, Canonicalizer, RobotsPolicy) are used directly.
-
-### CrawlScheduler
-
-Owns the crawl loop. Drives `fetch_pump` and `rank_pump`, runs the stop checks,
-handles pause/resume/stop, and checkpoints automatically.
-
-- `__init__` takes everything explicitly, typed as Protocols or concrete classes,
-  and imports no implementation
-- `_page_contexts` caches `{title, link_count}` per page so the ranker can use
-  per-page signals
-- `CrawlContext` holds the run's state in three parts, split by who reads them
-  (see the schema section), rather than one bag every stage writes into
-- `PreFilterContext` comes from `frontier.get_prefilter_context(**overrides)`, so
-  the engine never reaches into the frontier's private fields
-- `ingest_seeds()` is separate: seeds face only dedup/blacklist/protocol/scope and
-  skip robots/extension/depth/domain_budget
-
-### Canonicalizer
-
-Collapses every spelling of the same page into one URL and fingerprints it for
-deduplication.
-
-Seven steps: resolve relative links → lowercase scheme and host → drop the default
-port → fold repeated slashes → strip 17 tracking parameters (utm_*, fbclid, gclid,
-…) → sort the remaining parameters by key → sha256[:16] as `url_key`.
-
-`reg_domain` comes from stripping 20 common subdomain prefixes (www, m, api, cdn, …).
-
-### PreFilter
-
-The second gate before ranking (the first is the canonicaliser's dedup
-fingerprint). No LLM, rules only, each returning ALLOW or DROP, stopping at the
-first hit. Fail-open: a rule that raises never blocks a candidate.
-
-Ten rules in priority order: scope → dedup → blacklist → robots → protocol →
-extension → url_pattern → depth → domain_budget → negative_anchor (off by default).
-
-`PreFilterContext` is supplied by the Frontier and carries the `visited` set, the
-`frontier_keys` set and the `domain_counters` dict, plus an `allow_fetch` callback
-and `allowed_domains` injected by the scheduler.
-
-### Frontier
-
-Holds every URL discovered and not yet read. Internals:
-
-- `_heap` — a heapq min-heap keyed `(-priority, seq, url_key)`, negated so high
-  priority comes out first
-- `_items` — `url_key → FrontierItem` for what is in the heap
-- `_visited` — the set of url_keys already read
-- `_pending` — items held by a gate (domain cooldown, backoff), returned to the
-  heap by a periodic `_drain_pending()`
-- `_domain_counters` / `_global_counter` — successful fetches, per domain and total
-
-Two gates: **per item**, each `FrontierItem` carries a `next_available_at`; **per
-domain**, an external `next_allowed` callback supplied by the RobotsPolicy.
-
-Budgets: `pop_next()` returns None once a domain budget or the global budget is
-spent.
-
-Ageing: `effective = priority + age_factor * (now - enqueued_at) / aging_window`,
-so low-priority items cannot starve forever.
-
-### Buffer
-
-The unscored half — where candidates wait between harvesting and ranking.
-
-- **Backpressure**: capacity 2000; when full, the lowest-quality candidate is
-  evicted (`quality = -depth*0.1 - position*0.001`)
-- **Deduplication**: `url_key` against a `_seen` set that persists across drains
-- `add()` never blocks; `wait_until()` blocks on an `asyncio.Condition`
-- Hands candidates out **a turn per seed, oldest first within a seed**, so one
-  loud account cannot take every turn
-
-`ready()` fires on `size >= 100`, non-empty for 30s, or the frontier starving.
-
-### HttpFetcher
-
-Downloads pages. Async httpx, redirect chains followed by hand (the full hop path
-is recorded), rotating user agents, exponential backoff up to 3 retries capped at
-60s. 429 respects `Retry-After`.
-
-Errors split in two: transient (5xx, timeout, DNS → retry) and permanent (4xx
-other than 429 → raise `FetchError`).
-
-### PlaywrightFetcher
-
-The same `Fetcher` Protocol, rendering with a browser and optionally a logged-in
-session. It also keeps the XHR payloads a page fetches for itself, which is where
-some platforms put the text that never reaches the DOM.
-
-A navigation wait that times out **does not discard the page**. `networkidle` is a
-condition some pages never reach — a platform that polls or streams keeps a
-request open forever — so a timeout means the condition failed, not the fetch.
-Whatever rendered is taken; only an empty document counts as a failure and
-retries.
-
-### TrafExtractor
-
-HTML → `Page`. trafilatura on the main path (boilerplate removal, markdown
-conversion, metadata), BeautifulSoup as the fallback (title plus plain text).
-
-Publication time gets its own best-effort chain: nine `<meta>` spellings →
-JSON-LD `datePublished` at any nesting depth → `<time datetime>`. Relative and
-absolute formats are normalised to aware UTC and absurd dates are discarded. When
-nothing is found the value is None — it is **never guessed**, because a wrong
-guess corrupts the stale streak that retires a source.
-
-### Harvester and FeedAdapter
-
-`PageHarvester` asks each `FeedAdapter` whether it claims this page. Instagram
-claims by host, RSS by the document's root element, and an ordinary web page is
-claimed by nobody — which is itself the answer: fall back to extracting `<a href>`
-links.
-
-A claimed listing yields post permalinks; a claimed post is a leaf. A feed entry
-arrives **carrying the post text**, so ranking judges content rather than guessing
-from an anchor.
-
-### Leaving the platform
-
-A feed run mostly does not.  A listing yields permalinks and an item yields
-nothing, because an item is a leaf whose text is the thing being looked for, so
-every candidate an Instagram run produces carries `reg_domain = instagram.com`.
-
-The analyzer used to name links worth following, which was the way out.  Seven
-runs measured what that bought: 17 pages fetched on its say-so, one of them a
-result, against a 25% hit rate on the pages the ranker chose.  It was removed.
-A crawl that has to reach a merchant's own site reaches it through a seed or
-through an ordinary page whose outlinks are read.
-
-### PageAnalyzer
-
-One LLM call per page (text truncated to `ANALYZER_MAX_CHARS`, 3000 by default),
-producing:
-
-- a classification (RELEVANT / IRRELEVANT, with UNKNOWN as the fallback) and a
-  relevance score. **A discarded page stops there.** Two thirds of this stage's
-  bill is what the model writes, and every field after the verdict on a page
-  that is thrown away is written and then never read
-- for a keeper, a summary, tags, and the fields the goal declared, **each with a
-  quote from the page**. A quote that is not in the text throws the field away;
-  so does a value that is a bare negation ("no", "none"), because no sentence on
-  a page can prove an absence, and absence is already sayable by the field not
-  being there
-
-Results go to the `analyses` table with `prompt_version`, `model` and
-`spec_version`, so replays can be compared.
-
-This stage **keeps the model's thinking on by default**: with it off, most of the
-extra fields it produces are slot-filling (`benchmarks.md`, 2026-08-22).
-
-On failure `analyze()` returns None immediately and the page goes to an internal
-retry queue (up to 3 attempts) in the background; it never blocks the fetch loop.
-A `TokenBudgetError` is not retried.
-
-### LLMRanker
-
-Answers "if only so many more links can be read, which ones?".
-
-1. At most 20 candidates per batch (`_RANK_BATCH_SIZE`), split further by
-   `LLM_MAX_BATCH_CHARS`
-2. The model scores each candidate 0-1 with one clause of reasoning; the clearly
-   worthless go to `candidates_to_drop`
-3. A failed call retries once (appending "emit valid JSON only"); a second failure
-   enqueues the batch flat rather than blocking
-4. Thinking is off by default here (`LLM_RANK_REASONING_EFFORT=none`) — see the
-   last section of `ranking.md`
-
-**Without LLM credentials this stage does not exist**, and candidates enqueue flat
-in the order the frontier hands them out.
-
-### util/
-
-Self-contained helpers that import nothing else in the package.  `util/dates.py`
-is the only one: it reads a date range out of text, and answers which group a
-range falls in relative to today and an optional horizon (`undated` / `over` /
-`open` / `later`).  Two readers ask that second question, `crawl inspect` and the
-dashboard, which is why it is one function rather than one per reader.
-
-### RobotsPolicy
-
-Per-domain fetch policy, three mechanisms together:
-
-1. **robots.txt cache** — 24h TTL per domain, consulted before every request
-2. **crawl-delay** — a minimum interval between two requests to one domain
-3. **circuit breaker** — five consecutive 429/503 responses cool the domain for
-   ten minutes
-
-`allow_fetch(url)` is injected into the `PreFilterContext`.
-
-### SqliteCrawlDb
-
-A per-run SQLite database (aiosqlite), one timestamped directory per run:
-`results/<ts>/db/crawl.db`. Raw HTML is content-addressed at
-`raw/{url_key}/{fetch_id}.html`.
-
-**No mutable state is shared across runs.** Every database belongs to one task and
-expires with its directory.
-
-The methods take pydantic models rather than dicts:
-
-- `save_page(page: Page)` — reads `page.page_id`, `page.title`, `page.url.model_dump()`
-- `save_link(candidate: Candidate)` — reads `candidate.candidate_id`, `candidate.url.url_key`
-- `save_rank_decision(rd: RankDecision)` — reads `rd.candidate_id`, `rd.priority`, …
-
-Every write goes through a single-consumer `asyncio.Queue`, committing every 200
-writes, so there is no concurrent-write race.
-
-### Dashboard
-
-`dashboard/serve.py`, standard library only, bound to the loopback address.  It
-opens a run database read-only and serves the results as a page you can filter:
-by classification, by full-text search, by which declared field a result carries,
-and by when what it describes runs.
-
-Two rules shape it.  Everything after the first request is a local filter, so a
-run is fetched once when it is selected and no knob costs a round trip.  And the
-grouping rule is imported from `util/dates.py` rather than rewritten in
-JavaScript, so the page and `crawl inspect` cannot disagree about what is still
-open; all the browser decides is where the reader draws the line ahead of them.
-
-### EventEmitter
-
-An append-only event stream covering the whole state machine:
-`TASK_STARTED → URL_DISCOVERED → FETCH_STARTED → FETCH_COMPLETED → PAGE_EXTRACTED
-→ CANDIDATE_ENQUEUED → CHECKPOINT_SAVED → TASK_PAUSED / TASK_RESUMED → STOPPED`.
-
-### When a page is not content, whose problem is it?
-
-A platform answers a request for a deleted account with 200 and a perfectly
-healthy-looking page, so "is this content at all" can only be decided from the
-text (`FeedAdapter.problem`). Once decided, it splits two ways, and getting either
-side wrong is expensive:
-
-- `UNAVAILABLE` — **about this one account.** Renamed or deleted. Count it, report
-  it at the end, and **never stop the run**: monitoring 30 shops, three of them
-  gone should not kill the other 27.
-- `BLOCKED` / `LOGIN_REQUIRED` — **about this crawl.** Every later request will be
-  refused the same way, and on a platform that keeps score, continuing to knock
-  turns a rate limit into a ban. **Stop on the first one.**
-
-The distinction lives on `PageProblem.refuses_the_run`, and it is written **by
-exclusion**: a fourth kind of problem stops the run by default until somebody says
-it should not. Being loud about an unfamiliar refusal is the cheaper of the two
-mistakes.
-
-The harvester carries the verdict out through `Harvest(candidates, problem)`.
-Before that existed, the only thing it could say was an empty list — which made
-"this account posted nothing this week" and "the platform refused us" the same
-answer, and **a rate-limited run reported a quiet week, every week**.
-
----
-
-## Data model
-
-Core objects are pydantic models (serialisable, validated); the run's own state
-is a `@dataclass` (mutable, updated constantly).
-
-| Model | Kind | What it holds |
-|-------|------|---------------|
-| `CrawlGoal` | BaseModel | The goal and its budgets. `goal_id = sha256(prompt)[:12]` — content-derived, so the same text is the same goal, which is what replay idempotency rests on. `keywords` / `since` are filled in by the GoalEnhancer |
-| `URL` | BaseModel | raw / canonical / url_key / reg_domain / scheme / host / path / query |
-| `RawLink` | BaseModel | Link-extractor output, not yet canonicalised |
-| `Candidate` | BaseModel | A canonicalised candidate with its source page, depth and status; a feed entry also carries the post text |
-| `FrontierItem` | BaseModel | An enqueued item: priority, retry state, domain gating |
-| `FetchResult` | BaseModel | Status code, redirect chain, raw bytes |
-| `Page` | BaseModel | The parsed page: markdown, `raw_html_path`, `published_at` (None when the page does not state one) |
-| `AnalysisResult` | BaseModel | The verdict, the summary, the extracted fields with their evidence, and `starts_on` / `ends_on` when the page said when the thing it describes runs |
-| `RankDecision` | BaseModel | priority, rationale, which ranker, dropped flag |
-| `RankHistorySummary` | BaseModel | A compact "what has been seen so far" |
-| `CrawlTask` | BaseModel | Task lifecycle state |
-| `FrontierSnapshot` | BaseModel | The checkpoint payload: heap, pending, visited, budgets |
-| `CrawlContext` | **dataclass** | The run's state, in three parts: `Limits`, `Progress`, `Ledger` |
-
-```python
-@dataclasses.dataclass
-class CrawlContext:
-    limits: Limits      # what the run was told, fixed for its lifetime
-    progress: Progress  # what a stop condition may read
-    ledger: Ledger      # everything else the report wants
-```
-
-The split is by reader, not by subject. `check_stop(task, frontier, limits,
-progress)` is not handed the `Ledger`, so a statistic nothing stops on cannot be
-read there and cannot quietly become a stopping criterion. The boundary holds by
-signature rather than by care.
-
-`Limits` is frozen: the goal is read once and never edited mid-run. `Progress`
-carries only what a check may consult (`pages_fetched`, `tokens_used`,
-`in_flight`, `relevant_found`, `started_at`, `fatal_error`, `refused_by`, and
-`listings_seen` / `listings_empty` for ADAPTER_EMPTY), and every field there is
-in fact read by one.
-`Ledger` carries the rest, including `seeds: dict[str, SeedState]`, one entry per
-seed holding that seed's `Funnel` and its retirement state.
-
-```python
-@dataclasses.dataclass
-class Funnel:
-    discovered: int = 0  # links this seed put in front of the ranker
-    scored: int = 0      # of those, how many were ranked
-    wanted: int = 0      # of those, how many the ranker kept
-    fetched: int = 0     # of those, how many were downloaded
-    judged: int = 0      # of those, how many the analyzer answered on
-    relevant: int = 0    # of those, how many were results
-```
-
-The stages are monotonically decreasing on purpose, so every gap says something:
-`scored` short of `discovered` is a rotation that never reached them, `judged`
-short of `fetched` is a run that stopped before the analyzer got there. Read as
-one number, "7 pages, wanted 6, nothing" once looked like a content judgement
-when six of the seven were never looked at.
-
----
-
-## Stop conditions
-
-`check_stop()` runs every cycle. Every check is independent and **all of them can
-fire**; it returns every reason that did.
-
-| Kind | Condition | Code |
-|------|-----------|------|
-| Budget | pages exhausted | BUDGET_PAGES |
-| Budget | tokens exhausted | BUDGET_TOKENS |
-| Budget | time exhausted | BUDGET_TIME |
-| Natural end | both halves empty, nothing in flight, nothing being scored | FRONTIER_DRAINED |
-| Natural end | the above, and a candidate was refused by a domain ceiling along the way | plus DOMAIN_BUDGET |
-| Enough | relevant results reached `--max-relevant` | MAX_RELEVANT |
-| User | `task.state == "STOPPING"` | USER_REQUESTED |
-| Adapter failure | three or more listings read, none yielding anything | plus ADAPTER_EMPTY |
-| Platform refusal | the first BLOCKED page | RATE_LIMITED |
-| Platform refusal | the first LOGIN_REQUIRED page | LOGIN_REQUIRED |
-| Fatal | `progress.fatal_error` is set | FATAL |
-
-**GOAL_SATISFIED was removed.** It stopped the whole run once the relevance window
-held N hits, but "stop after N" contradicts "find as many as the budget allows",
-and the budget conditions already cover finishing normally.
-
-### Retiring one source, not the run
-
-Two of these used to be run-level checks and are not any more. Both asked a
-question about one source and were counted globally, where neither could be read
-at face value.
-
-`TIME_HORIZON` assumed reverse-chronological traversal: the first item older than
-the window means everything after it is older too. That holds inside one feed and
-never across several, so the check armed only for runs with a single entry point
--- which is to say it was dormant for every real run.
-
-`DIMINISHING_RETURNS` asked whether the crawl had stopped finding things. Counted
-globally it mixed sources: one quiet shop's back catalogue could end a run with
-three others still producing, and every seed's landing page put a certain miss
-into the window before a single post was read.
-
-Both now live in `stop_conds.why_retire(window, stale)`, asked per seed with the
-same thresholds they always had (20/2 and 5). When one answers, the frontier
-retires that seed: its queued candidates are dropped from both halves and later
-ones are refused at the door. The run ends when every source has retired and the
-frontier drains, which is FRONTIER_DRAINED reporting what it always meant.
-
-Dropping eagerly is not an optimisation. Candidates left behind keep both halves
-non-empty, and a run whose sources had all retired would never read as drained.
-
-**It is suppressed under `--recall`.** That mode deliberately reads the candidates
-the ranker rejected, and reads them last, so a tail of misses is the point of the
-mode rather than evidence a source is finished.
-
-Three rules carried over from the time horizon: with `since=None` it sleeps, so
-runs that ask for no window are unaffected; a page that reports no date **neither
-advances nor resets** the streak, because silence is not evidence either way; and
-an absurd date (before 1990, or more than a year ahead) is treated as no date at
-all, so template leftovers cannot poison the decision.
-
----
-
-## Seeds the run names for itself
-
-`--enhance-seeds` adds one LLM call at task start: given the goal and the seeds
-the user chose, name more sources. It is off by default, and the branch is
-imported inside the `if`, so a run that does not ask for it never loads the
-module.
-
-The model is asked where to look, never what is there. Asked for content it
-reports what other people said about a source; asked for sources, the crawl
-still reads them first-hand.
-
-Nothing it names is trusted. Two thirds of the addresses do not exist, in a
-shape a person cannot spot: the brand is real and the account name is invented.
-Each proposal is fetched and read before use, and only what a harvester gets
-something out of survives. Payloads are kept for that read, or a busy account
-reports as empty and a real seed is thrown away for being real.
-
-Verification answers only what one fetch can settle: does this exist, does it
-yield anything. Whether it is worth reading past that was once asked here too,
-on a sample of twenty captions put to the ranker, and the answer was wrong
-whenever the fetch came back thin. Retiring a source answers the same question
-on pages actually read.
-
-Survivors take a smaller share of the crawl than the seeds the user named: all
-of them share one rotation key, so proposing more changes how deep each is read
-rather than what the user's own seeds get. Nothing is stored between runs. What
-a source is worth is a fact about this goal, and the last piece of cross-run
-state went wrong by storing exactly that kind of fact against an address.
-
----
-
-## Concurrency
-
-One process, asyncio. `fetch_pump` and `rank_pump` run concurrently. Fetching is
-bounded by `asyncio.Semaphore(fetch_concurrency)` and LLM calls by
-`asyncio.Semaphore(llm_concurrency)`, and **the two are independent**.
-
-That sentence used to be false. The per-page analyzer call ran inside the fetch
-semaphore's critical section, so a page waiting on an LLM held a fetch slot and
-the two knobs were effectively nested — the inner one starved the outer one and
-HTTP fetching stalled behind analysis. The fetch slot now covers only the network
-request and the parse it feeds (`_fetch_and_extract`); analysis runs outside it.
-
-Per-domain serialisation is enforced through `next_available_at`. HTML parsing
-goes through `asyncio.to_thread`, and every lxml/libxml2 parse is serialised by a
-global lock in `digest/lxml.py` — libxml2's global dictionary has a concurrency
-race that produced a SIGABRT. Writes go through a single-consumer queue.
-
-Analysis queues on a third semaphore of its own, as wide as the LLM's. It used
-to queue inside the LLM client, past every check the scheduler could make, so a
-target met while forty-six pages waited still had all forty-six analysed. Holding
-a slot here means being the next to call, which is where the target check belongs.
-
-Backpressure, two kinds. The candidate buffer is bounded at 2000 and evicts the
-lowest-quality candidate when full. The fetch pump stops dispatching once
-`fetch_concurrency + 2 * llm_concurrency` tasks are in flight: the fetch slot is
-released before the analysis, so without this the pump kept dispatching into a
-queue. One run reached forty-six parked tasks and abandoned thirty-three of them
-unjudged when it stopped.
-
----
-
-## Error handling
-
-Two categories throughout: transient (retry) and permanent (mark failed).
-
-| Stage | Error | Policy |
-|-------|-------|--------|
-| Fetch | timeout / 5xx | Exponential backoff, up to 3 attempts |
-| Fetch | 429 | Respect `Retry-After`, cool the domain |
-| Fetch | 404 / 403 / SSL | Permanent → `FetchError` |
-| Fetch | wait condition timed out | Keep whatever rendered; only an empty document fails |
-| Domain | more than 5 consecutive failures | Circuit breaker, 10-minute cooldown |
-| Extract | parse failure | Degrade to DEGRADED/FAILED, do not interrupt |
-| Extract | timeout | `asyncio.wait_for`, mark SKIPPED |
-| Any LLM call | thought away the whole allowance, said nothing | Asked again one reasoning level lower; a bigger ceiling only buys a longer silence |
-| Rank | LLM failure | Retries inside the client, then propagates; a dead pump ends the run as FATAL |
-| Analyze | LLM failure | Background retry queue, up to 3 attempts; never blocks fetching |
-| Storage | write failure | Retry 3 times → checkpoint and PAUSE |
-| Any pump | uncaught exception | Recorded as `fatal_error`, the run ends as FATAL |
-
-Nothing stands behind the ranker any more, so a rank pump that dies stops scoring
-and the crawl would otherwise reach a stop condition the ordinary way and report
-having completed with nothing ranked. Both pumps are gathered with
-`return_exceptions`, and the results are read rather than discarded.
-
----
-
-## Observability
-
-- **Logs** — two levels of the same events. INFO says what happened in words,
-  naming a page by its address; DEBUG counts the same event and adds the
-  mechanics that have no readable form. The rule lives in the module docstring of
-  `logging/config.py`, which is the only place it is written down
-- **Event stream** — the append-only `events` table, covering the state machine
-- **Counters** — live on `CrawlContext`: `progress` for what a stop condition
-  reads, `ledger` for what only the report reads
-- **Token accounting** — `TokenBudget` separates input, output, the input a
-  provider served from its cache, and the output the model spent thinking. A total
-  that does not separate them is not a bill: cached input costs about a tenth of
-  fresh input, and on one measured run 84% of all output was thinking. It also
-  keeps the bill per stage (`Stage.ANALYSIS`, `RANKING`, `GOAL`, `SEEDS`), which
-  is what says which stage to argue with. The label rides on the client, since a
-  client belongs to one consumer; the budget is shared by all of them
-
----
-
-## Storage
-
-SQLite (aiosqlite), one database per run:
-
-| Table | What it holds |
-|-------|---------------|
-| `crawl_goals` | Goals and budgets |
-| `crawl_tasks` | Task lifecycle |
-| `urls` | The URL dedup table |
-| `pages` | Page content (replayable), including `published_at` |
-| `links` | Candidates as discovered — one row per discovery, not per candidate |
-| `rank_decisions` | Ranking records, auditable |
-| `analyses` | Analysis results, append-only |
-| `frontier_snapshots` | Checkpoints |
-| `events` | Event sourcing |
-| `errors` | Error audit |
-| `robots_cache` | robots.txt cache |
-
----
-
-## What extends without touching the architecture
-
-New page types (PDF, GitHub), a different analyzer, a different ranker, a new URL
-source, a different LLM, learning from user feedback. All of it goes through the
-Protocols.
+SQLite stores goals, tasks, pages, links, rank decisions, analyses, frontier
+snapshots, events, errors and robots cache entries. Writes use an async queue;
+reads use the connection directly. Events provide an audit trail. Checkpoints,
+rather than event replay, restore the frontier.
+
+`crawl inspect` reads stored results and exports JSON or CSV. The dashboard opens
+SQLite read-only and filters loaded results in the browser.
+
+`crawl replay` analyzes stored page text without refetching or re-extracting HTML.
+It skips matching `(url_key, goal_id, prompt_version, spec_version, model)` analyses
+unless forced. A new prompt creates or reuses its content-derived goal ID. Run
+schemas are not migrated across versions.

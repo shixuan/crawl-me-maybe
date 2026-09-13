@@ -620,15 +620,7 @@ async def test_refusal_stops():
 
 @pytest.mark.asyncio
 async def test_inflight_waits():
-    """The pumps returning is not the run being over.
-
-    A fetch is its own task with a page still to save and an analysis
-    still to record. One run stopped with seven of them running, closed
-    the storage and the analyzer underneath, and ended with seven pages
-    fetched, saved, and never analysed -- with the analyzer's retries
-    for them still arriving in the log after the crawl had reported
-    itself complete.
-    """
+    """Wait for dispatched fetches and analyses before closing their resources."""
     sched = _make_sched()
     order: list[str] = []
     released = asyncio.Event()

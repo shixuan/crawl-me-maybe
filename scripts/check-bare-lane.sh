@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# Run the tests the way CI's main lane does: without playwright.
-#
-# The developer venv has it, so a test that reaches for it passes here
-# and fails there. That has happened three times. Nothing catches it
-# except an environment that really lacks it, and a meta_path blocker
-# is not one: it makes find_spec raise where the real lane returns None.
-#
+# Run the CI test command in a separate environment without Playwright.
 # Usage:  scripts/check-bare-lane.sh [pytest args]
 set -euo pipefail
 

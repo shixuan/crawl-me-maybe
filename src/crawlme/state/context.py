@@ -1,13 +1,4 @@
-"""Run-scoped context: the mutable state every pipeline stage shares.
-
-CrawlContext is the one object a run accumulates into.  The factory
-creates it and injects it at construction time, and the engine resets
-it in place at the start of each run, so references held by stages
-never go stale.
-
-It is split by who reads it rather than by what it counts.  See the
-class at the bottom of this file.
-"""
+"""Run-scoped limits, progress and reporting state, reset in place by the scheduler."""
 
 from __future__ import annotations
 
@@ -24,17 +15,7 @@ RELEVANCE_WINDOW = 20
 
 @dataclasses.dataclass
 class Funnel:
-    """How far this seed's work got, stage by stage.
-
-    Monotonically decreasing by construction, so every gap between two
-    stages means something and no new question needs a new field:
-    discovered but not scored is a rotation that never reached it,
-    wanted but not fetched is a budget that ran out first, and fetched
-    but not judged is a run that stopped before the analyzer answered.
-    That last gap is why "read 7 pages, wanted 6" once reported nothing
-    and read as a content judgement when six of the seven were never
-    looked at.
-    """
+    """Per-seed counts at discovery, ranking, fetching and analysis stages."""
 
     discovered: int = 0
     scored: int = 0
@@ -68,15 +49,7 @@ class SeedState:
 
 @dataclasses.dataclass
 class PageRecord:
-    """What the run knows about one page it fetched.
-
-    Three facts arrive from three places and in no fixed order: the seed
-    when the page is dispatched, whether it was a listing after it is
-    harvested, and the verdict when the analyzer answers, which for a
-    retried analysis can be long after both. Held as one record rather
-    than one dict each, so "are both halves in" is a question about a
-    record instead of a lookup in two maps.
-    """
+    """Join a page seed, listing status and verdict as they arrive independently."""
 
     seed: str = ""
     listing: bool | None = None
@@ -123,12 +96,7 @@ class PageBook:
 
 @dataclasses.dataclass(frozen=True)
 class Limits:
-    """What the run was told it may spend, and what counts as an answer.
-
-    Fixed when the run starts. Separate from Progress because a ceiling
-    and a tally read the same way in code and mean opposite things: one
-    is an instruction, the other is what happened.
-    """
+    """Immutable run budgets and goal constraints."""
 
     max_pages: int = 0
     max_tokens: int = 0
@@ -145,12 +113,7 @@ class Limits:
 
 @dataclasses.dataclass
 class Progress:
-    """What the run has done so far, as the stop conditions read it.
-
-    Every field here is read by some stop condition. That is the entry
-    rule: a number nothing stops on belongs in the Ledger, or the run
-    grows counters that look like stopping criteria and are not.
-    """
+    """Mutable counters read by stopping policies."""
 
     pages_fetched: int = 0
     tokens_used: int = 0
@@ -159,9 +122,7 @@ class Progress:
     started_at: float = 0.0
     # The first failure that was about the run rather than one page.
     fatal_error: str = ""
-    # The first page problem that was about the crawl rather than about
-    # one page. A block or a dead session makes every later request
-    # wasted, so one is enough to end the run.
+    # Record the first run-wide platform refusal.
     refused_by: str = ""
     # A platform that changed shape answers every listing and holds
     # nothing, which is not the same as a quiet week.
@@ -171,21 +132,13 @@ class Progress:
 
 @dataclasses.dataclass
 class Ledger:
-    """Everything the report reads and no stop condition does.
-
-    Kept apart from Progress on purpose. A number here can be added,
-    renamed or grouped differently without touching a stop condition,
-    and check_stop is not handed this object, so the separation holds by
-    signature rather than by discipline.
-    """
+    """Reporting state that stopping policies do not read."""
 
     links_discovered: int = 0
     candidates_ranked: int = 0
     fetch_errors: int = 0
     analyses_by_class: dict[str, int] = dataclasses.field(default_factory=dict)
-    # Pages that came back as something other than content, by kind.
-    # Reported because a run that read thirty accounts and found three
-    # of them gone is a different run from one that found none gone.
+    # Count page problems separately from relevance judgments.
     not_content: dict[str, int] = dataclasses.field(default_factory=dict)
     # URLs robots.txt refused. Reported because a run that found nothing
     # because it was not allowed to look is not a quiet week.
@@ -211,13 +164,7 @@ class Ledger:
 
 @dataclasses.dataclass
 class CrawlContext:
-    """One run's state, split by who reads it.
-
-    Limits are the instruction, Progress is what the stop conditions
-    read, and the Ledger is what only the report reads. Two of them used
-    to be one class, which is how a statistic nothing stops on ended up
-    sitting among the stopping criteria.
-    """
+    """Run state split into limits, stopping progress and reporting counters."""
 
     limits: Limits
     progress: Progress

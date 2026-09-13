@@ -1,13 +1,4 @@
-"""Link extraction: finds all <a href> in a Page and produces RawLink records.
-
-- anchor: link text, stripped.  None if only contains an image.
-- snippet: parent element text truncated to ~200 chars.
-- parent_heading: nearest h1-h6 ancestor, or preceding heading in document order.
-- Empty/missing hrefs are skipped.
-
-Reads raw HTML from page.raw_html_path on disk so it can parse the original
-DOM.  Parsing from plain_text or markdown would lose <a> tags.
-"""
+"""Extract raw links and surrounding context from saved page HTML."""
 
 from __future__ import annotations
 
@@ -34,11 +25,7 @@ def _extract_from_html(path: str) -> list[RawLink]:
     with LXML_LOCK:
         soup = BeautifulSoup(html_bytes, "lxml")
         links: list[RawLink] = []
-        # One document-order pass over headings and links.  The fallback
-        # heading for a link with no heading ancestor is the nearest
-        # preceding heading, which the pass tracks in O(1).  The previous
-        # per-link find_previous rescan was quadratic on pages with many
-        # links (a 14k-link page took minutes).
+        # Track the nearest preceding heading in one pass to avoid per-link rescans.
         last_heading: str | None = None
         position = 0
 

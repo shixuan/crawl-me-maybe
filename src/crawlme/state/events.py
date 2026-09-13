@@ -1,14 +1,4 @@
-"""Event emitter: append-only audit trail for the crawl state machine.
-
-Every significant state transition gets recorded in the events table
-(append-only, seq-ordered).  Events are the foundation for:
-  - real-time progress display (CLI tails by seq)
-  - post-crawl audit (why was this URL dropped?)
-  - replay / debugging
-
-Event types cover the full state machine referenced in arch.md:
-  TASK_STARTED -> URL_DISCOVERED -> CANDIDATE_BUFFERED -> ... -> STOPPED
-"""
+"""Append timestamped, sequence-ordered events for crawl auditing."""
 
 from __future__ import annotations
 
@@ -48,12 +38,7 @@ class EventType:
 
 
 class EventEmitter:
-    """Thin wrapper around Storage.save_event that auto-fills ts.
-
-    Typical usage in the scheduler:
-        events = EventEmitter(storage, task_id)
-        events.emit(EventType.FETCH_STARTED, {"url_key": item.url_key})
-    """
+    """Add task identity, timestamp and sequence number to stored events."""
 
     def __init__(self, storage: Any, task_id: str) -> None:
         self._storage = storage

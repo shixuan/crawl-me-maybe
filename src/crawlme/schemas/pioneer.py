@@ -20,29 +20,17 @@ class Candidate(BaseModel):
     parent_heading: str | None = None
     position: int = 0
     source_url_key: str | None = None
-    # The seed at the top of this candidate's chain, inherited from the
-    # page it was found on.  Empty until the engine, which alone knows
-    # the chain, fills it in.
+    # Original seed identity, filled by the scheduler and inherited by descendants.
     seed_url_key: str = ""
     depth: int = 0
-    # The text this candidate carries on its own, whatever the source
-    # calls it: empty for a link (its business card lives in anchor and
-    # snippet), the caption for a feed post.  The ranking funnel reads
-    # this and nothing else, which is what lets it judge content instead
-    # of proxies once a source can supply it.
+    # Source-provided content, such as a feed caption, available before fetching.
     text: str = ""
     # Proposed by the enhancer, not named by the user. The buffer gives
     # these a smaller share of its turns.
     seed_ext: bool = False
-    # When the source says this was published, if it says so at all.
-    # Typed rather than left in the bag because a key read by name fails
-    # silently on a typo, taking the default with nothing to say why.
-    # A link has no publication time, so None is ordinary.
+    # Source-declared publication time, if known.
     posted_at: datetime.datetime | None = None
-    # Source-specific signals the funnel's factor set and the analyzer
-    # pick from: hashtags, account, and whatever the next platform
-    # brings.  A bag rather than columns, so adding a source never means
-    # changing this schema.
+    # Adapter metadata such as author, engagement and ownership flags.
     signals: dict[str, Any] = Field(default_factory=dict[str, Any])
     status: CandidateStatus = "INGESTED"
     discovered_at: datetime.datetime = Field(default_factory=_utcnow)
@@ -60,11 +48,7 @@ class FrontierItem(BaseModel):
     rationale: str | None = None
     depth: int = 0
     reg_domain: str = ""
-    # The seed this descends from.  Carried across the frontier because
-    # a page's children inherit it, and the engine's own map of it is
-    # in memory only: without this a resumed run would regroup every
-    # candidate under the page it was found on.  The grouping that uses
-    # it happens upstream, on the candidate, not here.
+    # Persist original seed ownership so resumed descendants keep their source grouping.
     seed_url_key: str = ""
     # Carried through so a resumed run keeps the smaller share.
     seed_ext: bool = False
@@ -87,14 +71,7 @@ class RankDecision(BaseModel):
 
 
 class RankHistorySummary(BaseModel):
-    """What the run has established, as the ranker is told it.
-
-    Everything here is read by the LLM ranker's prompt.  It used to
-    carry four more fields -- hub domains, topics, domain priors, page
-    counts -- filled by the steering subsystem and consumed by the rule
-    ranker's factors.  Both are gone, and a field nothing writes and
-    nothing reads is worse than no field: it reads as a working signal.
-    """
+    """Previous crawl findings consumed by the ranking prompt."""
 
     goal: str = ""
     relevant_pages: list[dict[str, Any]] = Field(default_factory=list)
@@ -103,14 +80,9 @@ class RankHistorySummary(BaseModel):
 class FrontierSnapshot(BaseModel):
     snapshot_id: str = Field(default_factory=_new_id)
     task_id: str = ""
-    # Whatever the ordering says its state is, kept as it gave it.  The
-    # frontier used to lift `heap` and `pending` out of that state by
-    # name, which quietly stored nothing at all once the ordering became
-    # something other than one heap.
+    # Opaque queue state serialized by the ordering implementation.
     ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
-    # The unscored half.  Absent from checkpoints written while it lived
-    # outside the frontier, which is why a resume then began knowing
-    # nothing about the candidates still waiting to be scored.
+    # Pending unranked candidates included in checkpoints.
     waiting: dict[str, Any] = Field(default_factory=dict[str, Any])
     # The shape checkpoints were written in before `ordering` existed.
     # Read on restore so an older checkpoint still resumes; no longer

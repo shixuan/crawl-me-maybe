@@ -1,20 +1,6 @@
-"""Fetch pages through a real browser, with an optional logged-in session.
+"""Fetch rendered pages with optional Playwright storage state.
 
-Same Fetcher contract as HttpFetcher, so the engine cannot tell them
-apart.  A browser earns its cost when the page builds itself with
-JavaScript, or when the platform hands anonymous requests a login wall
-instead of the content.
-
-The session comes from a storage_state JSON file the user exports
-themselves.  This module never sees a password and never logs anything
-in.
-
-playwright is an optional dependency, imported lazily so nothing here
-costs anything until a run asks for a browser:
-
-    pip install 'crawl-me-maybe[browser]'
-    playwright install chromium
-"""
+Playwright is imported lazily. Each fetch uses a fresh page in a shared context."""
 
 from __future__ import annotations
 
@@ -39,9 +25,7 @@ WaitUntil = Literal["commit", "domcontentloaded", "load", "networkidle"]
 
 logger = logging.getLogger(__name__)
 
-# Time for a lazily-built page to answer one scroll.  Long enough for a
-# request to come back on a slow connection, short enough that a page
-# with nothing left costs little.
+# Deadline for responses triggered by one scroll.
 _SCROLL_SETTLE_MS = 6000
 # How often to look while waiting.  The wait ends on the answer, so this
 # only bounds how long an early one goes unnoticed.
@@ -57,12 +41,7 @@ _INSTALL_HINT = (
 
 
 class PlaywrightFetcher:
-    """One browser per run, one fresh page per fetch.
-
-    The browser and the logged-in context are expensive to build and are
-    reused; a page is cheap and is discarded after every fetch so one
-    page's state cannot leak into the next.
-    """
+    """One browser and context per instance, with a fresh page per fetch."""
 
     def __init__(
         self,
@@ -83,24 +62,15 @@ class PlaywrightFetcher:
         self._max_retries = max_retries
         self._wait_until = wait_until
         self._headless = headless
-        # What a page fetches for itself is dropped unless something asks
-        # for it, so a crawl that has no use for it pays nothing at all.
-        # The fetcher cannot know which response matters; whoever does
-        # passes the predicate in.
+        # Retain sub-responses only when the caller supplies a selection predicate.
         self._keep_payload = keep_payload
         self._max_payload_bytes = max_payload_bytes
-        # How many times to ask a lazily-built page for more of itself.
-        # Zero keeps the old behaviour: one screen, one set of requests.
-        # Scrolling is how a reader reaches the rest, and it makes the
-        # page issue the same requests it made for the first screen, so
-        # nothing here forges anything the page would not send itself.
+        # Zero scrolls limits the fetch to the initial page load.
         self._scrolls = scrolls
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        # One page at a time per browser: a shared context is not safe to
-        # drive concurrently, and fetch_concurrency already bounds the
-        # callers.  This keeps the browser honest about that.
+        # Serialize page navigation and capture within the shared browser context.
         self._lock = asyncio.Lock()
         # Held only while starting up, so a burst of first fetches
         # produces one browser rather than one each.
@@ -109,18 +79,7 @@ class PlaywrightFetcher:
     # lifecycle --------------------------------------------------------
 
     async def _ensure_context(self) -> BrowserContext:
-        """Start the browser on first use and reuse it afterwards.
-
-        Lazy because constructing a scheduler must not launch a browser,
-        and because the import itself is optional.
-
-        Guarded because the first fetches arrive together: the pump pops
-        several seeds at once, every one of them finds no context, and
-        every one of them launches a browser.  The last assignment wins
-        and the rest become processes nobody holds a reference to, so
-        aclose() cannot reach them.  One run showed five starts where it
-        should have shown one.
-        """
+        """Serialize lazy startup so concurrent first fetches cannot leak duplicate browsers."""
         async with self._start_lock:
             if self._context is not None:
                 return self._context
@@ -146,11 +105,7 @@ class PlaywrightFetcher:
         return self._context
 
     async def aclose(self) -> None:
-        """Tear the browser down.  Safe to call more than once.
-
-        A browser that outlives the run keeps a process tree alive, which
-        is the same class of leak the aiosqlite worker thread once was.
-        """
+        """Close the browser context, browser and Playwright driver."""
         for closer in (self._context, self._browser):
             if closer is not None:
                 try:
@@ -188,19 +143,12 @@ class PlaywrightFetcher:
             page = await context.new_page()
             try:
                 if self._keep_payload is not None:
-                    # Attached before navigating: a listener added after
-                    # would miss the requests that fill the first screen,
-                    # which are exactly the ones carrying the content.
+                    # Attach listeners before navigation to capture initial content responses.
                     page.on("response", lambda resp: self._collect(resp, payloads))
                 try:
                     response = await page.goto(item.url.canonical, wait_until=self._wait_until)
                 except PlaywrightTimeout:
-                    # "networkidle" is a condition some pages never
-                    # reach, because a platform that polls or streams
-                    # keeps a request open forever.  The page rendered
-                    # anyway, so the timeout says the condition failed
-                    # rather than the fetch.  Discarding it here threw
-                    # away a page already paid for, twice more on retry.
+                    # Polling pages may never become idle; preserve the rendered DOM on timeout.
                     logger.info("%s was slow to settle, reading what it rendered", item.url.canonical)
                     response = None
                 if self._scrolls:
@@ -211,9 +159,7 @@ class PlaywrightFetcher:
                 await page.close()
 
         if response is None:
-            # The wait condition timed out.  If something rendered, that
-            # is the page and the condition was simply unreachable; if
-            # nothing did, the fetch really failed and should retry.
+            # Retry only if the timed-out navigation produced no usable content.
             if not html.strip():
                 raise FetchError("navigation timed out with an empty document")
             status = 200
@@ -260,21 +206,10 @@ class PlaywrightFetcher:
         )
 
     async def _scroll_through(self, page: Any, payloads: list[Payload]) -> None:
-        """Ask the page for more of itself, and stop when it stops giving.
+        """Wait for responses triggered by each scroll, up to the deadline.
 
-        A listing hands out one screen at a time, so a window measured in
-        weeks is answered with the dozen most recent items unless someone
-        keeps asking.
-
-        What a scroll is waiting for is the answer it triggers, not a
-        fixed delay: on a slow reply the delay expired first and the run
-        carried on with markup that was weeks behind. So each scroll
-        waits for a payload to arrive and gives up only at the deadline.
-
-        The height check stops early on a short account, but only when
-        nothing arrived either: a grid can hand back a batch without
-        growing, and reading that as "no more" cost a whole account.
-        """
+        Stop on unchanged height only when no payload arrived; virtualized grids can
+        load posts without growing."""
         last_height = 0
         for i in range(self._scrolls):
             height = await page.evaluate("document.body.scrollHeight")
@@ -299,13 +234,7 @@ class PlaywrightFetcher:
         logger.debug("browser.scroll_unanswered url=%s after=%dms", page.url, waited)
 
     def _collect(self, response: Any, into: list[Payload]) -> None:
-        """Keep one response the page asked for, if anyone wants it.
-
-        Fire-and-forget: the listener is sync, reading a body is not, and
-        a body can be gone by the time it is asked for. A payload that
-        does not arrive is a weaker crawl, never a failed one, so every
-        failure here is swallowed after a debug line.
-        """
+        """Keep selected sub-responses within the byte cap; ignore unavailable bodies."""
         keep = self._keep_payload
         if keep is None:
             return
@@ -334,12 +263,7 @@ class PlaywrightFetcher:
 
 
 def _load_storage_state(path: str) -> dict[str, Any]:
-    """Read an exported session, failing loudly rather than anonymously.
-
-    A missing or malformed session file would otherwise degrade into an
-    anonymous browser, which on a login-walled platform means crawling a
-    login page a few hundred times and concluding the site is empty.
-    """
+    """Load saved session state; reject invalid input instead of silently browsing anonymously."""
     p = Path(path)
     if not p.is_file():
         raise FetchError(f"storage state file not found: {path}")
@@ -353,11 +277,6 @@ def _load_storage_state(path: str) -> dict[str, Any]:
 
 
 def _is_transient(err: BaseException) -> bool:
-    """A navigation that timed out or was interrupted is worth retrying.
-
-    Rendering fails transiently more often than an HTTP GET does, so the
-    browser needs this at least as much as httpx: a slow page, a resource
-    that never settles, a renderer that died mid-navigation.
-    """
+    """Identify navigation failures that can be retried."""
     name = type(err).__name__
     return "Timeout" in name or "TargetClosed" in name or isinstance(err, asyncio.TimeoutError)

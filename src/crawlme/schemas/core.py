@@ -1,9 +1,4 @@
-"""Shared primitives: id/clock helpers and the URL vocabulary.
-
-The schemas package is the neutral cross-layer vocabulary: every layer
-imports from it, it imports from none of them (discipline rule: keep
-it dependency-free and behavior-free, so it can never create a cycle).
-"""
+"""Shared ID, clock and URL primitives. No imports from pipeline components."""
 
 from __future__ import annotations
 
@@ -21,13 +16,7 @@ def _new_id() -> str:
 
 
 def _content_id(text: str) -> str:
-    """A content-derived id: same text, same id (sha256[:12]).
-
-    For entities whose identity IS their content — a goal is named by
-    its prompt, so two runs (or replays) with the same prompt share
-    the goal id, which is what makes same-prompt replay idempotent and
-    replay idempotent.
-    """
+    """Return a deterministic content ID using the first 12 SHA-256 hex digits."""
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 

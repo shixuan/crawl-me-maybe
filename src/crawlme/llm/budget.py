@@ -12,13 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class Stage:
-    """Who spent the tokens.
-
-    The label travels from the consumer that owns a client down to
-    record(), because the budget is shared and a single total cannot
-    say which stage to argue with. ORDER is the order the report
-    prints them in, fixed so the same run twice reads the same way.
-    """
+    """LLM consumer labels used for per-stage token accounting."""
 
     ANALYSIS = "analysis"
     RANKING = "ranking"
@@ -43,43 +37,27 @@ class Usage:
 
 
 class TokenBudget:
-    """Task-wide LLM token accounting with a hard limit.
+    """Shared LLM token accounting. check() rejects new calls after the limit is reached.
 
-    Shared by every LLM consumer (Goal Enhancer, LLMRanker, Page
-    Analyzer).  record() logs per-call and cumulative totals so usage
-    is visible in the run log.  check() is the emergency brake: it
-    raises before any call once the limit is reached.  The optional
-    sink feeds the scheduler's counters, whose BUDGET_TOKENS stop
-    condition then ends the crawl gracefully.
-    """
+    The optional sink updates scheduler progress. Already-running calls can exceed
+    the limit before their usage is recorded."""
 
     def __init__(self, limit: int, *, sink: Callable[[int], None] | None = None) -> None:
         self.limit = limit
         self.used = 0
         self.input_tokens = 0
         self.output_tokens = 0
-        # Input tokens the provider served from its prefix cache.  They
-        # count the same here and cost about a tenth as much, so a total
-        # that does not separate them is not a bill.  Our prompts put
-        # every fixed part first -- system, then goal, then fields --
-        # precisely so this number can be large.
+        # Track cached input separately; it remains part of total input usage.
         self.cached_input_tokens = 0
         # Output the model spent thinking, billed and then discarded.
         self.reasoning_tokens = 0
         self.calls = 0
-        # Per stage, so a total that says 500k can say which stage to
-        # argue with. Keyed by Stage; an unlabelled call lands nowhere
-        # and is still in the totals above.
+        # Unlabelled calls contribute to totals but not per-stage counts.
         self.by_stage: dict[str, Usage] = {}
         self._sink = sink
 
     def bind_sink(self, sink: Callable[[int], None]) -> None:
-        """Attach the scheduler counter sink after both objects exist.
-
-        The budget is created before the scheduler (the LLM ranker
-        needs it at construction time), so the sink cannot be passed
-        in the constructor in that wiring.
-        """
+        """Attach the scheduler counter sink after scheduler construction."""
         self._sink = sink
 
     def check(self) -> None:

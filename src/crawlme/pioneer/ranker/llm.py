@@ -1,16 +1,7 @@
-"""LLMRanker: batched LLM fine-ranking, the final funnel stage.
+"""Rank and reject candidate batches with an LLM.
 
-RuleRanker is the relaxed pre-filter; this one decides.  A batch goes to
-the model in one request so it compares links against each other rather
-than judging each alone, and comes back with a priority per candidate
-plus a drop list.
-
-Two failure policies, opposite on purpose.  An LLMError propagates and
-the scheduler ends the run saying why, because a rank pump that has
-stopped will quietly starve everything downstream.  But a response that
-simply forgets a candidate keeps it at a neutral priority, because the
-house rule is to over-crawl rather than lose good links.
-"""
+Omitted candidates receive neutral priority. Unrecoverable LLM errors propagate
+to the scheduler; malformed or truncated replies have bounded recovery paths."""
 
 from __future__ import annotations
 
@@ -28,22 +19,13 @@ logger = logging.getLogger(__name__)
 # One LLM call covers at most this many candidates; larger survivor
 # batches are chunked into sequential calls.
 _BATCH_SIZE = 30
-# Response cap: 30 rankings with short rationales fit comfortably, and
-# the headroom tolerates verbose models without truncation.
-# Link texts are truncated so the prompt size stays roughly
-# proportional to the batch size; the URL is what mostly matters.
 _MAX_FIELD_CHARS = 160
-# Room for a batch's texts.  Sixty real posts came to 40k characters in
-# total, so this holds a normal batch whole and splits an unusual one
-# into more calls rather than into fragments.  Each extra call repeats
-# only the system prompt, which is a rounding error next to the text.
+# Maximum candidate text per ranking call.
 _MAX_BATCH_CHARS = 12_000
 # Priority for candidates the model did not mention at all: kept with a
 # neutral score (fail-open, see module docstring).
 _NEUTRAL_PRIORITY = 0.5
-# Below anything the model scores itself, so a rejection is read last
-# rather than not at all.  Not zero: a candidate nobody has an opinion
-# about should still outrank one the model argued against.
+# Retained rejections rank below neutral, unscored candidates.
 _DEMOTED_PRIORITY = 0.01
 _DROP_TAG = "llm_drop"
 _DEMOTED_TAG = "llm_drop_demoted"
@@ -80,12 +62,7 @@ def _utcnow() -> datetime.datetime:
 
 
 class LLMRanker:
-    """Fine-ranks batches of candidates with one LLM call per batch.
-
-    On provider failure the exception propagates and the scheduler ends
-    the run with it. Nothing scores candidates behind this, so carrying
-    on would crawl in frontier order and report a normal finish.
-    """
+    """Rank candidates in batches bounded by count and text size."""
 
     def __init__(
         self,
@@ -107,10 +84,7 @@ class LLMRanker:
         """Default-on with graceful auto-off: without credentials there
         is nothing to call, so the stage is skipped entirely.  *budget*
         is shared across all LLM consumers of the task."""
-        # The ranking stage takes its own reasoning setting when one is
-        # given: it orders candidates for fetching, and the analyzer
-        # judges every page again afterwards, so the trade here is not
-        # the trade the analyzer faces.
+        # Each LLM stage has an independent reasoning-effort setting.
         client = LLMClient.from_settings_if_configured(
             settings,
             budget=budget,
@@ -137,19 +111,7 @@ class LLMRanker:
         return decisions
 
     def _chunks(self, candidates: list[Candidate]) -> list[list[Candidate]]:
-        """Split into calls by count and by how much text they carry.
-
-        A candidate is never split across the boundary, and never shown
-        in part: whatever it says, the model sees all of it or waits for
-        the next call.  Truncating each candidate instead is what a
-        char cap does, and it fails the same way at every size -- a post
-        whose one relevant line sits past the cut is rejected for not
-        containing what was cut off.  It cost a run three real results
-        at 160 characters, and would have cost fewer but not none at 800.
-
-        Chunking by text is what makes that affordable: one long post
-        takes room from its batch rather than from its own content.
-        """
+        """Split by candidate count and text size without truncating candidate text."""
         out: list[list[Candidate]] = []
         chunk: list[Candidate] = []
         chars = 0
@@ -191,21 +153,14 @@ class LLMRanker:
         resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
         data = _parse_response(resp.content)
         if data is None:
-            # A reply that used the whole ceiling was cut off mid-JSON.
-            # Raising the ceiling was the first answer and the wrong one.
-            # The reply is long because the batch is big, so a bigger
-            # ceiling buys another slow call that also runs out: one run
-            # spent four of them, 33k output tokens and half its total
-            # time, on the same twenty-one candidates.
+            # Split truncated batches instead of increasing the output ceiling.
             if resp.truncated and len(chunk) > 1:
                 await self._halve_batches(len(chunk))
                 mid = len(chunk) // 2
                 first = await self._rank_chunk(goal, chunk[:mid], history, page_contexts)
                 return first + await self._rank_chunk(goal, chunk[mid:], history, page_contexts)
             if resp.truncated:
-                # One candidate that will not fit is the only case where
-                # more room is the answer, because there is nothing to
-                # split.
+                # A single truncated candidate cannot be split further.
                 logger.warning("llm.rank one candidate overruns the ceiling, retrying with more room")
                 resp = await self._client.chat(
                     prompt, system=_SYSTEM, max_tokens=resp.output_tokens * 2, json_mode=True
@@ -246,9 +201,7 @@ def _build_prompt(
     lines.extend(_window_lines(goal))
     lines.extend(_extract_lines(goal))
     if history.relevant_pages:
-        # Deduplicated, because identical lines are not five findings.
-        # Instagram titles every page "Instagram", so this block once
-        # said that word five times and called itself feedback.
+        # Avoid repeating identical history summaries in the prompt.
         seen: list[str] = []
         for entry in history.relevant_pages[:_MAX_RELEVANT]:
             line = f"- {_summarize_page(entry)}"
@@ -261,9 +214,7 @@ def _build_prompt(
     for c in candidates:
         lines.append(f"{c.candidate_id}: {_trunc(c.url.canonical)}")
         if c.text:
-            # Whole, not truncated: this is what the candidate says, and
-            # the batch is sized so it fits.  The cap below still guards
-            # the proxies a link carries, which are short by nature.
+            # Keep candidate content intact; only proxy fields use the display cap.
             lines.append(f"  text: {c.text}")
         if c.anchor:
             lines.append(f"  anchor: {_trunc(c.anchor)}")
@@ -282,13 +233,7 @@ def _build_prompt(
 
 
 def _extract_lines(goal: CrawlGoal) -> list[str]:
-    """The fields the analyzer will look for, said here too.
-
-    The two stages used to judge different goals, the ranker the user's
-    raw wording and the analyzer the enhanced statement plus these
-    fields.  A candidate that plainly cannot yield them is one the
-    analyzer will reject, and the ranker had no way to know that.
-    """
+    """Include the same requested fields used by the analyzer."""
     fields = spec_fields(goal.extraction_spec)
     if not fields:
         return []
@@ -296,12 +241,7 @@ def _extract_lines(goal: CrawlGoal) -> list[str]:
 
 
 def _window_lines(goal: CrawlGoal) -> list[str]:
-    """The window actually in force, said out loud.
-
-    The prompt is the user's own words and can disagree with it: asked
-    for "this month" with --since "1 week", the model ranked three-week
-    old posts highly and the filter had already dropped them.
-    """
+    """Include the effective publication cutoff in the ranking prompt."""
     if goal.since is None:
         return []
     return ["## Window", f"Anything published before {goal.since:%Y-%m-%d} is out of scope."]
@@ -324,13 +264,7 @@ def _age_of(posted_at: datetime.datetime) -> str:
 
 
 def _summarize_page(entry: dict[str, Any]) -> str:
-    """One line per prior relevant page, from whatever fields exist.
-
-    The summary leads because it is what analysis established. The title
-    is whatever the page put in its head tag, which on a platform that
-    serves one title for every page is a constant, and the fallback
-    chain used to reach it first.
-    """
+    """Prefer the analysis summary, falling back to title and URL."""
     for key in ("summary", "title", "url"):
         value = entry.get(key)
         if value:
@@ -338,19 +272,12 @@ def _summarize_page(entry: dict[str, Any]) -> str:
     return _trunc(str(entry))
 
 
-# How much of the source page's summary reaches the prompt.  Kept short
-# on purpose: the verdict carries most of the signal and a full summary
-# per candidate would bloat a 30-candidate batch for little gain.
+# Limit repeated source-page summaries in candidate prompts.
 _SUMMARY_CHARS = 60
 
 
 def _build_source_line(src: dict[str, Any], title: str) -> str:
-    """Describe the source page, with the analyzer's verdict when known.
-
-    The verdict is what lets the model tell a link off a RELEVANT article
-    from a link off a help page.  A page that has not been analyzed yet
-    yields the bare title, which is byte-for-byte the pre-2.9 output.
-    """
+    """Describe a candidate source using analysis feedback when available."""
     line = _trunc(title)
     classification = str(src.get("classification", ""))
     if not classification:
@@ -387,20 +314,7 @@ def _to_decisions(
     now: datetime.datetime,
     demote_dropped: bool = False,
 ) -> list[RankDecision]:
-    """Turn the parsed response into one decision per candidate.
-
-    Candidates in rankings are kept with the model's priority (clamped
-    to [0, 1]); candidates in candidates_to_drop are dropped; ids the
-    model did not mention are kept with a neutral priority.
-
-    Under *demote_dropped* a rejection becomes the lowest priority there
-    is instead of a removal. What the model would have discarded is then
-    read last and only if the page budget reaches it, so the run's own
-    limit decides where to stop rather than one model's yes or no. It
-    costs a fetch for everything the model doubted, which is the point:
-    a wrong keep is a page you skim, a wrong drop is a result you never
-    learn existed.
-    """
+    """Produce one decision per candidate, keeping omitted candidates at neutral priority."""
     scored: dict[str, tuple[float, str]] = {}
     raw_rankings = data.get("rankings")
     if isinstance(raw_rankings, list):
@@ -420,9 +334,7 @@ def _to_decisions(
             rationale = str(rationale).strip() if isinstance(rationale, str) else ""
             scored[cid] = (round(priority, 4), rationale)
 
-    # A rejection carries its reason, so a mistaken one can be read back
-    # rather than guessed at.  Bare ids stay valid: the older shape, and
-    # what a model returns when it ignores the instruction.
+    # Accept both reason-bearing rejections and legacy bare IDs.
     drops: dict[str, str] = {}
     raw_drops = data.get("candidates_to_drop")
     if isinstance(raw_drops, list):
@@ -453,9 +365,7 @@ def _to_decisions(
             if not rationale:
                 rationale = f"llm_priority={priority:.4f}"
         elif cid in drop_ids:
-            # The tag stays in front of the reason: it is what marks the
-            # decision as a rejection for anything counting them later,
-            # and the reason is what makes a mistaken one readable.
+            # Keep the rejection marker before its reason for downstream counting.
             tag = _DEMOTED_TAG if demote_dropped else _DROP_TAG
             why = drops[cid]
             rationale = f"{tag}: {why}" if why else tag
@@ -463,9 +373,7 @@ def _to_decisions(
         else:
             priority, dropped, rationale = _NEUTRAL_PRIORITY, False, "no_opinion"
             missing += 1
-        # One line per candidate, not per batch. A batch line says 30
-        # were scored and never which link got which number, which is
-        # the only part a reader can argue with.
+        # Log each candidate decision for audit.
         logger.info("scored %.2f %s%s", priority, where(c.url.canonical), _aside(rationale))
         logger.debug("rank.scored url_key=%s priority=%.2f dropped=%s", c.url.url_key, priority, dropped)
         decisions.append(

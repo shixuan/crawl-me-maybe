@@ -1,12 +1,4 @@
-"""End-to-end tests against live Wikipedia.
-
-Run manually (skipped in CI):
-
-    pytest tests/e2e/test_wiki_crawl.py -v -s -m e2e
-
-Goal: find software projects that were rewritten from other languages
-into Rust ("projects rewritten in Rust").
-"""
+"""Live Wikipedia crawls. Run manually with pytest tests/e2e -m e2e."""
 
 from __future__ import annotations
 
@@ -36,15 +28,7 @@ def _utcnow() -> str:
 
 @pytest.mark.asyncio
 async def test_wiki_basic(e2e_settings):
-    """Full pipeline: seed Wikipedia Rust page, crawl up to 10 pages.
-
-    Verifies:
-      - Crawl completes without fatal errors
-      - Pages are fetched and extracted
-      - Candidates flow through prefilter → buffer → ranker → frontier
-      - Storage has pages, links, rank_decisions
-      - Stop reason includes BUDGET_PAGES
-    """
+    """Verify a bounded live crawl persists pages and stops at its page budget."""
     cfg = e2e_settings
     setup_logging(cfg, force=True)
 
@@ -212,14 +196,7 @@ _DRAINING_TIMEOUT = 600
 
 @pytest.mark.asyncio
 async def test_wiki_draining(e2e_settings):
-    """Draining mode: 15 seeds, depth=3, no page limit. Crawls until frontier drained.
-
-    Verifies:
-      - Multiple seeds all pushed successfully
-      - Crawler runs to natural exhaustion (FRONTIER_DRAINED)
-      - Depth limit is respected (no pages beyond depth 3)
-      - Substantial page/candidate yield from cross-linking
-    """
+    """Verify a multi-seed crawl exhausts its frontier within the depth limit."""
     cfg = e2e_settings
     setup_logging(cfg, force=True)
 

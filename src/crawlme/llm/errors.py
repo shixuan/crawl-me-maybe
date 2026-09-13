@@ -1,9 +1,4 @@
-"""LLM call failures.
-
-Separate from client.py on purpose: both the client (which raises
-these) and the budget (whose TokenBudgetError extends LLMError) import
-them, so keeping them here avoids an import cycle between the two.
-"""
+"""Shared LLM errors, separated from the client to avoid a budget/client import cycle."""
 
 
 class LLMError(Exception):

@@ -1,14 +1,7 @@
-"""HTTP fetch worker.
+"""Fetch HTTP pages with redirect tracking, retries and a total deadline.
 
-Downloads what the frontier hands it.  The only module that touches the
-network, and it knows nothing about strategy, ranking or analysis.
-
-Two things are done the long way on purpose.  Redirects are followed by
-hand, because httpx's follow_redirects discards the intermediate hops and
-canonicalization needs the whole chain.  And every attempt runs under a
-hard total deadline, because per-phase timeouts never fire against a host
-that trickles a few bytes at a time and resets the read timer forever.
-"""
+Redirects are followed explicitly to retain every hop. The total deadline also
+bounds responses that continuously reset the per-read timeout."""
 
 from __future__ import annotations
 
@@ -48,16 +41,9 @@ class HttpFetcher:
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
         self._max_retries = max_retries
-        # Hard deadline per attempt.  Per-phase timeouts (connect/read)
-        # are not enough: a host that trickles a few bytes every few
-        # seconds resets the read timer forever and hangs the fetch.
-        # Default: connect + read + 10s of slack.
+        # Bound trickling responses that never trigger the per-read timeout.
         self._total_timeout = total_timeout if total_timeout is not None else connect_timeout + read_timeout + 10.0
-        # One client for the whole run, built on first use because it
-        # binds to the running event loop.  A client per fetch threw the
-        # connection pool away every time and paid a fresh TCP and TLS
-        # handshake per request, which hurts most on the same-domain
-        # runs the domain budget encourages.
+        # Create the shared connection pool lazily on the running event loop.
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -90,9 +76,7 @@ class HttpFetcher:
 
     async def _do_fetch(self, item: FrontierItem, attempt: int, started: float) -> FetchResult:
         client = self._get_client()
-        # The UA rides on the request rather than the client, because the
-        # client outlives a single fetch now and rotation has to stay
-        # per-request.
+        # Rotate the User-Agent per request while reusing the client.
         headers = {"User-Agent": random.choice(self._uas)}  # noqa: S311
         response = await client.get(item.url.canonical, headers=headers)
 

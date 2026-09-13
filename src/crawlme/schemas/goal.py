@@ -16,25 +16,18 @@ class CrawlGoal(BaseModel):
     goal_id: str = ""
     prompt: str
     goal_statement: str = ""
-    # LLM-curated keywords from the Goal Enhancer (2.0).  Empty means
-    # the rule stage falls back to bare tokenization of the prompt.
+    # Optional keywords inferred by goal enhancement.
     keywords: list[str] = Field(default_factory=list)
     since: datetime.datetime | None = None
     max_pages: int = 500
-    # LLM token budget for the whole task (v0.2).  Sized so an
-    # unspecified user can finish a typical crawl: a 300-page run
-    # with LLM reranking spends roughly 100-150k tokens, and even
-    # the full 500k costs cents on the default model.
+    # Shared token limit across all LLM stages.
     max_tokens: int = 500_000
     max_duration_sec: int = 3600
     relevance_threshold: float = 0.7
     # Stop once this many pages have been judged relevant.  0 means the
     # run has no target and stops only when a budget runs out.
     max_relevant: int = 0
-    # Diagnostic mode: nothing is discarded, the rejects are ranked
-    # last.  Carried on the goal because the run's stop conditions have
-    # to know: a run that deliberately reads its own rejects ends with a
-    # tail of misses, which is what retires a source.
+    # Keep LLM rejections at low priority and disable source retirement.
     recall: bool = False
     depth_limit: int = 5
     domain_budget: int = 50
@@ -43,12 +36,7 @@ class CrawlGoal(BaseModel):
 
     @model_validator(mode="after")
     def _derive_goal_id(self) -> CrawlGoal:
-        """A goal is named by its prompt: same text, same goal id.
-
-        Same-prompt replay idempotency and the cross-run goal
-        embedding cache both rely on this determinism.  An explicitly
-        passed goal_id still wins.
-        """
+        """Derive identity from the prompt unless an explicit goal ID was supplied."""
         if not self.goal_id:
             self.goal_id = _content_id(self.prompt)
         return self
@@ -68,14 +56,7 @@ class CrawlTask(BaseModel):
 
 
 def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:
-    """The fields a goal declares, as name -> what it holds.
-
-    One reader for the whole codebase.  Everything that builds a prompt,
-    logs a run, or reads a stored result asks here what the fields are,
-    so a spec that grows a key never has to be understood twice.  An
-    empty result means the goal asks to find pages rather than to
-    collect anything out of them.
-    """
+    """Return declared field names and descriptions, or an empty mapping."""
     if not isinstance(spec, dict):
         return {}
     fields = spec.get("fields")
@@ -85,14 +66,7 @@ def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:
 
 
 def spec_time_field(spec: dict[str, Any] | None) -> tuple[str, str] | None:
-    """Which extracted field carries the event's time, and what it marks.
-
-    Returns (field name, "until" | "on"), or None when the goal has no
-    time dimension. Declared by the goal rather than guessed from the
-    field name, because the names are written per goal: one crawl calls
-    it deadline, the next event_date, and the difference between "shuts
-    on this day" and "happens on this day" is not in either name.
-    """
+    """Return the declared event-time field and on/until meaning, or None."""
     if not isinstance(spec, dict):
         return None
     raw = spec.get("time_field")
@@ -106,17 +80,7 @@ def spec_time_field(spec: dict[str, Any] | None) -> tuple[str, str] | None:
 
 
 def spec_version(spec: dict[str, Any] | None) -> str:
-    """A short name for one extraction spec, or "" when there is none.
-
-    This belongs to the analysis, not to the goal.  `goal_id` is
-    sha256(prompt) so that the same prompt is the same goal, which is
-    what replay idempotency and the goal embedding cache are built on;
-    folding a model-inferred spec into it would make the same prompt
-    become a new goal every time the model worded its fields
-    differently.  What actually changed is how a page was read, which is
-    the same kind of fact as the prompt version and the model, so it is
-    recorded alongside them.
-    """
+    """Hash the extraction specification independently of the prompt-derived goal ID."""
     fields = spec_fields(spec)
     if not fields:
         return ""

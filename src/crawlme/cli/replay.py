@@ -1,17 +1,7 @@
-"""Replay: re-run the analysis stage over a completed task's pages.
+"""Re-analyze stored page text without fetching or re-extracting pages.
 
-The pages table is the frozen corpus of a run, and replay produces new
-judgments over it without touching anything else.  It writes only to
-analyses, plus one crawl_goals row when given a fresh prompt, and it
-calls the analyzer directly rather than going through steering: a
-replay prompt has not been validated by a live crawl, so its signals
-must not reach feedback.db.
-
-An analysis is identified by (url_key, goal_id, prompt_version, model)
-and an existing one is skipped, so replaying twice is a no-op; goal ids
-are a hash of the prompt, so the same prompt is the same goal.  --force
-appends instead, for variance studies, and never touches the old rows.
-"""
+Matching analysis identities are skipped unless forced. New prompts create or
+reuse a goal row; successful analyses are appended to the run database."""
 
 from __future__ import annotations
 
@@ -64,9 +54,7 @@ async def cmd_replay(args: argparse.Namespace) -> None:
     except ReplayError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    # Same teardown as run: close litellm's cached async clients while
-    # the loop is alive, so its shutdown noise never prints after the
-    # report.
+    # Close cached clients before the event loop and final report.
     await close_litellm_clients()
     print_replay_summary(report)
     logging.getLogger().setLevel(logging.CRITICAL)
@@ -104,14 +92,10 @@ async def run_replay(
     force: bool = False,
     analyzer: Analyzer | None = None,
 ) -> ReplayReport:
-    """Re-analyze a completed task's pages.
+    """Analyze stored pages and wait for bounded retries before closing.
 
-    *analyzer* is injectable for tests; None (the default) builds one
-    from settings exactly like a live run does.  Pages are processed
-    in fetch order, one at a time, and parked failures are waited out
-    through drain_pending() so nothing is lost when the analyzer
-    closes.
-    """
+    An injected analyzer avoids provider calls in tests. Otherwise settings build
+    the analyzer with the replay token budget."""
     run_dir, task_row = await find_run_dir(settings.result_dir, task_id)
     budget = TokenBudget(limit=max_tokens or 0)
     if analyzer is None:
@@ -128,10 +112,7 @@ async def run_replay(
         goal = _goal_from_row(goal_row)
         new_goal = False
         if prompt:
-            # A replay prompt names one judging context: CrawlGoal ids
-            # are content-derived (sha256 of the prompt), so the same
-            # text maps to the same goal and replaying a prompt twice
-            # is idempotent like the no-prompt case.
+            # Prompt-derived goal IDs make repeated replay requests idempotent.
             goal = CrawlGoal(prompt=prompt)
             existing = await storage.get_goal(goal.goal_id)
             if existing is None:
@@ -145,9 +126,7 @@ async def run_replay(
                 storage.save_goal(goal.model_dump(mode="json"))
             else:
                 if existing.get("prompt") != prompt:
-                    # Same id with different text: a hash collision or
-                    # hand-edited data.  save_goal would REPLACE the old
-                    # row, so never judge under a mismatched goal.
+                    # Reject goal-ID collisions before save_goal can replace a different prompt.
                     raise ReplayError(f"goal id {goal.goal_id} already exists with a different prompt")
                 # Same prompt replayed before: reuse the stored goal
                 # (already enhanced), never pay the enhancer again.
@@ -224,13 +203,7 @@ async def run_replay(
 
 
 async def find_run_dir(result_dir: Path, task_id: str) -> tuple[Path, dict[str, Any]]:
-    """Locate the run directory holding *task_id* under results/.
-
-    Run dirs are results/<timestamp>/ with no task index, so this
-    scans every candidate db/crawl.db (newest first) until the task
-    row turns up.  Returns (run_dir, task_row).  Raises ReplayError
-    when nothing holds the task, listing what was found.
-    """
+    """Find the run database containing task_id; raise ReplayError if absent."""
     seen: dict[str, str] = {}
     for db_path in sorted(result_dir.glob("*/db/crawl.db"), reverse=True):
         try:
@@ -282,12 +255,7 @@ def print_replay_summary(r: ReplayReport) -> None:
 
 
 def _goal_from_row(row: dict[str, Any]) -> CrawlGoal:
-    """Rebuild a CrawlGoal from a stored row.
-
-    save_goal stores the JSON-shaped fields (keywords,
-    extraction_spec) as JSON text columns, so they must be decoded
-    before validation.
-    """
+    """Restore a goal and its extraction specification from a database row."""
     data = dict(row)
     data["keywords"] = json.loads(data.get("keywords") or "[]")
     data["extraction_spec"] = json.loads(data["extraction_spec"]) if data.get("extraction_spec") else None
@@ -320,13 +288,7 @@ def _parse_ts(value: Any) -> datetime.datetime:
 
 
 def _parse_optional_ts(value: Any) -> datetime.datetime | None:
-    """Nullable timestamps, where absent must stay absent.
-
-    Unlike _parse_ts there is no sensible stand-in.  A page that never
-    stated when it was published must not come back from the database
-    claiming it was published now, and runs recorded before the column
-    existed simply have nothing here.
-    """
+    """Parse a nullable timestamp, preserving missing values as None."""
     if isinstance(value, str) and value:
         try:
             return datetime.datetime.fromisoformat(value)

@@ -1,17 +1,4 @@
-"""When to stop, at both scales this crawl has one.
-
-check_stop() answers it for the run, and why_retire() for one source,
-which is a different question with the same shape: a feed is
-time-ordered and productive per account and never as a whole, so read
-globally neither signal meant anything.
-
-Both live here so that "when does this stop" has one place to look.
-The scheduler acts on the answers and does not decide them.
-
-Every check in _CHECKS must be reachable.  A check whose input is never
-written is worse than no check, because the capability looks present in
-the docs while nothing can trigger it.
-"""
+"""Run stopping and individual source-retirement policies. The scheduler applies their decisions."""
 
 from __future__ import annotations
 
@@ -125,15 +112,7 @@ def _ceiling_refused(
     lim: Limits,
     p: Progress,
 ) -> StopReason | None:
-    """The per-domain ceiling refused candidates before the run ended.
-
-    Said alongside FRONTIER_DRAINED rather than instead of it, because
-    both are true and only together do they answer why nothing is left.
-    A feed crawl ended at fifty pages with a hundred and sixty
-    candidates refused and reported only "completed"; a graph crawl that
-    genuinely exhausts itself refuses thousands along the way and is
-    still a real completion.
-    """
+    """Add domain-budget context when the frontier drains after refusing candidates."""
     blocked = getattr(frontier, "blocked_by_domain_budget", 0)
     if not blocked or not _is_drained(frontier, p):
         return None
@@ -146,18 +125,7 @@ def _enough_found(
     lim: Limits,
     p: Progress,
 ) -> StopReason | None:
-    """Stop once the run has what it was asked for.
-
-    The other stop conditions are ceilings on what a run may spend; this
-    one is the only statement of what it is for.  Without it a page
-    budget has to stand in for a goal, and "sixty pages" tells nobody
-    how many answers that buys -- one run spent sixty and returned
-    twenty-two.
-
-    Analysis lags fetching, so the tally can pass the target by whatever
-    was already in flight.  Overshooting by a page or two beats holding
-    the pumps to make the count exact.
-    """
+    """Stop dispatch when the result target is met; in-flight analyses may still complete."""
     if lim.max_relevant > 0 and p.relevant_found >= lim.max_relevant:
         return StopReason("MAX_RELEVANT", f"found {p.relevant_found}/{lim.max_relevant} relevant pages")
     return None
@@ -169,17 +137,7 @@ def _platform_refused(
     lim: Limits,
     p: Progress,
 ) -> StopReason | None:
-    """The platform is refusing this crawl, not just this page.
-
-    Rate limiting and an expired session are facts about the crawler,
-    so the first one settles every request that would follow: they
-    would all be refused too, and on a platform that counts strikes,
-    asking again is how a session becomes a ban.  Stopping on the first
-    one trades a re-run for that risk.
-
-    A gone account is the opposite kind of fact and never arrives here;
-    it is counted and reported instead.  See PageProblem.refuses_the_run.
-    """
+    """Stop on run-wide platform refusal; unavailable individual pages do not trigger this."""
     if not p.refused_by:
         return None
     if p.refused_by == PageProblem.LOGIN_REQUIRED.value:
@@ -193,17 +151,7 @@ def _adapter_empty(
     lim: Limits,
     p: Progress,
 ) -> StopReason | None:
-    """Every listing was readable and none of them held anything.
-
-    That is what a platform redesign looks like from inside: the pages
-    still arrive, the adapter still recognises them as pages, and it
-    recognises nothing on any of them.  The run then drains on schedule
-    and reports a finished crawl of a platform that posted nothing.
-
-    Said alongside FRONTIER_DRAINED rather than instead of it, and only
-    once the run is over: a single empty account is an account having a
-    quiet week, and mid-run there is no telling which this is.
-    """
+    """Flag a drained run whose listings all yielded no candidates, after the minimum sample."""
     if not _is_drained(frontier, p):
         return None
     if p.listings_seen < _EMPTY_LISTING_FLOOR or p.listings_empty < p.listings_seen:
@@ -255,12 +203,7 @@ def check_stop(
     limits: Limits,
     progress: Progress,
 ) -> list[StopReason]:
-    """Why this run should stop, if it should.
-
-    The Ledger is deliberately not a parameter. A statistic nothing
-    stops on cannot be read here, so it cannot quietly become a stopping
-    criterion, and the split holds by signature rather than by care.
-    """
+    """Return all applicable stop reasons using limits and progress, excluding reporting-only state."""
     reasons: list[StopReason] = []
     for check in _CHECKS:
         result = check(task, frontier, limits, progress)
