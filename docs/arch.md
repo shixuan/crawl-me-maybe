@@ -7,30 +7,49 @@ Pydantic models live in `schemas/`; the mutable run context lives in `state/`.
 
 ```mermaid
 flowchart TB
-    cli["cli/run.py<br>settings, goal, shared token budget"] --> factory["scheduler/factory.py<br>component assembly"]
-    factory --> engine
-    subgraph engine["scheduler/engine.py · CrawlScheduler"]
-        fetchpump[fetch_pump]
-        rankpump[rank_pump]
+    subgraph pioneer["1. pioneer/ · candidate selection"]
+        candidates["Candidate<br>URL, text, source, depth"] --> filter["PreFilter<br>scope, depth, dedup, robots, publication cutoff"]
+        filter -->|allowed| buffer["GatedFrontier / RoundRobinBuffer<br>unranked candidates, rotation between sources"]
+        buffer -->|rank_pump drains a batch| ranker["LLMRanker<br>goal + candidate text + page context"]
+        ranker -->|kept RankDecisions| queue["GatedFrontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
+        ranker -->|dropped| dropped["No fetch"]
     end
-    subgraph pioneer["pioneer/"]
-        frontier["Frontier<br>priority queue + unranked buffer"]
-        filter[PreFilter]
-        ranker[LLMRanker]
+
+    queue -->|fetch_pump calls pop_next| dispatch["scheduler/engine.py<br>dispatch _handle_fetch tasks"]
+
+    subgraph digest["2. digest/ · fetch and extract under a fetch slot"]
+        fetcher[DispatchingFetcher] -->|HTTP| http[HttpFetcher]
+        fetcher -->|rendering| browser["PlaywrightFetcher<br>saved session, selected response payloads"]
+        http -->|FetchResult| extractor["TrafExtractor<br>text, Markdown, publication metadata"]
+        browser -->|FetchResult| extractor
     end
-    subgraph digest["digest/"]
-        fetcher["Fetcher<br>HTTP / Playwright dispatch"]
-        extractor[TrafExtractor]
-        harvest["PageHarvester<br>feed adapters / web links"]
+    dispatch --> fetcher
+
+    subgraph analysis["3. analyzer/ · separate analysis slot"]
+        analyzer["PageAnalyzer<br>relevance, fields, evidence checks"]
+        analyzer -->|failed call| retry["Bounded retry queue"]
+        retry -. delayed attempt .-> analyzer
     end
-    frontier --> fetchpump
-    fetchpump --> fetcher --> extractor
-    extractor --> analyzer["analyzer/PageAnalyzer"]
-    analyzer --> harvest --> filter --> frontier
-    frontier --> rankpump --> ranker --> frontier
-    analyzer -. feedback .-> ranker
-    engine --> storage["storage/sqlite/<br>pages, analyses, events, checkpoints"]
+    extractor -->|Page| analyzer
+    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist analysis, update context and counters"]
+
+    subgraph discovery["4. digest/ · discover the next candidates"]
+        harvest["PageHarvester<br>reads saved HTML and payloads"]
+        harvest -->|claimed page| adapters["FeedAdapter<br>Instagram / Reddit / RSS"]
+        harvest -->|unclaimed page| links[extract_links]
+        adapters -->|listing entries; posts are leaves| canonical["pioneer/Canonicalizer"]
+        links --> canonical
+    end
+    analyzer -->|after initial attempt| harvest
+    canonical -. new Candidate objects .-> candidates
 ```
+
+The numbered stages follow one candidate URL. `rank_pump` and `fetch_pump` run
+concurrently across different candidates, sharing the frontier's two queues.
+The scheduler saves HTML, payloads and the extracted `Page` before analysis.
+Harvesting follows the initial analysis attempt and can proceed while a failed
+analysis waits for a retry. Analyzer output goes to its sink; discovery reads the
+saved page inputs. Dashed arrows show delayed work or candidates for a later pass.
 
 | Location | Responsibility |
 |---|---|
@@ -69,8 +88,11 @@ queued without LLM ranking. Deterministic URL filtering still runs.
 
 ### Fetching and discovery
 
-Each dispatched item is fetched, saved as raw HTML, extracted to a `Page`, and
-persisted before analysis. The harvester then reads the saved HTML and payloads.
+For a discovered candidate, ranking precedes dispatch, fetching and analysis.
+Seeds and listing continuation URLs bypass ranking after filtering. Each dispatched
+item is fetched, saved as raw HTML, extracted to a `Page`, and persisted before
+analysis. The harvester then reads the saved HTML and payloads to discover new
+candidate URLs, which return to the unranked buffer through the pre-filter.
 
 - `DispatchingFetcher` chooses Playwright for enabled adapters that require
   rendering and HTTP otherwise. `--fetcher browser` forces Playwright everywhere.
@@ -128,6 +150,28 @@ is `over`; a start beyond a supplied horizon is `later`. Without a horizon, futu
 results remain `open`. The dashboard applies its selected horizon in the browser.
 
 ## State and concurrency
+
+The scheduler connects stage outputs to shared services. These are coordination
+and data dependencies, rather than additional steps in the candidate path above.
+
+```mermaid
+flowchart LR
+    ranker[LLMRanker] --> clients["llm/LLMClient<br>provider calls and retries"]
+    analyzer[PageAnalyzer] --> clients
+    clients --> budget["Shared TokenBudget<br>usage by stage"]
+
+    analyzer -->|successful analysis, including retries| sink["scheduler._on_analysis"]
+    sink -->|relevant summaries and page context| ranker
+    sink --> state["CrawlContext + PageBook + SeedState<br>progress, page verdicts, source history"]
+    state --> policies["stop_conds<br>run stopping / source retirement"]
+    budget -->|usage| policies
+    policies -->|scheduler applies decisions| control["Stop dispatch / retire pending source work"]
+
+    ranker -->|decisions via scheduler| storage["storage/sqlite/CrawlDb"]
+    sink -->|analyses| storage
+    scheduler["Scheduler<br>fetching, discovery, events, checkpoints"] -->|pages, links, events, snapshots| storage
+    scheduler -->|HTML and payload bytes| raw["raw/ files"]
+```
 
 `CrawlContext` is retained across a scheduler reset; its parts are rebuilt:
 
