@@ -164,8 +164,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
         logger.info(
             "%s after %d pages and %d tokens: %s",
             task.state.lower(),
-            scheduler.context.progress.pages_fetched,
-            scheduler.context.progress.tokens_used,
+            scheduler.run_state.progress.pages_fetched,
+            scheduler.run_state.progress.tokens_used,
             task.stopping_reason or "no reason recorded",
         )
 

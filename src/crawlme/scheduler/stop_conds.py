@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 from crawlme.pioneer.frontier import Frontier
 from crawlme.platforms.base import PageProblem
+from crawlme.runtime.state import RELEVANCE_WINDOW, Limits, Progress
 from crawlme.schemas import CrawlTask
-from crawlme.state.context import RELEVANCE_WINDOW, Limits, Progress
 
 # has stopped finding anything worth the budget.
 

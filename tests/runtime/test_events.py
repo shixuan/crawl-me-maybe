@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from crawlme.state.events import EventEmitter, EventType
+from crawlme.runtime.events import EventEmitter, EventType
 
 
 def test_emit_saves():

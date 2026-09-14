@@ -10,7 +10,7 @@ from crawlme.cli import main
 from crawlme.cli.run import _build_source
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker.llm import LLMRanker
-from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
+from crawlme.runtime.state import Limits, Progress, RunState, Stats
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,7 @@ def test_prints_prompt(caplog):
             mock_sched = MagicMock()
             mock_sched.ingest_seeds = AsyncMock()
             mock_sched.enhance_seeds = AsyncMock(return_value=[])
-            mock_sched.context = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
+            mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
 
@@ -80,7 +80,7 @@ def _capturing_factory(captured: dict):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched.enhance_seeds = AsyncMock(return_value=[])
-        sched.context = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
+        sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
         sched.run = AsyncMock()
         return sched
 
@@ -271,7 +271,7 @@ def test_binds_budget(monkeypatch):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched.enhance_seeds = AsyncMock(return_value=[])
-        sched.context = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
+        sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
         sched.run = AsyncMock()
         sched.note_tokens_used = note
         return sched
@@ -294,9 +294,7 @@ def test_prints_summary(capsys):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
         sched.enhance_seeds = AsyncMock(return_value=[])
-        sched.context = CrawlContext(
-            limits=Limits(), progress=Progress(pages_fetched=5, tokens_used=1234), ledger=Ledger()
-        )
+        sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5, tokens_used=1234), stats=Stats())
         sched.run = AsyncMock()
         sched.summary = lambda: {
             "pages_fetched": 5,

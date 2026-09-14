@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from crawlme.state.context import PageBook
+from crawlme.runtime.state import PageBook
 
 
 def test_a_record_waits_for_both_halves():
@@ -56,7 +56,7 @@ def test_an_unknown_page_answers_with_the_default():
 def test_a_funnel_only_narrows():
     """Every gap between two stages means something, which is what lets
     a new question be answered without a new field."""
-    from crawlme.state.context import Funnel
+    from crawlme.runtime.state import Funnel
 
     f = Funnel(discovered=63, scored=11, wanted=6, fetched=7, judged=1, relevant=0)
     found, judged, fetched, wanted, scored, discovered = f.as_tuple()
@@ -64,7 +64,7 @@ def test_a_funnel_only_narrows():
 
 
 def test_a_seed_starts_with_an_empty_funnel():
-    from crawlme.state.context import SeedState
+    from crawlme.runtime.state import SeedState
 
     st = SeedState()
     assert st.funnel.as_tuple() == (0, 0, 0, 0, 0, 0)
