@@ -19,11 +19,11 @@ from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_enhancer import enhance
+from crawlme.runtime.state import Limits, Progress, RunState, Stats
+from crawlme.runtime.tracking import RunTracker
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchWorker, RankingWorker
 from crawlme.schemas import Candidate, CrawlGoal
-from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
-from crawlme.state.tracking import RunTracking
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 
@@ -40,10 +40,10 @@ def create_scheduler(
     A missing analyzer is built from settings when enabled and configured.
     The supplied token budget is shared with that analyzer."""
     storage = overrides.pop("storage") if "storage" in overrides else SqliteCrawlDb.create(settings.result_dir)
-    # Keep context identity stable when the engine resets its state.
-    ctx = overrides.pop("context", None)
-    if ctx is None:
-        ctx = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
+    # The tracker and reporting use the same state across startup reset.
+    state = overrides.pop("run_state", None)
+    if state is None:
+        state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
     canonicalizer = overrides.pop("canonicalizer", None) or Canonicalizer()
     fetcher = overrides.pop("fetcher") if "fetcher" in overrides else _build_fetcher(settings)
     extractor = overrides.pop("extractor", None) or TrafExtractor()
@@ -90,7 +90,7 @@ def create_scheduler(
         "robots": robots,
         "prefilter": PreFilter(),
         "canonicalizer": canonicalizer,
-        "tracking": RunTracking(ctx),
+        "tracking": RunTracker(state),
         "seed_enhancer": enhance_seeds,
     }
     kwargs.update(overrides)

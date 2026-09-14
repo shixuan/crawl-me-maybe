@@ -41,7 +41,11 @@ def test_scheduler_no_analyzer(tmp_path: Path):
     assert sched._analysis.analyzer is None
 
 
-def test_sched_context(tmp_path: Path):
-    """The context the factory creates is the one the engine holds."""
-    sched = create_scheduler(Settings(result_dir=tmp_path))
-    assert sched.context is sched._tracking.context
+def test_sched_run_state(tmp_path: Path):
+    """The engine and tracker use the state supplied to the factory."""
+    from crawlme.runtime.state import Limits, Progress, RunState, Stats
+
+    state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+    sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
+    assert sched.run_state is state
+    assert sched._tracking.state is state

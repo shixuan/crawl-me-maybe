@@ -1,7 +1,7 @@
 # Architecture
 
 `crawlme` separates discovery, page processing, analysis and scheduling. Shared
-Pydantic models live in `schemas/`; the mutable run context lives in `state/`.
+Pydantic models live in `schemas/`; `runtime/state.py` holds run-wide data.
 
 ## Components
 
@@ -31,7 +31,7 @@ flowchart TB
         retry -. delayed attempt .-> analyzer
     end
     extractor -->|Page| analyzer
-    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through RunTracking, apply retirement"]
+    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through RunTracker, apply retirement"]
 
     subgraph discovery["4. workers/discovery.py · DiscoveryWorker · bounded parsing wait"]
         harvest["PageHarvester<br>reads saved HTML and payloads"]
@@ -57,22 +57,22 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `scheduler/factory.py` | Assemble and inject workers and their component dependencies |
 | `scheduler/engine.py` | Run pumps, admit candidates, apply outcomes and manage lifecycle |
 | `scheduler/workers/` | Execute ranking, fetching, analysis and discovery with stage-specific inputs and outputs |
-| `scheduler/reporting.py` | Build the CLI report from run statistics |
+| `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Decide run stopping and individual source retirement |
 | `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs; enhance goals and seeds |
 | `digest/` | Fetch, extract text and discover candidates |
 | `analyzer/` | Classify pages and extract fields with source evidence |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
-| `state/tracking.py` | Join page verdicts and source history; provide ranking feedback snapshots |
-| `state/context.py` | Run limits, progress, reporting counters and page/source records |
-| `state/events.py` | Persist crawl events |
+| `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
+| `runtime/state.py` | Own run limits, counters, page/source history and seed enhancement metadata |
+| `runtime/events.py` | Persist crawl events |
 | `storage/` | Persistence contract and SQLite implementation |
 | `util/dates.py` | Parse event dates and assign result groups |
 | `dashboard/` | Local HTTP server and browser UI for stored results |
 
 Workers are concrete classes with different input and output types, not interchangeable
 pipeline steps. They neither call one another nor receive the engine or mutable run
-context. The engine owns ordering and queue admission; workers use the existing
+state. The engine owns ordering and queue admission; workers use the existing
 Fetcher, Extractor, Analyzer, Harvester and Ranker contracts.
 
 The factory creates workers and binds seed enhancement to its dependencies.
@@ -174,8 +174,9 @@ flowchart LR
     clients --> budget["Shared TokenBudget<br>usage by stage"]
 
     analyzer -->|successful analysis, including retries| sink["scheduler._on_analysis"]
-    sink --> state["RunTracking<br>CrawlContext + PageBook + SeedState"]
-    state -->|batch feedback snapshot via engine| ranker
+    sink --> tracker[RunTracker]
+    tracker -->|update| state["RunState<br>limits, counters, page/source history, ranking feedback"]
+    state -->|batch feedback snapshot via tracker and engine| ranker
     state --> policies["stop_conds<br>run stopping / source retirement"]
     budget -->|usage callback via engine| state
     policies -->|scheduler applies decisions| control["Stop dispatch / retire pending source work"]
@@ -185,18 +186,32 @@ flowchart LR
     scheduler["Engine<br>candidate admission, events, checkpoints"] -->|links, events, snapshots| storage
     fetchworker[FetchWorker] -->|pages| storage
     fetchworker -->|HTML and payload bytes| raw["raw/ files"]
+    state -->|read only| report["reporting.summary"]
 ```
 
-`CrawlContext` is retained across a scheduler reset; its parts are rebuilt:
+The engine exposes `run_state`. `RunState` owns run-wide data:
 
 - `Limits` holds immutable run budgets and goal constraints.
 - `Progress` holds counters used by stopping policies.
-- `Ledger` holds reporting statistics and per-seed state.
+- `Stats` holds reporting statistics.
+- `seeds` holds per-source counters, retirement history and pagination counts.
+- `pages`, `page_contexts` and `relevant_pages` hold page associations and ranking feedback.
+- Seed enhancement metadata records proposed and rejected sources.
 
-`RunTracking` owns the page/source history and updates it synchronously on the event
-loop. It returns source keys for the engine to check with `why_retire`; only the
-engine removes queued work. Ranking receives a snapshot of recent relevant pages
-and the current batch's source contexts, so later analysis updates affect later batches.
+Startup reset clears execution history and counters while preserving prepared seed
+URLs, proposal metadata and recorded pre-run token usage. It retains the RunState
+object's identity. Resume does not reset it.
+
+`RunTracker` holds only a reference to RunState and updates it synchronously on the
+event loop. It returns source keys for the engine to check with `why_retire`; only
+the engine removes queued work. Reporting reads RunState directly. Ranking receives
+a snapshot of recent relevant pages and the current batch's source contexts, so
+later analysis updates affect later batches.
+
+Frontier owns queue internals, Engine owns task handles, and TokenBudget owns token
+accounting. These resources are not duplicated in RunState. The single-page path
+passes `FrontierItem`, `FetchedPage`, `Page` and `Harvest` between stages; delayed
+analysis results join run-wide records by page identity.
 
 `PageBook` joins each page's seed, listing status and analysis verdict. These may
 arrive in different orders because analysis can retry. A completed non-listing
