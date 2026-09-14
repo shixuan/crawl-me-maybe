@@ -7,17 +7,17 @@ Pydantic models live in `schemas/`; the mutable run context lives in `state/`.
 
 ```mermaid
 flowchart TB
-    subgraph pioneer["1. pioneer/ · candidate selection"]
+    subgraph pioneer["1. Candidate selection · Engine and RankingWorker"]
         candidates["Candidate<br>URL, text, source, depth"] --> filter["PreFilter<br>scope, depth, dedup, robots, publication cutoff"]
         filter -->|allowed| buffer["GatedFrontier / RoundRobinBuffer<br>unranked candidates, rotation between sources"]
-        buffer -->|rank_pump drains a batch| ranker["LLMRanker<br>goal + candidate text + page context"]
-        ranker -->|kept RankDecisions| queue["GatedFrontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
+        buffer -->|rank_pump drains a batch| ranker["workers/ranking.py · RankingWorker<br>LLMRanker + decision conversion"]
+        ranker -->|engine enqueues kept items| queue["GatedFrontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
         ranker -->|dropped| dropped["No fetch"]
     end
 
     queue -->|fetch_pump calls pop_next| dispatch["scheduler/engine.py<br>dispatch _handle_fetch tasks"]
 
-    subgraph digest["2. digest/ · fetch and extract under a fetch slot"]
+    subgraph digest["2. workers/fetch.py · FetchWorker · fetch and extract under a fetch slot"]
         fetcher[DispatchingFetcher] -->|HTTP| http[HttpFetcher]
         fetcher -->|rendering| browser["PlaywrightFetcher<br>saved session, selected response payloads"]
         http -->|FetchResult| extractor["TrafExtractor<br>text, Markdown, publication metadata"]
@@ -25,15 +25,15 @@ flowchart TB
     end
     dispatch --> fetcher
 
-    subgraph analysis["3. analyzer/ · separate analysis slot"]
+    subgraph analysis["3. workers/analysis.py · AnalysisWorker · admission check inside analysis slot"]
         analyzer["PageAnalyzer<br>relevance, fields, evidence checks"]
         analyzer -->|failed call| retry["Bounded retry queue"]
         retry -. delayed attempt .-> analyzer
     end
     extractor -->|Page| analyzer
-    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist analysis, update context and counters"]
+    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through RunTracking, apply retirement"]
 
-    subgraph discovery["4. digest/ · discover the next candidates"]
+    subgraph discovery["4. workers/discovery.py · DiscoveryWorker · bounded parsing wait"]
         harvest["PageHarvester<br>reads saved HTML and payloads"]
         harvest -->|claimed page| adapters["FeedAdapter<br>Instagram / Reddit / RSS"]
         harvest -->|unclaimed page| links[extract_links]
@@ -46,7 +46,7 @@ flowchart TB
 
 The numbered stages follow one candidate URL. `rank_pump` and `fetch_pump` run
 concurrently across different candidates, sharing the frontier's two queues.
-The scheduler saves HTML, payloads and the extracted `Page` before analysis.
+`FetchWorker` saves HTML, payloads and the extracted `Page` before analysis.
 Harvesting follows the initial analysis attempt and can proceed while a failed
 analysis waits for a retry. Analyzer output goes to its sink; discovery reads the
 saved page inputs. Dashed arrows show delayed work or candidates for a later pass.
@@ -54,21 +54,30 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | Location | Responsibility |
 |---|---|
 | `cli/` | Parse commands, apply settings, build goals, report results |
-| `scheduler/factory.py` | Select and inject concrete implementations |
-| `scheduler/engine.py` | Coordinate components and persist their outputs |
+| `scheduler/factory.py` | Assemble and inject workers and their component dependencies |
+| `scheduler/engine.py` | Run pumps, admit candidates, apply outcomes and manage lifecycle |
+| `scheduler/workers/` | Execute ranking, fetching, analysis and discovery with stage-specific inputs and outputs |
+| `scheduler/reporting.py` | Build the CLI report from run statistics |
 | `scheduler/stop_conds.py` | Decide run stopping and individual source retirement |
 | `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs; enhance goals and seeds |
 | `digest/` | Fetch, extract text and discover candidates |
 | `analyzer/` | Classify pages and extract fields with source evidence |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
-| `state/` | Run limits, progress, reporting counters and event emission |
+| `state/tracking.py` | Join page verdicts and source history; provide ranking feedback snapshots |
+| `state/context.py` | Run limits, progress, reporting counters and page/source records |
+| `state/events.py` | Persist crawl events |
 | `storage/` | Persistence contract and SQLite implementation |
 | `util/dates.py` | Parse event dates and assign result groups |
 | `dashboard/` | Local HTTP server and browser UI for stored results |
 
-The scheduler depends on component contracts. The factory supplies implementations;
-`create_scheduler(..., fetcher=stub)` and other overrides support isolated tests.
-Simple policies such as URL canonicalization and pre-filtering use concrete classes.
+Workers are concrete classes with different input and output types, not interchangeable
+pipeline steps. They neither call one another nor receive the engine or mutable run
+context. The engine owns ordering and queue admission; workers use the existing
+Fetcher, Extractor, Analyzer, Harvester and Ranker contracts.
+
+The factory creates workers and binds seed enhancement to its dependencies.
+`create_scheduler(..., fetcher=stub)` still overrides a component;
+`create_scheduler(..., ranking=RankingWorker(ranker))` overrides an assembled worker.
 
 ## Crawl lifecycle
 
@@ -80,8 +89,9 @@ Simple policies such as URL canonicalization and pre-filtering use concrete clas
    candidates. Accepted proposals receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
 5. `fetch_pump` dispatches pages while `rank_pump` scores newly discovered candidates.
-6. On exit, the scheduler settles in-flight work and pending analyses, records stop
-   reasons and a frontier checkpoint, then closes resources.
+6. On exit, the scheduler settles in-flight page tasks, records the task result and
+   closes resources. Periodic and pause checkpoints save the frontier; analyzer
+   shutdown cancels remaining background retries.
 
 Without LLM configuration, enhancement and analysis are absent and candidates are
 queued without LLM ranking. Deterministic URL filtering still runs.
@@ -131,6 +141,9 @@ not independently verify the truth of the value. Unsupported fields are omitted.
 Failed analyses enter a bounded retry queue. Successful results reach the scheduler
 through a sink, including successes from delayed retries.
 
+`AnalysisWorker` limits initial calls and checks the result target after acquiring
+its slot. `PageAnalyzer` continues to own background retries and their shutdown.
+
 Analysis feeds relevant-page summaries back to ranking. It does not nominate links
 or bypass the harvester. Platform posts are leaves in the current traversal.
 
@@ -161,16 +174,17 @@ flowchart LR
     clients --> budget["Shared TokenBudget<br>usage by stage"]
 
     analyzer -->|successful analysis, including retries| sink["scheduler._on_analysis"]
-    sink -->|relevant summaries and page context| ranker
-    sink --> state["CrawlContext + PageBook + SeedState<br>progress, page verdicts, source history"]
+    sink --> state["RunTracking<br>CrawlContext + PageBook + SeedState"]
+    state -->|batch feedback snapshot via engine| ranker
     state --> policies["stop_conds<br>run stopping / source retirement"]
-    budget -->|usage| policies
+    budget -->|usage callback via engine| state
     policies -->|scheduler applies decisions| control["Stop dispatch / retire pending source work"]
 
     ranker -->|decisions via scheduler| storage["storage/sqlite/CrawlDb"]
     sink -->|analyses| storage
-    scheduler["Scheduler<br>fetching, discovery, events, checkpoints"] -->|pages, links, events, snapshots| storage
-    scheduler -->|HTML and payload bytes| raw["raw/ files"]
+    scheduler["Engine<br>candidate admission, events, checkpoints"] -->|links, events, snapshots| storage
+    fetchworker[FetchWorker] -->|pages| storage
+    fetchworker -->|HTML and payload bytes| raw["raw/ files"]
 ```
 
 `CrawlContext` is retained across a scheduler reset; its parts are rebuilt:
@@ -178,6 +192,11 @@ flowchart LR
 - `Limits` holds immutable run budgets and goal constraints.
 - `Progress` holds counters used by stopping policies.
 - `Ledger` holds reporting statistics and per-seed state.
+
+`RunTracking` owns the page/source history and updates it synchronously on the event
+loop. It returns source keys for the engine to check with `why_retire`; only the
+engine removes queued work. Ranking receives a snapshot of recent relevant pages
+and the current batch's source contexts, so later analysis updates affect later batches.
 
 `PageBook` joins each page's seed, listing status and analysis verdict. These may
 arrive in different orders because analysis can retry. A completed non-listing

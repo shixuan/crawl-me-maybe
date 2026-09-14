@@ -18,9 +18,12 @@ from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
+from crawlme.pioneer.seed_enhancer import enhance
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.schemas import CrawlGoal
+from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchWorker, RankingWorker
+from crawlme.schemas import Candidate, CrawlGoal
 from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
+from crawlme.state.tracking import RunTracking
 from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
 
 
@@ -36,12 +39,36 @@ def create_scheduler(
 
     A missing analyzer is built from settings when enabled and configured.
     The supplied token budget is shared with that analyzer."""
-    storage = SqliteCrawlDb.create(settings.result_dir)
+    storage = overrides.pop("storage") if "storage" in overrides else SqliteCrawlDb.create(settings.result_dir)
     # Keep context identity stable when the engine resets its state.
-    ctx = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
-    canonicalizer = Canonicalizer()
+    ctx = overrides.pop("context", None)
+    if ctx is None:
+        ctx = CrawlContext(limits=Limits(), progress=Progress(), ledger=Ledger())
+    canonicalizer = overrides.pop("canonicalizer", None) or Canonicalizer()
+    fetcher = overrides.pop("fetcher") if "fetcher" in overrides else _build_fetcher(settings)
+    extractor = overrides.pop("extractor", None) or TrafExtractor()
+    robots = overrides.pop("robots", None) or RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots)
+    harvester = overrides.pop("harvester") if "harvester" in overrides else _build_harvester(settings, canonicalizer)
+    ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
     if analyzer is None and settings.analysis_enabled:
         analyzer = PageAnalyzer.from_settings(settings, budget=budget)
+
+    async def enhance_seeds(
+        goal: CrawlGoal,
+        seeds: list[str],
+        budget: TokenBudget | None,
+    ) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
+        return await enhance(
+            goal,
+            seeds,
+            settings=settings,
+            budget=budget,
+            fetcher=fetcher,
+            harvester=harvester,
+            storage=storage,
+            canonicalizer=canonicalizer,
+        )
+
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
@@ -49,15 +76,22 @@ def create_scheduler(
             domain_budget=goal.domain_budget if goal else 50,
             buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         ),
-        "fetcher": _build_fetcher(settings),
-        "extractor": TrafExtractor(),
-        "robots": RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots),
+        "fetch": FetchWorker(
+            fetcher,
+            extractor,
+            robots,
+            storage,
+            concurrency=settings.fetch_concurrency,
+            extract_timeout=settings.extract_timeout,
+        ),
+        "ranking": RankingWorker(ranker),
+        "analysis": AnalysisWorker(analyzer, concurrency=settings.llm_concurrency),
+        "discovery": DiscoveryWorker(harvester, timeout=settings.extract_timeout),
+        "robots": robots,
         "prefilter": PreFilter(),
-        "ranker": _build_ranker(settings, llm=llm_ranker),
         "canonicalizer": canonicalizer,
-        "harvester": _build_harvester(settings, canonicalizer),
-        "analyzer": analyzer,
-        "context": ctx,
+        "tracking": RunTracking(ctx),
+        "seed_enhancer": enhance_seeds,
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)
