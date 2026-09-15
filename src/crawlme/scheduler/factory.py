@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from crawlme.analyzer import Analyzer, PageAnalyzer
+from crawlme.adapters import ADAPTERS, FeedAdapter
+from crawlme.analysis import Analyzer, PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
-from crawlme.digest.feed import ADAPTERS, FeedAdapter
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
-from crawlme.digest.harvest import Harvester, PageHarvester
+from crawlme.discovery.harvester import Harvester, PageHarvester
 from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer

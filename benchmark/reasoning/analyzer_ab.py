@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from crawlme.analyzer import PageAnalyzer
+from crawlme.analysis import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, TokenBudget, close_litellm_clients
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -100,7 +100,7 @@ async def analyse_all(goal: CrawlGoal, pages: list[Page], effort: str) -> dict[s
     )
     analyzer = PageAnalyzer(client, max_page_chars=cfg.analyzer_max_chars)
     counter = _RejectionCounter()
-    logging.getLogger("crawlme.analyzer.page_analyzer").addHandler(counter)
+    logging.getLogger("crawlme.analysis.analyzer").addHandler(counter)
 
     detail: dict[str, dict] = {}
     kept = 0
@@ -120,7 +120,7 @@ async def analyse_all(goal: CrawlGoal, pages: list[Page], effort: str) -> dict[s
         if done % 10 == 0:
             print(f"    {done}/{len(pages)} pages, {budget.used:,} tokens so far", flush=True)
 
-    logging.getLogger("crawlme.analyzer.page_analyzer").removeHandler(counter)
+    logging.getLogger("crawlme.analysis.analyzer").removeHandler(counter)
     await analyzer.aclose()
     return {
         "detail": detail,

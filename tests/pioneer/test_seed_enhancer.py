@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.digest.harvest import Harvest
+from crawlme.discovery.harvester import Harvest
 from crawlme.llm import LLMError, LLMResponse
 from crawlme.pioneer.seed_enhancer import SeedEnhancer, _parse, how_many
 from crawlme.schemas import (
@@ -194,7 +194,7 @@ async def test_a_seed_that_yields_nothing_is_dropped():
 
 
 async def test_a_refusal_is_dropped():
-    from crawlme.digest.feed.base import PageProblem
+    from crawlme.adapters.base import PageProblem
 
     kept, _, _, _ = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
     assert kept == []
@@ -223,7 +223,7 @@ async def test_seeds_are_verified_one_by_one():
 async def test_a_rejection_says_which_kind_it_was():
     """An address the model guessed and one that would not load cost the
     same fetch and mean different things."""
-    from crawlme.digest.feed.base import PageProblem
+    from crawlme.adapters.base import PageProblem
 
     _, _, _, gone = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
     assert gone == [("https://a.com/", "does not exist")]

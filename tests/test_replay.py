@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.analyzer.page_analyzer import _PROMPT_VERSION
+from crawlme.analysis.analyzer import _PROMPT_VERSION
 from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
 from crawlme.config import Settings
 from crawlme.llm import TokenBudgetError

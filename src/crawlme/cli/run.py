@@ -10,10 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from crawlme.adapters import ADAPTERS
+from crawlme.adapters.base import PageProblem
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.config import Settings
-from crawlme.digest.feed import ADAPTERS
-from crawlme.digest.feed.base import PageProblem
 from crawlme.llm import Stage, TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer

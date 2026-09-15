@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.config import Settings
-from crawlme.digest.harvest import Harvest
+from crawlme.discovery.harvester import Harvest
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.stop_conds import MAX_STALE_STREAK, RELEVANCE_WINDOW
 from crawlme.schemas import (
@@ -596,7 +596,7 @@ async def test_refusal_stops():
     there, so a rate-limited crawl kept requesting pages that would all
     be refused, and reported the empty result as a finished run.
     """
-    from crawlme.digest.feed.base import PageProblem
+    from crawlme.adapters.base import PageProblem
 
     sched = _make_sched()
     sched._ctx.ledger.reset()
@@ -663,7 +663,7 @@ async def test_missing_extra():
     """It is not about this page: every later page of the same format
     fails identically, so carrying on would spend the whole budget
     producing nothing and then report success."""
-    from crawlme.digest.feed.base import FeedDependencyError
+    from crawlme.adapters.base import FeedDependencyError
 
     sched = _make_sched()
     sched._goal = _goal(max_pages=5)

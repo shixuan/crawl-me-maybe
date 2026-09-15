@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.digest.feed import PageProblem
-from crawlme.digest.feed import instagram as ig
+from crawlme.adapters import PageProblem
+from crawlme.adapters import instagram as ig
 from crawlme.schemas import Payload
 
 _PROFILE = """<html><body>

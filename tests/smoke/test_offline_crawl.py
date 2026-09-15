@@ -274,7 +274,7 @@ def _settings(tmp_path: Path) -> Settings:
 @pytest.mark.asyncio
 async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     """Analyzer and LLM ranker both run, on scripted answers."""
-    from crawlme.analyzer import PageAnalyzer
+    from crawlme.analysis import PageAnalyzer
     from crawlme.pioneer.ranker.llm import LLMRanker
 
     cfg = _settings(tmp_path)

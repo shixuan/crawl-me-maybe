@@ -67,8 +67,8 @@ def test_each_item_handled_gets_both_lines():
         ("scheduler/engine.py", "debug", "fetch.ok "),
         ("pioneer/ranker/llm.py", "info", "scored "),
         ("pioneer/ranker/llm.py", "debug", "rank.scored "),
-        ("analyzer/page_analyzer.py", "info", "judged "),
-        ("analyzer/page_analyzer.py", "debug", "analysis.ok "),
+        ("analysis/analyzer.py", "info", "judged "),
+        ("analysis/analyzer.py", "debug", "analysis.ok "),
     ]
     seen = {(str(path), level, fmt) for path, _, fmt, _, level in _calls()}
     missing = [

@@ -10,7 +10,7 @@ import logging
 import re
 from typing import Any
 
-from crawlme.digest.feed.base import FeedDependencyError, FeedItem, Listing, PageProblem
+from crawlme.adapters.base import FeedDependencyError, FeedItem, Listing, PageProblem
 from crawlme.schemas import Page, Payload
 
 logger = logging.getLogger(__name__)

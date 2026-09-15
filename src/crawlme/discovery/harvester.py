@@ -9,8 +9,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from crawlme.digest.feed.base import FeedAdapter, PageProblem
-from crawlme.digest.links import extract_links
+from crawlme.adapters.base import FeedAdapter, PageProblem
+from crawlme.discovery.links import extract_links
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.schemas import Candidate, Page, Payload
 

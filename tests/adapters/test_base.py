@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 
-from crawlme.digest.feed import FeedItem, Listing
+from crawlme.adapters import FeedItem, Listing
 
 
 def _item(**kw) -> FeedItem:

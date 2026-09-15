@@ -9,12 +9,12 @@ import logging
 import time
 from typing import Any
 
-from crawlme.analyzer import Analyzer
+from crawlme.adapters.base import FeedDependencyError, PageProblem
+from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
-from crawlme.digest.feed.base import FeedDependencyError, PageProblem
 from crawlme.digest.fetcher import Fetcher
-from crawlme.digest.harvest import Harvest, Harvester, PageHarvester
+from crawlme.discovery.harvester import Harvest, Harvester, PageHarvester
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging, where
 from crawlme.pioneer.canonicalizer import Canonicalizer

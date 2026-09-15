@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from crawlme.digest.links import extract_links
+from crawlme.discovery.links import extract_links
 from crawlme.schemas import URL, Page
 
 PAGE_WITH_LINKS = """<!DOCTYPE html>

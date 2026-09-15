@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.digest.feed import rss
-from crawlme.digest.feed.base import FeedDependencyError
-from crawlme.digest.harvest import PageHarvester
+from crawlme.adapters import rss
+from crawlme.adapters.base import FeedDependencyError
+from crawlme.discovery.harvester import PageHarvester
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.schemas import URL, Page
 

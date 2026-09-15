@@ -14,7 +14,7 @@ from crawlme.llm import LLMClient, LLMError, Stage
 if TYPE_CHECKING:
     from crawlme.config import Settings
     from crawlme.digest.fetcher.base import Fetcher
-    from crawlme.digest.harvest import Harvester
+    from crawlme.discovery.harvester import Harvester
     from crawlme.llm import TokenBudget
     from crawlme.schemas import Candidate, CrawlGoal
 
