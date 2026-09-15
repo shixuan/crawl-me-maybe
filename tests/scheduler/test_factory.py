@@ -23,14 +23,14 @@ def test_ranker_no_creds(tmp_path: Path):
 def test_sched_no_ranker(tmp_path: Path):
     """A scheduler with no credentials still builds and still crawls."""
     sched = create_scheduler(Settings(result_dir=tmp_path, llm_api_key="", llm_base_url=""))
-    assert sched._ranker is None
+    assert sched._ranking.ranker is None
 
 
 def test_sched_analyzer(tmp_path: Path):
     """A passed analyzer reaches the engine, which binds its sink."""
     analyzer = MagicMock()
     sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
-    assert sched._analyzer is analyzer
+    assert sched._analysis.analyzer is analyzer
     analyzer.bind_sink.assert_called_once()
 
 
@@ -38,10 +38,14 @@ def test_scheduler_no_analyzer(tmp_path: Path):
     """analysis_enabled off: the engine runs with the subsystem absent."""
     cfg = Settings(result_dir=tmp_path, analysis_enabled=False)
     sched = create_scheduler(cfg)
-    assert sched._analyzer is None
+    assert sched._analysis.analyzer is None
 
 
-def test_sched_context(tmp_path: Path):
-    """The context the factory creates is the one the engine holds."""
-    sched = create_scheduler(Settings(result_dir=tmp_path))
-    assert sched.context is sched._ctx
+def test_sched_run_state(tmp_path: Path):
+    """The engine and tracker use the state supplied to the factory."""
+    from crawlme.runtime.state import Limits, Progress, RunState, Stats
+
+    state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+    sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
+    assert sched.run_state is state
+    assert sched._tracking.state is state

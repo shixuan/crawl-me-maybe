@@ -6,9 +6,9 @@ import time
 import pytest
 
 from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.runtime.state import Limits, Progress
 from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
-from crawlme.state.context import Limits, Progress
 
 
 def _task(state: str = "RUNNING") -> CrawlTask:
@@ -292,11 +292,11 @@ def test_a_stop_condition_cannot_see_the_ledger():
     away."""
     import inspect
 
-    from crawlme.state.context import Ledger
+    from crawlme.runtime.state import Stats
 
     params = inspect.signature(check_stop).parameters
-    assert "ledger" not in params
-    assert not any(p.annotation is Ledger for p in params.values())
+    assert "stats" not in params
+    assert not any(p.annotation is Stats for p in params.values())
 
 
 def test_every_progress_field_is_read_by_some_check():
@@ -306,8 +306,8 @@ def test_every_progress_field_is_read_by_some_check():
     import dataclasses
     import inspect
 
+    from crawlme.runtime.state import Progress
     from crawlme.scheduler import stop_conds
-    from crawlme.state.context import Progress
 
     source = inspect.getsource(stop_conds)
     unread = [f.name for f in dataclasses.fields(Progress) if f"p.{f.name}" not in source]
