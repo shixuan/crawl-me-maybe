@@ -1,7 +1,7 @@
 """Platform adapters for recognition, access requirements and content discovery."""
 
-from crawlme.adapters import instagram, reddit, rss
-from crawlme.adapters.base import FeedAdapter, FeedItem, Listing, PageProblem
+from crawlme.platforms import instagram, reddit, rss
+from crawlme.platforms.base import FeedAdapter, FeedItem, Listing, PageProblem
 
 FEEDS: dict[str, FeedAdapter] = {instagram.PLATFORM: instagram, reddit.PLATFORM: reddit}
 

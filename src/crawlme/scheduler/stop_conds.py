@@ -6,8 +6,8 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from crawlme.adapters.base import PageProblem
 from crawlme.pioneer.frontier import Frontier
+from crawlme.platforms.base import PageProblem
 from crawlme.schemas import CrawlTask
 from crawlme.state.context import RELEVANCE_WINDOW, Limits, Progress
 

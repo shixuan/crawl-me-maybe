@@ -1,4 +1,4 @@
-"""Extract page text with trafilatura and a BeautifulSoup fallback."""
+"""Prefer adapter page text, then trafilatura and a BeautifulSoup fallback."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ import datetime
 import hashlib
 import json
 import warnings
+from collections.abc import Sequence
 from typing import Protocol
 
 import trafilatura
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
+from crawlme.platforms.base import FeedAdapter
 from crawlme.schemas import ExtractionStatus, FetchResult, Page
 from crawlme.util.lxml import LXML_LOCK
 
@@ -26,6 +28,9 @@ def _utcnow() -> datetime.datetime:
 
 
 class TrafExtractor:
+    def __init__(self, adapters: Sequence[FeedAdapter] = ()) -> None:
+        self._adapters = tuple(adapters)
+
     def extract(self, fetch_result: FetchResult, raw_html_path: str = "") -> Page:
         # trafilatura parses with libxml2 all the way through, so the
         # whole body runs under the shared lock (see util/lxml.py).
@@ -42,34 +47,43 @@ class TrafExtractor:
         metadata: dict[str, str] = {}
         status: ExtractionStatus = "OK"
 
-        # Primary path: trafilatura handles boilerplate removal, markdown
-        # conversion, and metadata extraction in one pass.
-        try:
-            doc = trafilatura.extract(
-                html_str,
-                output_format="xml",
-                include_tables=True,
-                include_images=False,
-                include_links=False,
-                with_metadata=True,
-            )
-            if doc is not None:
-                markdown = trafilatura.extract(
+        for adapter in self._adapters:
+            if adapter.claims_url(fetch_result.url.canonical):
+                text = adapter.extract_text(fetch_result)
+                if text and text.strip():
+                    plain_text = text
+                    markdown = text
+                    metadata["text_source"] = adapter.PLATFORM
+                break
+
+        if plain_text is None:
+            # Keep the generic HTML path when no adapter provides page text.
+            try:
+                doc = trafilatura.extract(
                     html_str,
-                    output_format="markdown",
+                    output_format="xml",
                     include_tables=True,
                     include_images=False,
                     include_links=False,
+                    with_metadata=True,
                 )
-                plain_text = trafilatura.extract(
-                    html_str,
-                    output_format="txt",
-                    include_tables=True,
-                    include_images=False,
-                    include_links=False,
-                )
-        except Exception:
-            status = "DEGRADED"
+                if doc is not None:
+                    markdown = trafilatura.extract(
+                        html_str,
+                        output_format="markdown",
+                        include_tables=True,
+                        include_images=False,
+                        include_links=False,
+                    )
+                    plain_text = trafilatura.extract(
+                        html_str,
+                        output_format="txt",
+                        include_tables=True,
+                        include_images=False,
+                        include_links=False,
+                    )
+            except Exception:
+                status = "DEGRADED"
 
         # Fallback: pull title and basic text from BeautifulSoup when
         # trafilatura couldn't get anything useful.

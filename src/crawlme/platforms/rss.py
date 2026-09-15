@@ -10,8 +10,8 @@ import logging
 import re
 from typing import Any
 
-from crawlme.adapters.base import FeedDependencyError, FeedItem, Listing, PageProblem
-from crawlme.schemas import Page, Payload
+from crawlme.platforms.base import FeedDependencyError, FeedItem, Listing, PageProblem
+from crawlme.schemas import FetchResult, Page, Payload
 
 logger = logging.getLogger(__name__)
 
@@ -136,3 +136,8 @@ def _published(entry: Any) -> datetime.datetime | None:
         return datetime.datetime(y, mo, d, h, mi, sec, tzinfo=datetime.timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def extract_text(result: FetchResult) -> str | None:
+    """Use generic HTML extraction for this platform."""
+    return None

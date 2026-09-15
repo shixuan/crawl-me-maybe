@@ -7,8 +7,8 @@ import logging
 
 import pytest
 
-from crawlme.adapters import ADAPTERS, instagram, reddit, rss
 from crawlme.digest.fetcher import DispatchingFetcher
+from crawlme.platforms import ADAPTERS, instagram, reddit, rss
 from crawlme.schemas import URL, FetchResult, FrontierItem
 
 

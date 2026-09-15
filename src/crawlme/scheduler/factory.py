@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from crawlme.adapters import ADAPTERS, FeedAdapter
 from crawlme.analysis import Analyzer, PageAnalyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import TrafExtractor
@@ -18,6 +17,7 @@ from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
+from crawlme.platforms import ADAPTERS, FeedAdapter
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.schemas import CrawlGoal
 from crawlme.state.context import CrawlContext, Ledger, Limits, Progress
@@ -50,7 +50,7 @@ def create_scheduler(
             buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         ),
         "fetcher": _build_fetcher(settings),
-        "extractor": TrafExtractor(),
+        "extractor": TrafExtractor(adapters=adapters_for(settings)),
         "robots": RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots),
         "prefilter": PreFilter(),
         "ranker": _build_ranker(settings, llm=llm_ranker),

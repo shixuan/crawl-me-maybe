@@ -9,7 +9,6 @@ import logging
 import time
 from typing import Any
 
-from crawlme.adapters.base import FeedDependencyError, PageProblem
 from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.digest.extractor import Extractor
@@ -22,6 +21,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
+from crawlme.platforms.base import FeedDependencyError, PageProblem
 from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.schemas import (
     URL,

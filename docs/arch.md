@@ -39,7 +39,7 @@ flowchart TB
         canonical["pioneer/Canonicalizer"]
         links --> canonical
     end
-    adapters["adapters/ · FeedAdapter<br>Instagram / Reddit / RSS"]
+    adapters["platforms/ · FeedAdapter<br>Instagram / Reddit / RSS"]
     harvest -->|claimed page| adapters
     adapters -->|listing entries; posts are leaves| canonical
     adapters -. rendering requirements .-> fetcher
@@ -63,7 +63,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs; enhance goals and seeds |
 | `digest/` | Fetch pages and extract text and metadata |
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
-| `adapters/` | Platform recognition, parsing, rendering and session requirements |
+| `platforms/` | Platform recognition, parsing, rendering and session requirements |
 | `analysis/` | Classify pages and extract fields with source evidence |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `state/` | Run limits, progress, reporting counters and event emission |
@@ -119,7 +119,15 @@ candidate URLs, which return to the unranked buffer through the pre-filter.
 | RSS/Atom | Document root; entries provide content, links and publication dates; requires `feedparser` |
 
 Adapters parse saved inputs and perform no network requests. Adding a platform
-requires implementing `FeedAdapter` and registering it in `adapters/__init__.py`.
+requires implementing `FeedAdapter` and registering it in `platforms/__init__.py`.
+
+The extractor also asks the first URL-matching adapter for page text through
+`extract_text(FetchResult)`. Instagram matches the requested post in captured payloads
+or inline JSON and merges its caption with distinct carousel captions. Other adapters
+return `None`, keeping generic HTML extraction. Missing target text also falls back
+to HTML. This reads fetched detail-page data, not `Candidate.text` from ranking.
+The selected text is saved in `Page.plain_text` and `markdown`; adapter text records
+its platform in `metadata.text_source`. Analysis still applies its character limit.
 
 ### Ranking and analysis
 

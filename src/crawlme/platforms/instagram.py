@@ -10,8 +10,10 @@ import logging
 import re
 from urllib.parse import urlsplit
 
-from crawlme.adapters.base import FeedItem, Listing, PageProblem
-from crawlme.schemas import Page, Payload
+from bs4 import BeautifulSoup
+
+from crawlme.platforms.base import FeedItem, Listing, PageProblem
+from crawlme.schemas import FetchResult, Page, Payload
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,37 @@ def next_page(html: str, url: str) -> str:
 def keeps_payload(url: str, content_type: str) -> bool:
     """Keep GraphQL responses regardless of content type; grids may use text/javascript."""
     return "/graphql/query" in url
+
+
+def extract_text(result: FetchResult) -> str | None:
+    """Read only the requested parent post; unrelated payload posts are not fallback text."""
+    url = result.url.canonical
+    match = _SHORTCODE.search(urlsplit(url).path)
+    if not claims_url(url) or match is None or result.status_code != 200:
+        return None
+    if result.final_url is not None:
+        final = result.final_url.canonical
+        final_match = _SHORTCODE.search(urlsplit(final).path)
+        if not claims_url(final) or final_match is None or final_match[1] != match[1]:
+            return None
+    document = result.raw.decode("utf-8", "ignore")
+    if problem(document) is not None:
+        return None
+    post = _posts_from_payloads(result.payloads, set()).get(match[1])
+    if post is None:
+        # Detail pages may embed the target post while captured responses contain only recommendations.
+        posts: dict[str, _Post] = {}
+        media_codes: set[str] = set()
+        soup = BeautifulSoup(document, "html.parser")
+        for script in soup.find_all("script", attrs={"type": "application/json"}):
+            try:
+                data = json.loads(script.string or "")
+            except json.JSONDecodeError:
+                continue
+            _collect_posts(data, posts, media_codes)
+        if match[1] not in media_codes:
+            post = posts.get(match[1])
+    return post.text if post is not None else None
 
 
 # Distinguish the requested account grid from the viewer home timeline.

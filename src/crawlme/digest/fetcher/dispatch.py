@@ -7,8 +7,8 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from crawlme.adapters import FeedAdapter
     from crawlme.digest.fetcher.base import Fetcher
+    from crawlme.platforms import FeedAdapter
     from crawlme.schemas import FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
