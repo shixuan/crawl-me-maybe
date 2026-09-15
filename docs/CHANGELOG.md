@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.5.0...v0.5.1) (2026-09-13)
+
+
+### Fixes
+
+* date time windows mismatch ([ca00b43](https://github.com/shixuan/crawl-me-maybe/commit/ca00b4302fd95a29032cfdb3520b075d177fc112))
+* validate and preserve event dates ([d3dcdbe](https://github.com/shixuan/crawl-me-maybe/commit/d3dcdbeffe50f3de1e537185f142becd371c6e6e))
+
 ## [0.5.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.4.1...v0.5.0) (2026-09-12)
 
 
