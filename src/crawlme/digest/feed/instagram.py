@@ -102,7 +102,8 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     Prefer payload captions and timestamps. DOM entries are a fallback because
     scrolling can remove earlier posts from the rendered grid."""
     handle = _account_from_url(url).strip("/").lower()
-    posts = _posts_from_payloads(payloads)
+    media_codes: set[str] = set()
+    posts = _posts_from_payloads(payloads, media_codes)
     alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
     # Use the account handle for ownership; image alt text may contain only a display name.
     seen: dict[str, FeedItem] = {}
@@ -120,7 +121,7 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
             published_at=post.taken_at,
         )
     for href, code in dict.fromkeys(_PERMALINK.findall(html)):
-        if code in seen:
+        if code in seen or code in media_codes:
             continue
         owner = href.strip("/").split("/")[0].lower()
         alt = alts.get(href, "")
@@ -237,7 +238,7 @@ class _Post:
     author: str
 
 
-def _posts_from_payloads(payloads: list[Payload]) -> dict[str, _Post]:
+def _posts_from_payloads(payloads: list[Payload], media_codes: set[str]) -> dict[str, _Post]:
     """Index payload posts by shortcode, retaining caption, author and timestamp."""
     out: dict[str, _Post] = {}
     for payload in payloads:
@@ -246,30 +247,55 @@ def _posts_from_payloads(payloads: list[Payload]) -> dict[str, _Post]:
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.debug("instagram.payload_unreadable url=%s", payload.url)
             continue
-        _collect_posts(data, out)
-    return out
+        _collect_posts(data, out, media_codes)
+    return {code: post for code, post in out.items() if code not in media_codes}
 
 
-def _collect_posts(node: object, out: dict[str, _Post]) -> None:
+def _collect_posts(node: object, out: dict[str, _Post], media_codes: set[str]) -> None:
     if isinstance(node, list):
         for child in node:
-            _collect_posts(child, out)
+            _collect_posts(child, out, media_codes)
         return
     if not isinstance(node, dict):
         return
     code = node.get("code") or node.get("shortcode")
-    caption = node.get("caption")
-    if isinstance(code, str) and isinstance(caption, dict):
-        text = caption.get("text")
-        if isinstance(text, str) and text.strip():
+    text = _caption_text(node, media_codes)
+    if isinstance(code, str):
+        if text:
             user = node.get("user")
             author = user.get("username") if isinstance(user, dict) else ""
             out.setdefault(
                 code,
                 _Post(text.strip(), _taken_at(node.get("taken_at")), str(author or "")),
             )
-    for child in node.values():
-        _collect_posts(child, out)
+    for key, child in node.items():
+        # Carousel media belong to their parent, even when they have captions and codes.
+        if key != "carousel_media":
+            _collect_posts(child, out, media_codes)
+
+
+def _caption_text(node: dict[str, object], media_codes: set[str]) -> str:
+    parts: list[str] = []
+
+    def collect(item: dict[str, object]) -> None:
+        caption = item.get("caption")
+        text = caption.get("text") if isinstance(caption, dict) else None
+        if isinstance(text, str):
+            text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+            if text and not any(text in previous for previous in parts):
+                parts.append(text)
+        children = item.get("carousel_media")
+        if isinstance(children, list):
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                code = child.get("code") or child.get("shortcode")
+                if isinstance(code, str):
+                    media_codes.add(code)
+                collect(child)
+
+    collect(node)
+    return "\n\n".join(parts)
 
 
 def _taken_at(raw: object) -> datetime.datetime | None:
