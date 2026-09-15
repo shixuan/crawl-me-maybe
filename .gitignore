@@ -15,6 +15,7 @@ coverage.xml
 htmlcov/
 docs/*
 !docs/arch.md
+!docs/engine-refactor.md
 !docs/CHANGELOG.md
 
 # Browser sessions: real login cookies, never commit
