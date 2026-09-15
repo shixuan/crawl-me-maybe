@@ -296,7 +296,9 @@ def _print_summary(
         }
         for name, u in budget.by_stage.items()
     }
-    print(_format_summary(summary))
+    report = _format_summary(summary)
+    print(report)
+    logger.info("\n%s", report, extra={"file_only": True})
 
 
 # Between the report's parts. Indentation alone left them reading as

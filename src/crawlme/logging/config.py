@@ -50,6 +50,8 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
 
     h = logging.StreamHandler(sys.stderr)
     h.setLevel(level)
+    # Reports already printed to stdout still need a copy in the run log.
+    h.addFilter(lambda record: not getattr(record, "file_only", False))
 
     if settings.log_format == "json":
         h.setFormatter(JsonFormatter())
