@@ -6,11 +6,13 @@ import collections
 import dataclasses
 import datetime
 import time
+from typing import Any
 
 from crawlme.schemas import CrawlGoal
 
 # How many of a source's own analyzed pages its window keeps.
 RELEVANCE_WINDOW = 20
+_SEEN_SO_FAR = 5
 
 
 @dataclasses.dataclass
@@ -130,8 +132,10 @@ class Progress:
     listings_empty: int = 0
 
 
+# Statistics are small enough to live with run state for now.
+# They may move to a separate module as their scope grows.
 @dataclasses.dataclass
-class Ledger:
+class Stats:
     """Reporting state that stopping policies do not read."""
 
     links_discovered: int = 0
@@ -146,9 +150,6 @@ class Ledger:
     # Listings read from markup alone. They look like a normal read and
     # carry content weeks older than the account has.
     listings_stale: int = 0
-    # Per seed, how far its work got and whether it is still worth
-    # reading. Keyed by the seed's url_key.
-    seeds: dict[str, SeedState] = dataclasses.field(default_factory=lambda: collections.defaultdict(SeedState))
 
     def reset(self) -> None:
         """Zero every field in place, so stage references stay valid."""
@@ -159,22 +160,30 @@ class Ledger:
         self.not_content = {}
         self.robots_blocked = 0
         self.listings_stale = 0
-        self.seeds = collections.defaultdict(SeedState)
 
 
 @dataclasses.dataclass
-class CrawlContext:
-    """Run state split into limits, stopping progress and reporting counters."""
+class RunState:
+    """Run data shared by the engine, tracker and reporting; workers receive narrower inputs."""
 
     limits: Limits
     progress: Progress
-    ledger: Ledger
+    stats: Stats
+    pages: PageBook = dataclasses.field(default_factory=PageBook)
+    seeds: dict[str, SeedState] = dataclasses.field(default_factory=lambda: collections.defaultdict(SeedState))
+    page_contexts: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+    relevant_pages: collections.deque[dict[str, Any]] = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=_SEEN_SO_FAR)
+    )
+    seeds_asked: int | None = None
+    rejected_seeds: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    proposed_seeds: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
 
     def reset(self, *, goal: CrawlGoal, tokens_used_start: int = 0) -> None:
-        """Rebuild for a fresh run, keeping this object's identity.
+        """Reset execution history while preserving prepared seeds and enhancement metadata.
 
-        Components hold a reference from construction time, so the
-        container stays and its parts are replaced or zeroed.
+        Seed ingestion precedes run(), so source URLs and proposal details must
+        survive startup. Resume does not call this method.
         """
         self.limits = Limits(
             max_pages=goal.max_pages,
@@ -186,4 +195,10 @@ class CrawlContext:
             since=goal.since,
         )
         self.progress = Progress(started_at=time.monotonic(), tokens_used=tokens_used_start)
-        self.ledger.reset()
+        self.stats.reset()
+        self.pages = PageBook()
+        self.page_contexts.clear()
+        self.relevant_pages.clear()
+        self.seeds = collections.defaultdict(
+            SeedState, {key: SeedState(url=seed.url) for key, seed in self.seeds.items() if seed.url}
+        )

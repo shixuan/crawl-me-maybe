@@ -63,7 +63,7 @@ def test_each_item_handled_gets_both_lines():
     read as a stall. The split is vocabulary, so each of these events
     is said in words at INFO and counted at DEBUG."""
     wanted = [
-        ("scheduler/engine.py", "info", "fetching "),
+        ("scheduler/workers/fetch.py", "info", "fetching "),
         ("scheduler/engine.py", "debug", "fetch.ok "),
         ("pioneer/ranker/llm.py", "info", "scored "),
         ("pioneer/ranker/llm.py", "debug", "rank.scored "),
