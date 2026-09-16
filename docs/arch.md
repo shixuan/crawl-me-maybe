@@ -7,17 +7,17 @@ Pydantic models live in `schemas/`; `runtime/state.py` holds run-wide data.
 
 ```mermaid
 flowchart TB
-    subgraph pioneer["1. Candidate selection · Engine and RankingWorker"]
+    subgraph pioneer["1. pioneer/ · candidate selection · coordinated by Engine"]
         candidates["Candidate<br>URL, text, source, depth"] --> filter["PreFilter<br>scope, depth, dedup, robots, publication cutoff"]
         filter -->|allowed| buffer["GatedFrontier / RoundRobinBuffer<br>unranked candidates, rotation between sources"]
-        buffer -->|rank_pump drains a batch| ranker["workers/ranking.py · RankingWorker<br>LLMRanker + decision conversion"]
+        buffer -->|rank_pump drains a batch| ranker["pioneer/ranker/ · LLMRanker<br>scheduled by RankingWorker"]
         ranker -->|engine enqueues kept items| queue["GatedFrontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
         ranker -->|dropped| dropped["No fetch"]
     end
 
     queue -->|fetch_pump calls pop_next| dispatch["scheduler/engine.py<br>dispatch _handle_fetch tasks"]
 
-    subgraph digest["2. workers/fetch.py · FetchWorker · fetch and extract under a fetch slot"]
+    subgraph digest["2. digest/ · fetch and extract · scheduled by FetchWorker"]
         fetcher[DispatchingFetcher] -->|HTTP| http[HttpFetcher]
         fetcher -->|rendering| browser["PlaywrightFetcher<br>saved session, selected response payloads"]
         http -->|FetchResult| extractor["TrafExtractor<br>text, Markdown, publication metadata"]
@@ -25,7 +25,7 @@ flowchart TB
     end
     dispatch --> fetcher
 
-    subgraph analysis["3. workers/analysis.py · AnalysisWorker · admission check inside analysis slot"]
+    subgraph analysis["3. analysis/ · classify pages · scheduled by AnalysisWorker"]
         analyzer["PageAnalyzer<br>relevance, fields, evidence checks"]
         analyzer -->|failed call| retry["Bounded retry queue"]
         retry -. delayed attempt .-> analyzer
@@ -33,7 +33,7 @@ flowchart TB
     extractor -->|Page| analyzer
     analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through RunTracker, apply retirement"]
 
-    subgraph discovery["4. workers/discovery.py · DiscoveryWorker · bounded parsing wait"]
+    subgraph discovery["4. discovery/ · find candidates · scheduled by DiscoveryWorker"]
         harvest["PageHarvester<br>reads saved HTML and payloads"]
         harvest -->|unclaimed page| links[extract_links]
         canonical["pioneer/Canonicalizer"]
