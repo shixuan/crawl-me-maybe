@@ -21,12 +21,32 @@ const state = {
   hasField: "",
   headline: TITLE_KEY,
   sort: "relevance",
+  loading: false,
+  error: "",
 };
 
-async function api(path) {
-  const r = await fetch(path, { cache: "no-store" });
-  if (!r.ok) throw new Error((await r.json()).error || r.statusText);
-  return r.json();
+async function api(path, signal) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal?.addEventListener("abort", cancel, { once: true });
+  const timer = setTimeout(cancel, 15000);
+  try {
+    if (signal?.aborted) controller.abort();
+    const r = await fetch(path, { cache: "no-store", signal: controller.signal });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    return await r.json();
+  } catch (e) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error("request timed out; check that the dashboard server is running and try selecting the run again");
+    }
+    if (e instanceof TypeError) {
+      throw new Error("cannot connect to the dashboard server; check that it is running and try selecting the run again");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
+  }
 }
 
 function escape(s) {
@@ -282,8 +302,16 @@ function card(r) {
 }
 
 function renderCards() {
-  const rows = visible();
   const box = $("#cards");
+  if (state.loading || state.error) {
+    box.innerHTML = state.loading
+      ? '<p class="loading">reading...</p>'
+      : `<p class="empty">could not read this run: ${escape(state.error)}</p>`;
+    $("#tally").textContent = "";
+    $("#empty").hidden = true;
+    return;
+  }
+  const rows = visible();
   box.innerHTML = "";
   rows.forEach((r) => box.append(card(r)));
   $("#empty").hidden = rows.length > 0;
@@ -313,13 +341,22 @@ function adopt(data) {
   renderCards();
 }
 
+let runRequest = null;
+
 async function loadRun(run, goalId) {
+  runRequest?.abort();
+  const request = new AbortController();
+  runRequest = request;
   state.run = run;
-  $("#cards").innerHTML = '<p class="loading">reading...</p>';
+  state.loading = true;
+  state.error = "";
+  renderCards();
   renderRuns();
   try {
     const base = `/api/run/${encodeURIComponent(run)}`;
-    const data = await api(goalId ? `${base}/${encodeURIComponent(goalId)}` : base);
+    const data = await api(goalId ? `${base}/${encodeURIComponent(goalId)}` : base, request.signal);
+    if (runRequest !== request) return;
+    state.loading = false;
     adopt(data);
 
     // A replay analyses the same pages under a new goal, so one run can
@@ -334,7 +371,13 @@ async function loadRun(run, goalId) {
       .join("");
     goals.onchange = () => loadRun(run, goals.value);
   } catch (e) {
-    $("#cards").innerHTML = `<p class="empty">could not read this run: ${escape(e.message)}</p>`;
+    if (runRequest !== request) return;
+    state.error = e.message;
+  } finally {
+    if (runRequest === request) {
+      state.loading = false;
+      renderCards();
+    }
   }
 }
 
