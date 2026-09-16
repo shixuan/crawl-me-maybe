@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.5.0...v0.5.1) (2026-09-16)
+
+
+### Fixes
+
+* **dashboard:** isolate run loading from filter updates ([7aaf8fc](https://github.com/shixuan/crawl-me-maybe/commit/7aaf8fc3083b35ef56f4e9a335afa7849a05af15))
+* date time windows mismatch ([ca00b43](https://github.com/shixuan/crawl-me-maybe/commit/ca00b4302fd95a29032cfdb3520b075d177fc112))
+* extract Instagram page text through platform adapters ([ee0d8dd](https://github.com/shixuan/crawl-me-maybe/commit/ee0d8dde49a885251eff941be594faf9f63a3a23))
+* ig carousel candidates ([2aa854d](https://github.com/shixuan/crawl-me-maybe/commit/2aa854d217efe9f3fee7e130d15b38bc85e125e7))
+* include final crawl report in run logs ([928462d](https://github.com/shixuan/crawl-me-maybe/commit/928462d94dee8c982fbab250b3770a308939b5f5))
+* keep Instagram carousel media within parent posts ([c523a60](https://github.com/shixuan/crawl-me-maybe/commit/c523a605eee5c7c2f5957e5884341b52b8f05f9a))
+* validate and preserve event dates ([d3dcdbe](https://github.com/shixuan/crawl-me-maybe/commit/d3dcdbeffe50f3de1e537185f142becd371c6e6e))
+
+
+### Changed
+
+* centralize runtime state ([3a6785c](https://github.com/shixuan/crawl-me-maybe/commit/3a6785ccc59ef11241289c745bc2190501ad3482))
+* engine.py ([b710fb8](https://github.com/shixuan/crawl-me-maybe/commit/b710fb8cdce4c7639cfb7b20995c6357e07237c4))
+* separate analysis discovery and platform adapters ([b7eb019](https://github.com/shixuan/crawl-me-maybe/commit/b7eb0195f587fe6ff3bbca1f26f0ab05f60d08ea))
+* separate scheduler workers ([917ae51](https://github.com/shixuan/crawl-me-maybe/commit/917ae511863110477a67f6a8db1f6fde45ef3ebd))
+
 ## [0.5.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.4.1...v0.5.0) (2026-09-12)
 
 
