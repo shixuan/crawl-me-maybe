@@ -275,10 +275,9 @@ function card(r) {
 
   const tags = (r.tags || []).map((t) => `<span class="tag">${escape(t)}</span>`).join("");
   const headline = headlineOf(r);
-  // Only the two that need explaining are marked. Still open is the
-  // expected case and needs no badge.
   const group = whenOf(r, horizonISO());
-  const mark = group === "later" || group === "over" ? WHEN_LABELS[group] : "";
+  if (group === "over") el.className += " result-ended";
+  const mark = group === "later" ? WHEN_LABELS[group] : "";
   const runs = runsFor(r);
   const subtitle = r.title && r.title !== headline ? r.title : "";
 
