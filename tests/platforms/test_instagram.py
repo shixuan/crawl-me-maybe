@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.digest.feed import PageProblem
-from crawlme.digest.feed import instagram as ig
+from crawlme.platforms import PageProblem
+from crawlme.platforms import instagram as ig
 from crawlme.schemas import Payload
 
 _PROFILE = """<html><body>
@@ -23,6 +23,33 @@ _PROFILE = """<html><body>
 </body></html>"""
 
 _CAPTION = "\\ud83c\\udf47Top Up, Get More!\\n\\nTop up 50 CAD, get a free drink. Ends Saturday."
+
+
+@pytest.mark.parametrize("parent_text", ["Buy two drinks.\r\nFree lantern.", "", None])
+def test_carousel_is_one_candidate(parent_text):
+    parent = {
+        "code": "PARENT",
+        "caption": {"text": parent_text},
+        "user": {"username": "shop"},
+        "taken_at": 1780000000,
+        "carousel_media": [
+            {"code": "CHILD1", "caption": {"text": "Free lantern."}},
+            {"code": "CHILD2", "caption": {"text": "Spend $15 for a gift."}},
+            {"code": "CHILD3", "caption": {"text": "Spend $30 for a gift."}},
+            {"code": "CHILD4", "caption": {"text": "Spend $15 for a gift."}},
+        ],
+    }
+    other = {"code": "OTHER", "caption": {"text": "Independent post."}, "user": {"username": "shop"}}
+    payload = Payload(url="", content_type="application/json", body=json.dumps([parent, other]).encode())
+    listing = ig.parse_listing('<a href="/shop/p/CHILD1/">image</a>', "https://www.instagram.com/shop/", [payload])
+    assert [item.item_id for item in listing.all] == ["PARENT", "OTHER"]
+    post = listing.all[0]
+    assert post.text == (
+        ("Buy two drinks.\n" if parent_text else "") + "Free lantern.\n\nSpend $15 for a gift.\n\nSpend $30 for a gift."
+    )
+    assert post.author == "shop"
+    assert post.published_at == datetime.datetime.fromtimestamp(1780000000, datetime.timezone.utc)
+
 
 _POST = f"""<html><head>
 <meta property="og:description" content="103 likes, 0 comments - mollytea_canada on August 13, 2026:

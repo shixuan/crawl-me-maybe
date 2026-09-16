@@ -7,7 +7,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from crawlme.schemas import URL, Candidate, Page, Payload
+from crawlme.schemas import URL, Candidate, FetchResult, Page, Payload
 
 
 class FeedDependencyError(RuntimeError):
@@ -134,4 +134,8 @@ class FeedAdapter(Protocol):
 
     def parse_item(self, html: str, url: str) -> FeedItem | None:
         """Read a single-item page, or None if this is not one."""
+        ...
+
+    def extract_text(self, result: FetchResult) -> str | None:
+        """Return target-page text from fetched data, or None for generic HTML extraction."""
         ...

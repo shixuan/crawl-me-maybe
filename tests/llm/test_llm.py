@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 import crawlme.llm.client as llm_mod
-from crawlme.analyzer import PageAnalyzer
+from crawlme.analysis import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError
 

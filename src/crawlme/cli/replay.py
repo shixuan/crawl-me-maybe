@@ -17,7 +17,7 @@ from typing import Any
 
 import aiosqlite
 
-from crawlme.analyzer.page_analyzer import _PROMPT_VERSION, Analyzer, PageAnalyzer
+from crawlme.analysis.analyzer import _PROMPT_VERSION, Analyzer, PageAnalyzer
 from crawlme.config import Settings
 from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging

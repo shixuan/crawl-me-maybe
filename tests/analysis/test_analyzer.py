@@ -11,8 +11,8 @@ import datetime
 
 import pytest
 
-from crawlme.analyzer import PageAnalyzer
-from crawlme.analyzer.page_analyzer import _build_prompt, _parse_analysis, _parse_extracted
+from crawlme.analysis import PageAnalyzer
+from crawlme.analysis.analyzer import _build_prompt, _parse_analysis, _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.schemas import URL, CrawlGoal, Page
@@ -505,7 +505,7 @@ def test_window_absent() -> None:
 
 
 def _contract(analyzer_goal=None):
-    from crawlme.analyzer.page_analyzer import _system_for
+    from crawlme.analysis.analyzer import _system_for
 
     return _system_for(analyzer_goal or _goal())
 

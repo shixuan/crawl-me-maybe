@@ -1,9 +1,107 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from crawlme.digest.extractor import TrafExtractor
-from crawlme.schemas import URL, FetchResult
+from crawlme.platforms import instagram, reddit, rss
+from crawlme.schemas import URL, FetchResult, Payload
+
+
+def _ig_result():
+    result = _result()
+    result.url = URL(
+        raw="https://www.instagram.com/shop/p/PARENT/",
+        canonical="https://www.instagram.com/shop/p/PARENT/",
+        url_key="k1",
+    )
+    result.payloads = [
+        Payload(
+            body=json.dumps(
+                [
+                    {"code": "OTHER", "caption": {"text": "Unrelated recommendation"}},
+                    {
+                        "code": "PARENT",
+                        "caption": {"text": "Buy two drinks."},
+                        "carousel_media": [
+                            {"code": "CHILD", "caption": {"text": "Free lantern."}},
+                            {"code": "CHILD2", "caption": {"text": "Buy two drinks."}},
+                        ],
+                    },
+                ]
+            ).encode()
+        )
+    ]
+    return result
+
+
+def test_adapter_page_text(monkeypatch):
+    import crawlme.digest.extractor as module
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("HTML extraction must not replace matched payload text")
+
+    monkeypatch.setattr(module.trafilatura, "extract", unexpected)
+    page = TrafExtractor(adapters=[instagram]).extract(_ig_result())
+    text = "Buy two drinks.\n\nFree lantern."
+    assert page.plain_text == page.markdown == text
+    assert page.text_len == len(text)
+    assert page.text_hash == hashlib.sha256(text.encode()).hexdigest()[:16]
+    assert page.metadata["text_source"] == "instagram"
+    assert page.title == "Test Page"
+    assert page.extraction_status == "OK"
+
+
+def test_inline_target_with_recommendations():
+    result = _ig_result()
+    data = json.loads(result.payloads[0].body)
+    result.raw += ('<script type="application/json">' + json.dumps(data[1]) + "</script>").encode()
+    result.payloads = [Payload(body=json.dumps([data[0]]).encode())]
+    page = TrafExtractor(adapters=[instagram]).extract(result)
+    assert page.plain_text == "Buy two drinks.\n\nFree lantern."
+    assert page.metadata["text_source"] == "instagram"
+
+
+@pytest.mark.parametrize("case", ["missing", "malformed", "unmatched", "listing", "redirect", "login", "http_error"])
+def test_adapter_text_fallback(case):
+    result = _ig_result()
+    if case == "missing":
+        result.payloads = []
+    elif case == "malformed":
+        result.payloads = [Payload(body=b"not json")]
+    elif case == "unmatched":
+        result.url.canonical = "https://www.instagram.com/shop/p/UNKNOWN/"
+    elif case == "listing":
+        result.url.canonical = "https://www.instagram.com/shop/"
+    elif case == "redirect":
+        result.final_url = URL(
+            raw="https://www.instagram.com/p/OTHER/", canonical="https://www.instagram.com/p/OTHER/", url_key="other"
+        )
+    elif case == "login":
+        result.raw += b'<form id="loginform"></form>'
+    else:
+        result.status_code = 404
+    expected = TrafExtractor().extract(result)
+    actual = TrafExtractor(adapters=[instagram]).extract(result)
+    assert actual.plain_text == expected.plain_text
+    assert actual.markdown == expected.markdown
+    assert "text_source" not in actual.metadata
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://example.com/page", "https://www.reddit.com/r/test/comments/abc/post", "https://example.com/feed.xml"],
+)
+def test_other_platform_text(url):
+    result = _result()
+    result.url.canonical = url
+    expected = TrafExtractor().extract(result)
+    actual = TrafExtractor(adapters=[instagram, reddit, rss]).extract(result)
+    assert actual.plain_text == expected.plain_text
+    assert actual.markdown == expected.markdown
+
 
 SAMPLE_HTML = b"""<!DOCTYPE html>
 <html>

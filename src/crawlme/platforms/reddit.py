@@ -8,8 +8,8 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
-from crawlme.schemas import Page, Payload
+from crawlme.platforms.base import FeedItem, Listing, PageProblem
+from crawlme.schemas import FetchResult, Page, Payload
 
 logger = logging.getLogger(__name__)
 
@@ -154,3 +154,8 @@ def _timestamp(raw: str | None) -> datetime.datetime | None:
         return datetime.datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def extract_text(result: FetchResult) -> str | None:
+    """Use generic HTML extraction for this platform."""
+    return None

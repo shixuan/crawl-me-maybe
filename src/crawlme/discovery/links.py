@@ -6,8 +6,8 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
-from crawlme.digest.lxml import LXML_LOCK
 from crawlme.schemas import Page, RawLink
+from crawlme.util.lxml import LXML_LOCK
 
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
@@ -21,7 +21,7 @@ def _extract_from_html(path: str) -> list[RawLink]:
         return []
     html_bytes = Path(path).read_bytes()
     # The parse and the tree walk both run under the shared lock:
-    # libxml2's global dictionary races across threads (digest/lxml.py).
+    # libxml2's global dictionary races across threads (util/lxml.py).
     with LXML_LOCK:
         soup = BeautifulSoup(html_bytes, "lxml")
         links: list[RawLink] = []

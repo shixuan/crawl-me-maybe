@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.digest.feed import reddit
-from crawlme.digest.feed.base import PageProblem
+from crawlme.platforms import reddit
+from crawlme.platforms.base import PageProblem
 from crawlme.schemas import URL, Page
 
 _DATA = Path(__file__).parent / "data"

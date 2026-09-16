@@ -296,6 +296,33 @@ body {
 
 .result:hover { box-shadow: var(--shadow-hover); transform: translateY(-1px); }
 
+.result-ended {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.result-ended .field-row { background: transparent; }
+
+/* A background mark, below all content and outside pointer hit testing. */
+.result-ended::before {
+  content: "ALREADY OVER";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(35deg);
+  font-family: var(--rounded);
+  font-size: clamp(46px, 7vw, 110px);
+  font-weight: 900;
+  letter-spacing: .035em;
+  white-space: nowrap;
+  color: rgba(145, 96, 115, .09);
+  pointer-events: none;
+  z-index: -1;
+}
+
 .result-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 
 .result-title {

@@ -10,8 +10,10 @@ import logging
 import re
 from urllib.parse import urlsplit
 
-from crawlme.digest.feed.base import FeedItem, Listing, PageProblem
-from crawlme.schemas import Page, Payload
+from bs4 import BeautifulSoup
+
+from crawlme.platforms.base import FeedItem, Listing, PageProblem
+from crawlme.schemas import FetchResult, Page, Payload
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,37 @@ def keeps_payload(url: str, content_type: str) -> bool:
     return "/graphql/query" in url
 
 
+def extract_text(result: FetchResult) -> str | None:
+    """Read only the requested parent post; unrelated payload posts are not fallback text."""
+    url = result.url.canonical
+    match = _SHORTCODE.search(urlsplit(url).path)
+    if not claims_url(url) or match is None or result.status_code != 200:
+        return None
+    if result.final_url is not None:
+        final = result.final_url.canonical
+        final_match = _SHORTCODE.search(urlsplit(final).path)
+        if not claims_url(final) or final_match is None or final_match[1] != match[1]:
+            return None
+    document = result.raw.decode("utf-8", "ignore")
+    if problem(document) is not None:
+        return None
+    post = _posts_from_payloads(result.payloads, set()).get(match[1])
+    if post is None:
+        # Detail pages may embed the target post while captured responses contain only recommendations.
+        posts: dict[str, _Post] = {}
+        media_codes: set[str] = set()
+        soup = BeautifulSoup(document, "html.parser")
+        for script in soup.find_all("script", attrs={"type": "application/json"}):
+            try:
+                data = json.loads(script.string or "")
+            except json.JSONDecodeError:
+                continue
+            _collect_posts(data, posts, media_codes)
+        if match[1] not in media_codes:
+            post = posts.get(match[1])
+    return post.text if post is not None else None
+
+
 # Distinguish the requested account grid from the viewer home timeline.
 _GRID_ANSWER = "user_timeline_graphql_connection"
 
@@ -102,7 +135,8 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     Prefer payload captions and timestamps. DOM entries are a fallback because
     scrolling can remove earlier posts from the rendered grid."""
     handle = _account_from_url(url).strip("/").lower()
-    posts = _posts_from_payloads(payloads)
+    media_codes: set[str] = set()
+    posts = _posts_from_payloads(payloads, media_codes)
     alts = {href: alt for href, alt in _GRID_ENTRY.findall(html)}
     # Use the account handle for ownership; image alt text may contain only a display name.
     seen: dict[str, FeedItem] = {}
@@ -120,7 +154,7 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
             published_at=post.taken_at,
         )
     for href, code in dict.fromkeys(_PERMALINK.findall(html)):
-        if code in seen:
+        if code in seen or code in media_codes:
             continue
         owner = href.strip("/").split("/")[0].lower()
         alt = alts.get(href, "")
@@ -237,7 +271,7 @@ class _Post:
     author: str
 
 
-def _posts_from_payloads(payloads: list[Payload]) -> dict[str, _Post]:
+def _posts_from_payloads(payloads: list[Payload], media_codes: set[str]) -> dict[str, _Post]:
     """Index payload posts by shortcode, retaining caption, author and timestamp."""
     out: dict[str, _Post] = {}
     for payload in payloads:
@@ -246,30 +280,55 @@ def _posts_from_payloads(payloads: list[Payload]) -> dict[str, _Post]:
         except (json.JSONDecodeError, UnicodeDecodeError):
             logger.debug("instagram.payload_unreadable url=%s", payload.url)
             continue
-        _collect_posts(data, out)
-    return out
+        _collect_posts(data, out, media_codes)
+    return {code: post for code, post in out.items() if code not in media_codes}
 
 
-def _collect_posts(node: object, out: dict[str, _Post]) -> None:
+def _collect_posts(node: object, out: dict[str, _Post], media_codes: set[str]) -> None:
     if isinstance(node, list):
         for child in node:
-            _collect_posts(child, out)
+            _collect_posts(child, out, media_codes)
         return
     if not isinstance(node, dict):
         return
     code = node.get("code") or node.get("shortcode")
-    caption = node.get("caption")
-    if isinstance(code, str) and isinstance(caption, dict):
-        text = caption.get("text")
-        if isinstance(text, str) and text.strip():
+    text = _caption_text(node, media_codes)
+    if isinstance(code, str):
+        if text:
             user = node.get("user")
             author = user.get("username") if isinstance(user, dict) else ""
             out.setdefault(
                 code,
                 _Post(text.strip(), _taken_at(node.get("taken_at")), str(author or "")),
             )
-    for child in node.values():
-        _collect_posts(child, out)
+    for key, child in node.items():
+        # Carousel media belong to their parent, even when they have captions and codes.
+        if key != "carousel_media":
+            _collect_posts(child, out, media_codes)
+
+
+def _caption_text(node: dict[str, object], media_codes: set[str]) -> str:
+    parts: list[str] = []
+
+    def collect(item: dict[str, object]) -> None:
+        caption = item.get("caption")
+        text = caption.get("text") if isinstance(caption, dict) else None
+        if isinstance(text, str):
+            text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+            if text and not any(text in previous for previous in parts):
+                parts.append(text)
+        children = item.get("carousel_media")
+        if isinstance(children, list):
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                code = child.get("code") or child.get("shortcode")
+                if isinstance(code, str):
+                    media_codes.add(code)
+                collect(child)
+
+    collect(node)
+    return "\n\n".join(parts)
 
 
 def _taken_at(raw: object) -> datetime.datetime | None:

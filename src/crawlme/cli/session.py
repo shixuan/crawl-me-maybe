@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-from crawlme.digest.feed import FEEDS
+from crawlme.platforms import FEEDS
 
 # How often to ask whether the login window is still there.
 _CLOSE_POLL_SECONDS = 0.5

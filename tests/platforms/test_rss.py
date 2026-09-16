@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.digest.feed import rss
-from crawlme.digest.feed.base import FeedDependencyError
-from crawlme.digest.harvest import PageHarvester
+from crawlme.discovery.harvester import PageHarvester
 from crawlme.pioneer.canonicalizer import Canonicalizer
+from crawlme.platforms import rss
+from crawlme.platforms.base import FeedDependencyError
 from crawlme.schemas import URL, Page
 
 pytest.importorskip("feedparser")

@@ -324,6 +324,40 @@ def test_prints_summary(capsys):
     assert "7.5s" in out
 
 
+@pytest.mark.parametrize("log_format", ["console", "json"])
+def test_summary_in_log(tmp_path, capsys, log_format):
+    import logging
+
+    from crawlme.cli.run import _print_summary
+    from crawlme.config import Settings
+    from crawlme.llm import TokenBudget
+    from crawlme.logging import setup_logging, to_file
+    from crawlme.schemas import CrawlTask
+
+    scheduler = MagicMock()
+    scheduler.summary.return_value = {
+        "pages_fetched": 2,
+        "seeds": {"seed": {"url": "https://example.com/", "funnel": (3, 2, 2, 2, 2, 1)}},
+    }
+    root = logging.getLogger()
+    path = tmp_path / "log"
+    with patch.object(root, "handlers", []), patch.object(root, "level", logging.INFO):
+        setup_logging(Settings(log_level="INFO", log_format=log_format), force=True)
+        to_file(str(path))
+        try:
+            _print_summary(scheduler, CrawlTask(goal_id="goal", state="COMPLETED"), TokenBudget(limit=100))
+            captured = capsys.readouterr()
+            saved = path.read_text()
+            assert captured.out.strip() in saved
+            assert "https://example.com/" in saved
+            assert saved.count("crawl finished") == 1
+            assert captured.out.count("crawl finished") == 1
+            assert "crawl finished" not in captured.err
+        finally:
+            for handler in root.handlers:
+                handler.close()
+
+
 # reading a moment off the command line ---------------------------------
 
 

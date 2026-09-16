@@ -12,8 +12,6 @@ from typing import Any
 
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.config import Settings
-from crawlme.digest.feed import ADAPTERS
-from crawlme.digest.feed.base import PageProblem
 from crawlme.llm import Stage, TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
@@ -21,6 +19,8 @@ from crawlme.pioneer.ranker.llm import LLMRanker
 from crawlme.pioneer.sources.base import UrlSource
 from crawlme.pioneer.sources.file import FileSource
 from crawlme.pioneer.sources.manual import ManualSource
+from crawlme.platforms import ADAPTERS
+from crawlme.platforms.base import PageProblem
 from crawlme.scheduler.engine import CrawlScheduler
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import CLASSIFICATIONS, CrawlGoal, CrawlTask, spec_fields
@@ -296,7 +296,9 @@ def _print_summary(
         }
         for name, u in budget.by_stage.items()
     }
-    print(_format_summary(summary))
+    report = _format_summary(summary)
+    print(report)
+    logger.info("\n%s", report, extra={"file_only": True})
 
 
 # Between the report's parts. Indentation alone left them reading as
