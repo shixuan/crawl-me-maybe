@@ -17,7 +17,7 @@ flowchart TB
 
     queue -->|fetch_pump calls pop_next| dispatch["scheduler/engine.py<br>dispatch _handle_fetch tasks"]
 
-    subgraph digest["2. digest/ · fetch and extract · scheduled by FetchWorker"]
+    subgraph digest["2. digest/ · fetch and extract · coordinated by Engine"]
         fetcher[DispatchingFetcher] -->|HTTP| http[HttpFetcher]
         fetcher -->|rendering| browser["PlaywrightFetcher<br>saved session, selected response payloads"]
         http -->|FetchResult| extractor["TrafExtractor<br>text, Markdown, publication metadata"]
@@ -49,7 +49,8 @@ flowchart TB
 
 The numbered stages follow one candidate URL. `rank_pump` and `fetch_pump` run
 concurrently across different candidates, sharing the frontier's two queues.
-`FetchWorker` saves HTML, payloads and the extracted `Page` before analysis.
+`FetchWorker` returns the fetched response. Engine calls `PersistWorker.save_raw`
+before invoking Extractor, then `PersistWorker.save_extracted` before analysis.
 Harvesting follows the initial analysis attempt and can proceed while a failed
 analysis waits for a retry. Analyzer output goes to its sink; discovery reads the
 saved page inputs. Dashed arrows show delayed work or candidates for a later pass.
@@ -72,6 +73,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `runtime/state.py` | Own run limits, counters, page/source history and seed enhancement metadata |
 | `runtime/events.py` | Persist crawl events |
 | `storage/` | Persistence contract and SQLite implementation |
+| `scheduler/workers/persist.py` | Coordinate page file writes and database queuing through Storage |
 | `util/dates.py` | Parse event dates and assign result groups |
 | `dashboard/` | Local HTTP server and browser UI for stored results |
 
@@ -197,8 +199,9 @@ flowchart LR
     ranker -->|decisions via scheduler| storage["storage/sqlite/CrawlDb"]
     sink -->|analyses| storage
     scheduler["Engine<br>candidate admission, events, checkpoints"] -->|links, events, snapshots| storage
-    fetchworker[FetchWorker] -->|pages| storage
-    fetchworker -->|HTML and payload bytes| raw["raw/ files"]
+    scheduler --> persistence[PersistWorker]
+    persistence -->|pages| storage
+    persistence -->|HTML and payload bytes| raw["raw/ files"]
     state -->|read only| report["reporting.summary"]
 ```
 
@@ -234,8 +237,9 @@ The frontier owns both the scored queue and unranked buffer. Scored work is gate
 by domain budgets and cooldowns. Ranking in progress and cooling items count as
 remaining work, so an empty immediate pop does not imply a drained frontier.
 
-Fetch and analysis concurrency have separate semaphores. Analysis does not hold a
-fetch slot. Dispatch counts in-flight pages against the page budget. The result
+Engine bounds the combined fetch, extraction and persistence work with page slots.
+FetchWorker also bounds network fetching; analysis has separate slots and does not
+hold a page slot. Dispatch counts in-flight pages against the page budget. The result
 target is checked before analysis, but already-running calls may overshoot it.
 Blocking extraction runs in worker threads; digest operations using libxml2 share
 `LXML_LOCK`. Extraction timeouts bound the await, not the lifetime of a running thread.
@@ -281,6 +285,12 @@ SQLite stores goals, tasks, pages, links, rank decisions, analyses, frontier
 snapshots, events, errors and robots cache entries. Writes use an async queue;
 reads use the connection directly. Events provide an audit trail. Checkpoints,
 rather than event replay, restore the frontier.
+
+Engine invokes PersistWorker before and after extraction. The worker calls Storage
+to retain HTML before extraction, then saves payloads, attaches their paths to the
+Page and queues the Page record. File writes run in threads; database writes are
+queued on the event loop. A failed payload write is logged and omitted from the
+saved paths. Storage owns paths and the underlying file and database operations.
 
 `crawl inspect` reads stored results and exports JSON or CSV. The dashboard opens
 SQLite read-only and filters loaded results in the browser.

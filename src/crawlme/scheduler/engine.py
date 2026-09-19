@@ -7,9 +7,11 @@ import datetime
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.digest.extractor import Extractor
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -25,9 +27,9 @@ from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.scheduler.workers import (
     AnalysisWorker,
     DiscoveryWorker,
-    FetchedPage,
     FetchFailure,
     FetchWorker,
+    PersistWorker,
     RankingWorker,
 )
 from crawlme.schemas import (
@@ -35,6 +37,7 @@ from crawlme.schemas import (
     Candidate,
     CrawlGoal,
     CrawlTask,
+    FetchResult,
     FrontierItem,
     FrontierSnapshot,
     Page,
@@ -70,6 +73,12 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+@dataclass(frozen=True)
+class FetchedPage:
+    result: FetchResult
+    page: Page
+
+
 class CrawlScheduler:
     """Run concurrent fetch and rank pumps over a shared frontier."""
 
@@ -80,6 +89,8 @@ class CrawlScheduler:
         storage: CrawlDb,
         frontier: Frontier,
         fetch: FetchWorker,
+        persist: PersistWorker,
+        extractor: Extractor,
         ranking: RankingWorker,
         analysis: AnalysisWorker,
         discovery: DiscoveryWorker,
@@ -93,6 +104,10 @@ class CrawlScheduler:
         self._storage = storage
         self._frontier = frontier
         self._fetch = fetch
+        self._persist = persist
+        self._extractor = extractor
+        # Preserve the bound on fetching, extraction and persistence together.
+        self._page_slots = asyncio.Semaphore(settings.fetch_concurrency)
         self._ranking = ranking
         self._analysis = analysis
         self._discovery = discovery
@@ -477,12 +492,14 @@ class CrawlScheduler:
         logger.debug("listing.next_page url=%s page=%d", url.canonical, pages + 2)
 
     async def _fetch_and_extract(self, item: FrontierItem) -> FetchedPage | None:
+        async with self._page_slots:
+            return await self._process_page(item)
+
+    async def _process_page(self, item: FrontierItem) -> FetchedPage | None:
         outcome = await self._fetch.fetch(item)
         if isinstance(outcome, FetchFailure):
             if outcome.reason == "robots":
                 self.run_state.stats.robots_blocked += 1
-            elif outcome.reason == "extract_timeout":
-                self.run_state.progress.pages_fetched += 1
             else:
                 self.run_state.stats.fetch_errors += 1
                 if self._events:
@@ -499,8 +516,20 @@ class CrawlScheduler:
                 )
             await self._frontier.record_outcome(item, "FAILED" if outcome.reason == "fetch" else "SKIPPED")
             return None
-        self._note_page_age(outcome.page, self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key))
-        return outcome
+        raw_path = await self._persist.save_raw(item.url_key, outcome)
+        logger.debug("fetch.extracting url_key=%s size=%dKB", item.url_key, len(outcome.raw) // 1024)
+        try:
+            page = await asyncio.wait_for(
+                asyncio.to_thread(self._extractor.extract, outcome, raw_path), timeout=self._cfg.extract_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(outcome.raw) // 1024)
+            self.run_state.progress.pages_fetched += 1
+            await self._frontier.record_outcome(item, "SKIPPED")
+            return None
+        await self._persist.save_extracted(item.url_key, outcome, page)
+        self._note_page_age(page, self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key))
+        return FetchedPage(outcome, page)
 
     async def _handle_fetch(self, item: FrontierItem) -> None:
         if self._events:

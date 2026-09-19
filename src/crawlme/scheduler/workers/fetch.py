@@ -1,4 +1,4 @@
-"""Fetch, persist and extract pages without changing frontier or run counters."""
+"""Fetch pages and enforce robots policy without persisting page content."""
 
 from __future__ import annotations
 
@@ -9,11 +9,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from crawlme.digest.extractor import Extractor
 from crawlme.digest.fetcher import Fetcher
 from crawlme.logging import where
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.schemas import URL, FetchResult, FrontierItem, Page
+from crawlme.schemas import URL, FetchResult, FrontierItem
 from crawlme.storage.contracts import CrawlDb
 
 logger = logging.getLogger(__name__)
@@ -23,14 +22,8 @@ _ROBOTS_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True)
-class FetchedPage:
-    result: FetchResult
-    page: Page
-
-
-@dataclass(frozen=True)
 class FetchFailure:
-    reason: Literal["robots", "fetch", "extract_timeout"]
+    reason: Literal["robots", "fetch"]
     error_type: str = ""
 
 
@@ -38,21 +31,17 @@ class FetchWorker:
     def __init__(
         self,
         fetcher: Fetcher,
-        extractor: Extractor,
         robots: RobotsPolicy,
         storage: CrawlDb,
         *,
         concurrency: int,
-        extract_timeout: float,
     ) -> None:
         self.fetcher = fetcher
-        self.extractor = extractor
         self.robots = robots
         self._storage = storage
         self._slots = asyncio.Semaphore(concurrency)
-        self._extract_timeout = extract_timeout
 
-    async def fetch(self, item: FrontierItem) -> FetchedPage | FetchFailure:
+    async def fetch(self, item: FrontierItem) -> FetchResult | FetchFailure:
         host = (urlparse(item.url.canonical).hostname or "").lower()
         domain = item.url.reg_domain or host
         await self.ensure_robots(host)
@@ -67,28 +56,7 @@ class FetchWorker:
             except Exception as e:
                 logger.warning("fetch.failed url_key=%s domain=%s depth=%d", item.url_key, domain, item.depth)
                 return FetchFailure("fetch", type(e).__name__)
-            raw_path = self._storage.raw_html_path(item.url_key, result.item_id)
-            logger.debug("fetch.extracting url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-            await asyncio.to_thread(self._storage.save_raw_html, item.url_key, result.item_id, result.raw)
-            try:
-                page = await asyncio.wait_for(
-                    asyncio.to_thread(self.extractor.extract, result, raw_path), timeout=self._extract_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(result.raw) // 1024)
-                return FetchFailure("extract_timeout")
-            page.payload_paths = await asyncio.to_thread(self._save_payloads, item.url_key, result)
-            self._storage.save_page(page)
-            return FetchedPage(result, page)
-
-    def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
-        paths: list[str] = []
-        for i, payload in enumerate(result.payloads):
-            try:
-                paths.append(self._storage.save_payload(url_key, result.item_id, i, payload.body))
-            except OSError:
-                logger.warning("fetch.payload_unsaved url_key=%s index=%d", url_key, i, exc_info=True)
-        return paths
+            return result
 
     async def ensure_robots(self, host: str) -> None:
         """Load policy by hostname, which may differ from the budget domain."""

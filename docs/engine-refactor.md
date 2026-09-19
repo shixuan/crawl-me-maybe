@@ -17,7 +17,8 @@ src/crawlme/
     stop_conds.py      Decide run stopping and source retirement
     workers/
       ranking.py       Rank candidates and produce frontier items
-      fetch.py         Fetch, extract and persist pages
+      fetch.py         Fetch responses and enforce robots policy
+      persist.py       Coordinate page file writes and database queuing
       analysis.py      Bound initial analysis and recheck the result target
       discovery.py     Harvest saved page inputs with a bounded wait
   runtime/
@@ -41,18 +42,21 @@ flowchart TB
         buffer -->|rank pump takes a batch| rank["RankingWorker"]
         rank -->|decisions and items via Engine| queue
         queue -->|fetch pump dispatches| fetch["FetchWorker"]
-        fetch -->|saved Page via Engine| analysis["AnalysisWorker"]
+        fetch -->|FetchResult via Engine| raw["PersistWorker.save_raw"]
+        raw -->|HTML path via Engine| extract["Extractor"]
+        extract -->|Page via Engine| saved["PersistWorker.save_extracted"]
+        saved -->|saved Page via Engine| analysis["AnalysisWorker"]
         analysis -->|initial attempt finishes| discovery["DiscoveryWorker"]
         discovery -->|Harvest via Engine| buffer
     end
     subgraph components["Existing component contracts"]
         ranker["Ranker"]
-        extractor["Fetcher + Extractor"]
+        fetcher["Fetcher"]
         analyzer["PageAnalyzer · includes delayed retries"]
         harvester["Harvester · reads saved HTML and payloads"]
     end
     rank --> ranker
-    fetch --> extractor
+    fetch --> fetcher
     analysis --> analyzer
     discovery --> harvester
     analyzer -->|successful result through Engine sink| tracker["RunTracker"]
@@ -96,10 +100,17 @@ There is no PageContext container. The page path uses `FrontierItem`,
 `FetchedPage`, `Page` and `Harvest`. Delayed results join page records by identity.
 The `page_contexts` mapping stores ranking feedback; it is not a pipeline envelope.
 
-FetchWorker returns `FetchedPage` or a typed `FetchFailure`. Engine records page
+FetchWorker returns `FetchResult` or a typed `FetchFailure`. Engine records page
 ownership and publication information before analysis. AnalysisWorker checks the
-result target after acquiring its slot. Fetch slots do not cover analysis, and
+result target after acquiring its slot. Engine bounds fetching, extraction and
+persistence together with page slots. Page slots do not cover analysis, and
 analysis slots do not cover harvesting.
+
+Engine calls PersistWorker twice: `save_raw` before invoking Extractor, then
+`save_extracted` before analysis. PersistWorker handles file-write threads, partial
+payload failures and attaching paths before queuing the Page. Storage owns paths
+and the underlying writes. FetchWorker never calls PersistWorker or Extractor;
+its remaining Storage dependency is for the existing robots cache.
 
 All successful analysis results, including retries, use the Engine sink for storage,
 tracking and retirement. PageBook prevents duplicate source votes. This does not
