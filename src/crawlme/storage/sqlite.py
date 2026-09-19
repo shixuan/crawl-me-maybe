@@ -146,8 +146,8 @@ CREATE TABLE IF NOT EXISTS robots_cache (
 """
 
 
-class SqliteCrawlDb:
-    """CrawlDb backed by one SQLite file per run."""
+class SqliteStorage:
+    """Store run records in SQLite and fetched files alongside the database."""
 
     def __init__(self, db_path: str, raw_dir: str):
         self._db_path = db_path
@@ -157,7 +157,7 @@ class SqliteCrawlDb:
         self._conn: aiosqlite.Connection | None = None
 
     @classmethod
-    def create(cls, base_dir: str | Path) -> SqliteCrawlDb:
+    def create(cls, base_dir: str | Path) -> SqliteStorage:
         """Create a Storage with a timestamped subdirectory under *base_dir*.
 
         Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``

@@ -12,7 +12,7 @@ import pytest
 from crawlme.cli.inspect import InspectError, _result_lines, cmd_inspect, inspect_task
 from crawlme.config import Settings
 from crawlme.schemas import URL, CrawlGoal, CrawlTask, Page
-from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.storage.sqlite import SqliteStorage
 
 
 def _goal(prompt: str) -> CrawlGoal:
@@ -56,7 +56,7 @@ async def _write_run(root: Path, ts: str, *, task_id: str = "task1") -> Path:
     replay_goal = _goal("filter the most valuable articles")
     run_dir = root / ts
     (run_dir / "db").mkdir(parents=True)
-    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    db = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     db.save_goal(original.model_dump(mode="json"))
     db.save_goal(replay_goal.model_dump(mode="json"))
@@ -179,7 +179,7 @@ async def test_json_evidence(tmp_path, monkeypatch, capsys):
     renders this can let the reader check it.
     """
     run_dir = await _write_run(tmp_path, "20260101_000001")
-    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    db = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     db.save_analysis(
         {

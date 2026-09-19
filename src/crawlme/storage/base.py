@@ -1,4 +1,4 @@
-"""Persistence contract used by the scheduler; implementations live in storage subpackages."""
+"""Persistence interface for run data and fetched files."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     from crawlme.schemas import Candidate, Page, RankDecision
 
 
-class CrawlDb(Protocol):
-    """Contract for one crawl run's persisted state: SQLite today, Postgres tomorrow."""
+class Storage(Protocol):
+    """Read and write one run's records and fetched files."""
 
     @property
     def db_path(self) -> str: ...

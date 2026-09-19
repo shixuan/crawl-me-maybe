@@ -22,9 +22,9 @@ from crawlme.platforms import ADAPTERS, FeedAdapter
 from crawlme.runtime.state import Limits, Progress, RunState, Stats
 from crawlme.runtime.tracking import RunTracker
 from crawlme.scheduler.engine import CrawlScheduler
-from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchWorker, RankingWorker
+from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchWorker, PersistWorker, RankingWorker
 from crawlme.schemas import Candidate, CrawlGoal
-from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.storage.sqlite import SqliteStorage
 
 
 def create_scheduler(
@@ -39,7 +39,7 @@ def create_scheduler(
 
     A missing analyzer is built from settings when enabled and configured.
     The supplied token budget is shared with that analyzer."""
-    storage = overrides.pop("storage") if "storage" in overrides else SqliteCrawlDb.create(settings.result_dir)
+    storage = overrides.pop("storage") if "storage" in overrides else SqliteStorage.create(settings.result_dir)
     # The tracker and reporting use the same state across startup reset.
     state = overrides.pop("run_state", None)
     if state is None:
@@ -78,12 +78,12 @@ def create_scheduler(
         ),
         "fetch": FetchWorker(
             fetcher,
-            extractor,
             robots,
             storage,
             concurrency=settings.fetch_concurrency,
-            extract_timeout=settings.extract_timeout,
         ),
+        "persist": PersistWorker(storage),
+        "extractor": extractor,
         "ranking": RankingWorker(ranker),
         "analysis": AnalysisWorker(analyzer, concurrency=settings.llm_concurrency),
         "discovery": DiscoveryWorker(harvester, timeout=settings.extract_timeout),

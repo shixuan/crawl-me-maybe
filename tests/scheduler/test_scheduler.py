@@ -14,10 +14,9 @@ import pytest
 from crawlme.config import Settings
 from crawlme.discovery.harvester import Harvest, PageHarvester
 from crawlme.runtime.state import Limits, Progress, RunState, Stats
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.scheduler.engine import CrawlScheduler, FetchedPage
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.stop_conds import MAX_STALE_STREAK, RELEVANCE_WINDOW
-from crawlme.scheduler.workers import FetchedPage
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -365,7 +364,7 @@ async def test_harvest_timeout(monkeypatch):
     sched._fetch.fetcher.fetch = AsyncMock(
         return_value=FetchResult(item_id="i1", url_key="k1", url=_item().url, raw=b"<html></html>")
     )
-    sched._fetch.extractor.extract = MagicMock(
+    sched._extractor.extract = MagicMock(
         return_value=Page(
             url_key="k1",
             url=URL(raw="https://example.com", canonical="https://example.com", url_key="k1"),

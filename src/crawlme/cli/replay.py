@@ -23,7 +23,7 @@ from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page, spec_version
-from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.storage.sqlite import SqliteStorage
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ async def run_replay(
         if analyzer is None:
             raise ReplayError("replay needs LLM credentials to analyze pages: configure LLM_API_KEY / LLM_BASE_URL")
 
-    storage = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    storage = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await storage.start()
     try:
         goal_row = await storage.get_goal(task_row["goal_id"])
