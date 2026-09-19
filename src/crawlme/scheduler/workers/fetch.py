@@ -13,7 +13,7 @@ from crawlme.digest.fetcher import Fetcher
 from crawlme.logging import where
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.schemas import URL, FetchResult, FrontierItem
-from crawlme.storage.contracts import CrawlDb
+from crawlme.storage.base import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class FetchWorker:
         self,
         fetcher: Fetcher,
         robots: RobotsPolicy,
-        storage: CrawlDb,
+        storage: Storage,
         *,
         concurrency: int,
     ) -> None:

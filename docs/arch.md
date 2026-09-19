@@ -72,7 +72,8 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed enhancement metadata |
 | `runtime/events.py` | Persist crawl events |
-| `storage/` | Persistence contract and SQLite implementation |
+| `storage/base.py` | Storage protocol for run records and fetched files |
+| `storage/sqlite.py` | SqliteStorage implementation using SQLite and raw files |
 | `scheduler/workers/persist.py` | Coordinate page file writes and database queuing through Storage |
 | `util/dates.py` | Parse event dates and assign result groups |
 | `dashboard/` | Local HTTP server and browser UI for stored results |
@@ -196,7 +197,7 @@ flowchart LR
     budget -->|usage callback via engine| state
     policies -->|scheduler applies decisions| control["Stop dispatch / retire pending source work"]
 
-    ranker -->|decisions via scheduler| storage["storage/sqlite/CrawlDb"]
+    ranker -->|decisions via scheduler| storage["storage/sqlite.py · SqliteStorage"]
     sink -->|analyses| storage
     scheduler["Engine<br>candidate admission, events, checkpoints"] -->|links, events, snapshots| storage
     scheduler --> persistence[PersistWorker]

@@ -25,6 +25,9 @@ src/crawlme/
     state.py           RunState and its page, source and statistics types
     tracking.py        RunTracker updates and ranking feedback snapshots
     events.py          Persist crawl events
+  storage/
+    base.py            Storage protocol for run records and fetched files
+    sqlite.py          SqliteStorage implementation
 ```
 
 The earlier `PageWorker`, `CandidateCoordinator` and `RunProgress` proposals are

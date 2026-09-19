@@ -16,7 +16,7 @@ from typing import Any
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
-from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.storage.sqlite import SqliteStorage
 from crawlme.util.dates import LATER, OVER, UNDATED, group_of
 
 
@@ -43,7 +43,7 @@ class InspectData:
 async def inspect_task(settings: Settings, task_id: str, *, goal_id: str | None = None) -> InspectData:
     """Read a task and its selected goal analyses without modifying the run database."""
     run_dir, task_row = await find_run_dir(settings.result_dir, task_id)
-    storage = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    storage = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await storage.start()
     try:
         goals = await storage.list_goals()

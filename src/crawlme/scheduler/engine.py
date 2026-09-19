@@ -42,7 +42,7 @@ from crawlme.schemas import (
     FrontierSnapshot,
     Page,
 )
-from crawlme.storage.contracts import CrawlDb
+from crawlme.storage.base import Storage
 
 SeedEnhancement = Callable[
     [CrawlGoal, list[str], TokenBudget | None],
@@ -86,7 +86,7 @@ class CrawlScheduler:
         self,
         *,
         settings: Settings,
-        storage: CrawlDb,
+        storage: Storage,
         frontier: Frontier,
         fetch: FetchWorker,
         persist: PersistWorker,

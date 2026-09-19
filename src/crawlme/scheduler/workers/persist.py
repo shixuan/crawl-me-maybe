@@ -6,13 +6,13 @@ import asyncio
 import logging
 
 from crawlme.schemas import FetchResult, Page
-from crawlme.storage.contracts import CrawlDb
+from crawlme.storage.base import Storage
 
 logger = logging.getLogger(__name__)
 
 
 class PersistWorker:
-    def __init__(self, storage: CrawlDb) -> None:
+    def __init__(self, storage: Storage) -> None:
         self._storage = storage
 
     async def save_raw(self, url_key: str, result: FetchResult) -> str:

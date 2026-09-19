@@ -1,6 +1,6 @@
 """Tests for replay: re-running the analysis stage over a finished run.
 
-The run database is faked with real SqliteCrawlDb writes; the analyzer
+The run database is faked with real SqliteStorage writes; the analyzer
 is stubbed through the Analyzer protocol so no LLM is ever called.
 """
 
@@ -15,7 +15,7 @@ from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
 from crawlme.config import Settings
 from crawlme.llm import TokenBudgetError
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, CrawlTask, Page
-from crawlme.storage.sqlite.crawl_db import SqliteCrawlDb
+from crawlme.storage.sqlite import SqliteStorage
 
 
 def _goal(prompt: str = "find rust posts") -> CrawlGoal:
@@ -49,7 +49,7 @@ async def _write_run(
     goal = goal or _goal()
     run_dir = root / ts
     (run_dir / "db").mkdir(parents=True)
-    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    db = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     db.save_goal(goal.model_dump(mode="json"))
     db.save_task(CrawlTask(task_id=task_id, goal_id=goal.goal_id).model_dump(mode="json"))
@@ -123,7 +123,7 @@ def _cfg(tmp_path: Path) -> Settings:
 
 
 async def _read_analyses(run_dir: Path, url_key: str) -> list[dict]:
-    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    db = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     try:
         return await db.get_analyses_by_url_key(url_key)
@@ -132,7 +132,7 @@ async def _read_analyses(run_dir: Path, url_key: str) -> list[dict]:
 
 
 async def _read_goal(run_dir: Path, goal_id: str) -> dict | None:
-    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    db = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     try:
         return await db.get_goal(goal_id)
@@ -275,7 +275,7 @@ async def test_replay_dup_id(tmp_path):
     original = _goal("original prompt")
     run_dir = tmp_path / "20260101_000001"
     (run_dir / "db").mkdir(parents=True)
-    db = SqliteCrawlDb(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    db = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     db.save_goal(original.model_dump(mode="json"))
     # A row already occupies the new prompt's derived id, with different
