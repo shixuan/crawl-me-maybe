@@ -30,10 +30,7 @@ _MAX_SPEC_DESC = 200
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SINCE_MAX_AGE_DAYS = 3650
 
-# The model cannot know today's date on its own, and time-window goals
-# ("recent", "last week") need it to compute since correctly.
 _SYSTEM = (
-    f"Today is {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d} (UTC). "
     "You turn a user's crawl goal into structured fields. Reply with JSON only, "
     "no prose. Fields: goal_statement (one complete statement of what to find; "
     "if the prompt is not in English, write the statement in English, then append "
@@ -90,8 +87,10 @@ class GoalEnhancer:
         """One chat call, then validation.  None means apply nothing."""
         if self._client is None:
             return None
+        # Compute the date per request so long-lived processes follow UTC midnight.
+        system = f"Today is {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d} (UTC). " + _SYSTEM
         try:
-            resp = await self._client.chat(goal.prompt, system=_SYSTEM, json_mode=True)
+            resp = await self._client.chat(goal.prompt, system=system, json_mode=True)
         except LLMError as e:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
             return None

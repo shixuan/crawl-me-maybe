@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -60,15 +61,34 @@ async def test_json_fills_all():
 
 async def test_chat_args():
     client = _StubClient([_resp(_valid_json())])
-    await GoalEnhancer(client).enhance(_goal())
+    with patch("crawlme.pioneer.goal_enhancer.datetime", wraps=datetime) as clock:
+        clock.timezone = datetime.timezone
+        clock.datetime.now.return_value = datetime.datetime(2026, 9, 19, 23, 59, 59, tzinfo=datetime.timezone.utc)
+        await GoalEnhancer(client).enhance(_goal())
     call = client.calls[0]
     assert call["prompt"] == "find machine learning papers"
     assert call["json_mode"] is True
     assert "JSON" in call["system"]
     # The model cannot know today's date: the prompt must carry it so
     # time-window goals resolve since correctly.
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    assert f"Today is {today}" in call["system"]
+    assert call["system"].startswith("Today is 2026-09-19 (UTC). ")
+
+
+async def test_prompt_date_updates_after_midnight():
+    client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
+    enhancer = GoalEnhancer(client)
+    goal = _goal()
+    with patch("crawlme.pioneer.goal_enhancer.datetime", wraps=datetime) as clock:
+        clock.timezone = datetime.timezone
+        clock.datetime.now.side_effect = [
+            datetime.datetime(2026, 9, 19, 23, 59, 59, tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 9, 20, 0, 0, 0, tzinfo=datetime.timezone.utc),
+        ]
+        await enhancer.enhance(goal)
+        await enhancer.enhance(goal)
+        assert all(call.args == (datetime.timezone.utc,) for call in clock.datetime.now.call_args_list)
+    assert client.calls[0]["system"].startswith("Today is 2026-09-19 (UTC). ")
+    assert client.calls[1]["system"].startswith("Today is 2026-09-20 (UTC). ")
 
 
 async def test_prose_json_ok():
