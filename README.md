@@ -156,10 +156,16 @@ Shows the goal, crawl counts and relevant results grouped by event dates.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--goal` | original goal | Select another stored goal's analyses |
-| `--during` | none | Separate events starting beyond this future cutoff, e.g. `"1 week"` or `2026-10-01` |
+| `--during` | none | Exclude results starting beyond this future cutoff, e.g. `"1 week"` or `2026-10-01` |
 | `--export` | none | `json` includes extracted fields and evidence; `csv` exports fixed columns |
 
 `--since` concerns **publication time** during crawling. `--during` concerns **event dates** in the results. Results with no date form a separate group; expired results remain visible. The terminal shows a limited number of results per group; export includes all rows.
+
+Goal Enhancer enables time handling only when the goal implies a validity window,
+such as events, offers or applications. Analyzer extracts evidenced dates independently
+of requested fields. The dashboard uses ongoing / upcoming / past / undated and hides
+time controls for goals without time semantics. Future starts remain upcoming even
+within the selected `during` window. Existing analyses need replay to gain new dates.
 
 ### `crawl replay <task-id>`
 

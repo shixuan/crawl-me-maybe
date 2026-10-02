@@ -135,13 +135,13 @@ def group_of(
 ) -> str:
     """Which of undated, over, open and later a range falls in.
 
-    A range with only an end is already running, so it stays open
-    however far off that end is. Without a horizon nothing is later.
+    A range with only an end is ongoing. Future starts are always upcoming;
+    callers apply a horizon separately without changing temporal classification.
     """
     if starts is None and ends is None:
         return UNDATED
     if ends is not None and ends < today:
         return OVER
-    if horizon is not None and starts is not None and starts > horizon:
+    if starts is not None and starts > today:
         return LATER
     return OPEN

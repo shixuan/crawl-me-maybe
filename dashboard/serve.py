@@ -126,6 +126,9 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
             "goal_id": chosen,
             "goals": [{"goal_id": g["goal_id"], "prompt": g["prompt"]} for g in goals],
             "fields": list((spec or {}).get("fields", {}).keys()),
+            "time_enabled": any(g.get("time_policy") for g in goals if g["goal_id"] == chosen)
+            or bool((spec or {}).get("time_field"))
+            or any(r["starts_on"] or r["ends_on"] for r in rows),
             # Declared order, not order of arrival: the verdicts read the
             # same way every run whatever the counts happen to be.
             "classifications": list(CLASSIFICATIONS),

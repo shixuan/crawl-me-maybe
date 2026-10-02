@@ -11,11 +11,12 @@ const state = {
   goalId: null,
   rows: [],
   groups: [],
+  timeEnabled: false,
   fields: [],
   classifications: [], // the analyzer's own order, so the chips never re-sort
   classes: new Set(), // empty means every class
   whens: new Set(), // same, over the four ways a result sits in time
-  during: "", // days ahead that still count as open; "" is no window
+  during: "", // furthest future start to show; "" is no limit
   query: "",
   // "" = no requirement, ANY_FIELD = at least one field, otherwise the
   // name of the one field a result has to carry.
@@ -69,7 +70,7 @@ function when(iso) {
    All that is left here is where the reader draws the line ahead of
    them, which is a knob and needs no round trip. */
 
-const WHEN_LABELS = { open: "still open", later: "starts later", undated: "no date", over: "already over" };
+const WHEN_LABELS = { open: "ongoing", later: "upcoming", undated: "undated", over: "past" };
 
 function horizonISO() {
   if (!state.during) return "";
@@ -104,7 +105,12 @@ function whenOf(r, horizon) {
     if (dates.includes("undated")) return "undated";
     return "later";
   }
-  return r.when === "open" && r.starts_on && horizon && r.starts_on > horizon ? "later" : r.when;
+  return r.when;
+}
+
+function withinHorizon(r, horizon) {
+  return !state.timeEnabled || !horizon ||
+    (r.members || [r]).some(m => !m.starts_on || m.starts_on <= horizon);
 }
 
 function groupedRows() {
@@ -192,11 +198,12 @@ function renderWhenChips() {
   const horizon = horizonISO();
   const counts = new Map();
   for (const r of groupedRows()) {
+    if (!withinHorizon(r, horizon)) continue;
     const w = whenOf(r, horizon);
     counts.set(w, (counts.get(w) || 0) + 1);
   }
-  // Nothing to filter by when no run has read a date yet.
-  box.hidden = counts.size <= 1 && counts.has("undated");
+  // Temporal controls apply only to goals with time semantics.
+  box.hidden = !state.timeEnabled;
   for (const w of ["open", "later", "undated", "over"]) {
     if (!counts.has(w)) continue;
     const b = document.createElement("button");
@@ -244,9 +251,9 @@ function fillFieldSelect(sel, leading, current) {
 function visible() {
   const q = state.query.trim().toLowerCase();
   const horizon = horizonISO();
-  let rows = groupedRows();
+  let rows = groupedRows().filter(r => withinHorizon(r, horizon));
   if (state.classes.size) rows = rows.filter((r) => state.classes.has(r.classification));
-  if (state.whens.size) rows = rows.filter((r) => state.whens.has(whenOf(r, horizon)));
+  if (state.timeEnabled && state.whens.size) rows = rows.filter((r) => state.whens.has(whenOf(r, horizon)));
   if (state.hasField === ANY_FIELD) {
     rows = rows.filter((r) => (r.members || [r]).some(m => Object.keys(m.extracted || {}).length));
   } else if (state.hasField) {
@@ -340,7 +347,7 @@ function groupCard(r) {
     if (i === 2) {
       const details = document.createElement("details");
       details.className = "group-more";
-      details.innerHTML = `<summary>Show ${r.members.length - 2} more sources</summary>`;
+      details.innerHTML = `<summary>show ${r.members.length - 2} more sources</summary>`;
       r.members.slice(2).forEach(m => details.append(card(m)));
       el.append(details);
     }
@@ -373,6 +380,8 @@ function adopt(data) {
   state.goalId = data.goal_id;
   state.rows = data.rows;
   state.groups = data.groups || [];
+  state.timeEnabled = data.time_enabled ?? state.rows.some(r => r.starts_on || r.ends_on);
+  $("#during").closest(".field").hidden = !state.timeEnabled;
   state.fields = data.fields;
   state.classifications = data.classifications || [];
   // The spec's first field leads unless the reader says otherwise; with

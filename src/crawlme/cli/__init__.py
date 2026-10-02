@@ -122,8 +122,7 @@ def main() -> None:
     inspect_p.add_argument(
         "--during",
         default=None,
-        help="How far ahead to count as still open, e.g. '1 week' or '2026-10-01'. "
-        "Results starting after it are listed separately",
+        help="Exclude results starting beyond this future cutoff, e.g. '1 week' or '2026-10-01'",
     )
     inspect_p.add_argument("--export", choices=["json", "csv"], help="Dump the pages-and-analyses join to stdout")
 

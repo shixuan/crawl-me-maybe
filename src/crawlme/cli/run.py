@@ -118,6 +118,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
         if args.since is None:
             goal.since = enhanced.since
         goal.extraction_spec = enhanced.extraction_spec
+        goal.time_policy = enhanced.time_policy
         logger.debug(
             "goal.enhanced statement_len=%d keywords=%d fields=%s",
             len(enhanced.statement),

@@ -123,6 +123,7 @@ async def run_replay(
                     goal.keywords = enhanced.keywords
                     goal.since = enhanced.since
                     goal.extraction_spec = enhanced.extraction_spec
+                    goal.time_policy = enhanced.time_policy
                 storage.save_goal(goal.model_dump(mode="json"))
             else:
                 if existing.get("prompt") != prompt:
@@ -160,7 +161,7 @@ async def run_replay(
                     goal.goal_id,
                     _PROMPT_VERSION,
                     settings.llm_model,
-                    spec_version(goal.extraction_spec),
+                    spec_version(goal.extraction_spec, goal.time_policy),
                 ):
                     skipped += 1
                     continue

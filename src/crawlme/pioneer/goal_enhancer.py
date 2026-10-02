@@ -43,10 +43,12 @@ _SYSTEM = (
     "goal asks for particular pieces of information out of each page; a goal that asks "
     "to find pages on a subject gets null. Take the fields from the goal's own wording "
     "and stay in its own domain. At most 8 fields. "
-    "When one of those fields carries when the thing is on, name it in the same spec as "
-    '"time_field": {"name": "<one of the field names>", "kind": "until" | "on"}. '
-    "Use until when the field marks the end of something, a deadline or an expiry, and on "
-    "when it marks when it happens, an event date. Omit time_field when no field carries a time. "
+    "Also return time_policy independently of extraction_spec: a short description of the "
+    "validity window that matters for this goal, or null when time is not applicable or uncertain. "
+    "Enable it for events, offers or application opportunities even without an explicit request "
+    "for dates. Say which window matters (event occurrence, offer validity, application window). "
+    "Do not enable it for tutorials, background information, historical years or publication "
+    "recency alone. A requested date field does not by itself imply a validity window. "
     "Keep every constraint of the original prompt: never narrow the goal."
 )
 
@@ -61,6 +63,7 @@ class EnhancedGoal:
     # None means this goal asks to find pages, not to collect fields out
     # of them, and the analyzer keeps its existing shape.
     extraction_spec: dict[str, Any] | None = None
+    time_policy: str | None = None
 
 
 class GoalEnhancer:
@@ -102,15 +105,19 @@ class GoalEnhancer:
         if parsed is None:
             logger.warning("goal.enhance unparseable json, using raw prompt")
             return None
-        statement, keywords, since, spec = parsed
+        statement, keywords, since, spec, policy = parsed
         if not statement:
             logger.warning("goal.enhance empty statement, using raw prompt")
             return None
         if not keywords:
             keywords = _extract_keywords(goal.prompt)
-        return EnhancedGoal(statement=statement, keywords=keywords, since=since, extraction_spec=spec)
+        return EnhancedGoal(
+            statement=statement, keywords=keywords, since=since, extraction_spec=spec, time_policy=policy
+        )
 
-    def _parse(self, content: str) -> tuple[str, list[str], datetime.datetime | None, dict[str, Any] | None] | None:
+    def _parse(
+        self, content: str
+    ) -> tuple[str, list[str], datetime.datetime | None, dict[str, Any] | None, str | None] | None:
         """Parse the LLM's JSON, tolerating prose wrapped around it."""
         data = parse_json_response(content)
         if data is None:
@@ -127,7 +134,9 @@ class GoalEnhancer:
             keywords = []
         since = self._parse_since(data.get("since"))
         spec = self._parse_spec(data.get("extraction_spec"))
-        return statement, keywords, since, spec
+        raw_policy = data.get("time_policy")
+        policy = raw_policy.strip()[:500] if isinstance(raw_policy, str) else ""
+        return statement, keywords, since, spec, policy or None
 
     def _parse_spec(self, raw: object) -> dict[str, Any] | None:
         """Validate snake_case field names and the optional time-field declaration."""

@@ -39,6 +39,25 @@ function groupingApp() {
   return context.ui;
 }
 
+test('upcoming remains distinct and during only limits future starts', () => {
+  const ui = groupingApp();
+  ui.state.timeEnabled = true;
+  ui.state.during = '7';
+  ui.state.rows = [
+    {analysis_id: 'future', when: 'later', starts_on: '2099-01-01', classification: 'RELEVANT'},
+    {analysis_id: 'unknown', when: 'undated', classification: 'RELEVANT'},
+  ];
+  assert.equal(ui.visible().length, 1);
+  ui.state.during = '';
+  ui.state.whens.add('open');
+  assert.equal(ui.visible().length, 0);
+  ui.state.whens.clear();
+  ui.state.whens.add('later');
+  assert.equal(ui.visible()[0].analysis_id, 'future');
+  ui.state.timeEnabled = false;
+  assert.equal(ui.visible().length, 2);
+});
+
 test('groups retain original sources and average all scores under filtering', () => {
   const ui = groupingApp();
   ui.state.rows = [
@@ -68,7 +87,7 @@ test('unknown dates prevent a group from being classified as over', () => {
   const ui = groupingApp();
   assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'undated'}]}, ''), 'undated');
   assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'over'}]}, ''), 'over');
-  assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'open', starts_on: '2099-01-01'}]}, '2026-01-01'), 'later');
+  assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'later', starts_on: '2099-01-01'}]}, '2026-01-01'), 'later');
 });
 
 test('only the latest run response is adopted', async () => {

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     depth_limit INTEGER DEFAULT 5,
     domain_budget INTEGER DEFAULT 50,
     extraction_spec TEXT,
+    time_policy TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -218,6 +219,9 @@ class SqliteStorage:
         # Library users may skip the early attach: cover them here.
         self.attach_log_file()
         await self._conn.executescript(DDL)
+        columns = await self._conn.execute("PRAGMA table_info(crawl_goals)")
+        if "time_policy" not in {r[1] for r in await columns.fetchall()}:
+            await self._conn.execute("ALTER TABLE crawl_goals ADD COLUMN time_policy TEXT")
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
         self._writer_task = asyncio.create_task(self._write_loop())
@@ -345,8 +349,8 @@ class SqliteStorage:
         self._enqueue_write(
             "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
             "max_pages, max_tokens, max_duration_sec, "
-            "relevance_threshold, depth_limit, domain_budget, extraction_spec, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "relevance_threshold, depth_limit, domain_budget, extraction_spec, time_policy, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 goal_json["goal_id"],
                 goal_json["prompt"],
@@ -360,6 +364,7 @@ class SqliteStorage:
                 goal_json.get("depth_limit", 5),
                 goal_json.get("domain_budget", 50),
                 json.dumps(goal_json.get("extraction_spec")),
+                goal_json.get("time_policy"),
                 goal_json.get("created_at", ""),
             ),
         )

@@ -169,15 +169,19 @@ or bypass the harvester. Platform posts are leaves in the current traversal.
 Publication time controls `--since` and source retirement. Event dates describe
 what a page announces and affect result grouping only.
 
-The goal's `extraction_spec.time_field` identifies a field and its meaning (`on`
-or `until`). Only validated fields produce `starts_on` and `ends_on`. The parser
+Goal Enhancer independently sets `time_policy` to describe the relevant validity
+window, or null for timeless/uncertain goals. This does not require a user-requested
+date field. Analyzer returns separate `time` endpoints with source evidence in the
+same call; unsupported, ambiguous or inverted dates remain unknown. Legacy goals
+can still use `extraction_spec.time_field`. The parser
 reads ISO dates and English month names. Explicit years take precedence; omitted
 years are resolved near publication, or against the current year when publication
 is unknown. Relative phrases are not resolved.
 
 `group_of()` assigns `undated`, `over`, `open` or `later`. An end date before today
-is `over`; a start beyond a supplied horizon is `later`. Without a horizon, future
-results remain `open`. The dashboard applies its selected horizon in the browser.
+is `over`; a start after today is always `later`. The UI labels are Past, Upcoming,
+Ongoing and Undated. Dashboard and inspect apply `during` as a future-start cutoff,
+not a change of status. Dashboard hides time controls for non-temporal goals.
 
 ## State and concurrency
 

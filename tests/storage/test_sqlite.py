@@ -67,6 +67,19 @@ def test_goal_roundtrip(storage):
     assert g["max_pages"] == 10
 
 
+def test_time_policy_survives_goal_restore_without_fields(storage):
+    from crawlme.cli.replay import _goal_from_row
+    from crawlme.schemas import CrawlGoal, spec_version
+
+    goal = CrawlGoal(prompt="find upcoming events", time_policy="event occurrence")
+    storage.save_goal(goal.model_dump(mode="json"))
+    _run(storage._write_queue.join())
+    restored = _goal_from_row(_run(storage.get_goal(goal.goal_id)))
+    assert restored.time_policy == "event occurrence"
+    assert restored.extraction_spec is None
+    assert spec_version(None, restored.time_policy) != spec_version(None)
+
+
 def test_enhanced_goal_saved(storage):
     """The Goal Enhancer's keywords and since survive persistence."""
     storage.save_goal(

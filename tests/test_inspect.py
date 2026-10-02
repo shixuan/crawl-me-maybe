@@ -127,7 +127,7 @@ async def test_cmd_summary(tmp_path, monkeypatch, capsys):
     assert "pages:     3 fetched" in out
     assert "2 RELEVANT" in out
     # Results are grouped by whether they have run out, not ranked by score.
-    assert "still open (" in out or "no date given (" in out
+    assert "Ongoing (" in out or "Undated (" in out
     assert "Title a" in out  # highest relevance first
 
 
@@ -232,20 +232,20 @@ def _day(offset: int) -> str:
     return (today + datetime.timedelta(days=offset)).isoformat()
 
 
-def test_without_a_window_everything_open_stays_together() -> None:
+def test_future_results_are_upcoming_without_a_window() -> None:
     lines = _result_lines([_dated("a", _day(2), _day(3)), _dated("b", _day(40), _day(41))], {})
-    assert "still open (2):" in lines
+    assert "Upcoming (2):" in lines
     assert not any(line.startswith("starts after") for line in lines)
 
 
 def test_a_window_splits_off_what_starts_later() -> None:
     horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
     lines = _result_lines([_dated("a", _day(2), _day(3)), _dated("b", _day(40), _day(41))], {}, horizon=horizon)
-    assert "still open (1):" in lines
-    assert any(line.startswith("starts after") and "(1)" in line for line in lines)
+    assert "Upcoming (1):" in lines
+    assert not any("in 40d" in line for line in lines)
 
 
-def test_a_window_hides_nothing() -> None:
+def test_a_window_excludes_only_future_starts_beyond_it() -> None:
     horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
     analyses = [
         _dated("open", _day(1), _day(2)),
@@ -254,16 +254,16 @@ def test_a_window_hides_nothing() -> None:
         _dated("over", _day(-9), _day(-8)),
     ]
     lines = _result_lines(analyses, {}, horizon=horizon)
-    assert len([line for line in lines if line.startswith("  ")]) == len(analyses)
+    assert len([line for line in lines if line.startswith("  ")]) == len(analyses) - 1
 
 
 def test_an_end_without_a_start_is_already_running() -> None:
     horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
     lines = _result_lines([_dated("a", None, _day(60))], {}, horizon=horizon)
-    assert "still open (1):" in lines
+    assert "Ongoing (1):" in lines
 
 
 def test_a_later_result_reads_as_a_start() -> None:
     horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
-    lines = _result_lines([_dated("a", _day(40), _day(41))], {}, horizon=horizon)
-    assert any("in 40d" in line for line in lines)
+    lines = _result_lines([_dated("a", _day(2), _day(3))], {}, horizon=horizon)
+    assert any("in 2d" in line for line in lines)
