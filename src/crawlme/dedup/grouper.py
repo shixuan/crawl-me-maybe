@@ -1,9 +1,10 @@
-"""LLM grouping over analyzed evidence; no crawling or persistence dependencies."""
+"""Group analyzed results and persist grouping snapshots."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +15,9 @@ from crawlme.llm.client import LLMClient
 from crawlme.llm.errors import LLMError
 from crawlme.llm.parsing import parse_json_response
 from crawlme.schemas import CrawlGoal
+from crawlme.storage.base import Storage
+
+logger = logging.getLogger(__name__)
 
 VERSION = "v2"
 SYSTEM = """Group results describing the same underlying item/event for the user's goal.
@@ -99,3 +103,18 @@ class Grouper:
             for r in rows
             if r["analysis_id"] not in assigned
         ]
+
+
+async def group_results(storage: Storage, goal: CrawlGoal, grouper: Grouper, *, model: str) -> dict[str, Any]:
+    rows = await storage.dedup_inputs(goal.goal_id)
+    logger.info("grouping %d relevant results", len(rows))
+    groups = await grouper.group(goal, rows)
+    await storage.save_groups(
+        goal.goal_id,
+        fingerprint(rows),
+        [g.model_dump() for g in groups],
+        model=model or "openai/gpt-4o-mini",
+        version=VERSION,
+    )
+    logger.info("dedup: %d sources grouped into %d results", len(rows), len(groups))
+    return {"status": "complete", "sources": len(rows), "groups": len(groups)}

@@ -9,11 +9,10 @@ from pathlib import Path
 from crawlme.cli.replay import _goal_from_row, find_run_dir
 from crawlme.cli.run import _stage_lines
 from crawlme.config import Settings
-from crawlme.dedup import Grouper
+from crawlme.dedup.grouper import Grouper, group_results
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.logging.config import write_report
-from crawlme.scheduler.dedup import group_results
 from crawlme.storage.sqlite import SqliteStorage
 
 logger = logging.getLogger(__name__)
