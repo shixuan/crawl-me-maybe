@@ -44,7 +44,6 @@ def _analysis(url_key: str, goal_id: str, classification: str, relevance: float)
         "relevance_score": relevance,
         "summary": f"summary of {url_key}",
         "model": "stub-model",
-        "prompt_version": "v2.4",
         "tokens_used": 10,
         "analyzed_at": "2026-01-01T00:00:00Z",
     }

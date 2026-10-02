@@ -28,7 +28,7 @@ async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
     )
     storage.save_analysis(analysis.model_dump(mode="json"))
     await storage.save_groups(
-        goal.goal_id, "old", [{"members": [analysis.analysis_id], "overview": "old"}], model="test", version="v1"
+        goal.goal_id, "old", [{"members": [analysis.analysis_id], "overview": "old"}], model="test"
     )
     await storage.close()
     calls = []

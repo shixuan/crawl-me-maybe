@@ -9,17 +9,17 @@ import datetime
 import logging
 from typing import Any
 
+from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
-from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary, spec_fields
+from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
 
 logger = logging.getLogger(__name__)
 
 # One LLM call covers at most this many candidates; larger survivor
 # batches are chunked into sequential calls.
 _BATCH_SIZE = 30
-_MAX_FIELD_CHARS = 160
 # Maximum candidate text per ranking call.
 _MAX_BATCH_CHARS = 12_000
 # Priority for candidates the model did not mention at all: kept with a
@@ -29,32 +29,6 @@ _NEUTRAL_PRIORITY = 0.5
 _DEMOTED_PRIORITY = 0.01
 _DROP_TAG = "llm_drop"
 _DEMOTED_TAG = "llm_drop_demoted"
-# At most this many previously-relevant pages are shown to the model.
-_MAX_RELEVANT = 5
-
-_SYSTEM = (
-    "You decide which links a web crawler should fetch under a limited budget, and in "
-    "what order. "
-    "You see a batch of candidate links plus the crawl goal and what the crawl found "
-    "so far, so compare the candidates against each other, not in isolation. Reply "
-    'with JSON only, no prose. Format: {"rankings": [{"id": "<id>", "priority": 0.0}], '
-    '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]}. '
-    "Include every candidate id exactly once, either in rankings or in "
-    "candidates_to_drop. rankings holds the candidates to keep: higher priority is "
-    "clicked earlier, so use the full 0.0 to 1.0 range, and no rationale: the "
-    "priority is the whole answer for something you are keeping. candidates_to_drop "
-    "holds the ones that would not answer the goal, each with a short rationale "
-    "saying why, because a rejection is the one a reader has to be able to argue "
-    "with. Drop a candidate when what you can see is enough to say it will not "
-    "answer, not only when it is obvious junk. Being unsure is not such a reason: "
-    "a candidate you cannot rule out belongs in rankings with a low priority, never "
-    "in candidates_to_drop. If none of the batch would answer, put every id in "
-    "candidates_to_drop."
-)
-
-_REPAIR_SUFFIX = (
-    "\n\nYour previous answer was not valid JSON. Reply with JSON only, no prose, in the exact format requested."
-)
 
 
 def _utcnow() -> datetime.datetime:
@@ -149,8 +123,8 @@ class LLMRanker:
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None,
     ) -> list[RankDecision]:
-        prompt = _build_prompt(goal, chunk, history, page_contexts)
-        resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
+        prompt = prompts.ranking_input(goal, chunk, history, page_contexts)
+        resp = await self._client.chat(prompt, system=prompts.RANKING_SYSTEM, json_mode=True)
         data = _parse_response(resp.content)
         if data is None:
             # Split truncated batches instead of increasing the output ceiling.
@@ -163,14 +137,16 @@ class LLMRanker:
                 # A single truncated candidate cannot be split further.
                 logger.warning("llm.rank one candidate overruns the ceiling, retrying with more room")
                 resp = await self._client.chat(
-                    prompt, system=_SYSTEM, max_tokens=resp.output_tokens * 2, json_mode=True
+                    prompt, system=prompts.RANKING_SYSTEM, max_tokens=resp.output_tokens * 2, json_mode=True
                 )
             else:
                 logger.warning(
                     "llm.rank unparseable json for %d candidates, retrying once with a stricter instruction",
                     len(chunk),
                 )
-                resp = await self._client.chat(prompt + _REPAIR_SUFFIX, system=_SYSTEM, json_mode=True)
+                resp = await self._client.chat(
+                    prompt + prompts.RANKING_REPAIR_SUFFIX, system=prompts.RANKING_SYSTEM, json_mode=True
+                )
             data = _parse_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {len(chunk)} candidates after repair retry")
@@ -188,109 +164,6 @@ class LLMRanker:
             tokens,
         )
         return decisions
-
-
-def _build_prompt(
-    goal: CrawlGoal,
-    candidates: list[Candidate],
-    history: RankHistorySummary,
-    page_contexts: dict[str, dict[str, Any]] | None,
-) -> str:
-    """Assemble the user prompt: goal, fields to collect, prior findings, candidate batch."""
-    lines = ["## Goal", goal.goal_statement or goal.prompt]
-    lines.extend(_window_lines(goal))
-    lines.extend(_extract_lines(goal))
-    if history.relevant_pages:
-        # Avoid repeating identical history summaries in the prompt.
-        seen: list[str] = []
-        for entry in history.relevant_pages[:_MAX_RELEVANT]:
-            line = f"- {_summarize_page(entry)}"
-            if line not in seen:
-                seen.append(line)
-        lines.append("## Seen so far")
-        lines.extend(seen)
-    lines.append(f"## Candidate links ({len(candidates)})")
-    pc = page_contexts or {}
-    for c in candidates:
-        lines.append(f"{c.candidate_id}: {_trunc(c.url.canonical)}")
-        if c.text:
-            # Keep candidate content intact; only proxy fields use the display cap.
-            lines.append(f"  text: {c.text}")
-        if c.anchor:
-            lines.append(f"  anchor: {_trunc(c.anchor)}")
-        if c.snippet:
-            lines.append(f"  snippet: {_trunc(c.snippet)}")
-        if c.parent_heading:
-            lines.append(f"  heading: {_trunc(c.parent_heading)}")
-        if c.posted_at:
-            lines.append(f"  posted: {_age_of(c.posted_at)}")
-        src = pc.get(c.source_url_key or "", {})
-        source_title = src.get("title", "")
-        if source_title:
-            lines.append(f"  source page: {_build_source_line(src, str(source_title))}")
-        lines.append(f"  depth: {c.depth}")
-    return "\n".join(lines)
-
-
-def _extract_lines(goal: CrawlGoal) -> list[str]:
-    """Include the same requested fields used by the analyzer."""
-    fields = spec_fields(goal.extraction_spec)
-    if not fields:
-        return []
-    return ["## Extract", *(f"- {name}: {desc}" for name, desc in fields.items())]
-
-
-def _window_lines(goal: CrawlGoal) -> list[str]:
-    """Include the effective publication cutoff in the ranking prompt."""
-    if goal.since is None:
-        return []
-    return ["## Window", f"Anything published before {goal.since:%Y-%m-%d} is out of scope."]
-
-
-def _age_of(posted_at: datetime.datetime) -> str:
-    """How long ago, relative: the model is comparing candidates, not dates."""
-    # Naive dates read as UTC, as everywhere else. Subtracting one raises,
-    # and that would lose the whole batch over an advisory field.
-    if posted_at.tzinfo is None:
-        posted_at = posted_at.replace(tzinfo=datetime.timezone.utc)
-    seconds = (_utcnow() - posted_at).total_seconds()
-    if seconds < 0:
-        return "just now"
-    hours = seconds / 3600
-    if hours < 48:
-        return f"{hours:.0f}h ago"
-    days = hours / 24
-    return f"{days:.0f}d ago" if days < 90 else f"{days / 30:.0f}mo ago"
-
-
-def _summarize_page(entry: dict[str, Any]) -> str:
-    """Prefer the analysis summary, falling back to title and URL."""
-    for key in ("summary", "title", "url"):
-        value = entry.get(key)
-        if value:
-            return _trunc(str(value))
-    return _trunc(str(entry))
-
-
-# Limit repeated source-page summaries in candidate prompts.
-_SUMMARY_CHARS = 60
-
-
-def _build_source_line(src: dict[str, Any], title: str) -> str:
-    """Describe a candidate source using analysis feedback when available."""
-    line = _trunc(title)
-    classification = str(src.get("classification", ""))
-    if not classification:
-        return line
-    line += f" [{classification} {float(src.get('relevance', 0.0)):.2f}]"
-    summary = str(src.get("summary", "")).strip()
-    if summary:
-        line += f" — {_trunc(summary, _SUMMARY_CHARS)}"
-    return line
-
-
-def _trunc(text: str, limit: int = _MAX_FIELD_CHARS) -> str:
-    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _parse_response(content: str) -> dict[str, Any] | None:

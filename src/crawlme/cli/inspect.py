@@ -242,7 +242,6 @@ def _export(data: InspectData, fmt: str) -> None:
                 "tags": json.loads(a.get("tags_json") or "[]"),
                 "extracted": json.loads(a.get("extracted_json") or "{}"),
                 "model": a.get("model", ""),
-                "prompt_version": a.get("prompt_version", ""),
                 "spec_version": a.get("spec_version", ""),
                 "analyzed_at": a.get("analyzed_at", ""),
             }
@@ -266,7 +265,6 @@ def _export(data: InspectData, fmt: str) -> None:
         "summary",
         "tags",
         "model",
-        "prompt_version",
         "spec_version",
         "analyzed_at",
     ]

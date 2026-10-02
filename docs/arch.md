@@ -2,6 +2,8 @@
 
 `crawlme` separates discovery, page processing, analysis and scheduling. Shared
 Pydantic models live in `schemas/`; `runtime/state.py` holds run-wide data.
+`prompts.py` holds all LLM instructions, input formatting.
+Stage modules own model calls, retries and response validation.
 
 ## Components
 
@@ -285,8 +287,7 @@ truncated or malformed output. Inputs
 over the configured character limit are not submitted. Failure preserves original
 results; no grouping decision affects source retirement or crawl stop conditions.
 
-Storage atomically publishes `dedup_runs` (input fingerprint and model/prompt
-version), `result_groups` (overview), and `result_members` (analysis IDs). Original
+Storage atomically publishes `dedup_runs` (input fingerprint and model), `result_groups` (overview), and `result_members` (analysis IDs). Original
 analyses remain intact. The dashboard reads the latest matching snapshot; a replay
 that changes the inputs invalidates it. Replay does not automatically regroup;
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
@@ -331,6 +332,7 @@ saved paths. Storage owns paths and the underlying file and database operations.
 SQLite read-only and filters loaded results in the browser.
 
 `crawl replay` analyzes stored page text without refetching or re-extracting HTML.
-It skips matching `(url_key, goal_id, prompt_version, spec_version, model)` analyses
-unless forced. A new prompt creates or reuses its content-derived goal ID. Run
-schemas are not migrated across versions.
+It skips matching `(url_key, goal_id, spec_version, model)` analyses
+unless forced. A new goal prompt creates or reuses its content-derived goal ID.
+After editing analyzer instructions, use `--force` to reanalyze existing results.
+Run schemas are not migrated across versions.

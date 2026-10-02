@@ -9,6 +9,7 @@ import math
 import re
 from typing import TYPE_CHECKING, Any
 
+from crawlme import prompts
 from crawlme.llm import LLMClient, LLMError, Stage
 
 if TYPE_CHECKING:
@@ -26,21 +27,6 @@ _MAX_WHY = 80
 
 # One verification fetch, generously. A platform seed renders a page.
 _VERIFY_TIMEOUT = 60.0
-
-_SYSTEM = (
-    "You propose additional starting points for a web crawler. Given a goal and the "
-    "seeds a user already chose, name more sources the crawl would otherwise miss. "
-    "Reply with JSON only, no prose: "
-    '{"seeds": [{"url": "...", "why": "one short clause"}]}. '
-    # Ask for sources that publish relevant content without fixing a platform or organization type.
-    "Judge a source by what it posts, not by who it is: name it only if its own recent "
-    "posts would themselves be answers to the goal. An account that exists to post "
-    "exactly this beats a brand that merely does it sometimes, and beats a directory "
-    "that indexes everyone. You are often wrong about exact "
-    "addresses, so name a source only when you are confident it exists. Never repeat a "
-    "seed you were given. Give at most the number asked for, and keep every "
-    "reason under a dozen words: a long reply is a cut-off reply."
-)
 
 
 def how_many(given: int, low: int, high: int) -> int:
@@ -72,14 +58,11 @@ class SeedEnhancer:
         """Ask for more sources. Pairs of url and the reason given."""
         if self._client is None or want <= 0 or not seeds:
             return []
-        prompt = (
-            f"## Goal\n{goal.goal_statement or goal.prompt}\n\n"
-            f"## Seeds already chosen\n" + "\n".join(f"- {s}" for s in seeds) + f"\n\n## Give at most {want}"
-        )
+        prompt = prompts.seeds_input(goal, seeds, want)
         # Log before awaiting the proposal so startup progress is visible.
         logger.info("asking the model for up to %d more sources to try", want)
         try:
-            resp = await self._client.chat(prompt, system=_SYSTEM, json_mode=True)
+            resp = await self._client.chat(prompt, system=prompts.SEEDS_SYSTEM, json_mode=True)
         except LLMError as e:
             logger.warning("seeds.propose_failed error=%s", e)
             return []
