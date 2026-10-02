@@ -1,4 +1,4 @@
-"""Parse CLI arguments and dispatch run, inspect, replay and session commands."""
+"""Parse CLI arguments and dispatch crawl, inspection and stored-result commands."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import asyncio
 import sys
 
 from crawlme.cli import session
+from crawlme.cli.dedup import cmd_dedup
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
@@ -150,6 +151,13 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
+    dedup_p = sub.add_parser("dedup", help="Group an existing task's analyzed results without re-analyzing pages")
+    dedup_p.add_argument("task_id", help="Task ID")
+    dedup_p.add_argument("--goal", help="Goal ID (default: the task's original goal)")
+    dedup_p.add_argument("--result-dir", help="Result directory (default: results)")
+    dedup_p.add_argument("--max-tokens", type=int, help="Token budget for this grouping (default: unlimited)")
+    dedup_p.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF"], default=None)
+
     session.add_arguments(sub)
 
     args = parser.parse_args()
@@ -171,3 +179,5 @@ async def _dispatch(args: argparse.Namespace) -> None:
         await cmd_replay(args)
     elif cmd == "session":
         await session.cmd_session(args)
+    elif cmd == "dedup":
+        await cmd_dedup(args)

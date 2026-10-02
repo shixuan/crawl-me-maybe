@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from crawlme.config import Settings
+from crawlme.llm import Stage, TokenBudget
 from crawlme.llm.client import LLMClient
 from crawlme.llm.errors import LLMError
 from crawlme.llm.parsing import parse_json_response
@@ -61,6 +63,13 @@ class Grouper:
     def __init__(self, client: LLMClient, *, max_chars: int) -> None:
         self.client = client
         self.max_chars = max_chars
+
+    @classmethod
+    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> Grouper | None:
+        client = LLMClient.from_settings_if_configured(
+            settings, budget=budget, reasoning_effort=settings.llm_dedup_reasoning_effort, stage=Stage.DEDUP
+        )
+        return cls(client, max_chars=settings.llm_dedup_max_chars) if client is not None else None
 
     async def group(self, goal: CrawlGoal, rows: list[dict[str, Any]]) -> list[Group]:
         if len(rows) < 2:

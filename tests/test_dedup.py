@@ -135,6 +135,7 @@ async def test_scheduler_waits_for_retries_and_retains_originals_on_failure():
     from crawlme.scheduler.engine import CrawlScheduler
 
     scheduler = object.__new__(CrawlScheduler)
+    scheduler._cfg = Settings(_env_file=None)
     scheduler._grouper = MagicMock()
     scheduler._grouper.group = AsyncMock(side_effect=ValueError("bad model reply"))
     scheduler._analysis = MagicMock()

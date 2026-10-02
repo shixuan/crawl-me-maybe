@@ -284,7 +284,10 @@ results; no grouping decision affects source retirement or crawl stop conditions
 Storage atomically publishes `dedup_runs` (input fingerprint and model/prompt
 version), `result_groups` (overview), and `result_members` (analysis IDs). Original
 analyses remain intact. The dashboard reads the latest matching snapshot; a replay
-that changes the inputs invalidates it. Replay does not automatically regroup.
+that changes the inputs invalidates it. Replay does not automatically regroup;
+`crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
+Both automatic and standalone dedup use `scheduler/dedup.py` for reading inputs
+and publishing groups, and `Grouper.from_settings` for client configuration.
 Each multi-source card shows an overview, arithmetic mean relevance, and source
 cards with their original fields and dates. Search and field filters can match any
 member without hiding other members. Date filters use open if any member is open,

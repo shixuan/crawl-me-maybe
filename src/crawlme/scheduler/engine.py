@@ -12,7 +12,6 @@ from typing import Any
 
 from crawlme.config import Settings
 from crawlme.dedup import Grouper
-from crawlme.dedup.grouper import VERSION, fingerprint
 from crawlme.digest.extractor import Extractor
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
@@ -24,6 +23,7 @@ from crawlme.platforms.base import FeedDependencyError
 from crawlme.runtime.events import EventEmitter, EventType
 from crawlme.runtime.state import RunState
 from crawlme.runtime.tracking import RunTracker
+from crawlme.scheduler.dedup import group_results
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.scheduler.workers import (
@@ -311,18 +311,7 @@ class CrawlScheduler:
         assert self._grouper is not None
         try:
             await self._analysis.drain_pending()
-            rows = await self._storage.dedup_inputs(goal.goal_id)
-            logger.info("grouping %d relevant results", len(rows))
-            groups = await self._grouper.group(goal, rows)
-            await self._storage.save_groups(
-                goal.goal_id,
-                fingerprint(rows),
-                [g.model_dump() for g in groups],
-                model=self._cfg.llm_model or "openai/gpt-4o-mini",
-                version=VERSION,
-            )
-            self._dedup_report = {"status": "complete", "sources": len(rows), "groups": len(groups)}
-            logger.info("dedup: %d sources grouped into %d results", len(rows), len(groups))
+            self._dedup_report = await group_results(self._storage, goal, self._grouper, model=self._cfg.llm_model)
         except Exception as exc:
             self._dedup_report = {"status": "failed"}
             logger.warning("dedup failed; original results retained: %s", exc)

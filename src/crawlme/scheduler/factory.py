@@ -11,7 +11,7 @@ from crawlme.dedup import Grouper
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.discovery.harvester import Harvester, PageHarvester
-from crawlme.llm import LLMClient, Stage, TokenBudget
+from crawlme.llm import TokenBudget
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import GatedFrontier
@@ -56,15 +56,7 @@ def create_scheduler(
         analyzer = PageAnalyzer.from_settings(settings, budget=budget)
     grouper = None
     if dedup_enabled and settings.analysis_enabled and (settings.llm_api_key or settings.llm_base_url):
-        grouper = Grouper(
-            LLMClient.from_settings(
-                settings,
-                budget=budget,
-                reasoning_effort=settings.llm_dedup_reasoning_effort,
-                stage=Stage.DEDUP,
-            ),
-            max_chars=settings.llm_dedup_max_chars,
-        )
+        grouper = Grouper.from_settings(settings, budget=budget)
 
     async def enhance_seeds(
         goal: CrawlGoal,

@@ -123,6 +123,22 @@ also retains original results. Per-stage usage, including dedup, appears in the
 final report in both the terminal and run log. `--max-relevant` still counts pages,
 not deduplicated groups.
 
+### `crawl dedup <task-id>`
+
+Group existing relevant analyses without fetching or re-analyzing pages. Reuses
+the run's goal by default; `--goal <goal-id>` selects a replay goal. Each successful
+invocation saves a new grouping snapshot; failures keep the previous snapshot.
+Refresh the dashboard to load the new groups. Usage is printed and appended to
+the run log, including on failure after a model call.
+
+```bash
+crawl dedup <task-id>
+crawl dedup <task-id> --goal <goal-id> --max-tokens 30000
+```
+
+`--result-dir` selects the results root; `--log-level` overrides logging verbosity.
+Model and reasoning settings are the same as for automatic dedup after crawling.
+
 ### `crawl session <path>`
 
 Opens a browser for manual login and saves its session state. Requires a desktop display.
