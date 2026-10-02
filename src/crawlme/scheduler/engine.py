@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.dedup import Grouper
 from crawlme.digest.extractor import Extractor
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
@@ -22,6 +23,7 @@ from crawlme.platforms.base import FeedDependencyError
 from crawlme.runtime.events import EventEmitter, EventType
 from crawlme.runtime.state import RunState
 from crawlme.runtime.tracking import RunTracker
+from crawlme.scheduler.dedup import group_results
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.scheduler.workers import (
@@ -99,8 +101,11 @@ class CrawlScheduler:
         canonicalizer: Canonicalizer,
         tracking: RunTracker,
         seed_enhancer: SeedEnhancement,
+        grouper: Grouper | None = None,
     ) -> None:
         self._cfg = settings
+        self._grouper = grouper
+        self._dedup_report: dict[str, Any] = {"status": "disabled" if grouper is None else "pending"}
         self._storage = storage
         self._frontier = frontier
         self._fetch = fetch
@@ -226,6 +231,9 @@ class CrawlScheduler:
         self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         await self._settle_inflight()
 
+        if self._grouper is not None:
+            await self._deduplicate(goal)
+
         task.state = "COMPLETED"
         task.end_at = _utcnow()
         reason = task.stopping_reason or "none"
@@ -297,7 +305,16 @@ class CrawlScheduler:
             logger.info("done with one source: %s", why)
 
     def summary(self) -> dict[str, Any]:
-        return summary(self.run_state)
+        return {**summary(self.run_state), "dedup": self._dedup_report}
+
+    async def _deduplicate(self, goal: CrawlGoal) -> None:
+        assert self._grouper is not None
+        try:
+            await self._analysis.drain_pending()
+            self._dedup_report = await group_results(self._storage, goal, self._grouper, model=self._cfg.llm_model)
+        except Exception as exc:
+            self._dedup_report = {"status": "failed"}
+            logger.warning("dedup failed; original results retained: %s", exc)
 
     @property
     def run_state(self) -> RunState:

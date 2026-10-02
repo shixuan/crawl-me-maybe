@@ -47,7 +47,7 @@ _JUDGEMENT = (
     "one or two sentences. tags describe the content."
 )
 
-_PROMPT_VERSION = "v2.6"
+_PROMPT_VERSION = "v2.7"
 
 # Request summaries and fields only for relevant pages.
 _SYSTEM = (
@@ -231,7 +231,18 @@ def _page_text(page: Page) -> str:
 
 def _system_for(goal: CrawlGoal) -> str:
     """The contract, widened when the goal declares fields to collect."""
-    return _SYSTEM + _EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _SYSTEM
+    system = _SYSTEM + _EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _SYSTEM
+    if goal.time_policy:
+        system += (
+            ' On RELEVANT pages also return "time": {"starts_on": {"value": "date as written", '
+            '"evidence": "verbatim quote"}, "ends_on": {"value": "date as written", '
+            '"evidence": "verbatim quote"}} following the time policy. '
+            "Omit unknown endpoints. For a single-day event use that date for both endpoints. "
+            "Evidence must contain the date value and explicitly support its role. Never use "
+            "publication dates, historical mentions or unrelated dates as validity dates. "
+            "Do not guess missing dates; omit time for ambiguous or multiple incompatible windows."
+        )
+    return system
 
 
 def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
@@ -242,6 +253,8 @@ def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str
         # window the run is actually enforcing.
         lines.append(f"Anything published before {goal.since:%Y-%m-%d} is out of scope.")
     fields = spec_fields(goal.extraction_spec)
+    if goal.time_policy:
+        lines.extend(["## Time policy", goal.time_policy])
     if fields:
         lines.append("## Extract")
         lines.extend(f"- {name}: {desc}" for name, desc in fields.items())
@@ -351,8 +364,14 @@ def _parse_analysis(
         summary=summary,
         structured_data=data,
         extracted=extracted,
-        spec_version=spec_version(goal.extraction_spec),
-        **_dates_from(extracted, page, goal),
+        spec_version=spec_version(goal.extraction_spec, goal.time_policy),
+        **(
+            _policy_dates(data, page)
+            if goal.time_policy and classification == "RELEVANT"
+            else _dates_from(extracted, page, goal)
+            if not goal.time_policy
+            else {}
+        ),
         tags=tags,
         feedback=AnalyzerFeedback(
             classification=classification,
@@ -365,6 +384,29 @@ def _parse_analysis(
         prompt_version=_PROMPT_VERSION,
         tokens_used=tokens_used,
     )
+
+
+def _policy_dates(data: dict[str, Any], page: Page) -> dict[str, Any]:
+    raw = data.get("time")
+    if not isinstance(raw, dict):
+        return {}
+    dates = {}
+    for endpoint in ("starts_on", "ends_on"):
+        entry = raw.get(endpoint)
+        if not isinstance(entry, dict):
+            continue
+        value, evidence = entry.get("value"), entry.get("evidence")
+        if not isinstance(value, str) or not isinstance(evidence, str) or not value.strip() or not evidence.strip():
+            continue
+        if _normalize(evidence) not in _normalize(_page_text(page)) or _normalize(value) not in _normalize(evidence):
+            continue
+        found = read_range(value, kind="on", said_on=page.published_at)
+        if found is not None and found.start == found.end:
+            dates[endpoint] = found.start
+    start, end = dates.get("starts_on"), dates.get("ends_on")
+    if start is not None and end is not None and start > end:
+        return {}
+    return dates
 
 
 def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: CrawlGoal) -> dict[str, Any]:

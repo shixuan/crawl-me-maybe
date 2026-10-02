@@ -50,6 +50,16 @@ async def test_no_client():
     assert enhanced is None
 
 
+@pytest.mark.parametrize("policy", ["event occurrence", None, {}, ""])
+async def test_time_policy_without_extraction_fields(policy):
+    import json
+
+    data = {"goal_statement": "Find events", "time_policy": policy}
+    result = await GoalEnhancer(_StubClient([_resp(json.dumps(data))])).enhance(_goal("find events"))
+    assert result.time_policy == (policy if isinstance(policy, str) and policy else None)
+    assert result.extraction_spec is None
+
+
 async def test_json_fills_all():
     enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
     enhanced = await enhancer.enhance(_goal("找机器学习论文"))

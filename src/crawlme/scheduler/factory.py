@@ -7,6 +7,7 @@ from typing import Any
 
 from crawlme.analysis import Analyzer, PageAnalyzer
 from crawlme.config import Settings
+from crawlme.dedup import Grouper
 from crawlme.digest.extractor import TrafExtractor
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.discovery.harvester import Harvester, PageHarvester
@@ -33,6 +34,7 @@ def create_scheduler(
     llm_ranker: Ranker | None = None,
     analyzer: Analyzer | None = None,
     budget: TokenBudget | None = None,
+    dedup_enabled: bool = True,
     **overrides: Any,
 ) -> CrawlScheduler:
     """Assemble scheduler components with optional test overrides.
@@ -52,6 +54,9 @@ def create_scheduler(
     ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
     if analyzer is None and settings.analysis_enabled:
         analyzer = PageAnalyzer.from_settings(settings, budget=budget)
+    grouper = None
+    if dedup_enabled and settings.analysis_enabled and (settings.llm_api_key or settings.llm_base_url):
+        grouper = Grouper.from_settings(settings, budget=budget)
 
     async def enhance_seeds(
         goal: CrawlGoal,
@@ -92,6 +97,7 @@ def create_scheduler(
         "canonicalizer": canonicalizer,
         "tracking": RunTracker(state),
         "seed_enhancer": enhance_seeds,
+        "grouper": grouper,
     }
     kwargs.update(overrides)
     return CrawlScheduler(**kwargs)

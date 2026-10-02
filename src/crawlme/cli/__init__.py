@@ -1,4 +1,4 @@
-"""Parse CLI arguments and dispatch run, inspect, replay and session commands."""
+"""Parse CLI arguments and dispatch crawl, inspection and stored-result commands."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import asyncio
 import sys
 
 from crawlme.cli import session
+from crawlme.cli.dedup import cmd_dedup
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.run import cmd_run
@@ -49,6 +50,12 @@ def main() -> None:
         help="Comma-separated registrable domains the crawl may not leave",
     )
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
+    run_p.add_argument(
+        "--dedup",
+        choices=["on", "off"],
+        default="on",
+        help="Group equivalent analyzed results after crawling (default: on)",
+    )
     run_p.add_argument(
         "--analysis",
         choices=["on", "off"],
@@ -115,8 +122,7 @@ def main() -> None:
     inspect_p.add_argument(
         "--during",
         default=None,
-        help="How far ahead to count as still open, e.g. '1 week' or '2026-10-01'. "
-        "Results starting after it are listed separately",
+        help="Exclude results starting beyond this future cutoff, e.g. '1 week' or '2026-10-01'",
     )
     inspect_p.add_argument("--export", choices=["json", "csv"], help="Dump the pages-and-analyses join to stdout")
 
@@ -144,6 +150,13 @@ def main() -> None:
         help="Log verbosity (overrides env LOG_LEVEL)",
     )
 
+    dedup_p = sub.add_parser("dedup", help="Group an existing task's analyzed results without re-analyzing pages")
+    dedup_p.add_argument("task_id", help="Task ID")
+    dedup_p.add_argument("--goal", help="Goal ID (default: the task's original goal)")
+    dedup_p.add_argument("--result-dir", help="Result directory (default: results)")
+    dedup_p.add_argument("--max-tokens", type=int, help="Token budget for this grouping (default: unlimited)")
+    dedup_p.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF"], default=None)
+
     session.add_arguments(sub)
 
     args = parser.parse_args()
@@ -165,3 +178,5 @@ async def _dispatch(args: argparse.Namespace) -> None:
         await cmd_replay(args)
     elif cmd == "session":
         await session.cmd_session(args)
+    elif cmd == "dedup":
+        await cmd_dedup(args)

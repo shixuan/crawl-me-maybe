@@ -555,7 +555,7 @@ async def test_results_name_their_prompt():
     table, so they have to say which one produced them."""
     client = _StubClient([_resp(_valid_json())])
     result = await PageAnalyzer(client).analyze(_page(), _goal())
-    assert result is not None and result.prompt_version == "v2.6"
+    assert result is not None and result.prompt_version == "v2.7"
 
 
 def test_aggregator_is_gone():
@@ -594,3 +594,54 @@ def test_dates_require_validated_evidence(evidence):
     else:
         assert result.ends_on is None
         assert result.extracted == {}
+
+
+@pytest.mark.parametrize("policy", [None, "offer validity"])
+def test_time_policy_is_independent_of_requested_fields(policy):
+    text = "Offer ends August 16, 2027."
+    goal = CrawlGoal(prompt="find offers", time_policy=policy)
+    result = _parse_analysis(
+        {"classification": "RELEVANT", "time": {"ends_on": {"value": "August 16, 2027", "evidence": text}}},
+        _page(text),
+        goal,
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.ends_on == (datetime.date(2027, 8, 16) if policy else None)
+    assert result.extracted == {}
+
+
+@pytest.mark.parametrize(
+    "value,evidence",
+    [
+        ("August 16, 2027", "invented quote"),
+        ("August 20, 2027", "Offer ends August 16, 2027."),
+    ],
+)
+def test_time_requires_date_inside_source_evidence(value, evidence):
+    result = _parse_analysis(
+        {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
+        _page("Offer ends August 16, 2027."),
+        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.ends_on is None
+
+
+def test_inverted_time_window_is_unknown():
+    text = "Starts August 20, 2027. Ends August 16, 2027."
+    result = _parse_analysis(
+        {
+            "classification": "RELEVANT",
+            "time": {
+                "starts_on": {"value": "August 20, 2027", "evidence": text},
+                "ends_on": {"value": "August 16, 2027", "evidence": text},
+            },
+        },
+        _page(text),
+        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.starts_on is None and result.ends_on is None

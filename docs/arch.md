@@ -68,6 +68,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
 | `platforms/` | Platform recognition, parsing, rendering and session requirements |
 | `analysis/` | Classify pages and extract fields with source evidence |
+| `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed enhancement metadata |
@@ -168,15 +169,19 @@ or bypass the harvester. Platform posts are leaves in the current traversal.
 Publication time controls `--since` and source retirement. Event dates describe
 what a page announces and affect result grouping only.
 
-The goal's `extraction_spec.time_field` identifies a field and its meaning (`on`
-or `until`). Only validated fields produce `starts_on` and `ends_on`. The parser
+Goal Enhancer independently sets `time_policy` to describe the relevant validity
+window, or null for timeless/uncertain goals. This does not require a user-requested
+date field. Analyzer returns separate `time` endpoints with source evidence in the
+same call; unsupported, ambiguous or inverted dates remain unknown. Legacy goals
+can still use `extraction_spec.time_field`. The parser
 reads ISO dates and English month names. Explicit years take precedence; omitted
 years are resolved near publication, or against the current year when publication
 is unknown. Relative phrases are not resolved.
 
 `group_of()` assigns `undated`, `over`, `open` or `later`. An end date before today
-is `over`; a start beyond a supplied horizon is `later`. Without a horizon, future
-results remain `open`. The dashboard applies its selected horizon in the browser.
+is `over`; a start after today is always `later`. The UI labels are Past, Upcoming,
+Ongoing and Undated. Dashboard and inspect apply `during` as a future-start cutoff,
+not a change of status. Dashboard hides time controls for non-temporal goals.
 
 ## State and concurrency
 
@@ -271,6 +276,35 @@ work and saves a snapshot; resume restores the latest snapshot. The CLI does not
 expose a separate resume command.
 
 ## Persistence and inspection
+
+At run completion, when dedup is enabled, the scheduler drains pending Analyzer
+retries, then passes relevant analyses and source evidence to `dedup/grouper.py`.
+One LLM call proposes duplicate groups. Unassigned analyses become singletons;
+duplicate or unknown member IDs invalidate the response. The grouper rejects
+truncated or malformed output. Inputs
+over the configured character limit are not submitted. Failure preserves original
+results; no grouping decision affects source retirement or crawl stop conditions.
+
+Storage atomically publishes `dedup_runs` (input fingerprint and model/prompt
+version), `result_groups` (overview), and `result_members` (analysis IDs). Original
+analyses remain intact. The dashboard reads the latest matching snapshot; a replay
+that changes the inputs invalidates it. Replay does not automatically regroup;
+`crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
+Both automatic and standalone dedup use `scheduler/dedup.py` for reading inputs
+and publishing groups, and `Grouper.from_settings` for client configuration.
+Each multi-source card shows an overview, arithmetic mean relevance, and source
+cards with their original fields and dates. Search and field filters can match any
+member without hiding other members. Date filters use open if any member is open,
+otherwise undated if any is undated, otherwise later if any starts later, and over
+only when all members are over. Conflicting dates are not collapsed for end-date
+sorting. The overview must acknowledge material disagreements rather than resolve
+them. Grouping is model judgment, not a guarantee of semantic equivalence.
+
+The CLI flag `--dedup on/off` defaults to `on`. Reasoning effort is independently
+configured with `LLM_DEDUP_REASONING_EFFORT=off`; model, credentials and token budget
+are shared with the other stages. Grouping consumes the remaining budget, so a run
+that has exhausted it retains original results. Final reports bypass verbosity
+filters for the run file and include dedup's token usage.
 
 Each run has its own directory:
 

@@ -81,6 +81,10 @@ python dashboard/serve.py
 
 The dashboard serves at `http://127.0.0.1:8765`. Its options are `--port` (default `8765`) and `--results-dir` (default `results`). It supports filtering by classification, dates, text and extracted fields.
 
+After analysis, an LLM groups equivalent relevant results by default. The dashboard
+shows each group with an overview and average relevance; individual sources retain
+their scores, dates, content and links. Use `--dedup off` to skip grouping.
+
 ## CLI
 
 ### `crawl run "<prompt>"`
@@ -105,11 +109,35 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”.
 | `--domain-budget` | `50` | Pages per domain; `0` means unlimited |
 | `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement; URL filters still apply |
 | `--analysis` | `on` | `on` or `off`; per-page classification and field extraction |
+| `--dedup` | `on` | `on` or `off`; group equivalent relevant analyses after crawling; requires an LLM |
 | `--analyzer-max-chars` | `3000` | Maximum page-text characters sent to the analyzer |
 | `--result-dir` | `results` | Parent directory for run output |
 | `--log-level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` or `OFF` |
 
 `--max-pages`, `--max-tokens` and `--max-duration` are aliases for the corresponding run budgets. Settings-backed options also accept environment values; CLI flags take precedence. See [Settings](src/crawlme/config.py) for those options.
+
+Dedup shares `LLM_MODEL` and the run's token budget. `LLM_DEDUP_REASONING_EFFORT`
+defaults to `off` (subject to model support). `LLM_DEDUP_MAX_CHARS` defaults to
+100000; oversized input is left ungrouped rather than truncated. Failed grouping
+also retains original results. Per-stage usage, including dedup, appears in the
+final report in both the terminal and run log. `--max-relevant` still counts pages,
+not deduplicated groups.
+
+### `crawl dedup <task-id>`
+
+Group existing relevant analyses without fetching or re-analyzing pages. Reuses
+the run's goal by default; `--goal <goal-id>` selects a replay goal. Each successful
+invocation saves a new grouping snapshot; failures keep the previous snapshot.
+Refresh the dashboard to load the new groups. Usage is printed and appended to
+the run log, including on failure after a model call.
+
+```bash
+crawl dedup <task-id>
+crawl dedup <task-id> --goal <goal-id> --max-tokens 30000
+```
+
+`--result-dir` selects the results root; `--log-level` overrides logging verbosity.
+Model and reasoning settings are the same as for automatic dedup after crawling.
 
 ### `crawl session <path>`
 
@@ -128,10 +156,16 @@ Shows the goal, crawl counts and relevant results grouped by event dates.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--goal` | original goal | Select another stored goal's analyses |
-| `--during` | none | Separate events starting beyond this future cutoff, e.g. `"1 week"` or `2026-10-01` |
+| `--during` | none | Exclude results starting beyond this future cutoff, e.g. `"1 week"` or `2026-10-01` |
 | `--export` | none | `json` includes extracted fields and evidence; `csv` exports fixed columns |
 
 `--since` concerns **publication time** during crawling. `--during` concerns **event dates** in the results. Results with no date form a separate group; expired results remain visible. The terminal shows a limited number of results per group; export includes all rows.
+
+Goal Enhancer enables time handling only when the goal implies a validity window,
+such as events, offers or applications. Analyzer extracts evidenced dates independently
+of requested fields. The dashboard uses ongoing / upcoming / past / undated and hides
+time controls for goals without time semantics. Future starts remain upcoming even
+within the selected `during` window. Existing analyses need replay to gain new dates.
 
 ### `crawl replay <task-id>`
 

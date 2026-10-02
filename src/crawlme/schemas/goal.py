@@ -32,6 +32,8 @@ class CrawlGoal(BaseModel):
     depth_limit: int = 5
     domain_budget: int = 50
     extraction_spec: dict[str, Any] | None = None
+    # Meaning of the result's validity window; None disables temporal extraction.
+    time_policy: str | None = None
     created_at: datetime.datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="after")
@@ -79,10 +81,11 @@ def spec_time_field(spec: dict[str, Any] | None) -> tuple[str, str] | None:
     return name, ("on" if kind == "on" else "until")
 
 
-def spec_version(spec: dict[str, Any] | None) -> str:
+def spec_version(spec: dict[str, Any] | None, time_policy: str | None = None) -> str:
     """Hash the extraction specification independently of the prompt-derived goal ID."""
     fields = spec_fields(spec)
-    if not fields:
+    if not fields and not time_policy:
         return ""
-    canonical = json.dumps(fields, sort_keys=True, ensure_ascii=False)
+    content = {"fields": fields, "time_policy": time_policy} if time_policy else fields
+    canonical = json.dumps(content, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]

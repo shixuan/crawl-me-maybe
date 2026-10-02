@@ -144,7 +144,7 @@ def _result_lines(
 ) -> list[str]:
     """Group relevant results by event dates and show a limited number per group.
 
-    A horizon separates later starts. Results with only an end remain open until
+    A horizon excludes later starts. Results with only an end remain ongoing until
     that end; results without dates get their own group."""
     today = datetime.datetime.now(datetime.timezone.utc).date()
     live: list[tuple[datetime.date | None, dict[str, Any]]] = []
@@ -154,6 +154,8 @@ def _result_lines(
     for a in analyses:
         ends = _as_date(a.get("ends_on"))
         starts = _as_date(a.get("starts_on"))
+        if horizon is not None and starts is not None and starts > horizon:
+            continue
         group = group_of(starts, ends, today, horizon)
         if group == UNDATED:
             undated.append(a)
@@ -167,17 +169,17 @@ def _result_lines(
 
     out: list[str] = []
     if live:
-        out.append(f"still open ({len(live)}):")
+        out.append(f"Ongoing ({len(live)}):")
         out += [_one_result(a, pages_by_key, ends, today) for ends, a in live[:10]]
     if undated:
-        out.append(f"no date given ({len(undated)}):")
+        out.append(f"Undated ({len(undated)}):")
         out += [_one_result(a, pages_by_key, None, today) for a in undated[:10]]
     if later:
         later.sort(key=lambda pair: pair[0])
-        out.append(f"starts after {horizon:%b %d} ({len(later)}):")
+        out.append(f"Upcoming ({len(later)}):")
         out += [_one_result(a, pages_by_key, starts, today, ahead=True) for starts, a in later[:10]]
     if over:
-        out.append(f"already over ({len(over)}), newest first:")
+        out.append(f"Past ({len(over)}), newest first:")
         over.sort(key=lambda a: _as_date(a.get("ends_on")) or today, reverse=True)
         out += [_one_result(a, pages_by_key, _as_date(a.get("ends_on")), today) for a in over[:5]]
     return out

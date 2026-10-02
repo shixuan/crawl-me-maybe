@@ -102,16 +102,16 @@ def test_a_start_past_the_horizon_is_later() -> None:
     assert group_of(d("2026-10-21"), d("2026-10-25"), TODAY, HORIZON) == LATER
 
 
-def test_a_start_inside_the_horizon_is_open() -> None:
-    assert group_of(d("2026-09-12"), d("2026-10-11"), TODAY, HORIZON) == OPEN
+def test_a_future_start_inside_the_horizon_is_upcoming() -> None:
+    assert group_of(d("2026-09-12"), d("2026-10-11"), TODAY, HORIZON) == LATER
 
 
 def test_the_horizon_itself_is_inside() -> None:
-    assert group_of(HORIZON, HORIZON, TODAY, HORIZON) == OPEN
+    assert group_of(HORIZON, HORIZON, TODAY, HORIZON) == LATER
 
 
-def test_without_a_horizon_nothing_is_later() -> None:
-    assert group_of(d("2027-01-01"), d("2027-01-02"), TODAY) == OPEN
+def test_future_starts_are_upcoming_without_a_horizon() -> None:
+    assert group_of(d("2027-01-01"), d("2027-01-02"), TODAY) == LATER
 
 
 def test_over_beats_the_horizon() -> None:

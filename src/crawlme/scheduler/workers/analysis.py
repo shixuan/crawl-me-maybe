@@ -30,3 +30,7 @@ class AnalysisWorker:
     async def aclose(self) -> None:
         if self.analyzer is not None:
             await self.analyzer.aclose()
+
+    async def drain_pending(self) -> None:
+        if self.analyzer is not None:
+            await self.analyzer.drain_pending()

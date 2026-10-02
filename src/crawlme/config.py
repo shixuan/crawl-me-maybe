@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     llm_rank_reasoning_effort: str = ""
     llm_analyze_reasoning_effort: str = ""
     llm_enhance_reasoning_effort: str = ""
+    llm_dedup_reasoning_effort: str = "off"
+    # Oversized dedup input is left ungrouped, never truncated.
+    llm_dedup_max_chars: int = 100_000
 
     # --- Fetch ---
     fetch_concurrency: int = 6

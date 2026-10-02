@@ -18,7 +18,8 @@ class Stage:
     RANKING = "ranking"
     GOAL = "goal"
     SEEDS = "seeds"
-    ORDER = (ANALYSIS, RANKING, GOAL, SEEDS)
+    DEDUP = "dedup"
+    ORDER = (ANALYSIS, RANKING, GOAL, SEEDS, DEDUP)
 
 
 @dataclasses.dataclass
