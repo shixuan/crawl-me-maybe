@@ -17,7 +17,7 @@ from typing import Any
 
 import aiosqlite
 
-from crawlme.analysis.analyzer import _PROMPT_VERSION, Analyzer, PageAnalyzer
+from crawlme.analysis.analyzer import Analyzer, PageAnalyzer
 from crawlme.config import Settings
 from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
@@ -159,7 +159,6 @@ async def run_replay(
                 if not force and await storage.has_analysis(
                     page.url_key,
                     goal.goal_id,
-                    _PROMPT_VERSION,
                     settings.llm_model,
                     spec_version(goal.extraction_spec, goal.time_policy),
                 ):

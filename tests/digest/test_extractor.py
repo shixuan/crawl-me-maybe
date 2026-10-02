@@ -150,9 +150,25 @@ def test_raw_path(extractor, tmp_path):
     assert page.raw_html_path == path
 
 
-def test_broken_degrades(extractor, tmp_path):
+def test_broken_html_recovers_text(extractor, tmp_path):
     page = extractor.extract(_result(b"not valid html <xyz>"), str(tmp_path / "x"))
-    assert page.extraction_status in ("DEGRADED", "FAILED")
+    assert "not valid html" in (page.plain_text or "")
+    assert page.extraction_status in ("OK", "DEGRADED")
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_primary_extraction_failure_degrades(extractor, monkeypatch, raises):
+    def unavailable(*args, **kwargs):
+        if raises:
+            raise ValueError("extraction failed")
+        return None
+
+    # Malformed HTML alone need not fail: parsers can recover its text.
+    monkeypatch.setattr("crawlme.digest.extractor.trafilatura.extract", unavailable)
+    page = extractor.extract(_result())
+    assert page.extraction_status == "DEGRADED"
+    assert "main content" in page.plain_text
+    assert page.markdown == page.plain_text
 
 
 def test_valid_content(extractor, tmp_path):

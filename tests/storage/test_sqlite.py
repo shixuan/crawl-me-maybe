@@ -249,19 +249,17 @@ def test_has_analysis(storage):
             "analysis_id": "a1",
             "url_key": "abc",
             "goal_id": "g1",
-            "prompt_version": "v1",
             "model": "m1",
             "analyzed_at": "2026-01-01T00:00:00Z",
         }
     )
     _run(storage._write_queue.join())
 
-    assert _run(storage.has_analysis("abc", "g1", "v1"))  # "" matches any model
-    assert _run(storage.has_analysis("abc", "g1", "v1", "m1"))
-    assert not _run(storage.has_analysis("abc", "g1", "v1", "m2"))
-    assert not _run(storage.has_analysis("abc", "g1", "v2"))
-    assert not _run(storage.has_analysis("abc", "g2", "v1"))
-    assert not _run(storage.has_analysis("other", "g1", "v1"))
+    assert _run(storage.has_analysis("abc", "g1"))  # "" matches any model
+    assert _run(storage.has_analysis("abc", "g1", "m1"))
+    assert not _run(storage.has_analysis("abc", "g1", "m2"))
+    assert not _run(storage.has_analysis("abc", "g2"))
+    assert not _run(storage.has_analysis("other", "g1"))
 
 
 def test_has_by_fields(storage):
@@ -275,7 +273,6 @@ def test_has_by_fields(storage):
             "analysis_id": "a1",
             "url_key": "abc",
             "goal_id": "g1",
-            "prompt_version": "v1",
             "model": "m1",
             "spec_version": "aaaa1111",
             "analyzed_at": "2026-01-01T00:00:00Z",
@@ -283,9 +280,9 @@ def test_has_by_fields(storage):
     )
     _run(storage._write_queue.join())
 
-    assert _run(storage.has_analysis("abc", "g1", "v1", "m1", "aaaa1111"))
-    assert not _run(storage.has_analysis("abc", "g1", "v1", "m1", "bbbb2222"))
-    assert not _run(storage.has_analysis("abc", "g1", "v1", "m1")), "a goal asking for no fields is not the same read"
+    assert _run(storage.has_analysis("abc", "g1", "m1", "aaaa1111"))
+    assert not _run(storage.has_analysis("abc", "g1", "m1", "bbbb2222"))
+    assert not _run(storage.has_analysis("abc", "g1", "m1")), "a goal asking for no fields is not the same read"
 
 
 def test_snapshot_saved(storage):

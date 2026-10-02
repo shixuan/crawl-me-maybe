@@ -71,7 +71,7 @@ async def test_json_fills_all():
 
 async def test_chat_args():
     client = _StubClient([_resp(_valid_json())])
-    with patch("crawlme.pioneer.goal_enhancer.datetime", wraps=datetime) as clock:
+    with patch("crawlme.prompts.datetime", wraps=datetime) as clock:
         clock.timezone = datetime.timezone
         clock.datetime.now.return_value = datetime.datetime(2026, 9, 19, 23, 59, 59, tzinfo=datetime.timezone.utc)
         await GoalEnhancer(client).enhance(_goal())
@@ -88,7 +88,7 @@ async def test_prompt_date_updates_after_midnight():
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
     enhancer = GoalEnhancer(client)
     goal = _goal()
-    with patch("crawlme.pioneer.goal_enhancer.datetime", wraps=datetime) as clock:
+    with patch("crawlme.prompts.datetime", wraps=datetime) as clock:
         clock.timezone = datetime.timezone
         clock.datetime.now.side_effect = [
             datetime.datetime(2026, 9, 19, 23, 59, 59, tzinfo=datetime.timezone.utc),

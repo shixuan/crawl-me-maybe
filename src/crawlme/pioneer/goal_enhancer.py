@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
 from crawlme.schemas import CrawlGoal
@@ -29,28 +30,6 @@ _MAX_SPEC_FIELDS = 8
 _MAX_SPEC_DESC = 200
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SINCE_MAX_AGE_DAYS = 3650
-
-_SYSTEM = (
-    "You turn a user's crawl goal into structured fields. Reply with JSON only, "
-    "no prose. Fields: goal_statement (one complete statement of what to find; "
-    "if the prompt is not in English, write the statement in English, then append "
-    "the same statement in the prompt's language, joined by ' / '), keywords "
-    "(array of up to 12 clean content keywords, no stopwords), since (ISO date "
-    "YYYY-MM-DD when the goal mentions a time window such as 'recent' or 'last "
-    "week', otherwise null), and extraction_spec. "
-    "extraction_spec names the fields worth pulling out of every matching page, as "
-    '{"fields": {"<snake_case_name>": "<what it holds>"}}. Produce it only when the '
-    "goal asks for particular pieces of information out of each page; a goal that asks "
-    "to find pages on a subject gets null. Take the fields from the goal's own wording "
-    "and stay in its own domain. At most 8 fields. "
-    "Also return time_policy independently of extraction_spec: a short description of the "
-    "validity window that matters for this goal, or null when time is not applicable or uncertain. "
-    "Enable it for events, offers or application opportunities even without an explicit request "
-    "for dates. Say which window matters (event occurrence, offer validity, application window). "
-    "Do not enable it for tutorials, background information, historical years or publication "
-    "recency alone. A requested date field does not by itself imply a validity window. "
-    "Keep every constraint of the original prompt: never narrow the goal."
-)
 
 
 @dataclass(frozen=True)
@@ -90,10 +69,8 @@ class GoalEnhancer:
         """One chat call, then validation.  None means apply nothing."""
         if self._client is None:
             return None
-        # Compute the date per request so long-lived processes follow UTC midnight.
-        system = f"Today is {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d} (UTC). " + _SYSTEM
         try:
-            resp = await self._client.chat(goal.prompt, system=system, json_mode=True)
+            resp = await self._client.chat(goal.prompt, system=prompts.goal_system(), json_mode=True)
         except LLMError as e:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
             return None

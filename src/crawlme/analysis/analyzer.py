@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
+from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
@@ -33,44 +34,9 @@ _MAX_PAGE_CHARS = 3000
 # A page gets at most this many attempts, spaced by a fixed delay.
 _MAX_ATTEMPTS = 3
 _RETRY_DELAY_SEC = 30.0
-# Bump when the prompt changes in a way that changes outputs, so
-# stored analyses stay comparable across versions.
 _MAX_TAGS = 8
 
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
-
-# What the classes mean, said once and shared by both prompts.
-_JUDGEMENT = (
-    "classification: RELEVANT means the page directly satisfies the goal, IRRELEVANT "
-    "means it does not, including menus, login pages and category indexes. "
-    "relevance_score is how well the page satisfies the goal, 0.0 to 1.0. summary is "
-    "one or two sentences. tags describe the content."
-)
-
-_PROMPT_VERSION = "v2.7"
-
-# Request summaries and fields only for relevant pages.
-_SYSTEM = (
-    "You analyze web pages for a goal-directed crawler. You get the crawl goal, the page "
-    "URL, title, and text. Classify the page, and describe it only if it is worth "
-    "keeping. Reply with JSON only, no prose. "
-    "For a page you discard, reply exactly "
-    '{"classification": "IRRELEVANT", "relevance_score": 0.0} '
-    "and nothing more, because the page is thrown away and no other field is ever read. "
-    "For a page that answers the goal, reply "
-    '{"classification": "RELEVANT", "relevance_score": 0.0, "summary": "...", '
-    '"tags": ["..."]}. ' + _JUDGEMENT
-)
-
-
-_EXTRACT_SYSTEM = (
-    ' Also fill "extracted": {"<field>": {"value": "...", "evidence": "..."}} for the '
-    "fields listed under ## Extract, on a RELEVANT page only. evidence must be copied "
-    "verbatim from the page text and must contain the value. Omit any field the page "
-    "does not state: a field you leave out is read as unknown, and that is the correct "
-    "answer whenever the page does not say. Never infer a value from what is likely, "
-    "and never use the goal's own wording as evidence."
-)
 
 
 class Analyzer(Protocol):
@@ -176,8 +142,8 @@ class PageAnalyzer:
 
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
-        prompt = _build_prompt(goal, page, text, self._max_page_chars)
-        resp = await self._client.chat(prompt, system=_system_for(goal), json_mode=True)
+        prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)
+        resp = await self._client.chat(prompt, system=prompts.analysis_system(goal), json_mode=True)
         data = parse_json_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {page.url_key}")
@@ -227,43 +193,6 @@ class PageAnalyzer:
 
 def _page_text(page: Page) -> str:
     return (page.plain_text or "").strip() or (page.markdown or "").strip()
-
-
-def _system_for(goal: CrawlGoal) -> str:
-    """The contract, widened when the goal declares fields to collect."""
-    system = _SYSTEM + _EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _SYSTEM
-    if goal.time_policy:
-        system += (
-            ' On RELEVANT pages also return "time": {"starts_on": {"value": "date as written", '
-            '"evidence": "verbatim quote"}, "ends_on": {"value": "date as written", '
-            '"evidence": "verbatim quote"}} following the time policy. '
-            "Omit unknown endpoints. For a single-day event use that date for both endpoints. "
-            "Evidence must contain the date value and explicitly support its role. Never use "
-            "publication dates, historical mentions or unrelated dates as validity dates. "
-            "Do not guess missing dates; omit time for ambiguous or multiple incompatible windows."
-        )
-    return system
-
-
-def _build_prompt(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
-    """Assemble the user prompt: goal, fields to collect, page, text."""
-    lines = ["## Goal", goal.goal_statement or goal.prompt]
-    if goal.since is not None:
-        # The statement is the user's wording and can disagree with the
-        # window the run is actually enforcing.
-        lines.append(f"Anything published before {goal.since:%Y-%m-%d} is out of scope.")
-    fields = spec_fields(goal.extraction_spec)
-    if goal.time_policy:
-        lines.extend(["## Time policy", goal.time_policy])
-    if fields:
-        lines.append("## Extract")
-        lines.extend(f"- {name}: {desc}" for name, desc in fields.items())
-    lines.extend(["## Page", page.url.canonical])
-    if page.title:
-        lines.append(f"Title: {page.title}")
-    lines.append("")
-    lines.append(text[:max_chars])
-    return "\n".join(lines)
 
 
 # Reject bare negations, but preserve values such as "no-sugar option".
@@ -381,7 +310,6 @@ def _parse_analysis(
             title=page.title or "",
         ),
         model=model,
-        prompt_version=_PROMPT_VERSION,
         tokens_used=tokens_used,
     )
 

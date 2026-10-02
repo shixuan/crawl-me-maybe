@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.analysis.analyzer import _PROMPT_VERSION
 from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
 from crawlme.config import Settings
 from crawlme.llm import TokenBudgetError
@@ -100,7 +99,6 @@ class _StubAnalyzer:
             relevance_score=0.9,
             summary="fine",
             model="stub-model",
-            prompt_version=_PROMPT_VERSION,
             tokens_used=100,
         )
         if self.sink is not None:

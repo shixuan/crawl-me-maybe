@@ -285,9 +285,7 @@ class SqliteStorage:
         )
         return [dedup_input(dict(row)) for row in await cur.fetchall()]
 
-    async def save_groups(
-        self, goal_id: str, fingerprint: str, groups: list[dict[str, Any]], *, model: str, version: str
-    ) -> None:
+    async def save_groups(self, goal_id: str, fingerprint: str, groups: list[dict[str, Any]], *, model: str) -> None:
         """Publish a complete grouping atomically after analysis writes have settled."""
         import uuid
 
@@ -303,7 +301,7 @@ class SqliteStorage:
                     dedup_id,
                     goal_id,
                     fingerprint,
-                    version,
+                    "",  # Reserved legacy column; prompt versions are no longer tracked.
                     model,
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 ),
@@ -521,7 +519,7 @@ class SqliteStorage:
                 # carries it under that key (never "feedback_json").
                 json.dumps(analysis_json.get("feedback", {})),
                 analysis_json.get("model", ""),
-                analysis_json.get("prompt_version", ""),
+                "",  # Reserved legacy column.
                 analysis_json.get("spec_version", ""),
                 analysis_json.get("tokens_used", 0),
                 analysis_json.get("analyzed_at", ""),
@@ -536,14 +534,13 @@ class SqliteStorage:
         self,
         url_key: str,
         goal_id: str,
-        prompt_version: str,
         model: str = "",
         spec_version: str = "",
     ) -> bool:
-        """Check (url_key, goal_id, prompt_version, spec_version, model). An empty model matches any."""
+        """Check (url_key, goal_id, spec_version, model). An empty model matches any."""
         cur = await self._execute_now(
-            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND prompt_version = ? AND spec_version = ?",
-            (url_key, goal_id, prompt_version, spec_version),
+            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND spec_version = ?",
+            (url_key, goal_id, spec_version),
         )
         rows = [dict(r) for r in await cur.fetchall()]
         if model == "":

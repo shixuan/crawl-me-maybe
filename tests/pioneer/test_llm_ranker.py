@@ -12,7 +12,8 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget
-from crawlme.pioneer.ranker.llm import LLMRanker, _build_prompt
+from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.prompts import ranking_input
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
 
 
@@ -485,13 +486,13 @@ def test_states_age() -> None:
     """Without it a post from an hour ago and one from three years ago
     differ only in their title."""
     c = _candidate("c1", posted_at=_hours_ago(3))
-    prompt = _build_prompt(CrawlGoal(prompt="recent events"), [c], RankHistorySummary(), {})
+    prompt = ranking_input(CrawlGoal(prompt="recent events"), [c], RankHistorySummary(), {})
     assert "posted: 3h ago" in prompt
 
 
 def test_undated_no_line() -> None:
     """Most of the web is links on a page."""
-    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "posted:" not in prompt
 
 
@@ -499,7 +500,7 @@ def test_naive_date_ok() -> None:
     """Subtracting a naive datetime raises, and that would cost the
     other nineteen candidates."""
     c = _candidate("c1", posted_at=datetime.datetime(2026, 1, 1, 12, 0))
-    prompt = _build_prompt(CrawlGoal(prompt="g"), [c], RankHistorySummary(), {})
+    prompt = ranking_input(CrawlGoal(prompt="g"), [c], RankHistorySummary(), {})
     assert "posted:" in prompt
 
 
@@ -510,13 +511,13 @@ def test_window_stated() -> None:
     them."""
     goal = CrawlGoal(prompt="public events this month")
     goal.since = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
-    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert "2026-08-20" in prompt
 
 
 def test_no_window() -> None:
     """Most goals have none, and an empty heading is a line per call."""
-    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "Window" not in prompt
 
 
@@ -524,14 +525,14 @@ def test_goal_statement_wins() -> None:
     """The analyzer judges the enhanced statement, so the ranker has to
     judge it too, or the two stages score different goals."""
     goal = CrawlGoal(prompt="raw words", goal_statement="the enhanced statement")
-    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert "the enhanced statement" in prompt
     assert "raw words" not in prompt
 
 
 def test_prompt_used_without_statement() -> None:
     """A run without the Goal Enhancer still has to say what it wants."""
-    prompt = _build_prompt(CrawlGoal(prompt="raw words"), [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(CrawlGoal(prompt="raw words"), [_candidate("c1")], RankHistorySummary(), {})
     assert "raw words" in prompt
 
 
@@ -542,14 +543,14 @@ def test_extract_fields_shown() -> None:
         prompt="g",
         extraction_spec={"fields": {"deadline": "when the offer ends"}},
     )
-    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert "## Extract" in prompt
     assert "- deadline: when the offer ends" in prompt
 
 
 def test_no_fields_no_block() -> None:
     """A goal that asks to find pages collects nothing."""
-    prompt = _build_prompt(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(CrawlGoal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
     assert "## Extract" not in prompt
 
 
@@ -557,5 +558,5 @@ def test_extract_before_candidates() -> None:
     """Fixed for the whole run, so it sits ahead of anything that
     changes per call and stays inside the cached prefix."""
     goal = CrawlGoal(prompt="g", extraction_spec={"fields": {"deadline": "d"}})
-    prompt = _build_prompt(goal, [_candidate("c1")], RankHistorySummary(), {})
+    prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert prompt.index("## Extract") < prompt.index("## Candidate links")

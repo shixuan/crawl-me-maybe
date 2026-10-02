@@ -108,7 +108,7 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
         rows = await storage.dedup_inputs(goal.goal_id)
         ids = [r["analysis_id"] for r in rows]
         await storage.save_groups(
-            goal.goal_id, fingerprint(rows), [{"members": ids, "overview": "one offer"}], model="test", version="v1"
+            goal.goal_id, fingerprint(rows), [{"members": ids, "overview": "one offer"}], model="test"
         )
         with sqlite3.connect(storage.db_path) as con:
             con.row_factory = sqlite3.Row
@@ -120,7 +120,6 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
                     fingerprint(rows),
                     [{"members": ids + ids, "overview": "bad"}],
                     model="test",
-                    version="v1",
                 )
             assert con.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == 1
             assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 2

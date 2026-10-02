@@ -45,7 +45,6 @@ class AnalysisResult(BaseModel):
     tags: list[str] = Field(default_factory=list)
     feedback: AnalyzerFeedback = Field(default_factory=AnalyzerFeedback)
     model: str = ""
-    prompt_version: str = ""
     # Event dates derived from the declared time field; either end may be absent.
     starts_on: datetime.date | None = None
     ends_on: datetime.date | None = None

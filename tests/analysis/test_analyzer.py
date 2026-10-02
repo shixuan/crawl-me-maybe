@@ -12,9 +12,10 @@ import datetime
 import pytest
 
 from crawlme.analysis import PageAnalyzer
-from crawlme.analysis.analyzer import _build_prompt, _parse_analysis, _parse_extracted
+from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
 from crawlme.config import Settings
 from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
+from crawlme.prompts import analysis_input
 from crawlme.schemas import URL, CrawlGoal, Page
 
 
@@ -82,7 +83,6 @@ async def test_full_result():
     assert result.tags == ["rust", "compiler"]
     assert result.model == "stub"
     assert result.tokens_used == 360
-    assert result.prompt_version
     assert result.page_id == "p1"
     assert result.url_key == "k1"
     assert result.goal_id
@@ -495,19 +495,19 @@ def test_window_told() -> None:
     wording and need not match the window being enforced."""
     goal = CrawlGoal(prompt="events this month")
     goal.since = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
-    prompt = _build_prompt(goal, _page(), "body", 3000)
+    prompt = analysis_input(goal, _page(), "body", 3000)
     assert "2026-08-20" in prompt
 
 
 def test_window_absent() -> None:
-    prompt = _build_prompt(CrawlGoal(prompt="g"), _page(), "body", 3000)
+    prompt = analysis_input(CrawlGoal(prompt="g"), _page(), "body", 3000)
     assert "out of scope" not in prompt
 
 
 def _contract(analyzer_goal=None):
-    from crawlme.analysis.analyzer import _system_for
+    from crawlme.prompts import analysis_system
 
-    return _system_for(analyzer_goal or _goal())
+    return analysis_system(analyzer_goal or _goal())
 
 
 def test_discard_shape_asks_for_nothing_else():
@@ -547,15 +547,6 @@ def test_extraction_is_scoped_to_keepers():
     goal.extraction_spec = {"fields": {"merchant": "who is running it"}}
     system = _contract(goal)
     assert "RELEVANT page only" in system
-
-
-@pytest.mark.asyncio
-async def test_results_name_their_prompt():
-    """Rows written by the old contract and the new one sit in the same
-    table, so they have to say which one produced them."""
-    client = _StubClient([_resp(_valid_json())])
-    result = await PageAnalyzer(client).analyze(_page(), _goal())
-    assert result is not None and result.prompt_version == "v2.7"
 
 
 def test_aggregator_is_gone():
