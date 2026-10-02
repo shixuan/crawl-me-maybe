@@ -24,7 +24,7 @@ from crawlme.runtime.events import EventEmitter, EventType
 from crawlme.runtime.state import RunState
 from crawlme.runtime.tracking import RunTracker
 from crawlme.scheduler.reporting import summary
-from crawlme.scheduler.stop_conds import check_stop, why_retire
+from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
 from crawlme.scheduler.workers import (
     AnalysisWorker,
     DiscoveryWorker,
@@ -230,6 +230,8 @@ class CrawlScheduler:
         self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         await self._settle_inflight()
 
+        await self._settle_analysis()
+
         if self._grouper is not None:
             await self._deduplicate(goal)
 
@@ -278,6 +280,32 @@ class CrawlScheduler:
                 t.cancel()
             await asyncio.gather(*still, return_exceptions=True)
 
+    async def _settle_analysis(self) -> None:
+        """Settle retries within run limits before grouping or closing storage."""
+        assert self._task is not None
+        deadline = time.monotonic() + _SETTLE_TIMEOUT
+        drain: asyncio.Task[None] | None = None
+        try:
+            while True:
+                reasons = check_stop(self._task, self._frontier, self.run_state.limits, self.run_state.progress)
+                if not can_drain_analysis(reasons):
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning("analysis.settle_timeout")
+                    break
+                if drain is None:
+                    drain = asyncio.create_task(self._analysis.drain_pending())
+                done, _ = await asyncio.wait({drain}, timeout=min(_POP_SLEEP, remaining))
+                if done:
+                    await drain
+                    break
+        finally:
+            if drain is not None:
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
+            await self._analysis.aclose()
+
     async def aclose(self) -> None:
         await self._analysis.aclose()
         await self._ranking.aclose()
@@ -309,7 +337,6 @@ class CrawlScheduler:
     async def _deduplicate(self, goal: CrawlGoal) -> None:
         assert self._grouper is not None
         try:
-            await self._analysis.drain_pending()
             self._dedup_report = await group_results(self._storage, goal, self._grouper, model=self._cfg.llm_model)
         except Exception as exc:
             self._dedup_report = {"status": "failed"}

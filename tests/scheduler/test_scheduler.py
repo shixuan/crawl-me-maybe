@@ -92,7 +92,7 @@ def _make_sched(**overrides) -> CrawlScheduler:
         "frontier": frontier_mock,
         "fetcher": MagicMock(aclose=AsyncMock()),
         "extractor": MagicMock(),
-        "robots": MagicMock(),
+        "robots": MagicMock(next_allowed_at=MagicMock(return_value=_utcnow())),
         "prefilter": MagicMock(),
         "ranker": MagicMock(aclose=AsyncMock()),
         "canonicalizer": MagicMock(),

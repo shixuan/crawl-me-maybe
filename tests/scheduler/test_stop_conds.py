@@ -7,7 +7,7 @@ import pytest
 
 from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.runtime.state import Limits, Progress
-from crawlme.scheduler.stop_conds import check_stop, why_retire
+from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
 from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
 
 
@@ -67,6 +67,20 @@ _LIMIT_FIELDS = {
 
 def _codes(reasons) -> list[str]:
     return [r.code for r in reasons]
+
+
+@pytest.mark.parametrize(
+    ("limits", "progress", "allowed"),
+    [
+        ({"max_pages": 1}, {"pages_fetched": 1}, True),
+        ({"max_pages": 1, "max_relevant": 1}, {"pages_fetched": 1, "relevant_found": 1}, False),
+        ({"max_pages": 1}, {"pages_fetched": 1, "fatal_error": "failed"}, False),
+        ({"max_pages": 1}, {"pages_fetched": 1, "refused_by": "LOGIN_REQUIRED"}, False),
+    ],
+)
+def test_analysis_after_fetch_stop(limits, progress, allowed):
+    reasons = check_stop(_task(), _frontier(), Limits(**limits), Progress(**progress))
+    assert can_drain_analysis(reasons) is allowed
 
 
 # -- budget --------------------------------------------------------------

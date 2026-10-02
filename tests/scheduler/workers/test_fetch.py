@@ -20,3 +20,26 @@ async def test_fetch_only_returns_response():
     fetcher.fetch.side_effect = OSError("offline")
     assert await worker.fetch(item) == FetchFailure("fetch", "OSError")
     assert not worker._slots.locked()
+
+
+@pytest.mark.asyncio
+async def test_fetch_obeys_crawl_delay():
+    import time
+
+    url = URL(
+        raw="https://news.example.com/p", canonical="https://news.example.com/p", url_key="p", reg_domain="example.com"
+    )
+    item = FrontierItem(url=url, url_key="p", reg_domain="example.com")
+    robots = RobotsPolicy()
+    robots.load_robots_txt("news.example.com", "User-agent: *\nAllow: /\nCrawl-delay: 1\n")
+    calls = []
+
+    async def fetch(item):
+        calls.append(time.monotonic())
+        return FetchResult(item_id="f", url=url, url_key="p", status_code=200)
+
+    worker = FetchWorker(MagicMock(fetch=fetch), robots, MagicMock(), concurrency=1)
+    await worker.fetch(item)
+    await worker.fetch(item)
+    assert len(calls) == 2
+    assert calls[1] - calls[0] >= 1

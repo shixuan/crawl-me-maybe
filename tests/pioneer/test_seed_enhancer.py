@@ -14,7 +14,6 @@ from crawlme.schemas import (
     URL,
     Candidate,
     CrawlGoal,
-    FetchResult,
 )
 
 
@@ -145,42 +144,32 @@ def _url(u: str) -> URL:
 
 
 def _rig(*, yields: int, problem=None, fetch_raises=False):
-    """A fetcher and harvester that answer however the case needs."""
-    fetcher = MagicMock()
+    """The scheduler's probe supplies discovered candidates or a fetch error."""
     if fetch_raises:
-        fetcher.fetch = AsyncMock(side_effect=OSError("gone"))
+        probe = AsyncMock(side_effect=OSError("gone"))
     else:
-        fetcher.fetch = AsyncMock(
-            side_effect=lambda it: FetchResult(item_id="f1", url=it.url, url_key=it.url_key, status=200, raw=b"<html/>")
+        probe = AsyncMock(
+            return_value=Harvest([Candidate(url=_url(f"https://x.com/{i}")) for i in range(yields)], problem)
         )
-    harvester = MagicMock()
-    harvester.harvest = MagicMock(
-        return_value=Harvest([Candidate(url=_url(f"https://x.com/{i}")) for i in range(yields)], problem)
-    )
-    storage = MagicMock()
-    storage.save_raw_html = MagicMock(return_value="raw.html")
-    storage.save_payload = MagicMock(return_value="p.0")
     canon = MagicMock()
     canon.canonicalize = MagicMock(side_effect=lambda raw, _b: _url(raw))
-    return fetcher, harvester, storage, canon
+    return probe, canon
 
 
 async def _verify(proposals, **kw):
     from crawlme.pioneer.seed_enhancer import verify
 
-    fetcher, harvester, storage, canon = _rig(**kw)
+    probe, canon = _rig(**kw)
     kept, dropped = await verify(
         proposals,
-        fetcher=fetcher,
-        harvester=harvester,
-        storage=storage,
+        probe=probe,
         canonicalizer=canon,
     )
-    return kept, fetcher, harvester, dropped
+    return kept, probe, dropped
 
 
 async def test_a_seed_that_yields_is_kept():
-    kept, _, _, _ = await _verify([("https://a.com/", "why")], yields=18)
+    kept, _, _ = await _verify([("https://a.com/", "why")], yields=18)
     assert [c.url.canonical for c in kept] == ["https://a.com/"]
     assert kept[0].seed_ext is True
     assert kept[0].signals["why"] == "why"
@@ -189,35 +178,26 @@ async def test_a_seed_that_yields_is_kept():
 async def test_a_seed_that_yields_nothing_is_dropped():
     """An invented account answers 200 and renders. Only reading it
     apart from a real one, which is what the harvester does."""
-    kept, _, _, _ = await _verify([("https://a.com/", "w")], yields=0)
+    kept, _, _ = await _verify([("https://a.com/", "w")], yields=0)
     assert kept == []
 
 
 async def test_a_refusal_is_dropped():
     from crawlme.platforms.base import PageProblem
 
-    kept, _, _, _ = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
+    kept, _, _ = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
     assert kept == []
 
 
 async def test_an_unreachable_seed_is_dropped():
-    kept, _, _, _ = await _verify([("https://a.com/", "w")], yields=9, fetch_raises=True)
+    kept, _, _ = await _verify([("https://a.com/", "w")], yields=9, fetch_raises=True)
     assert kept == []
 
 
-async def test_verification_reads_the_page_it_fetched():
-    """Payloads go with it: an adapter reading markup alone reports a
-    busy account as empty, and a real seed would be thrown away."""
-    _, _, harvester, _ = await _verify([("https://a.com/", "w")], yields=3)
-    page = harvester.harvest.call_args.args[0]
-    assert page.raw_html_path
-    assert page.payload_paths == []
-
-
 async def test_seeds_are_verified_one_by_one():
-    kept, fetcher, _, _ = await _verify([("https://a.com/", "w"), ("https://b.com/", "w")], yields=4)
+    kept, probe, _ = await _verify([("https://a.com/", "w"), ("https://b.com/", "w")], yields=4)
     assert len(kept) == 2
-    assert fetcher.fetch.await_count == 2
+    assert probe.await_count == 2
 
 
 async def test_a_rejection_says_which_kind_it_was():
@@ -225,11 +205,11 @@ async def test_a_rejection_says_which_kind_it_was():
     same fetch and mean different things."""
     from crawlme.platforms.base import PageProblem
 
-    _, _, _, gone = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
+    _, _, gone = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
     assert gone == [("https://a.com/", "does not exist")]
 
-    _, _, _, unreachable = await _verify([("https://b.com/", "w")], yields=5, fetch_raises=True)
+    _, _, unreachable = await _verify([("https://b.com/", "w")], yields=5, fetch_raises=True)
     assert unreachable == [("https://b.com/", "could not be fetched")]
 
-    _, _, _, kept_none = await _verify([("https://c.com/", "w")], yields=4)
+    _, _, kept_none = await _verify([("https://c.com/", "w")], yields=4)
     assert kept_none == []

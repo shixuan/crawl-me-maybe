@@ -142,10 +142,12 @@ The current LLM client passes a 90-second timeout to LiteLLM. It does not impose
 outer deadline or fix pump supervision. A transient timeout can still trigger the
 client's retry policy.
 
+Analysis retries now settle independently of dedup, within run limits and a
+120-second backstop. Pump supervision and pause boundaries remain open.
+
 Other limits remain:
 
 - Fetch dispatch polls at 0.2-second intervals and directly wakes the waiting buffer.
-- Normal scheduler shutdown closes analysis without first draining delayed retries.
 - Pause does not explicitly await both pumps before writing its checkpoint.
 - Periodic snapshots represent Frontier, not all page tasks, source history or retries.
 - Same-host robots loads are not coalesced.
@@ -163,7 +165,8 @@ their existing storage behavior. Release ranking and in-flight counts in `finall
 TaskGroup is an implementation option, not permission to cancel pending writes
 without a defined shutdown policy.
 
-The following behavior is proposed, not implemented:
+The target lifecycle is below. Retry settlement is implemented as described above;
+coordinated pump shutdown and stable pause/resume remain proposed:
 
 | Exit condition | New work | In-flight work and analysis retries |
 |---|---|---|

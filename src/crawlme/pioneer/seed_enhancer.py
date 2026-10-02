@@ -7,17 +7,21 @@ import json
 import logging
 import math
 import re
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from crawlme import prompts
+from crawlme.digest.fetcher.base import FetchError
 from crawlme.llm import LLMClient, LLMError, Stage
 
 if TYPE_CHECKING:
     from crawlme.config import Settings
-    from crawlme.digest.fetcher.base import Fetcher
-    from crawlme.discovery.harvester import Harvester
+    from crawlme.discovery.harvester import Harvest
     from crawlme.llm import TokenBudget
-    from crawlme.schemas import Candidate, CrawlGoal
+    from crawlme.pioneer.canonicalizer import Canonicalizer
+    from crawlme.schemas import Candidate, CrawlGoal, FrontierItem
+
+SeedProbe = Callable[["FrontierItem"], Awaitable["Harvest"]]
 
 logger = logging.getLogger(__name__)
 
@@ -114,16 +118,14 @@ def _parse(content: str, *, known: set[str], want: int) -> list[tuple[str, str]]
 async def verify(
     proposals: list[tuple[str, str]],
     *,
-    fetcher: Fetcher,
-    harvester: Harvester,
-    storage: Any,
-    canonicalizer: Any,
+    probe: SeedProbe,
+    canonicalizer: Canonicalizer,
 ) -> tuple[list[Candidate], list[tuple[str, str]]]:
     """Fetch proposals and keep those whose harvester yields candidates.
 
-    Retain sub-responses for adapters that need them. Verification checks discovery,
-    not relevance; the crawl evaluates relevance after accepting a seed."""
-    from crawlme.schemas import Candidate, FetchResult, FrontierItem, Page
+    The scheduler supplies policy-aware fetching and discovery. Verification checks
+    discovery, not relevance; the crawl evaluates relevance after accepting a seed."""
+    from crawlme.schemas import Candidate, FrontierItem
 
     kept: list[Candidate] = []
     # Retain a reason for each rejected proposal.
@@ -133,18 +135,15 @@ async def verify(
         canonical = canonicalizer.canonicalize(url, url)
         item = FrontierItem(url=canonical, url_key=canonical.url_key, reg_domain=canonical.reg_domain)
         try:
-            result: FetchResult = await asyncio.wait_for(fetcher.fetch(item), timeout=_VERIFY_TIMEOUT)
+            harvest = await asyncio.wait_for(probe(item), timeout=_VERIFY_TIMEOUT)
+        except FetchError as exc:
+            dropped.append((url, str(exc)))
+            logger.info("dropping %s: %s", url, exc)
+            continue
         except Exception:
             logger.info("dropping %s: could not be fetched", url)
             dropped.append((url, "could not be fetched"))
             continue
-        page = Page(
-            url_key=canonical.url_key,
-            url=canonical,
-            raw_html_path=storage.save_raw_html(canonical.url_key, result.item_id, result.raw),
-            payload_paths=_save_payloads(storage, canonical.url_key, result),
-        )
-        harvest = harvester.harvest(page, 0)
         if harvest.problem is not None or not harvest.candidates:
             reason = harvest.problem.value if harvest.problem else "nothing to follow"
             logger.info("dropping %s: %s", url, reason)
@@ -156,26 +155,14 @@ async def verify(
     return kept, dropped
 
 
-def _save_payloads(storage: Any, url_key: str, result: Any) -> list[str]:
-    paths: list[str] = []
-    for i, payload in enumerate(result.payloads):
-        try:
-            paths.append(storage.save_payload(url_key, result.item_id, i, payload.body))
-        except OSError as e:
-            logger.debug("seeds.payload_unsaved url_key=%s error=%s", url_key, e)
-    return paths
-
-
 async def enhance(
     goal: CrawlGoal,
     seeds: list[str],
     *,
     settings: Settings,
     budget: TokenBudget | None,
-    fetcher: Fetcher,
-    harvester: Harvester,
-    storage: Any,
-    canonicalizer: Any,
+    probe: SeedProbe,
+    canonicalizer: Canonicalizer,
 ) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
     """Return accepted seeds, proposal count and rejected (URL, reason) pairs."""
     want = how_many(len(seeds), settings.enhance_seeds_min, settings.enhance_seeds_max)
@@ -185,9 +172,7 @@ async def enhance(
     logger.info("the model named %d more source%s to try", len(proposals), "" if len(proposals) == 1 else "s")
     kept, dropped = await verify(
         proposals,
-        fetcher=fetcher,
-        harvester=harvester,
-        storage=storage,
+        probe=probe,
         canonicalizer=canonicalizer,
     )
     logger.info("%d of the %d it named answered", len(kept), len(proposals))

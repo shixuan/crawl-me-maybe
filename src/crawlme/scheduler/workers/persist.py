@@ -22,9 +22,13 @@ class PersistWorker:
         return path
 
     async def save_extracted(self, url_key: str, result: FetchResult, page: Page) -> None:
-        page.payload_paths = await asyncio.to_thread(self._save_payloads, url_key, result)
+        page.payload_paths = await self.save_payloads(url_key, result)
         # The database write queue belongs to the event loop.
         self._storage.save_page(page)
+
+    async def save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
+        """Retain sub-responses for both seed verification and extracted pages."""
+        return await asyncio.to_thread(self._save_payloads, url_key, result)
 
     def _save_payloads(self, url_key: str, result: FetchResult) -> list[str]:
         paths: list[str] = []

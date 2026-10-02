@@ -87,6 +87,9 @@ state. The engine owns ordering and queue admission; workers use the existing
 Fetcher, Extractor, Analyzer, Harvester and Ranker contracts.
 
 The factory creates workers and binds seed enhancement to its dependencies.
+Seed verification receives a probe that uses the same FetchWorker, PersistWorker
+and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
+and payloads, and discovers candidates without publishing an unextracted Page row.
 `create_scheduler(..., fetcher=stub)` still overrides a component;
 `create_scheduler(..., ranking=RankingWorker(ranker))` overrides an assembled worker.
 
@@ -279,8 +282,12 @@ expose a separate resume command.
 
 ## Persistence and inspection
 
-At run completion, when dedup is enabled, the scheduler drains pending Analyzer
-retries, then passes relevant analyses and source evidence to `dedup/grouper.py`.
+At run completion, the scheduler settles pending Analyzer retries independently
+of dedup. Page limits and frontier exhaustion allow already-fetched pages to finish
+analysis; token/time limits, the result target, user stop and run failures cancel
+remaining retries. Settlement also has a 120-second backstop. Analysis closes before
+optional grouping, so grouping sees a stable set of results.
+When dedup is enabled, the scheduler passes relevant analyses and source evidence to `dedup/grouper.py`.
 One LLM call proposes duplicate groups. Unassigned analyses become singletons;
 duplicate or unknown member IDs invalidate the response. The grouper rejects
 truncated or malformed output. Inputs

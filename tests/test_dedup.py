@@ -130,7 +130,7 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
         await storage.close()
 
 
-async def test_scheduler_waits_for_retries_and_retains_originals_on_failure():
+async def test_grouping_failure_retains_results():
     from crawlme.scheduler.engine import CrawlScheduler
 
     scheduler = object.__new__(CrawlScheduler)
@@ -139,16 +139,10 @@ async def test_scheduler_waits_for_retries_and_retains_originals_on_failure():
     scheduler._grouper.group = AsyncMock(side_effect=ValueError("bad model reply"))
     scheduler._analysis = MagicMock()
     scheduler._storage = MagicMock()
-    order = []
-
-    async def drain():
-        order.append("drained")
 
     async def inputs(goal_id):
-        assert order == ["drained"]
         return [{"analysis_id": "a"}]
 
-    scheduler._analysis.drain_pending = drain
     scheduler._storage.dedup_inputs = inputs
     scheduler._storage.save_groups = AsyncMock()
     await scheduler._deduplicate(CrawlGoal(prompt="gifts"))

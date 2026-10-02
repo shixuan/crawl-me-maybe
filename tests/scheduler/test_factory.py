@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from crawlme.config import Settings
 from crawlme.pioneer.ranker import LLMRanker
@@ -49,3 +51,53 @@ def test_sched_run_state(tmp_path: Path):
     sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
     assert sched.run_state is state
     assert sched._tracking.state is state
+
+
+@pytest.mark.parametrize(("disallow", "ignore"), [(True, False), (True, True), (False, False)])
+async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore):
+    """The assembled seed verifier uses the same access policy as crawling."""
+    import sqlite3
+
+    from crawlme.pioneer.seed_enhancer import SeedEnhancer
+    from crawlme.pioneer.sources.manual import ManualSource
+    from crawlme.schemas import CrawlGoal, FetchResult, Payload
+
+    url = "https://example.com/source"
+    calls = []
+
+    async def fetch(item):
+        address = item.url.canonical
+        calls.append(address)
+        raw = b"<html><body><a href='/article'>Compiler safety</a></body></html>"
+        payloads = [Payload(body=b'{"items": []}')]
+        if address.endswith("/robots.txt"):
+            raw = b"User-agent: *\nDisallow: /\n" if disallow else b"User-agent: *\nAllow: /\n"
+            payloads = []
+        return FetchResult(item_id="f", url=item.url, url_key=item.url_key, status_code=200, raw=raw, payloads=payloads)
+
+    monkeypatch.setattr(SeedEnhancer, "propose", AsyncMock(return_value=[(url, "source")]))
+    cfg = Settings(
+        _env_file=None,
+        result_dir=tmp_path,
+        llm_api_key="",
+        llm_base_url="",
+        analysis_enabled=False,
+        enhance_seeds=True,
+        ignore_robots=ignore,
+    )
+    scheduler = create_scheduler(cfg, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
+    goal = CrawlGoal(prompt="compiler safety")
+    seeds = await ManualSource(["https://example.com/start"]).discover(goal)
+    try:
+        kept = await scheduler.enhance_seeds(goal, seeds)
+        assert bool(kept) == (ignore or not disallow)
+        assert (url in calls) == (ignore or not disallow)
+        assert ("https://example.com/robots.txt" in calls) == (not ignore)
+        if disallow and not ignore:
+            assert scheduler.run_state.rejected_seeds == [(url, "blocked by robots")]
+        else:
+            assert len(list(tmp_path.glob("*/raw/*/*.payload.0"))) == 1
+    finally:
+        await scheduler.aclose()
+    with sqlite3.connect(next(tmp_path.glob("*/db/crawl.db"))) as con:
+        assert con.execute("SELECT count(*) FROM pages").fetchone()[0] == 0
