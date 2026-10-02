@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.dedup import Grouper
+from crawlme.dedup.grouper import Grouper, group_results
 from crawlme.digest.extractor import Extractor
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
@@ -23,7 +23,6 @@ from crawlme.platforms.base import FeedDependencyError
 from crawlme.runtime.events import EventEmitter, EventType
 from crawlme.runtime.state import RunState
 from crawlme.runtime.tracking import RunTracker
-from crawlme.scheduler.dedup import group_results
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.stop_conds import check_stop, why_retire
 from crawlme.scheduler.workers import (
