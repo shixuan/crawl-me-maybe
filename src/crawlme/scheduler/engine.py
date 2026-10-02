@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.dedup import Grouper
+from crawlme.dedup.grouper import VERSION, fingerprint
 from crawlme.digest.extractor import Extractor
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
@@ -99,8 +101,11 @@ class CrawlScheduler:
         canonicalizer: Canonicalizer,
         tracking: RunTracker,
         seed_enhancer: SeedEnhancement,
+        grouper: Grouper | None = None,
     ) -> None:
         self._cfg = settings
+        self._grouper = grouper
+        self._dedup_report: dict[str, Any] = {"status": "disabled" if grouper is None else "pending"}
         self._storage = storage
         self._frontier = frontier
         self._fetch = fetch
@@ -226,6 +231,9 @@ class CrawlScheduler:
         self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         await self._settle_inflight()
 
+        if self._grouper is not None:
+            await self._deduplicate(goal)
+
         task.state = "COMPLETED"
         task.end_at = _utcnow()
         reason = task.stopping_reason or "none"
@@ -297,7 +305,27 @@ class CrawlScheduler:
             logger.info("done with one source: %s", why)
 
     def summary(self) -> dict[str, Any]:
-        return summary(self.run_state)
+        return {**summary(self.run_state), "dedup": self._dedup_report}
+
+    async def _deduplicate(self, goal: CrawlGoal) -> None:
+        assert self._grouper is not None
+        try:
+            await self._analysis.drain_pending()
+            rows = await self._storage.dedup_inputs(goal.goal_id)
+            logger.info("grouping %d relevant results", len(rows))
+            groups = await self._grouper.group(goal, rows)
+            await self._storage.save_groups(
+                goal.goal_id,
+                fingerprint(rows),
+                [g.model_dump() for g in groups],
+                model=self._cfg.llm_model or "openai/gpt-4o-mini",
+                version=VERSION,
+            )
+            self._dedup_report = {"status": "complete", "sources": len(rows), "groups": len(groups)}
+            logger.info("dedup: %d sources grouped into %d results", len(rows), len(groups))
+        except Exception as exc:
+            self._dedup_report = {"status": "failed"}
+            logger.warning("dedup failed; original results retained: %s", exc)
 
     @property
     def run_state(self) -> RunState:

@@ -17,6 +17,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def dedup_input(row: dict[str, Any]) -> dict[str, Any]:
+    """The stored evidence used to group a relevant analysis and detect stale groups."""
+    return {
+        "analysis_id": row["analysis_id"],
+        "url": json.loads(row["url_json"])["canonical"],
+        "published_at": row.get("published_at"),
+        "summary": row.get("summary"),
+        "extracted": json.loads(row.get("extracted_json") or "{}"),
+        "starts_on": row.get("starts_on") or "",
+        "ends_on": row.get("ends_on") or "",
+        "relevance": row["relevance_score"],
+    }
+
+
 DDL = """
 CREATE TABLE IF NOT EXISTS crawl_goals (
     goal_id    TEXT PRIMARY KEY,
@@ -108,6 +123,25 @@ CREATE TABLE IF NOT EXISTS analyses (
     spec_version    TEXT DEFAULT '',
     tokens_used     INTEGER DEFAULT 0,
     analyzed_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dedup_runs (
+    dedup_id TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    version TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS result_groups (
+    group_id TEXT PRIMARY KEY,
+    dedup_id TEXT NOT NULL,
+    overview TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS result_members (
+    group_id TEXT NOT NULL,
+    analysis_id TEXT NOT NULL,
+    PRIMARY KEY (group_id, analysis_id)
 );
 
 CREATE TABLE IF NOT EXISTS frontier_snapshots (
@@ -236,6 +270,53 @@ class SqliteStorage:
     async def _execute_now(self, sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Cursor:
         assert self._conn is not None
         return await self._conn.execute(sql, params)
+
+    async def dedup_inputs(self, goal_id: str) -> list[dict[str, Any]]:
+        await self._write_queue.join()
+        cur = await self._execute_now(
+            "SELECT a.*, p.url_json, p.published_at FROM analyses a "
+            "JOIN pages p ON p.page_id = a.page_id WHERE a.goal_id = ? "
+            "AND a.classification = 'RELEVANT' ORDER BY a.analysis_id",
+            (goal_id,),
+        )
+        return [dedup_input(dict(row)) for row in await cur.fetchall()]
+
+    async def save_groups(
+        self, goal_id: str, fingerprint: str, groups: list[dict[str, Any]], *, model: str, version: str
+    ) -> None:
+        """Publish a complete grouping atomically after analysis writes have settled."""
+        import uuid
+
+        await self._write_queue.join()
+        assert self._conn is not None
+        await self._conn.commit()
+        dedup_id = uuid.uuid4().hex
+        try:
+            await self._conn.execute("BEGIN")
+            await self._conn.execute(
+                "INSERT INTO dedup_runs VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    dedup_id,
+                    goal_id,
+                    fingerprint,
+                    version,
+                    model,
+                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ),
+            )
+            for group in groups:
+                group_id = uuid.uuid4().hex
+                await self._conn.execute(
+                    "INSERT INTO result_groups VALUES (?, ?, ?)", (group_id, dedup_id, group["overview"])
+                )
+                await self._conn.executemany(
+                    "INSERT INTO result_members VALUES (?, ?)",
+                    [(group_id, member) for member in group["members"]],
+                )
+            await self._conn.commit()
+        except BaseException:
+            await self._conn.rollback()
+            raise
 
     # raw HTML -----------------------------------------------------------
 

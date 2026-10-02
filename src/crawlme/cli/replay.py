@@ -251,7 +251,11 @@ def print_replay_summary(r: ReplayReport) -> None:
     if r.llm_calls:
         tokens += f" ({r.tokens_in} in / {r.tokens_out} out), {r.llm_calls} calls"
     lines.append(f"  tokens:     {tokens}")
-    print("\n".join(lines))
+    from crawlme.logging.config import write_report
+
+    report = "\n".join(lines)
+    print(report)
+    write_report(report)
 
 
 def _goal_from_row(row: dict[str, Any]) -> CrawlGoal:

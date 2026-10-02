@@ -296,6 +296,17 @@ body {
 
 .result:hover { box-shadow: var(--shadow-hover); transform: translateY(-1px); }
 
+.result-group > .result,
+.group-more > .result {
+  box-shadow: none;
+  border-top: 1px solid var(--line, #ddd);
+  border-radius: 0;
+  margin: 0;
+  padding: 18px 0;
+}
+.result-group .result:hover { transform: none; }
+.group-more > summary { cursor: pointer; padding: 12px 0; }
+
 .result-ended {
   position: relative;
   isolation: isolate;

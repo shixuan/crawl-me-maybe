@@ -81,6 +81,10 @@ python dashboard/serve.py
 
 The dashboard serves at `http://127.0.0.1:8765`. Its options are `--port` (default `8765`) and `--results-dir` (default `results`). It supports filtering by classification, dates, text and extracted fields.
 
+After analysis, an LLM groups equivalent relevant results by default. The dashboard
+shows each group with an overview and average relevance; individual sources retain
+their scores, dates, content and links. Use `--dedup off` to skip grouping.
+
 ## CLI
 
 ### `crawl run "<prompt>"`
@@ -105,11 +109,19 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”.
 | `--domain-budget` | `50` | Pages per domain; `0` means unlimited |
 | `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement; URL filters still apply |
 | `--analysis` | `on` | `on` or `off`; per-page classification and field extraction |
+| `--dedup` | `on` | `on` or `off`; group equivalent relevant analyses after crawling; requires an LLM |
 | `--analyzer-max-chars` | `3000` | Maximum page-text characters sent to the analyzer |
 | `--result-dir` | `results` | Parent directory for run output |
 | `--log-level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` or `OFF` |
 
 `--max-pages`, `--max-tokens` and `--max-duration` are aliases for the corresponding run budgets. Settings-backed options also accept environment values; CLI flags take precedence. See [Settings](src/crawlme/config.py) for those options.
+
+Dedup shares `LLM_MODEL` and the run's token budget. `LLM_DEDUP_REASONING_EFFORT`
+defaults to `off` (subject to model support). `LLM_DEDUP_MAX_CHARS` defaults to
+100000; oversized input is left ungrouped rather than truncated. Failed grouping
+also retains original results. Per-stage usage, including dedup, appears in the
+final report in both the terminal and run log. `--max-relevant` still counts pages,
+not deduplicated groups.
 
 ### `crawl session <path>`
 

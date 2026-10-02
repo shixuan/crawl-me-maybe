@@ -31,6 +31,46 @@ function app() {
 
 const result = name => ({ rows: [name], goals: [], goal_id: name });
 
+function groupingApp() {
+  const context = vm.createContext({ URL, document: {
+    createElement: () => ({ innerHTML: '', className: '', children: [], append(child) { this.children.push(child); } }),
+  } });
+  vm.runInContext(source + '\nglobalThis.ui = {state, groupedRows, visible, whenOf, card};', context);
+  return context.ui;
+}
+
+test('groups retain original sources and average all scores under filtering', () => {
+  const ui = groupingApp();
+  ui.state.rows = [
+    {analysis_id: 'a', classification: 'RELEVANT', relevance: 0.9, when: 'over', ends_on: '2026-09-30',
+      summary: 'two large', url: 'https://example.com/a', extracted: {}},
+    {analysis_id: 'b', classification: 'RELEVANT', relevance: 0.7, when: 'open', ends_on: '2026-10-04',
+      summary: 'any two', url: 'https://example.com/b', extracted: {price: {value: '10'}}},
+  ];
+  ui.state.groups = [{members: ['a', 'b'], overview: 'Same event; conditions differ.'}];
+  ui.state.query = 'any two';
+  ui.state.hasField = 'price';
+  ui.state.whens.add('open');
+  const rows = ui.visible();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].members.length, 2);
+  assert.equal(rows[0].relevance, 0.8);
+  assert.equal(rows[0].ends_on, '');
+  const card = ui.card(rows[0]);
+  assert.match(card.innerHTML, /average relevance 0.80/);
+  assert.match(card.children[0].innerHTML, /two large/);
+  assert.match(card.children[1].innerHTML, /any two/);
+  assert.match(card.children[0].className, /result-ended/);
+  assert.doesNotMatch(card.children[1].className, /result-ended/);
+});
+
+test('unknown dates prevent a group from being classified as over', () => {
+  const ui = groupingApp();
+  assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'undated'}]}, ''), 'undated');
+  assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'over'}]}, ''), 'over');
+  assert.equal(ui.whenOf({members: [{when: 'over'}, {when: 'open', starts_on: '2099-01-01'}]}, '2026-01-01'), 'later');
+});
+
 test('only the latest run response is adopted', async () => {
   const ui = app();
   const first = ui.loadRun('first');

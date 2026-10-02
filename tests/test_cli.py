@@ -42,6 +42,16 @@ def test_run_help(capsys):
     assert "usage" in captured.out or "usage" in captured.err
 
 
+@pytest.mark.parametrize("flags, expected", [([], "on"), (["--dedup", "on"], "on"), (["--dedup", "off"], "off")])
+def test_dedup_flag(flags, expected):
+    with (
+        patch("sys.argv", ["crawl", "run", "test", *flags]),
+        patch("crawlme.cli._dispatch", new_callable=AsyncMock) as dispatch,
+    ):
+        main()
+    assert dispatch.call_args.args[0].dedup == expected
+
+
 def test_prints_prompt(caplog):
     """crawl run <prompt> should log task info via logging."""
     import logging
@@ -323,7 +333,8 @@ def test_prints_summary(capsys):
 
 
 @pytest.mark.parametrize("log_format", ["console", "json"])
-def test_summary_in_log(tmp_path, capsys, log_format):
+@pytest.mark.parametrize("log_level", ["INFO", "WARNING", "OFF"])
+def test_summary_in_log(tmp_path, capsys, log_format, log_level):
     import logging
 
     from crawlme.cli.run import _print_summary
@@ -340,14 +351,18 @@ def test_summary_in_log(tmp_path, capsys, log_format):
     root = logging.getLogger()
     path = tmp_path / "log"
     with patch.object(root, "handlers", []), patch.object(root, "level", logging.INFO):
-        setup_logging(Settings(log_level="INFO", log_format=log_format), force=True)
+        setup_logging(Settings(log_level=log_level, log_format=log_format), force=True)
         to_file(str(path))
         try:
-            _print_summary(scheduler, CrawlTask(goal_id="goal", state="COMPLETED"), TokenBudget(limit=100))
+            budget = TokenBudget(limit=100)
+            budget.record(12, 8, stage="dedup")
+            _print_summary(scheduler, CrawlTask(goal_id="goal", state="COMPLETED"), budget)
             captured = capsys.readouterr()
             saved = path.read_text()
             assert captured.out.strip() in saved
             assert "https://example.com/" in saved
+            assert "dedup" in saved
+            assert "12 in / 8 out" in saved
             assert saved.count("crawl finished") == 1
             assert captured.out.count("crawl finished") == 1
             assert "crawl finished" not in captured.err

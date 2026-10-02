@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from crawlme.dedup.grouper import fingerprint
 from crawlme.schemas.analysis import CLASSIFICATIONS
+from crawlme.storage.sqlite import dedup_input
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
@@ -99,6 +101,7 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
             url = json.loads(page.get("url_json") or "{}")
             rows.append(
                 {
+                    "analysis_id": a.get("analysis_id", a["url_key"]),
                     "url": url.get("canonical", ""),
                     "host": url.get("domain", ""),
                     "url_key": a["url_key"],
@@ -127,9 +130,41 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
             # same way every run whatever the counts happen to be.
             "classifications": list(CLASSIFICATIONS),
             "rows": rows,
+            "groups": _groups(con, chosen),
         }
     finally:
         con.close()
+
+
+def _groups(con: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]]:
+    """Read persisted groups only when the complete relevant input still matches."""
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dedup_runs'").fetchone():
+        return []
+    run = con.execute(
+        "SELECT * FROM dedup_runs WHERE goal_id = ? ORDER BY created_at DESC LIMIT 1", (goal_id,)
+    ).fetchone()
+    if run is None:
+        return []
+    inputs = [
+        dedup_input(dict(row))
+        for row in con.execute(
+            "SELECT a.*, p.url_json, p.published_at FROM analyses a JOIN pages p ON a.page_id = p.page_id "
+            "WHERE a.goal_id = ? AND a.classification = 'RELEVANT'",
+            (goal_id,),
+        )
+    ]
+    if fingerprint(inputs) != run["fingerprint"]:
+        return []
+    groups = []
+    for group in con.execute("SELECT * FROM result_groups WHERE dedup_id = ? ORDER BY rowid", (run["dedup_id"],)):
+        members = [
+            r[0]
+            for r in con.execute(
+                "SELECT analysis_id FROM result_members WHERE group_id = ? ORDER BY rowid", (group["group_id"],)
+            )
+        ]
+        groups.append({"group_id": group["group_id"], "overview": group["overview"], "members": members})
+    return groups
 
 
 class Handler(SimpleHTTPRequestHandler):

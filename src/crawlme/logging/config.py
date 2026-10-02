@@ -102,3 +102,12 @@ def _level(name: str) -> int:
     if name.upper() in ("OFF", "NONE", ""):
         return _OFF
     return getattr(logging, name.upper(), logging.INFO)
+
+
+def write_report(report: str) -> None:
+    """Persist an already printed report even when normal INFO logging is filtered."""
+    record = logging.LogRecord("crawlme.summary", logging.INFO, "", 0, "\n%s", (report,), None)
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.handle(record)
+            handler.flush()

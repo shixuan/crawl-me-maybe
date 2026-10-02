@@ -10,6 +10,7 @@ const state = {
   run: null,
   goalId: null,
   rows: [],
+  groups: [],
   fields: [],
   classifications: [], // the analyzer's own order, so the chips never re-sort
   classes: new Set(), // empty means every class
@@ -96,7 +97,33 @@ function runsFor(r) {
 }
 
 function whenOf(r, horizon) {
+  if (r.members) {
+    const dates = r.members.map(m => whenOf(m, horizon));
+    if (dates.every(w => w === "over")) return "over";
+    if (dates.includes("open")) return "open";
+    if (dates.includes("undated")) return "undated";
+    return "later";
+  }
   return r.when === "open" && r.starts_on && horizon && r.starts_on > horizon ? "later" : r.when;
+}
+
+function groupedRows() {
+  const byId = new Map(state.rows.map(r => [r.analysis_id, r]));
+  const assigned = new Set();
+  const groups = [];
+  for (const g of state.groups) {
+    const members = g.members.map(id => byId.get(id));
+    if (members.some(m => !m)) continue;
+    members.forEach(m => assigned.add(m.analysis_id));
+    if (members.length === 1) { groups.push(members[0]); continue; }
+    groups.push({
+      members, title: g.overview, summary: g.overview, classification: "RELEVANT",
+      relevance: members.reduce((n, m) => n + Number(m.relevance), 0) / members.length,
+      published_at: members.map(m => m.published_at || "").sort().at(-1),
+      ends_on: members.every(m => m.ends_on === members[0].ends_on) ? members[0].ends_on : "",
+    });
+  }
+  return [...groups, ...state.rows.filter(r => !assigned.has(r.analysis_id))];
 }
 
 function valueOf(field) {
@@ -140,7 +167,7 @@ function renderChips() {
   // Ordered by what the analyzer declares, so relevant leads whatever the
   // counts are; anything it did not declare follows, still shown.
   const counts = new Map();
-  for (const r of state.rows) counts.set(r.classification, (counts.get(r.classification) || 0) + 1);
+  for (const r of groupedRows()) counts.set(r.classification, (counts.get(r.classification) || 0) + 1);
   const declared = state.classifications;
   const rank = (c) => (declared.indexOf(c) < 0 ? declared.length : declared.indexOf(c));
   const present = [...counts.keys()].sort((a, b) => rank(a) - rank(b) || counts.get(b) - counts.get(a));
@@ -164,7 +191,7 @@ function renderWhenChips() {
   box.innerHTML = "";
   const horizon = horizonISO();
   const counts = new Map();
-  for (const r of state.rows) {
+  for (const r of groupedRows()) {
     const w = whenOf(r, horizon);
     counts.set(w, (counts.get(w) || 0) + 1);
   }
@@ -217,24 +244,24 @@ function fillFieldSelect(sel, leading, current) {
 function visible() {
   const q = state.query.trim().toLowerCase();
   const horizon = horizonISO();
-  let rows = state.rows;
+  let rows = groupedRows();
   if (state.classes.size) rows = rows.filter((r) => state.classes.has(r.classification));
   if (state.whens.size) rows = rows.filter((r) => state.whens.has(whenOf(r, horizon)));
   if (state.hasField === ANY_FIELD) {
-    rows = rows.filter((r) => Object.keys(r.extracted || {}).length);
+    rows = rows.filter((r) => (r.members || [r]).some(m => Object.keys(m.extracted || {}).length));
   } else if (state.hasField) {
     // A field is present when it survived the evidence check, which is
     // what makes "only the ones with a launch date" a claim about the
     // pages rather than about the model's willingness to guess.
-    rows = rows.filter((r) => valueOf((r.extracted || {})[state.hasField]));
+    rows = rows.filter((r) => (r.members || [r]).some(m => valueOf((m.extracted || {})[state.hasField])));
   }
   if (q) {
     rows = rows.filter((r) => {
-      const hay = [
-        r.title, r.summary, r.url, r.text,
-        ...(r.tags || []),
-        ...Object.entries(r.extracted || {}).flatMap(([k, v]) => [k, valueOf(v), v && v.evidence]),
-      ];
+      const hay = [r.summary, ...(r.members || [r]).flatMap(m => [
+        m.title, m.summary, m.url, m.text,
+        ...(m.tags || []),
+        ...Object.entries(m.extracted || {}).flatMap(([k, v]) => [k, valueOf(v), v && v.evidence]),
+      ])];
       return hay.some((s) => typeof s === "string" && s.toLowerCase().includes(q));
     });
   }
@@ -256,6 +283,7 @@ function headlineOf(r) {
 }
 
 function card(r) {
+  if (r.members) return groupCard(r);
   const el = document.createElement("article");
   el.className = "result";
 
@@ -289,14 +317,42 @@ function card(r) {
       ${mark ? `<span class="when-tag">${escape(mark)}</span>` : ""}
     </div>
     <p class="result-sub">
-      <a class="open" href="${escape(r.url)}" target="_blank" rel="noopener" title="${escape(r.url)}">open page</a>
+      <a class="open" href="${escape(r.url)}" target="_blank" rel="noopener" title="${escape(r.url)}">${escape(sourceOf(r.url))} ↗</a>
       ${subtitle ? `<span>${escape(subtitle)}</span>` : ""}
-      ${r.published_at ? `<span>${escape(when(r.published_at))}</span>` : ""}
+      ${r.published_at ? `<span>published ${escape(when(r.published_at))}</span>` : ""}
       ${runs ? `<span class="when-range">${escape(runs)}</span>` : ""}
     </p>
     ${r.summary ? `<p class="summary">${escape(r.summary)}</p>` : ""}
     ${fields ? `<div class="fields">${fields}</div>` : ""}
     ${tags ? `<div class="tags">${tags}</div>` : ""}`;
+  return el;
+}
+
+function sourceOf(url) {
+  try {
+    const u = new URL(url);
+    const account = u.pathname.split("/").filter(Boolean)[0];
+    return `${u.hostname}${account ? ` / ${account}` : ""}`;
+  } catch { return url || "open page"; }
+}
+
+function groupCard(r) {
+  const el = document.createElement("article");
+  el.className = "result result-group";
+  el.innerHTML = `<div class="result-head">
+    <h3 class="result-title">${r.members.length} sources</h3>
+    <span class="score" title="mean source relevance">average relevance ${r.relevance.toFixed(2)}</span>
+    </div><p class="summary">${escape(r.summary)}</p>`;
+  r.members.forEach((member, i) => {
+    if (i < 2) { el.append(card(member)); return; }
+    if (i === 2) {
+      const details = document.createElement("details");
+      details.className = "group-more";
+      details.innerHTML = `<summary>Show ${r.members.length - 2} more sources</summary>`;
+      r.members.slice(2).forEach(m => details.append(card(m)));
+      el.append(details);
+    }
+  });
   return el;
 }
 
@@ -314,9 +370,9 @@ function renderCards() {
   box.innerHTML = "";
   rows.forEach((r) => box.append(card(r)));
   $("#empty").hidden = rows.length > 0;
-  const withFields = rows.filter((r) => Object.keys(r.extracted || {}).length).length;
+  const withFields = rows.filter((r) => (r.members || [r]).some(m => Object.keys(m.extracted || {}).length)).length;
   const extra = withFields ? ` &middot; ${withFields} with extracted fields` : "";
-  $("#tally").innerHTML = `${rows.length} of ${state.rows.length}${extra}`;
+  $("#tally").innerHTML = `${rows.length} of ${groupedRows().length} results · ${state.rows.length} sources${extra}`;
 }
 
 /* -- loading -------------------------------------------------------- */
@@ -324,6 +380,7 @@ function renderCards() {
 function adopt(data) {
   state.goalId = data.goal_id;
   state.rows = data.rows;
+  state.groups = data.groups || [];
   state.fields = data.fields;
   state.classifications = data.classifications || [];
   // The spec's first field leads unless the reader says otherwise; with

@@ -100,7 +100,9 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if llm_ranker is not None:
         logger.info("ranking with the LLM")
     # The factory builds the analyzer with the same shared budget.
-    scheduler = create_scheduler(cfg, goal=goal, llm_ranker=llm_ranker, budget=budget)
+    scheduler = create_scheduler(
+        cfg, goal=goal, llm_ranker=llm_ranker, budget=budget, dedup_enabled=getattr(args, "dedup", "on") == "on"
+    )
     budget.bind_sink(scheduler.note_tokens_used)
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.
@@ -298,7 +300,9 @@ def _print_summary(
     }
     report = _format_summary(summary)
     print(report)
-    logger.info("\n%s", report, extra={"file_only": True})
+    from crawlme.logging.config import write_report
+
+    write_report(report)
 
 
 # Between the report's parts. Indentation alone left them reading as
@@ -434,6 +438,12 @@ def _format_summary(s: dict[str, Any]) -> str:
         share = f" ({think / tout:.0%} of output)" if tout else ""
         lines.append(f"  thinking:   {think}{share}")
     lines.extend(_stage_lines(s))
+
+    dedup = s.get("dedup") or {}
+    if dedup.get("status") == "complete":
+        lines.append(f"  dedup:      {dedup['sources']} sources -> {dedup['groups']} results")
+    elif dedup:
+        lines.append(f"  dedup:      {dedup['status']} (original results)")
 
     lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
 

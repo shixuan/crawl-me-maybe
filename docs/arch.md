@@ -68,6 +68,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
 | `platforms/` | Platform recognition, parsing, rendering and session requirements |
 | `analysis/` | Classify pages and extract fields with source evidence |
+| `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed enhancement metadata |
@@ -271,6 +272,32 @@ work and saves a snapshot; resume restores the latest snapshot. The CLI does not
 expose a separate resume command.
 
 ## Persistence and inspection
+
+At run completion, when dedup is enabled, the scheduler drains pending Analyzer
+retries, then passes relevant analyses and source evidence to `dedup/grouper.py`.
+One LLM call proposes duplicate groups. Unassigned analyses become singletons;
+duplicate or unknown member IDs invalidate the response. The grouper rejects
+truncated or malformed output. Inputs
+over the configured character limit are not submitted. Failure preserves original
+results; no grouping decision affects source retirement or crawl stop conditions.
+
+Storage atomically publishes `dedup_runs` (input fingerprint and model/prompt
+version), `result_groups` (overview), and `result_members` (analysis IDs). Original
+analyses remain intact. The dashboard reads the latest matching snapshot; a replay
+that changes the inputs invalidates it. Replay does not automatically regroup.
+Each multi-source card shows an overview, arithmetic mean relevance, and source
+cards with their original fields and dates. Search and field filters can match any
+member without hiding other members. Date filters use open if any member is open,
+otherwise undated if any is undated, otherwise later if any starts later, and over
+only when all members are over. Conflicting dates are not collapsed for end-date
+sorting. The overview must acknowledge material disagreements rather than resolve
+them. Grouping is model judgment, not a guarantee of semantic equivalence.
+
+The CLI flag `--dedup on/off` defaults to `on`. Reasoning effort is independently
+configured with `LLM_DEDUP_REASONING_EFFORT=off`; model, credentials and token budget
+are shared with the other stages. Grouping consumes the remaining budget, so a run
+that has exhausted it retains original results. Final reports bypass verbosity
+filters for the run file and include dedup's token usage.
 
 Each run has its own directory:
 

@@ -50,6 +50,12 @@ def main() -> None:
     )
     run_p.add_argument("--result-dir", help="Result directory (default: results)")
     run_p.add_argument(
+        "--dedup",
+        choices=["on", "off"],
+        default="on",
+        help="Group equivalent analyzed results after crawling (default: on)",
+    )
+    run_p.add_argument(
         "--analysis",
         choices=["on", "off"],
         default=None,
