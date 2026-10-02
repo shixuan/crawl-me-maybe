@@ -57,7 +57,7 @@ test('groups retain original sources and average all scores under filtering', ()
   assert.equal(rows[0].relevance, 0.8);
   assert.equal(rows[0].ends_on, '');
   const card = ui.card(rows[0]);
-  assert.match(card.innerHTML, /average relevance 0.80/);
+  assert.match(card.innerHTML, /avg 0.80/);
   assert.match(card.children[0].innerHTML, /two large/);
   assert.match(card.children[1].innerHTML, /any two/);
   assert.match(card.children[0].className, /result-ended/);

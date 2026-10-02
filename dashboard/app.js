@@ -317,7 +317,7 @@ function card(r) {
       ${mark ? `<span class="when-tag">${escape(mark)}</span>` : ""}
     </div>
     <p class="result-sub">
-      <a class="open" href="${escape(r.url)}" target="_blank" rel="noopener" title="${escape(r.url)}">${escape(sourceOf(r.url))} ↗</a>
+      <a class="open" href="${escape(r.url)}" target="_blank" rel="noopener" title="${escape(r.url)}">open</a>
       ${subtitle ? `<span>${escape(subtitle)}</span>` : ""}
       ${r.published_at ? `<span>published ${escape(when(r.published_at))}</span>` : ""}
       ${runs ? `<span class="when-range">${escape(runs)}</span>` : ""}
@@ -328,20 +328,12 @@ function card(r) {
   return el;
 }
 
-function sourceOf(url) {
-  try {
-    const u = new URL(url);
-    const account = u.pathname.split("/").filter(Boolean)[0];
-    return `${u.hostname}${account ? ` / ${account}` : ""}`;
-  } catch { return url || "open page"; }
-}
-
 function groupCard(r) {
   const el = document.createElement("article");
   el.className = "result result-group";
   el.innerHTML = `<div class="result-head">
     <h3 class="result-title">${r.members.length} sources</h3>
-    <span class="score" title="mean source relevance">average relevance ${r.relevance.toFixed(2)}</span>
+    <span class="score" title="mean source relevance">avg ${r.relevance.toFixed(2)}</span>
     </div><p class="summary">${escape(r.summary)}</p>`;
   r.members.forEach((member, i) => {
     if (i < 2) { el.append(card(member)); return; }
