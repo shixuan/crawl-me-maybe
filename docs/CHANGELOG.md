@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.5.0...v0.5.1) (2026-09-20)
+
+
+### Fixes
+
+* **dashboard:** isolate run loading from filter updates ([7aaf8fc](https://github.com/shixuan/crawl-me-maybe/commit/7aaf8fc3083b35ef56f4e9a335afa7849a05af15))
+* date time windows mismatch ([ca00b43](https://github.com/shixuan/crawl-me-maybe/commit/ca00b4302fd95a29032cfdb3520b075d177fc112))
+* extract Instagram page text through platform adapters ([ee0d8dd](https://github.com/shixuan/crawl-me-maybe/commit/ee0d8dde49a885251eff941be594faf9f63a3a23))
+* ig carousel candidates ([2aa854d](https://github.com/shixuan/crawl-me-maybe/commit/2aa854d217efe9f3fee7e130d15b38bc85e125e7))
+* include final crawl report in run logs ([928462d](https://github.com/shixuan/crawl-me-maybe/commit/928462d94dee8c982fbab250b3770a308939b5f5))
+* keep Instagram carousel media within parent posts ([c523a60](https://github.com/shixuan/crawl-me-maybe/commit/c523a605eee5c7c2f5957e5884341b52b8f05f9a))
+* **pioneer:** refresh goal prompt date ([4e73d2b](https://github.com/shixuan/crawl-me-maybe/commit/4e73d2bcf6c33d8597e4d60157812673d06c5a3b))
+* refresh goal prompt date ([307acdf](https://github.com/shixuan/crawl-me-maybe/commit/307acdfe220805a6ce2b516dca1e63786d2c5b11))
+* validate and preserve event dates ([d3dcdbe](https://github.com/shixuan/crawl-me-maybe/commit/d3dcdbeffe50f3de1e537185f142becd371c6e6e))
+
+
+### Changed
+
+* centralize runtime state ([3a6785c](https://github.com/shixuan/crawl-me-maybe/commit/3a6785ccc59ef11241289c745bc2190501ad3482))
+* engine.py ([b710fb8](https://github.com/shixuan/crawl-me-maybe/commit/b710fb8cdce4c7639cfb7b20995c6357e07237c4))
+* persistance files ([3dcbf79](https://github.com/shixuan/crawl-me-maybe/commit/3dcbf7939aac57792b39bd3072fb5f5d34b7f5d1))
+* **scheduler:** separate persistence worker ([c7dcdbd](https://github.com/shixuan/crawl-me-maybe/commit/c7dcdbd148ae113e2e00f3580c7a573ded9bf91e))
+* separate analysis discovery and platform adapters ([b7eb019](https://github.com/shixuan/crawl-me-maybe/commit/b7eb0195f587fe6ff3bbca1f26f0ab05f60d08ea))
+* separate scheduler workers ([917ae51](https://github.com/shixuan/crawl-me-maybe/commit/917ae511863110477a67f6a8db1f6fde45ef3ebd))
+* **storage:** flatten module layout ([1f257c3](https://github.com/shixuan/crawl-me-maybe/commit/1f257c33da5224c4ae65e57248119f31e346085b))
+
 ## [0.5.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.4.1...v0.5.0) (2026-09-12)
 
 
