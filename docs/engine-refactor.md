@@ -1,7 +1,8 @@
-# Engine refactoring plan
+# Engine refactoring status
 
-Reviewed on 2026-09-15. The worker split and runtime state consolidation are implemented
-in this branch. Lifecycle fixes and performance work remain open.
+Reviewed against the code on 2026-10-03. The worker split, runtime state consolidation
+and analysis retry settlement are implemented. Pump supervision, stable pause/resume
+and performance work remain open. Measurements below retain their original dates.
 
 The goal is clearer ownership and less wasted work. Moving code is not evidence of
 higher throughput. Measure network, model, parsing and scheduler time separately.
@@ -33,7 +34,7 @@ src/crawlme/
 The earlier `PageWorker`, `CandidateCoordinator` and `RunProgress` proposals are
 superseded. Workers have different inputs and outputs. There is no common Worker
 Protocol, generic pipeline or automatic stage discovery. The factory assembles
-workers; Engine coordinates them.
+workers, and Engine coordinates them.
 
 ```mermaid
 flowchart TB
@@ -80,8 +81,8 @@ retry later while discovery proceeds.
 | Engine | Run control state, pump and page task handles, backpressure, candidate admission, queue mutations, checkpoint timing |
 | Frontier | Waiting, scored and cooling work, deduplication, ranking-in-progress count and snapshots |
 | RunState | Limits, progress, reporting statistics, page/source associations, feedback and seed enhancement metadata |
-| RunTracker | Synchronous updates and joins over one RunState; no separate copy of run data |
-| TokenBudget | Token accounting and stage usage; callback updates the progress mirror |
+| RunTracker | Synchronous updates and joins over one RunState |
+| TokenBudget | Token accounting and stage usage, with a callback updating the progress mirror |
 | PageAnalyzer | Analysis execution, delayed retry queue and result sink |
 | Workers | Stage execution through existing component contracts |
 | Reporting | Read RunState without mutating it |
@@ -92,8 +93,7 @@ These are event-loop ownership boundaries, not a thread-safety guarantee.
 
 `RunState` keeps `Limits`, `Progress` and `Stats` distinct by their readers.
 Stopping policies receive limits and progress, not reporting statistics.
-`Stats` remains in `runtime/state.py` because it is small; it may be split out
-when its responsibilities grow.
+`Stats` remains in `runtime/state.py`.
 
 Startup reset preserves RunState identity, prepared seed URLs, enhancement metadata
 and pre-run token usage. It clears execution history and counters. Resume does not
@@ -101,7 +101,7 @@ reset it. Code must not retain references to nested objects replaced by reset.
 
 There is no PageContext container. The page path uses `FrontierItem`,
 `FetchedPage`, `Page` and `Harvest`. Delayed results join page records by identity.
-The `page_contexts` mapping stores ranking feedback; it is not a pipeline envelope.
+The `page_contexts` mapping stores ranking feedback.
 
 FetchWorker returns `FetchResult` or a typed `FetchFailure`. Engine records page
 ownership and publication information before analysis. AnalysisWorker checks the
@@ -112,8 +112,13 @@ analysis slots do not cover harvesting.
 Engine calls PersistWorker twice: `save_raw` before invoking Extractor, then
 `save_extracted` before analysis. PersistWorker handles file-write threads, partial
 payload failures and attaching paths before queuing the Page. Storage owns paths
-and the underlying writes. FetchWorker never calls PersistWorker or Extractor;
-its remaining Storage dependency is for the existing robots cache.
+and the underlying writes. FetchWorker uses Storage for the robots cache. It does
+not call PersistWorker or Extractor.
+
+Seed verification receives a `SeedProbe` assembled by the factory from the same
+fetch, persistence and discovery workers. The probe enforces robots and cooldown
+policies, saves HTML and payloads, and discovers candidates without writing an
+unextracted Page row. Each verification attempt has a 60-second deadline.
 
 All successful analysis results, including retries, use the Engine sink for storage,
 tracking and retirement. PageBook prevents duplicate source votes. This does not
@@ -151,7 +156,7 @@ Other limits remain:
 - Pause does not explicitly await both pumps before writing its checkpoint.
 - Periodic snapshots represent Frontier, not all page tasks, source history or retries.
 - Same-host robots loads are not coalesced.
-- Candidate admission is performed one candidate at a time; rank result mapping
+- Candidate admission is performed one candidate at a time. Rank result mapping
   includes repeated linear searches.
 
 ## Remaining lifecycle design
@@ -165,20 +170,20 @@ their existing storage behavior. Release ranking and in-flight counts in `finall
 TaskGroup is an implementation option, not permission to cancel pending writes
 without a defined shutdown policy.
 
-The target lifecycle is below. Retry settlement is implemented as described above;
-coordinated pump shutdown and stable pause/resume remain proposed:
+The table describes the target lifecycle. Retry settlement is implemented as
+described above. Coordinated pump shutdown and stable pause/resume remain proposals.
 
 | Exit condition | New work | In-flight work and analysis retries |
 |---|---|---|
 | Frontier exhausted | Stop dispatch | Drain retries within remaining budgets and a shutdown deadline |
-| Result target or token/time limit | Stop the affected work | Accept returned results; do not start calls beyond the limit |
+| Result target or token/time limit | Stop the affected work | Accept returned results without starting calls beyond the limit |
 | Page limit | Stop fetching | Allow analysis of fetched pages within remaining analysis budgets |
 | User stop or fatal error | Stop dispatch and wake waiters | Bounded settlement, cancel queued retries, report unfinished work |
-| Pause | Freeze fetching and ranking | Reach a stable checkpoint boundary; retain queued retries in memory |
+| Pause | Freeze fetching and ranking | Reach a stable checkpoint boundary and retain queued retries in memory |
 | Resume | Restore scheduling | Resume retained work without duplicate pumps or retry workers |
 
-Add narrow Analyzer lifecycle methods where needed; do not manipulate its private
-retry queue from Engine. In-memory pause/resume and process-restart recovery are
+Expose any further Analyzer lifecycle operations through methods that keep retry
+queue ownership inside Analyzer. In-memory pause/resume and process-restart recovery are
 separate capabilities. Historical database migration and lossless cross-process
 recovery are outside this refactor.
 
@@ -203,7 +208,7 @@ tasks at shutdown.
 Replacing polling requires notifications for ranked work, candidate readiness,
 completed page tasks, budget changes, stop and pause. Timers must also cover domain
 cooldowns, maximum batch wait and the run deadline. Use a Condition or versioned
-notification to avoid lost wakeups; always recheck the condition.
+notification to avoid lost wakeups, and recheck the condition after waking.
 
 Keep `LXML_LOCK`. Cancelling a parsing await does not stop its thread. Do not add
 threads, parsers or writers until measurements identify the bottleneck.
@@ -229,12 +234,12 @@ outputs in a serial run before checking permitted concurrent interleavings.
 Calling `_note_pump_failures()` directly is not a pump supervision test.
 
 For performance comparisons, fix configuration, inputs, clock policy and environment.
-Warm up and repeat at least five times; report median and range. Record throughput,
+Warm up and repeat at least five times, reporting median and range. Record throughput,
 first relevant result, stage waits, peak in-flight work, memory, storage backlog,
 request/token counts and per-source coverage. A live platform run supplements these
 checks but cannot isolate a local optimization.
 
-After rebasing onto master, the structural refactor passed 918 tests, with 1 skipped
+The 2026-09-15 review recorded 918 passing tests after rebasing onto master, with 1 skipped
 and 6 deselected, plus Ruff, formatting, mypy and four dashboard tests. These checks
 do not validate the remaining lifecycle work or establish a performance improvement.
 

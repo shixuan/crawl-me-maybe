@@ -11,7 +11,7 @@
 >
 > So crawl me, maybe?
 
-A goal-driven crawler. You say what you are looking for; it decides where to go, what to skip, and when to stop, inside a budget
+A goal-driven crawler. You say what you are looking for. It decides where to go, what to skip, and when to stop, within your budget.
 
 ## Install
 
@@ -69,7 +69,7 @@ crawl run "nearby merchants giving something away, with the shop, offer and dead
 
 The crawler obeys robots.txt by default. Use `--ignore-robots` to explicitly bypass its rules and crawl delays.
 
-Add `--enhance-seeds` to propose and verify additional sources. Use `--fetcher browser` to render all pages; otherwise fetching is selected per URL.
+Add `--enhance-seeds` to propose and verify additional sources. Use `--fetcher browser` to render all pages. Otherwise, fetching is selected per URL.
 
 **Read results** using the task ID printed by the run:
 
@@ -82,7 +82,7 @@ python dashboard/serve.py
 The dashboard serves at `http://127.0.0.1:8765`. Its options are `--port` (default `8765`) and `--results-dir` (default `results`). It supports filtering by classification, dates, text and extracted fields.
 
 After analysis, an LLM groups equivalent relevant results by default. The dashboard
-shows each group with an overview and average relevance; individual sources retain
+shows each group with an overview and average relevance. Individual sources retain
 their scores, dates, content and links. Use `--dedup off` to skip grouping.
 
 ## CLI
@@ -94,31 +94,31 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--seeds` | none | Comma-separated URLs or a JSON file containing a URL list or `{"seeds": [...], "allowed_domains": [...]}` |
-| `--allowed-domains` | none | Comma-separated domain scope; overrides the seeds file |
+| `--allowed-domains` | none | Comma-separated domain scope overriding the seeds file |
 | `--enhance-seeds` | off | Propose additional sources and fetch them to verify they yield candidates |
-| `--depth-limit` | `5` | Maximum candidate depth; seeds start at `0` |
-| `--since` | none | Publication cutoff, e.g. `"2 weeks"` or `2026-08-01`; overrides a cutoff inferred from the prompt |
-| `--draining` | off | Disable the page limit; other budgets and stop conditions still apply |
-| `--fetcher` | per URL | `http` uses HTTP with automatic platform rendering; `browser` renders everything |
-| `--session` | none | Playwright storage-state file; enables Instagram and defaults the domain budget to unlimited |
+| `--depth-limit` | `5` | Maximum candidate depth, starting at `0` for seeds |
+| `--since` | none | Publication cutoff, e.g. `"2 weeks"` or `2026-08-01`, overriding any cutoff inferred from the prompt |
+| `--draining` | off | Disable the page limit. Other budgets and stop conditions still apply |
+| `--fetcher` | per URL | `http` uses HTTP with automatic platform rendering. `browser` renders everything |
+| `--session` | none | Playwright storage-state file enabling Instagram and defaulting the domain budget to unlimited |
 | `--ignore-robots` | off | Bypass robots.txt rules and requested delays |
-| `--max-relevant` | `0` | Stop after this many relevant results; `0` means no target; in-flight analysis may overshoot |
-| `--page-budget` | `500` | Maximum pages; `0` means unlimited; a positive value conflicts with `--draining` |
+| `--max-relevant` | `0` | Relevant-result target (`0` disables). In-flight analysis may overshoot |
+| `--page-budget` | `500` | Maximum pages (`0` means unlimited). A positive value conflicts with `--draining` |
 | `--token-budget` | `500000` | Shared LLM token budget |
 | `--time-budget` | `3600` | Run duration in seconds |
-| `--domain-budget` | `50` | Pages per domain; `0` means unlimited |
-| `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement; URL filters still apply |
-| `--analysis` | `on` | `on` or `off`; per-page classification and field extraction |
-| `--dedup` | `on` | `on` or `off`; group equivalent relevant analyses after crawling; requires an LLM |
+| `--domain-budget` | `50` | Pages per domain (`0` means unlimited) |
+| `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement. URL filters still apply |
+| `--analysis` | `on` | Per-page classification and field extraction (`on` or `off`) |
+| `--dedup` | `on` | Group equivalent relevant analyses after crawling (`on` or `off`). Requires an LLM |
 | `--analyzer-max-chars` | `3000` | Maximum page-text characters sent to the analyzer |
 | `--result-dir` | `results` | Parent directory for run output |
 | `--log-level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` or `OFF` |
 
-`--max-pages`, `--max-tokens` and `--max-duration` are aliases for the corresponding run budgets. Settings-backed options also accept environment values; CLI flags take precedence. See [Settings](src/crawlme/config.py) for those options.
+`--max-pages`, `--max-tokens` and `--max-duration` are aliases for the corresponding run budgets. Settings-backed options also accept environment values. CLI flags take precedence. See [Settings](src/crawlme/config.py) for those options.
 
 Dedup shares `LLM_MODEL` and the run's token budget. `LLM_DEDUP_REASONING_EFFORT`
 defaults to `off` (subject to model support). `LLM_DEDUP_MAX_CHARS` defaults to
-100000; oversized input is left ungrouped rather than truncated. Failed grouping
+100000. Oversized input is left ungrouped. Failed grouping
 also retains original results. Per-stage usage, including dedup, appears in the
 final report in both the terminal and run log. `--max-relevant` still counts pages,
 not deduplicated groups.
@@ -126,8 +126,8 @@ not deduplicated groups.
 ### `crawl dedup <task-id>`
 
 Group existing relevant analyses without fetching or re-analyzing pages. Reuses
-the run's goal by default; `--goal <goal-id>` selects a replay goal. Each successful
-invocation saves a new grouping snapshot; failures keep the previous snapshot.
+the run's goal by default. Use `--goal <goal-id>` to select a replay goal. Each
+successful invocation saves a new grouping snapshot. Failures keep the previous snapshot.
 Refresh the dashboard to load the new groups. Usage is printed and appended to
 the run log, including on failure after a model call.
 
@@ -136,7 +136,7 @@ crawl dedup <task-id>
 crawl dedup <task-id> --goal <goal-id> --max-tokens 30000
 ```
 
-`--result-dir` selects the results root; `--log-level` overrides logging verbosity.
+Use `--result-dir` to select the results root and `--log-level` to override logging verbosity.
 Model and reasoning settings are the same as for automatic dedup after crawling.
 
 ### `crawl session <path>`
@@ -157,9 +157,9 @@ Shows the goal, crawl counts and relevant results grouped by event dates.
 |---|---|---|
 | `--goal` | original goal | Select another stored goal's analyses |
 | `--during` | none | Exclude results starting beyond this future cutoff, e.g. `"1 week"` or `2026-10-01` |
-| `--export` | none | `json` includes extracted fields and evidence; `csv` exports fixed columns |
+| `--export` | none | `json` includes extracted fields and evidence. `csv` exports fixed columns |
 
-`--since` concerns **publication time** during crawling. `--during` concerns **event dates** in the results. Results with no date form a separate group; expired results remain visible. The terminal shows a limited number of results per group; export includes all rows.
+`--since` concerns **publication time** during crawling. `--during` concerns **event dates** in the results. Results with no date form a separate group, and expired results remain visible. The terminal limits the number shown per group. Export includes all rows.
 
 Goal Enhancer enables time handling only when the goal implies a validity window,
 such as events, offers or applications. Analyzer extracts evidenced dates independently
@@ -195,7 +195,7 @@ flowchart LR
     harvest -. next candidates .-> candidates
 ```
 
-Each discovered candidate is ranked before its page is fetched and analyzed. The frontier rotates unranked candidates between sources, then fetches kept candidates by priority. Seeds and listing continuation URLs enter the priority queue directly after filtering. Analysis checks field evidence against page text; discovery then supplies the next batch of candidate URLs.
+Each discovered candidate is ranked before its page is fetched and analyzed. The frontier rotates unranked candidates between sources, then fetches kept candidates by priority. Seeds and listing continuation URLs enter the priority queue directly after filtering. Analysis checks whether field evidence appears in the page text. Discovery then supplies the next batch of candidate URLs.
 
 The crawl stops on budgets, a result target, an empty frontier or a reported failure. Individual sources retire after sustained low relevance or old publication dates. Raw pages, analyses, ranking decisions and checkpoints are stored under `results/<timestamp>/`.
 
@@ -208,7 +208,7 @@ Copy [`.env.example`](.env.example) to `.env` for credentials, model settings an
 - Browser and feed support require their optional dependencies. Automatic dispatch falls back to HTTP with a warning if Playwright is absent.
 - Platform adapters depend on site markup and responses, which may change. Login or rate-limit refusals stop the run.
 - The analyzer reads a bounded text prefix. Extracted evidence is checked, but relevance and field values remain model judgments.
-- Event-date parsing supports explicit English month names and ISO dates; relative phrases such as “tomorrow” are not resolved.
+- Event-date parsing supports explicit English month names and ISO dates. Relative phrases such as “tomorrow” are not resolved.
 
 ## License
 
