@@ -1,4 +1,4 @@
-"""Seed Enhancer: how many to ask for, what to keep, what to drop."""
+"""Seed Expander: how many to ask for, what to keep, what to drop."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from crawlme.discovery.harvester import Harvest
 from crawlme.llm import LLMError, LLMResponse
-from crawlme.pioneer.seed_enhancer import SeedEnhancer, _parse, how_many
+from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
 from crawlme.schemas import (
     URL,
     Candidate,
@@ -21,10 +21,10 @@ def _reply(*pairs) -> str:
     return json.dumps({"seeds": [{"url": u, "why": w} for u, w in pairs]})
 
 
-def _enhancer(content: str) -> SeedEnhancer:
+def _expander(content: str) -> SeedExpander:
     client = MagicMock()
     client.chat = AsyncMock(return_value=LLMResponse(content=content, input_tokens=0, output_tokens=0, model="m"))
-    return SeedEnhancer(client)
+    return SeedExpander(client)
 
 
 def _goal() -> CrawlGoal:
@@ -57,14 +57,14 @@ def test_bounds_come_from_settings():
 
 
 async def test_proposes_what_the_model_named():
-    got = await _enhancer(_reply(("https://a.com/", "because"))).propose(_goal(), ["https://s.com/"], 4)
+    got = await _expander(_reply(("https://a.com/", "because"))).propose(_goal(), ["https://s.com/"], 4)
     assert got == [("https://a.com/", "because")]
 
 
 async def test_a_seed_already_given_is_not_proposed_again():
     """Spending a verification fetch to rediscover the user's own seed."""
     reply = _reply(("https://s.com/", "dup"), ("https://a.com/", "new"))
-    got = await _enhancer(reply).propose(_goal(), ["https://s.com/"], 4)
+    got = await _expander(reply).propose(_goal(), ["https://s.com/"], 4)
     assert [u for u, _ in got] == ["https://a.com/"]
 
 
@@ -81,26 +81,26 @@ async def test_a_seed_already_given_is_not_proposed_again():
 async def test_a_seed_respelled_is_still_the_same_seed(spelling):
     """Asked twice, a model writes one account several ways. Each costs
     a fetch and then hands back a seed the user already gave."""
-    got = await _enhancer(_reply((spelling, "w"))).propose(_goal(), ["https://www.ig.com/acct/"], 4)
+    got = await _expander(_reply((spelling, "w"))).propose(_goal(), ["https://www.ig.com/acct/"], 4)
     assert got == []
 
 
 async def test_two_spellings_of_one_proposal_count_once():
     reply = _reply(("https://a.com/x/", "w"), ("http://www.a.com/x", "w"))
-    got = await _enhancer(reply).propose(_goal(), ["https://s.com/"], 4)
+    got = await _expander(reply).propose(_goal(), ["https://s.com/"], 4)
     assert len(got) == 1
 
 
 async def test_more_than_asked_is_cut():
     reply = _reply(*[(f"https://a{i}.com/", "w") for i in range(9)])
-    got = await _enhancer(reply).propose(_goal(), ["https://s.com/"], 3)
+    got = await _expander(reply).propose(_goal(), ["https://s.com/"], 3)
     assert len(got) == 3
 
 
 async def test_a_non_url_is_dropped():
     """The model answers in prose sometimes, and a bare handle is not
     something the crawler can fetch."""
-    got = await _enhancer(_reply(("chatimecanada", "w"), ("https://a.com/", "w"))).propose(
+    got = await _expander(_reply(("chatimecanada", "w"), ("https://a.com/", "w"))).propose(
         _goal(), ["https://s.com/"], 4
     )
     assert [u for u, _ in got] == ["https://a.com/"]
@@ -108,13 +108,13 @@ async def test_a_non_url_is_dropped():
 
 async def test_no_client_proposes_nothing():
     """Inert without credentials, like the Goal Enhancer."""
-    assert await SeedEnhancer(None).propose(_goal(), ["https://s.com/"], 4) == []
+    assert await SeedExpander(None).propose(_goal(), ["https://s.com/"], 4) == []
 
 
 async def test_an_llm_error_proposes_nothing():
     client = MagicMock()
     client.chat = AsyncMock(side_effect=LLMError("down"))
-    assert await SeedEnhancer(client).propose(_goal(), ["https://s.com/"], 4) == []
+    assert await SeedExpander(client).propose(_goal(), ["https://s.com/"], 4) == []
 
 
 def test_unparseable_replies_are_dropped():
@@ -130,7 +130,7 @@ def test_prose_around_the_json_is_tolerated():
 def test_a_long_reason_is_cut():
     """It is shown back to a person deciding whether to keep the seed,
     so it has to fit on the line it is printed on."""
-    from crawlme.pioneer.seed_enhancer import _MAX_WHY
+    from crawlme.pioneer.seed_expander import _MAX_WHY
 
     content = json.dumps({"seeds": [{"url": "https://a.com/", "why": "x" * 500}]})
     assert len(_parse(content, known=set(), want=4)[0][1]) == _MAX_WHY
@@ -157,7 +157,7 @@ def _rig(*, yields: int, problem=None, fetch_raises=False):
 
 
 async def _verify(proposals, **kw):
-    from crawlme.pioneer.seed_enhancer import verify
+    from crawlme.pioneer.seed_expander import verify
 
     probe, canon = _rig(**kw)
     kept, dropped = await verify(

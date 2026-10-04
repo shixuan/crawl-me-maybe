@@ -65,7 +65,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `scheduler/workers/` | Execute ranking, fetching, persistence, analysis and discovery |
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Decide run stopping and individual source retirement |
-| `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs, and enhance goals and seeds |
+| `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs, and enhance goals and expand seeds |
 | `digest/` | Fetch pages and extract text and metadata |
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
 | `platforms/` | Platform recognition, parsing, rendering and session requirements |
@@ -73,7 +73,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
-| `runtime/state.py` | Own run limits, counters, page/source history and seed enhancement metadata |
+| `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `storage/base.py` | Storage protocol for run records and fetched files |
 | `storage/sqlite.py` | SqliteStorage implementation using SQLite and raw files |
@@ -88,7 +88,7 @@ pipeline steps. They neither call one another nor receive the engine or mutable 
 state. The engine owns ordering and queue admission. Workers use the existing
 Fetcher, Extractor, Analyzer, Harvester and Ranker contracts.
 
-The factory creates workers and binds seed enhancement to its dependencies.
+The factory creates workers and binds seed expansion to its dependencies.
 Seed verification receives a probe that uses the same FetchWorker, PersistWorker
 and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
 and payloads, and discovers candidates without publishing an unextracted Page row.
@@ -101,7 +101,7 @@ and payloads, and discovers candidates without publishing an unextracted Page ro
    a goal, task, scheduler and shared `TokenBudget`.
 2. `GoalEnhancer` derives the goal statement, fields and optional publication
    cutoff. An explicit `--since` overrides the inferred cutoff.
-3. Optional seed enhancement proposes URLs and verifies that fetched pages yield
+3. Optional seed expansion proposes URLs and verifies that fetched pages yield
    candidates. Accepted proposals receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
 5. `fetch_pump` dispatches pages while `rank_pump` scores newly discovered candidates.
@@ -227,7 +227,7 @@ The engine exposes `run_state`. `RunState` owns run-wide data:
 - `Stats` holds reporting statistics.
 - `seeds` holds per-source counters, retirement history and pagination counts.
 - `pages`, `page_contexts` and `relevant_pages` hold page associations and ranking feedback.
-- Seed enhancement metadata records proposed and rejected sources.
+- Seed expansion metadata records proposed and rejected sources.
 
 Startup reset clears execution history and counters while preserving prepared seed
 URLs, proposal metadata and recorded pre-run token usage. It retains the RunState

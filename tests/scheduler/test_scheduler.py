@@ -935,29 +935,29 @@ async def test_robots_absent():
 
 
 @pytest.mark.asyncio
-async def test_seeds_unenhanced_by_default():
-    """Off unless asked for: no call, and the module is not even loaded."""
-    sched = _make_sched(settings=Settings(enhance_seeds=False))
-    assert await sched.enhance_seeds(_goal(), [MagicMock()]) == []
+async def test_seed_expansion_disabled():
+    """Disabled seed expansion does not propose sources."""
+    sched = _make_sched(settings=Settings(expand_seeds=False))
+    assert await sched.expand_seeds(_goal(), [MagicMock()]) == []
 
 
 @pytest.mark.asyncio
-async def test_no_seeds_nothing_to_enhance():
+async def test_no_seeds_to_expand():
     """Nothing to widen, and the model would have no example to follow."""
-    sched = _make_sched(settings=Settings(enhance_seeds=True))
-    assert await sched.enhance_seeds(_goal(), []) == []
+    sched = _make_sched(settings=Settings(expand_seeds=True))
+    assert await sched.expand_seeds(_goal(), []) == []
 
 
 @pytest.mark.asyncio
-async def test_enhanced_seeds_are_marked():
+async def test_expanded_seeds_are_marked():
     """The buffer reads this to give them the smaller share."""
     from crawlme.schemas import URL, Candidate
 
     url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
     proposed = Candidate(url=url, seed_ext=True)
-    sched = _make_sched(settings=Settings(enhance_seeds=True))
-    with patch("crawlme.scheduler.factory.enhance", AsyncMock(return_value=([proposed], 1, []))):
-        got = await sched.enhance_seeds(_goal(), [MagicMock(url=url)])
+    sched = _make_sched(settings=Settings(expand_seeds=True))
+    with patch("crawlme.scheduler.factory.expand", AsyncMock(return_value=([proposed], 1, []))):
+        got = await sched.expand_seeds(_goal(), [MagicMock(url=url)])
     assert [c.seed_ext for c in got] == [True]
 
 

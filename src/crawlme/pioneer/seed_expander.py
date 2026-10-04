@@ -40,14 +40,14 @@ def how_many(given: int, low: int, high: int) -> int:
     return max(low, min(high, round(4 + 2 * math.log2(given))))
 
 
-class SeedEnhancer:
+class SeedExpander:
     """Propose additional seed URLs with an optional LLM client."""
 
     def __init__(self, client: LLMClient | None) -> None:
         self._client = client
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> SeedEnhancer:
+    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> SeedExpander:
         """Inert without credentials, like the Goal Enhancer."""
         return cls(
             LLMClient.from_settings_if_configured(
@@ -155,7 +155,7 @@ async def verify(
     return kept, dropped
 
 
-async def enhance(
+async def expand(
     goal: CrawlGoal,
     seeds: list[str],
     *,
@@ -165,8 +165,8 @@ async def enhance(
     canonicalizer: Canonicalizer,
 ) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
     """Return accepted seeds, proposal count and rejected (URL, reason) pairs."""
-    want = how_many(len(seeds), settings.enhance_seeds_min, settings.enhance_seeds_max)
-    proposals = await SeedEnhancer.from_settings(settings, budget=budget).propose(goal, seeds, want)
+    want = how_many(len(seeds), settings.expand_seeds_min, settings.expand_seeds_max)
+    proposals = await SeedExpander.from_settings(settings, budget=budget).propose(goal, seeds, want)
     if not proposals:
         return [], 0, []
     logger.info("the model named %d more source%s to try", len(proposals), "" if len(proposals) == 1 else "s")

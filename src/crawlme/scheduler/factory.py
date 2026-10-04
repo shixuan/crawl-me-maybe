@@ -19,7 +19,7 @@ from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_enhancer import enhance
+from crawlme.pioneer.seed_expander import expand
 from crawlme.platforms import ADAPTERS, FeedAdapter
 from crawlme.runtime.state import Limits, Progress, RunState, Stats
 from crawlme.runtime.tracking import RunTracker
@@ -86,12 +86,12 @@ def create_scheduler(
         )
         return await discovery.discover(page, item.depth)
 
-    async def enhance_seeds(
+    async def expand_seeds(
         goal: CrawlGoal,
         seeds: list[str],
         budget: TokenBudget | None,
     ) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
-        return await enhance(
+        return await expand(
             goal,
             seeds,
             settings=settings,
@@ -117,7 +117,7 @@ def create_scheduler(
         "prefilter": PreFilter(),
         "canonicalizer": canonicalizer,
         "tracking": RunTracker(state),
-        "seed_enhancer": enhance_seeds,
+        "seed_expander": expand_seeds,
         "grouper": grouper,
     }
     kwargs.update(overrides)

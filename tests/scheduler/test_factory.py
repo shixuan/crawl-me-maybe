@@ -58,7 +58,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     """The assembled seed verifier uses the same access policy as crawling."""
     import sqlite3
 
-    from crawlme.pioneer.seed_enhancer import SeedEnhancer
+    from crawlme.pioneer.seed_expander import SeedExpander
     from crawlme.pioneer.sources.manual import ManualSource
     from crawlme.schemas import CrawlGoal, FetchResult, Payload
 
@@ -75,21 +75,21 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
             payloads = []
         return FetchResult(item_id="f", url=item.url, url_key=item.url_key, status_code=200, raw=raw, payloads=payloads)
 
-    monkeypatch.setattr(SeedEnhancer, "propose", AsyncMock(return_value=[(url, "source")]))
+    monkeypatch.setattr(SeedExpander, "propose", AsyncMock(return_value=[(url, "source")]))
     cfg = Settings(
         _env_file=None,
         result_dir=tmp_path,
         llm_api_key="",
         llm_base_url="",
         analysis_enabled=False,
-        enhance_seeds=True,
+        expand_seeds=True,
         ignore_robots=ignore,
     )
     scheduler = create_scheduler(cfg, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
     goal = CrawlGoal(prompt="compiler safety")
     seeds = await ManualSource(["https://example.com/start"]).discover(goal)
     try:
-        kept = await scheduler.enhance_seeds(goal, seeds)
+        kept = await scheduler.expand_seeds(goal, seeds)
         assert bool(kept) == (ignore or not disallow)
         assert (url in calls) == (ignore or not disallow)
         assert ("https://example.com/robots.txt" in calls) == (not ignore)

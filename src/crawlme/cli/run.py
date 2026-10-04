@@ -44,8 +44,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
         cfg.analyzer_max_chars = args.analyzer_max_chars
     if args.fetcher is not None:
         cfg.fetcher = args.fetcher
-    if args.enhance_seeds:
-        cfg.enhance_seeds = True
+    if args.expand_seeds:
+        cfg.expand_seeds = True
     if args.session is not None:
         # A session supplies browser state without forcing browser fetching for every URL.
         cfg.browser_storage_state = args.session
@@ -147,7 +147,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
     # After the user's own, so theirs are ingested whatever the model
     # says.
-    candidates += await scheduler.enhance_seeds(goal, candidates, budget)
+    candidates += await scheduler.expand_seeds(goal, candidates, budget)
     await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(

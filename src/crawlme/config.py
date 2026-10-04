@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from crawlme.digest.fetcher.base import DEFAULT_UA
@@ -65,9 +66,9 @@ class Settings(BaseSettings):
     candidate_buffer_size: int = 2_000
 
     # Proposal count is clamped between these bounds.
-    enhance_seeds: bool = False
-    enhance_seeds_min: int = 4
-    enhance_seeds_max: int = 12
+    expand_seeds: bool = Field(default=False, validation_alias=AliasChoices("expand_seeds", "enhance_seeds"))
+    expand_seeds_min: int = Field(default=4, validation_alias=AliasChoices("expand_seeds_min", "enhance_seeds_min"))
+    expand_seeds_max: int = Field(default=12, validation_alias=AliasChoices("expand_seeds_max", "enhance_seeds_max"))
 
     # --- Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF

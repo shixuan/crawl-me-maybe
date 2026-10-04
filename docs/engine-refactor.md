@@ -82,7 +82,7 @@ retry later while discovery proceeds.
 |---|---|
 | Engine | Run control state, pump and page task handles, backpressure, candidate admission, queue mutations, checkpoint timing |
 | Frontier | Waiting, scored and cooling work, deduplication, ranking-in-progress count and snapshots |
-| RunState | Limits, progress, reporting statistics, page/source associations, feedback and seed enhancement metadata |
+| RunState | Limits, progress, reporting statistics, page/source associations, feedback and seed expansion metadata |
 | RunTracker | Synchronous updates and joins over one RunState |
 | TokenBudget | Token accounting and stage usage, with a callback updating the progress mirror |
 | PageAnalyzer | Analysis execution, delayed retry queue and result sink |
@@ -97,7 +97,7 @@ These are event-loop ownership boundaries, not a thread-safety guarantee.
 Stopping policies receive limits and progress, not reporting statistics.
 `Stats` remains in `runtime/state.py`.
 
-Startup reset preserves RunState identity, prepared seed URLs, enhancement metadata
+Startup reset preserves RunState identity, prepared seed URLs, expansion metadata
 and pre-run token usage. It clears execution history and counters. Resume does not
 reset it. Code must not retain references to nested objects replaced by reset.
 
@@ -134,7 +134,7 @@ Consolidating their ownership does not bound their memory growth.
 On 2026-09-14, run `20260914_162309` exposed the pump supervision defect.
 
 - LiteLLM initialization completed in 1.4 seconds.
-- Goal and seed enhancement exceeded the new 90-second request deadline.
+- Goal enhancement and seed expansion exceeded the new 90-second request deadline.
 - Ranking exceeded the deadline at 16:29:20. The exception escapes the rank pump.
 - Engine waits for both pumps with `gather(return_exceptions=True)` before
   inspecting failures. The fetch pump therefore keeps running.

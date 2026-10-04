@@ -69,7 +69,10 @@ crawl run "nearby merchants giving something away, with the shop, offer and dead
 
 The crawler obeys robots.txt by default. Use `--ignore-robots` to explicitly bypass its rules and crawl delays.
 
-Add `--enhance-seeds` to propose and verify additional sources. Use `--fetcher browser` to render all pages. Otherwise, fetching is selected per URL.
+Add `--expand-seeds` to propose and verify additional sources. Use `--fetcher browser` to render all pages. Otherwise, fetching is selected per URL.
+
+`--enhance-seeds` remains an alias for `--expand-seeds`. The seed expansion settings
+use `EXPAND_SEEDS_MIN/MAX`, with `ENHANCE_SEEDS_MIN/MAX` accepted for existing configurations.
 
 **Read results** using the task ID printed by the run:
 
@@ -95,7 +98,7 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”.
 |---|---|---|
 | `--seeds` | none | Comma-separated URLs or a JSON file containing a URL list or `{"seeds": [...], "allowed_domains": [...]}` |
 | `--allowed-domains` | none | Comma-separated domain scope overriding the seeds file |
-| `--enhance-seeds` | off | Propose additional sources and fetch them to verify they yield candidates |
+| `--expand-seeds` | off | Propose additional sources and fetch them to verify they yield candidates |
 | `--depth-limit` | `5` | Maximum candidate depth, starting at `0` for seeds |
 | `--since` | none | Publication cutoff, e.g. `"2 weeks"` or `2026-08-01`, overriding any cutoff inferred from the prompt |
 | `--draining` | off | Disable the page limit. Other budgets and stop conditions still apply |

@@ -45,7 +45,7 @@ from crawlme.schemas import (
 )
 from crawlme.storage.base import Storage
 
-SeedEnhancement = Callable[
+SeedExpansion = Callable[
     [CrawlGoal, list[str], TokenBudget | None],
     Awaitable[tuple[list[Candidate], int, list[tuple[str, str]]]],
 ]
@@ -99,7 +99,7 @@ class CrawlScheduler:
         prefilter: PreFilter,
         canonicalizer: Canonicalizer,
         tracking: RunTracker,
-        seed_enhancer: SeedEnhancement,
+        seed_expander: SeedExpansion,
         grouper: Grouper | None = None,
     ) -> None:
         self._cfg = settings
@@ -119,7 +119,7 @@ class CrawlScheduler:
         self._prefilter = prefilter
         self._canonicalizer = canonicalizer
         self._tracking = tracking
-        self._seed_enhancer = seed_enhancer
+        self._seed_expander = seed_expander
         self._analysis.bind_sink(self._on_analysis)
         self._state = "CREATED"
         self._goal: CrawlGoal | None = None
@@ -130,13 +130,13 @@ class CrawlScheduler:
 
     # seed ingestion --------------------------------------------------
 
-    async def enhance_seeds(
+    async def expand_seeds(
         self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
     ) -> list[Candidate]:
         """Propose and verify additional seeds when enabled."""
-        if not self._cfg.enhance_seeds or not seeds:
+        if not self._cfg.expand_seeds or not seeds:
             return []
-        proposed, n_proposed, rejected = await self._seed_enhancer(goal, [c.url.raw for c in seeds], budget)
+        proposed, n_proposed, rejected = await self._seed_expander(goal, [c.url.raw for c in seeds], budget)
         self.run_state.seeds_asked = n_proposed
         self.run_state.rejected_seeds = rejected
         for c in proposed:
