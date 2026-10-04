@@ -180,7 +180,7 @@ class RunState:
     proposed_seeds: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
 
     def reset(self, *, goal: CrawlGoal, tokens_used_start: int = 0) -> None:
-        """Reset execution history while preserving prepared seeds and enhancement metadata.
+        """Reset execution history while preserving prepared seeds and expansion metadata.
 
         Seed ingestion precedes run(), so source URLs and proposal details must
         survive startup. Resume does not call this method.

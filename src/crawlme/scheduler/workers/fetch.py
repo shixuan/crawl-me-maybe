@@ -49,10 +49,14 @@ class FetchWorker:
             logger.debug("robots.disallowed url=%s domain=%s", item.url.canonical, domain)
             return FetchFailure("robots")
         async with self._slots:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            delay = (self.robots.next_allowed_at(domain) - now).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
             logger.info("fetching %s", where(item.url.canonical))
             try:
                 result = await self.fetcher.fetch(item)
-                self.robots.record_response(domain, result.status_code, self.robots.crawl_delay(domain))
+                self.robots.record_response(domain, result.status_code, self.robots.crawl_delay(host))
             except Exception as e:
                 logger.warning("fetch.failed url_key=%s domain=%s depth=%d", item.url_key, domain, item.depth)
                 return FetchFailure("fetch", type(e).__name__)

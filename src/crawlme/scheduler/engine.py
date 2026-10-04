@@ -24,7 +24,7 @@ from crawlme.runtime.events import EventEmitter, EventType
 from crawlme.runtime.state import RunState
 from crawlme.runtime.tracking import RunTracker
 from crawlme.scheduler.reporting import summary
-from crawlme.scheduler.stop_conds import check_stop, why_retire
+from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
 from crawlme.scheduler.workers import (
     AnalysisWorker,
     DiscoveryWorker,
@@ -45,7 +45,7 @@ from crawlme.schemas import (
 )
 from crawlme.storage.base import Storage
 
-SeedEnhancement = Callable[
+SeedExpansion = Callable[
     [CrawlGoal, list[str], TokenBudget | None],
     Awaitable[tuple[list[Candidate], int, list[tuple[str, str]]]],
 ]
@@ -99,7 +99,7 @@ class CrawlScheduler:
         prefilter: PreFilter,
         canonicalizer: Canonicalizer,
         tracking: RunTracker,
-        seed_enhancer: SeedEnhancement,
+        seed_expander: SeedExpansion,
         grouper: Grouper | None = None,
     ) -> None:
         self._cfg = settings
@@ -119,7 +119,7 @@ class CrawlScheduler:
         self._prefilter = prefilter
         self._canonicalizer = canonicalizer
         self._tracking = tracking
-        self._seed_enhancer = seed_enhancer
+        self._seed_expander = seed_expander
         self._analysis.bind_sink(self._on_analysis)
         self._state = "CREATED"
         self._goal: CrawlGoal | None = None
@@ -130,13 +130,13 @@ class CrawlScheduler:
 
     # seed ingestion --------------------------------------------------
 
-    async def enhance_seeds(
+    async def expand_seeds(
         self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
     ) -> list[Candidate]:
         """Propose and verify additional seeds when enabled."""
-        if not self._cfg.enhance_seeds or not seeds:
+        if not self._cfg.expand_seeds or not seeds:
             return []
-        proposed, n_proposed, rejected = await self._seed_enhancer(goal, [c.url.raw for c in seeds], budget)
+        proposed, n_proposed, rejected = await self._seed_expander(goal, [c.url.raw for c in seeds], budget)
         self.run_state.seeds_asked = n_proposed
         self.run_state.rejected_seeds = rejected
         for c in proposed:
@@ -230,6 +230,8 @@ class CrawlScheduler:
         self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         await self._settle_inflight()
 
+        await self._settle_analysis()
+
         if self._grouper is not None:
             await self._deduplicate(goal)
 
@@ -278,6 +280,32 @@ class CrawlScheduler:
                 t.cancel()
             await asyncio.gather(*still, return_exceptions=True)
 
+    async def _settle_analysis(self) -> None:
+        """Settle retries within run limits before grouping or closing storage."""
+        assert self._task is not None
+        deadline = time.monotonic() + _SETTLE_TIMEOUT
+        drain: asyncio.Task[None] | None = None
+        try:
+            while True:
+                reasons = check_stop(self._task, self._frontier, self.run_state.limits, self.run_state.progress)
+                if not can_drain_analysis(reasons):
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning("analysis.settle_timeout")
+                    break
+                if drain is None:
+                    drain = asyncio.create_task(self._analysis.drain_pending())
+                done, _ = await asyncio.wait({drain}, timeout=min(_POP_SLEEP, remaining))
+                if done:
+                    await drain
+                    break
+        finally:
+            if drain is not None:
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
+            await self._analysis.aclose()
+
     async def aclose(self) -> None:
         await self._analysis.aclose()
         await self._ranking.aclose()
@@ -309,7 +337,6 @@ class CrawlScheduler:
     async def _deduplicate(self, goal: CrawlGoal) -> None:
         assert self._grouper is not None
         try:
-            await self._analysis.drain_pending()
             self._dedup_report = await group_results(self._storage, goal, self._grouper, model=self._cfg.llm_model)
         except Exception as exc:
             self._dedup_report = {"status": "failed"}
@@ -419,7 +446,7 @@ class CrawlScheduler:
                     self._frontier.size + self._frontier.waiting_size,
                     self.run_state.progress.in_flight,
                 )
-                await self._frontier.waiting.wake()
+                await self._frontier.wake_ranker()
                 break
 
             # Count dispatched pages against the budget; wait for failed fetches to release slots.
@@ -446,22 +473,22 @@ class CrawlScheduler:
                     # A running rank call still holds pending work; wait for it to return.
                     await asyncio.sleep(_POP_SLEEP)
                     continue
-                if self._frontier.waiting.is_empty:
+                if self._frontier.waiting_size == 0:
                     # Cooling items remain pending work even when no item can be popped now.
                     if self.run_state.progress.in_flight == 0 and self._frontier.cooling == 0:
                         # Record the stop reason before leaving this loop directly.
                         self._record_stop_reason()
                         logger.debug("fetch_pump.exhausted frontier=0 buffer=0")
-                        await self._frontier.waiting.wake()
+                        await self._frontier.wake_ranker()
                         break
                     # Wake ranking to observe state changes while fetching or cooldowns continue.
-                    await self._frontier.waiting.wake()
+                    await self._frontier.wake_ranker()
                 elif self._frontier.size == 0 and self.run_state.progress.in_flight == 0:
                     # Wake ranking when buffered work remains but fetching has no candidates.
                     logger.debug(
                         "fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size
                     )
-                    await self._frontier.waiting.wake()
+                    await self._frontier.wake_ranker()
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -644,9 +671,7 @@ class CrawlScheduler:
         ranked_total = 0
         while self._state == "RUNNING":
             logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
-            await self._frontier.waiting.wait_until(
-                lambda: self._frontier.waiting.ready(self._frontier.size == 0) or self._state != "RUNNING"
-            )
+            await self._frontier.wait_for_ranking(lambda: self._state != "RUNNING")
             logger.debug(
                 "rank_pump.woke frontier=%d buffer=%d state=%s",
                 self._frontier.size,

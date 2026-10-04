@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import datetime
 import json
@@ -16,7 +17,7 @@ from typing import Any
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
-from crawlme.storage.sqlite import SqliteStorage
+from crawlme.storage.read import read_results
 from crawlme.util.dates import LATER, OVER, UNDATED, group_of
 
 
@@ -43,37 +44,31 @@ class InspectData:
 async def inspect_task(settings: Settings, task_id: str, *, goal_id: str | None = None) -> InspectData:
     """Read a task and its selected goal analyses without modifying the run database."""
     run_dir, task_row = await find_run_dir(settings.result_dir, task_id)
-    storage = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
-    await storage.start()
-    try:
-        goals = await storage.list_goals()
-        goal_ids = [g["goal_id"] for g in goals]
-        if goal_id is None:
-            goal_id = task_row.get("goal_id", "")
-        if goal_id not in goal_ids:
-            raise InspectError(f"goal {goal_id} not found in the run database")
+    results = await asyncio.to_thread(read_results, run_dir / "db" / "crawl.db")
+    goal_ids = [g["goal_id"] for g in results.goals]
+    if goal_id is None:
+        goal_id = task_row.get("goal_id", "")
+    if goal_id not in goal_ids:
+        raise InspectError(f"goal {goal_id} not found in the run database")
 
-        all_analyses = await storage.list_analyses()
-        goal_counts: dict[str, int] = {}
-        for a in all_analyses:
-            g = a.get("goal_id", "")
-            goal_counts[g] = goal_counts.get(g, 0) + 1
-        analyses = [a for a in all_analyses if a.get("goal_id") == goal_id]
+    goal_counts: dict[str, int] = {}
+    for a in results.analyses:
+        g = a.get("goal_id", "")
+        goal_counts[g] = goal_counts.get(g, 0) + 1
+    analyses = [a for a in results.analyses if a.get("goal_id") == goal_id]
 
-        return InspectData(
-            task_id=task_id,
-            run_dir=run_dir,
-            state=task_row.get("state", ""),
-            reason=task_row.get("stopping_reason") or "",
-            goals=goals,
-            task_goal_id=task_row.get("goal_id", ""),
-            goal_id=goal_id,
-            pages=await storage.list_pages(),
-            analyses=analyses,
-            goal_counts=goal_counts,
-        )
-    finally:
-        await storage.close()
+    return InspectData(
+        task_id=task_id,
+        run_dir=run_dir,
+        state=task_row.get("state", ""),
+        reason=task_row.get("stopping_reason") or "",
+        goals=results.goals,
+        task_goal_id=task_row.get("goal_id", ""),
+        goal_id=goal_id,
+        pages=results.pages,
+        analyses=analyses,
+        goal_counts=goal_counts,
+    )
 
 
 async def cmd_inspect(args: argparse.Namespace) -> None:

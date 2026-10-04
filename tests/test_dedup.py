@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from contextlib import closing
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -130,7 +131,73 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
         await storage.close()
 
 
-async def test_scheduler_waits_for_retries_and_retains_originals_on_failure():
+async def test_group_inputs_match_readers(tmp_path, monkeypatch):
+    """Both consumers use the same goal, page revision and evidence for fingerprints."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
+    import serve
+
+    storage = SqliteStorage.create(tmp_path)
+    await storage.start()
+    try:
+        for key in ("b", "a"):
+            page = Page(
+                page_id=f"page-{key}",
+                url_key="shared-url",
+                url=URL(raw="https://example.com/offer", canonical="https://example.com/offer", url_key="shared-url"),
+            )
+            storage.save_page(page)
+            storage.save_analysis(
+                {
+                    "analysis_id": key,
+                    "page_id": page.page_id,
+                    "url_key": page.url_key,
+                    "goal_id": "chosen",
+                    "classification": "RELEVANT",
+                    "relevance_score": 0.9,
+                    "summary": key,
+                    "extracted": {"offer": {"value": key, "evidence": f"offer {key}"}},
+                }
+            )
+        for key, goal, classification, page_id in (
+            ("other-goal", "other", "RELEVANT", "page-a"),
+            ("discarded", "chosen", "IRRELEVANT", "page-a"),
+            ("orphan", "chosen", "RELEVANT", "missing-page"),
+        ):
+            storage.save_analysis(
+                {"analysis_id": key, "goal_id": goal, "classification": classification, "page_id": page_id}
+            )
+        rows = await storage.dedup_inputs("chosen")
+        assert [row["analysis_id"] for row in rows] == ["a", "b"]
+        assert [row["extracted"]["offer"]["value"] for row in rows] == ["a", "b"]
+        await storage.save_groups(
+            "chosen", fingerprint(rows), [{"members": ["a", "b"], "overview": "offer"}], model="test"
+        )
+        observed = []
+
+        def record_inputs(inputs):
+            observed.append(inputs)
+            return fingerprint(inputs)
+
+        monkeypatch.setattr(serve, "fingerprint", record_inputs)
+        with closing(serve.connect(Path(storage.db_path))) as reader:
+            assert serve._groups(reader, "chosen")[0]["members"] == ["a", "b"]
+            assert observed[-1] == rows
+            assert serve._groups(reader, "other") == []
+            with closing(sqlite3.connect(storage.db_path)) as writer:
+                writer.execute("UPDATE analyses SET summary = 'unrelated edit' WHERE goal_id = 'other'")
+                writer.commit()
+                assert serve._groups(reader, "chosen")
+                writer.execute("UPDATE analyses SET extracted_json = '{}' WHERE analysis_id = 'a'")
+                writer.commit()
+            assert serve._groups(reader, "chosen") == []
+    finally:
+        await storage.close()
+
+
+async def test_grouping_failure_retains_results():
     from crawlme.scheduler.engine import CrawlScheduler
 
     scheduler = object.__new__(CrawlScheduler)
@@ -139,16 +206,10 @@ async def test_scheduler_waits_for_retries_and_retains_originals_on_failure():
     scheduler._grouper.group = AsyncMock(side_effect=ValueError("bad model reply"))
     scheduler._analysis = MagicMock()
     scheduler._storage = MagicMock()
-    order = []
-
-    async def drain():
-        order.append("drained")
 
     async def inputs(goal_id):
-        assert order == ["drained"]
         return [{"analysis_id": "a"}]
 
-    scheduler._analysis.drain_pending = drain
     scheduler._storage.dedup_inputs = inputs
     scheduler._storage.save_groups = AsyncMock()
     await scheduler._deduplicate(CrawlGoal(prompt="gifts"))

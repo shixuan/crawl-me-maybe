@@ -20,6 +20,11 @@ class StopReason:
     detail: str = ""
 
 
+def can_drain_analysis(reasons: Sequence[StopReason]) -> bool:
+    """Fetch exhaustion still permits analysis of pages already retrieved."""
+    return all(r.code in {"BUDGET_PAGES", "FRONTIER_DRAINED", "DOMAIN_BUDGET", "ADAPTER_EMPTY"} for r in reasons)
+
+
 # individual checks ---------------------------------------------------
 
 # -- one source ----------------------------------------------------------
@@ -91,7 +96,7 @@ def _budget_time(
 
 def _is_drained(frontier: Frontier, p: Progress) -> bool:
     """Nothing to fetch in either half, and nothing on its way back."""
-    return frontier.size == 0 and frontier.waiting.is_empty and p.in_flight == 0 and frontier.scoring == 0
+    return frontier.size == 0 and frontier.waiting_size == 0 and p.in_flight == 0 and frontier.scoring == 0
 
 
 def _frontier_drained(

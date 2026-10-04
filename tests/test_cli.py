@@ -60,7 +60,7 @@ def test_prints_prompt(caplog):
         with patch("crawlme.cli.run.create_scheduler") as mock_factory:
             mock_sched = MagicMock()
             mock_sched.ingest_seeds = AsyncMock()
-            mock_sched.enhance_seeds = AsyncMock(return_value=[])
+            mock_sched.expand_seeds = AsyncMock(return_value=[])
             mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
@@ -89,12 +89,23 @@ def _capturing_factory(captured: dict):
         captured["overrides"] = overrides
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
-        sched.enhance_seeds = AsyncMock(return_value=[])
+        sched.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
         sched.run = AsyncMock()
         return sched
 
     return _capture
+
+
+@pytest.mark.parametrize("flag", ["--expand-seeds", "--enhance-seeds"])
+def test_seed_expansion_flag(flag):
+    captured: dict = {}
+    with (
+        patch("sys.argv", ["crawl", "run", "test", "--seeds", "https://example.com", flag]),
+        patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)),
+    ):
+        main()
+    assert captured["cfg"].expand_seeds is True
 
 
 def test_flags_win(tmp_path):
@@ -280,7 +291,7 @@ def test_binds_budget(monkeypatch):
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
-        sched.enhance_seeds = AsyncMock(return_value=[])
+        sched.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
         sched.run = AsyncMock()
         sched.note_tokens_used = note
@@ -303,7 +314,7 @@ def test_prints_summary(capsys):
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
         sched.ingest_seeds = AsyncMock()
-        sched.enhance_seeds = AsyncMock(return_value=[])
+        sched.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5, tokens_used=1234), stats=Stats())
         sched.run = AsyncMock()
         sched.summary = lambda: {

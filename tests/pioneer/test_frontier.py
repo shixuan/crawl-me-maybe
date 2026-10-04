@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -259,12 +261,12 @@ async def test_retiring_empties_both_halves():
     f = GatedFrontier()
     await f.push_candidates([_candidate("a", seed_url_key="dead")])
     await f.push_batch([_item("b", seed_url_key="dead")])
-    assert f.size == 1 and not f.waiting.is_empty
+    assert f.size == 1 and f.waiting_size > 0
 
     f.retire("dead")
 
     assert f.size == 0
-    assert f.waiting.is_empty
+    assert f.waiting_size == 0
     assert f.is_retired("dead")
 
 
@@ -277,3 +279,44 @@ async def test_a_retired_seed_is_not_handed_out():
     while (item := await f.pop_next()) is not None:
         got.append(item.seed_url_key)
     assert got == ["live"]
+
+
+@pytest.mark.parametrize("trigger", ["hungry", "batch", "age", "interrupted"])
+async def test_ranking_wait(trigger, monkeypatch):
+    """A notification rechecks readiness without exposing the candidate buffer."""
+    clock = [0.0]
+    monkeypatch.setattr("crawlme.pioneer.buffer.time", SimpleNamespace(monotonic=lambda: clock[0]))
+    frontier = GatedFrontier()
+    await frontier.push_batch([_item("queued")])
+    await frontier.push_candidates([_candidate("first")])
+    interrupted = asyncio.Event()
+    waiting = asyncio.create_task(frontier.wait_for_ranking(interrupted.is_set))
+    try:
+        await asyncio.sleep(0)
+        await frontier.wake_ranker()
+        await asyncio.sleep(0)
+        assert not waiting.done(), "a wake alone does not make a batch ready"
+        if trigger == "hungry":
+            assert await frontier.pop_next() is not None
+        elif trigger == "batch":
+            await frontier.push_candidates([_candidate(f"c{i}") for i in range(99)])
+        elif trigger == "age":
+            clock[0] = 31.0
+        else:
+            interrupted.set()
+        await frontier.wake_ranker()
+        await asyncio.wait_for(waiting, timeout=1)
+        assert frontier.scoring == 0
+        batch = await frontier.take_for_ranking(20)
+        assert frontier.scoring == len(batch)
+        frontier.finish_ranking(len(batch))
+        assert frontier.scoring == 0
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+
+
+async def test_ranking_already_interrupted():
+    frontier = GatedFrontier()
+    await frontier.wake_ranker()
+    await asyncio.wait_for(frontier.wait_for_ranking(lambda: True), timeout=1)

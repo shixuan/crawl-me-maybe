@@ -17,17 +17,11 @@ from urllib.parse import unquote, urlparse
 
 from crawlme.dedup.grouper import fingerprint
 from crawlme.schemas.analysis import CLASSIFICATIONS
-from crawlme.storage.sqlite import dedup_input
+from crawlme.storage import queries
+from crawlme.storage.read import connect
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
-
-
-def _connect(db: Path) -> sqlite3.Connection:
-    """Open a run database read-only, so a browse can never damage a run."""
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    return con
 
 
 def _runs(results_dir: Path) -> list[dict[str, Any]]:
@@ -35,7 +29,7 @@ def _runs(results_dir: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for db in sorted(results_dir.glob("*/db/crawl.db"), reverse=True):
         try:
-            con = _connect(db)
+            con = connect(db)
         except sqlite3.Error:
             continue
         try:
@@ -83,9 +77,9 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
     db = results_dir / run / "db" / "crawl.db"
     if not db.is_file():
         raise FileNotFoundError(run)
-    con = _connect(db)
+    con = connect(db)
     try:
-        goals = [dict(g) for g in con.execute("SELECT * FROM crawl_goals ORDER BY created_at")]
+        goals = [dict(g) for g in con.execute(queries.GOALS)]
         task = con.execute("SELECT * FROM crawl_tasks ORDER BY start_at DESC LIMIT 1").fetchone()
         chosen = goal_id or (task["goal_id"] if task else "")
         pages = {p["url_key"]: dict(p) for p in con.execute("SELECT * FROM pages")}
@@ -148,14 +142,7 @@ def _groups(con: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]]:
     ).fetchone()
     if run is None:
         return []
-    inputs = [
-        dedup_input(dict(row))
-        for row in con.execute(
-            "SELECT a.*, p.url_json, p.published_at FROM analyses a JOIN pages p ON a.page_id = p.page_id "
-            "WHERE a.goal_id = ? AND a.classification = 'RELEVANT'",
-            (goal_id,),
-        )
-    ]
+    inputs = [queries.dedup_input(dict(row)) for row in con.execute(queries.DEDUP_INPUTS, (goal_id,))]
     if fingerprint(inputs) != run["fingerprint"]:
         return []
     groups = []

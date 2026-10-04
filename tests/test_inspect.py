@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -108,10 +110,45 @@ async def test_goal_unknown(tmp_path):
         await inspect_task(_cfg(tmp_path), "task1", goal_id="nope")
 
 
+@pytest.mark.parametrize("unknown_goal", [False, True])
+async def test_inspect_preserves_run(tmp_path, unknown_goal):
+    """Reading an older run must not migrate it or create a run log."""
+    run = await _write_run(tmp_path, "20260101_000001")
+    for handler in logging.getLogger().handlers[:]:
+        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == run / "log":
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+    (run / "log").unlink()
+    with sqlite3.connect(run / "db" / "crawl.db") as con:
+        con.execute("ALTER TABLE crawl_goals DROP COLUMN time_policy")
+        con.execute("DROP TABLE dedup_runs")
+
+    def files():
+        return {p.relative_to(run): (p.read_bytes(), p.stat().st_mtime_ns) for p in run.rglob("*") if p.is_file()}
+
+    before = files()
+    handlers = logging.getLogger().handlers[:]
+    if unknown_goal:
+        with pytest.raises(InspectError, match="not found"):
+            await inspect_task(_cfg(tmp_path), "task1", goal_id="missing")
+    else:
+        data = await inspect_task(_cfg(tmp_path), "task1")
+        assert len(data.pages) == len(data.analyses) == 3
+        assert all("time_policy" not in goal for goal in data.goals)
+    assert files() == before
+    assert logging.getLogger().handlers == handlers
+
+
 @pytest.mark.asyncio
 async def test_task_missing(tmp_path):
     with pytest.raises(Exception, match="task1"):
         await inspect_task(_cfg(tmp_path), "task1")
+
+
+async def test_inspect_escapes_db_path(tmp_path):
+    await _write_run(tmp_path, "run ?# %")
+    data = await inspect_task(_cfg(tmp_path), "task1")
+    assert len(data.pages) == 3
 
 
 @pytest.mark.asyncio
