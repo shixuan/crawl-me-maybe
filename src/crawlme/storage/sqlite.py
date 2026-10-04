@@ -12,24 +12,12 @@ from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
+from crawlme.storage import queries
+
 if TYPE_CHECKING:
     from crawlme.schemas import Candidate, Page, RankDecision
 
 logger = logging.getLogger(__name__)
-
-
-def dedup_input(row: dict[str, Any]) -> dict[str, Any]:
-    """The stored evidence used to group a relevant analysis and detect stale groups."""
-    return {
-        "analysis_id": row["analysis_id"],
-        "url": json.loads(row["url_json"])["canonical"],
-        "published_at": row.get("published_at"),
-        "summary": row.get("summary"),
-        "extracted": json.loads(row.get("extracted_json") or "{}"),
-        "starts_on": row.get("starts_on") or "",
-        "ends_on": row.get("ends_on") or "",
-        "relevance": row["relevance_score"],
-    }
 
 
 DDL = """
@@ -278,12 +266,10 @@ class SqliteStorage:
     async def dedup_inputs(self, goal_id: str) -> list[dict[str, Any]]:
         await self._write_queue.join()
         cur = await self._execute_now(
-            "SELECT a.*, p.url_json, p.published_at FROM analyses a "
-            "JOIN pages p ON p.page_id = a.page_id WHERE a.goal_id = ? "
-            "AND a.classification = 'RELEVANT' ORDER BY a.analysis_id",
+            queries.DEDUP_INPUTS,
             (goal_id,),
         )
-        return [dedup_input(dict(row)) for row in await cur.fetchall()]
+        return [queries.dedup_input(dict(row)) for row in await cur.fetchall()]
 
     async def save_groups(self, goal_id: str, fingerprint: str, groups: list[dict[str, Any]], *, model: str) -> None:
         """Publish a complete grouping atomically after analysis writes have settled."""
@@ -431,7 +417,7 @@ class SqliteStorage:
 
     async def list_pages(self) -> list[dict[str, Any]]:
         """All pages of the run, in fetch order (the replay reader)."""
-        cur = await self._execute_now("SELECT * FROM pages ORDER BY extracted_at, page_id")
+        cur = await self._execute_now(queries.PAGES)
         return [dict(r) for r in await cur.fetchall()]
 
     # links --------------------------------------------------------------
@@ -549,7 +535,7 @@ class SqliteStorage:
 
     async def list_goals(self) -> list[dict[str, Any]]:
         """All goal rows of the run, oldest first (the inspect reader)."""
-        cur = await self._execute_now("SELECT * FROM crawl_goals ORDER BY created_at")
+        cur = await self._execute_now(queries.GOALS)
         return [dict(r) for r in await cur.fetchall()]
 
     async def list_analyses(self, goal_id: str = "") -> list[dict[str, Any]]:
@@ -557,7 +543,7 @@ class SqliteStorage:
         if goal_id:
             cur = await self._execute_now("SELECT * FROM analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,))
         else:
-            cur = await self._execute_now("SELECT * FROM analyses ORDER BY analyzed_at")
+            cur = await self._execute_now(queries.ANALYSES)
         return [dict(r) for r in await cur.fetchall()]
 
     # frontier_snapshots -------------------------------------------------

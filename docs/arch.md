@@ -77,6 +77,8 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `runtime/events.py` | Persist crawl events |
 | `storage/base.py` | Storage protocol for run records and fetched files |
 | `storage/sqlite.py` | SqliteStorage implementation using SQLite and raw files |
+| `storage/read.py` | Open existing databases read-only and load stored results |
+| `storage/queries.py` | Share result queries and dedup input mapping across readers |
 | `scheduler/workers/persist.py` | Coordinate page file writes and database queuing through Storage |
 | `util/dates.py` | Parse event dates and assign result groups |
 | `dashboard/` | Local HTTP server and browser UI for stored results |
@@ -246,7 +248,9 @@ analysis results join run-wide records by page identity.
 arrive in different orders because analysis can retry. A completed non-listing
 record contributes one relevance vote to its seed.
 
-The frontier owns both the scored queue and unranked buffer. Scored work is gated
+The frontier owns both the scored queue and unranked buffer. Engine waits for ranking
+through `wait_for_ranking` and signals changes through `wake_ranker`. Queue counts
+are public, and the buffer stays private. Scored work is gated
 by domain budgets and cooldowns. Ranking in progress and cooling items count as
 remaining work, so an empty immediate pop does not imply a drained frontier.
 
@@ -305,6 +309,9 @@ that changes the inputs invalidates it. Replay does not automatically regroup.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
 Both automatic and standalone dedup use `dedup/grouper.py:group_results` for reading inputs
 and publishing groups, and `Grouper.from_settings` for client configuration.
+Storage and the dashboard share the input query and row mapping in `storage/queries.py`,
+so snapshot validation uses the same evidence as grouping. Analyses join their exact
+page version by `page_id`.
 Each multi-source card shows an overview, arithmetic mean relevance, and source
 cards with their original fields and dates. Search and field filters can match any
 member without hiding other members. Date filters use open if any member is open,
@@ -340,9 +347,11 @@ Page and queues the Page record. File writes run in threads. Database writes are
 queued on the event loop. A failed payload write is logged and omitted from the
 saved paths. Storage owns paths and the underlying file and database operations.
 
-`crawl inspect` displays stored results and exports JSON or CSV. Its storage startup
-still runs schema setup and opens the run log, so it is not a read-only database
-operation. The dashboard opens SQLite read-only and filters results in the browser.
+`crawl inspect` displays stored results and exports JSON or CSV. It loads results
+through `storage/read.py` in a worker thread using a read-only transaction, without
+schema setup, a write queue or a run log handler. Run lookup also opens databases
+read-only. The dashboard uses the same read-only connection helper and filters
+results in the browser.
 
 `crawl replay` analyzes stored page text without refetching or re-extracting HTML.
 It skips matching `(url_key, goal_id, spec_version, model)` analyses

@@ -13,6 +13,7 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.discovery.harvester import Harvest, PageHarvester
+from crawlme.pioneer.frontier import Frontier
 from crawlme.runtime.state import Limits, Progress, RunState, Stats
 from crawlme.scheduler.engine import CrawlScheduler, FetchedPage
 from crawlme.scheduler.factory import create_scheduler
@@ -69,15 +70,14 @@ def _ctx(**kw) -> RunState:
 
 def _make_sched(**overrides) -> CrawlScheduler:
     """Build a scheduler with all-mock components for unit tests."""
-    # The waiting half lives inside the frontier now, so the mock hangs
-    # off it rather than beside it.
-    frontier_mock = MagicMock()
-    frontier_mock.waiting = MagicMock()
-    frontier_mock.waiting.wake = AsyncMock()
-    frontier_mock.waiting.wait_until = AsyncMock()
+    frontier_mock = MagicMock(spec=Frontier)
+    frontier_mock.wake_ranker = AsyncMock()
+    frontier_mock.wait_for_ranking = AsyncMock()
     frontier_mock.take_for_ranking = AsyncMock(return_value=[])
     frontier_mock.push_candidates = AsyncMock()
     # Counts, not auto-attributes: the pumps compare them to zero.
+    frontier_mock.size = 0
+    frontier_mock.waiting_size = 0
     frontier_mock.scoring = 0
     frontier_mock.cooling = 0
 
@@ -200,7 +200,7 @@ async def test_gate_allows():
     pop_mock = AsyncMock(return_value=None)
     sched._frontier.pop_next = pop_mock
     sched._frontier.size = 0
-    sched._frontier.waiting.is_empty = True
+    sched._frontier.waiting_size = 0
 
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(sched._fetch_pump(), timeout=0.5)
@@ -489,9 +489,9 @@ async def test_pump_quiet(caplog):
     sched._frontier.scoring = 11
     sched._frontier.pop_next = AsyncMock(return_value=None)
     sched._frontier.size = 0
-    sched._frontier.waiting.is_empty = True
+    sched._frontier.waiting_size = 0
     wake = AsyncMock()
-    sched._frontier.waiting.wake = wake
+    sched._frontier.wake_ranker = wake
 
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(asyncio.TimeoutError):
@@ -583,7 +583,7 @@ async def test_cooldown_lives(caplog):
     sched._frontier.pop_next = AsyncMock(return_value=None)
     sched._frontier.size = 1
     sched._frontier.cooling = 1
-    sched._frontier.waiting.is_empty = True
+    sched._frontier.waiting_size = 0
 
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(asyncio.TimeoutError):

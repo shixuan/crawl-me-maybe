@@ -152,6 +152,7 @@ Opens a browser for manual login and saves its session state. Requires a desktop
 ### `crawl inspect <task-id>`
 
 Shows the goal, crawl counts and relevant results grouped by event dates.
+Opens stored databases read-only, without running migrations or opening the run log.
 
 | Flag | Default | Meaning |
 |---|---|---|

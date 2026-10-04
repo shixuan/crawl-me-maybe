@@ -29,6 +29,8 @@ src/crawlme/
   storage/
     base.py            Storage protocol for run records and fetched files
     sqlite.py          SqliteStorage implementation
+    read.py            Read-only connections and stored result loading
+    queries.py         Shared result queries and dedup input mapping
 ```
 
 The earlier `PageWorker`, `CandidateCoordinator` and `RunProgress` proposals are
@@ -152,7 +154,8 @@ Analysis retries now settle independently of dedup, within run limits and a
 
 Other limits remain:
 
-- Fetch dispatch polls at 0.2-second intervals and directly wakes the waiting buffer.
+- Fetch dispatch polls at 0.2-second intervals and signals `Frontier.wake_ranker`.
+  Frontier owns batch readiness and keeps its buffer private.
 - Pause does not explicitly await both pumps before writing its checkpoint.
 - Periodic snapshots represent Frontier, not all page tasks, source history or retries.
 - Same-host robots loads are not coalesced.

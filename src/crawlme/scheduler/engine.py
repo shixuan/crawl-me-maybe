@@ -446,7 +446,7 @@ class CrawlScheduler:
                     self._frontier.size + self._frontier.waiting_size,
                     self.run_state.progress.in_flight,
                 )
-                await self._frontier.waiting.wake()
+                await self._frontier.wake_ranker()
                 break
 
             # Count dispatched pages against the budget; wait for failed fetches to release slots.
@@ -473,22 +473,22 @@ class CrawlScheduler:
                     # A running rank call still holds pending work; wait for it to return.
                     await asyncio.sleep(_POP_SLEEP)
                     continue
-                if self._frontier.waiting.is_empty:
+                if self._frontier.waiting_size == 0:
                     # Cooling items remain pending work even when no item can be popped now.
                     if self.run_state.progress.in_flight == 0 and self._frontier.cooling == 0:
                         # Record the stop reason before leaving this loop directly.
                         self._record_stop_reason()
                         logger.debug("fetch_pump.exhausted frontier=0 buffer=0")
-                        await self._frontier.waiting.wake()
+                        await self._frontier.wake_ranker()
                         break
                     # Wake ranking to observe state changes while fetching or cooldowns continue.
-                    await self._frontier.waiting.wake()
+                    await self._frontier.wake_ranker()
                 elif self._frontier.size == 0 and self.run_state.progress.in_flight == 0:
                     # Wake ranking when buffered work remains but fetching has no candidates.
                     logger.debug(
                         "fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size
                     )
-                    await self._frontier.waiting.wake()
+                    await self._frontier.wake_ranker()
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -671,9 +671,7 @@ class CrawlScheduler:
         ranked_total = 0
         while self._state == "RUNNING":
             logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
-            await self._frontier.waiting.wait_until(
-                lambda: self._frontier.waiting.ready(self._frontier.size == 0) or self._state != "RUNNING"
-            )
+            await self._frontier.wait_for_ranking(lambda: self._state != "RUNNING")
             logger.debug(
                 "rank_pump.woke frontier=%d buffer=%d state=%s",
                 self._frontier.size,

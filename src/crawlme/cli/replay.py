@@ -23,6 +23,7 @@ from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page, spec_version
+from crawlme.storage.read import readonly_uri
 from crawlme.storage.sqlite import SqliteStorage
 
 logger = logging.getLogger(__name__)
@@ -207,7 +208,7 @@ async def find_run_dir(result_dir: Path, task_id: str) -> tuple[Path, dict[str, 
     seen: dict[str, str] = {}
     for db_path in sorted(result_dir.glob("*/db/crawl.db"), reverse=True):
         try:
-            async with aiosqlite.connect(db_path) as conn:
+            async with aiosqlite.connect(readonly_uri(db_path), uri=True) as conn:
                 conn.row_factory = aiosqlite.Row
                 cur = await conn.execute("SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,))
                 row = await cur.fetchone()

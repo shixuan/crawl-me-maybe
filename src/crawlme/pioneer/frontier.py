@@ -43,8 +43,9 @@ class Frontier(Protocol):
         """Candidates out being scored, in neither half but still work."""
         ...
 
-    @property
-    def waiting(self) -> Buffer: ...
+    async def wait_for_ranking(self, interrupted: Callable[[], bool]) -> None: ...
+
+    async def wake_ranker(self) -> None: ...
 
     @property
     def waiting_size(self) -> int: ...
@@ -137,10 +138,13 @@ class GatedFrontier:
         """Scored items waiting out a cooldown rather than a decision."""
         return self._source.cooling
 
-    @property
-    def waiting(self) -> Buffer:
-        """The unscored half, for the rank pump's own wake-up signal."""
-        return self._waiting
+    async def wait_for_ranking(self, interrupted: Callable[[], bool]) -> None:
+        """Wait for a ready batch or a change in the scheduler's lifecycle."""
+        await self._waiting.wait_until(lambda: self._waiting.ready(self.size == 0) or interrupted())
+
+    async def wake_ranker(self) -> None:
+        """Recheck readiness after a scheduling or lifecycle change."""
+        await self._waiting.wake()
 
     @property
     def waiting_size(self) -> int:
