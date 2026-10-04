@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.5.1...v0.6.0) (2026-10-04)
+
+
+### Features
+
+* **cli:** deduplicate stored analyses with shared grouping pipeline ([39191ee](https://github.com/shixuan/crawl-me-maybe/commit/39191ee7a9b6e62df0a757b81a6131acaaad52c6))
+* **dedup:** group analyzed results with source cards and usage reporting ([49cd408](https://github.com/shixuan/crawl-me-maybe/commit/49cd40870becf6696ffb84eb9bbebe57415fe1fc))
+* deduplicate results ([fe874cb](https://github.com/shixuan/crawl-me-maybe/commit/fe874cb8623f22fc1d46967d7b0bf1de56971ec6))
+* **time:** infer goal time policy independently of extracted fields ([c4d908c](https://github.com/shixuan/crawl-me-maybe/commit/c4d908c294647a8bd01047c6298caafccb672f6b))
+
+
+### Fixes
+
+* **crawl:** enforce shared stage policies ([e784129](https://github.com/shixuan/crawl-me-maybe/commit/e784129818fc170b0f2fa6fb5fbb301b83cf67f1))
+* **dedup:** use English overviews and compact card labels ([8f7e397](https://github.com/shixuan/crawl-me-maybe/commit/8f7e3971af3dcc2dbe6ba831ab91537c89446b51))
+
+
+### Changed
+
+* decoupling ([2b67a82](https://github.com/shixuan/crawl-me-maybe/commit/2b67a82b97563b4e438382e3aea6f089d9d9ccc1))
+* **dedup:** keep grouping workflow in grouper module ([eb72c7b](https://github.com/shixuan/crawl-me-maybe/commit/eb72c7bb436e1e5a21100e3100507d915f78b030))
+* isolate query and queue access ([bb9641c](https://github.com/shixuan/crawl-me-maybe/commit/bb9641cae15c0dca5f5fec0562339fb0ea7da519))
+* **prompts:** centralize prompts and remove manual version tracking ([9ceb307](https://github.com/shixuan/crawl-me-maybe/commit/9ceb3077181535642ca18c6654fc37d18a01bee5))
+* promtps management ([f9ce121](https://github.com/shixuan/crawl-me-maybe/commit/f9ce1216eeaace45e010044a9d8645d82b9a6aef))
+* rename seed enhancer to expander ([84a8f00](https://github.com/shixuan/crawl-me-maybe/commit/84a8f00df66c295a5a23b9346c0b78371bf14c09))
+
 ## [0.5.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.5.0...v0.5.1) (2026-09-20)
 
 
