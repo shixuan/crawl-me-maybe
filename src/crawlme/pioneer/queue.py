@@ -42,6 +42,7 @@ class PriorityQueue:
     """Best-first queue with lazy removal, cooldowns and periodic aging."""
 
     def __init__(self, *, aging_window: float = 600.0, age_factor: float = 1.0) -> None:
+        self._origin = _utcnow()
         self._aging_window = aging_window
         self._age_factor = age_factor
         self._heap: list[tuple[float, int, str]] = []
@@ -90,7 +91,7 @@ class PriorityQueue:
             item.enqueued_at = _utcnow()
             item.seq = _next_seq()
             self._items[item.url_key] = item
-            heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
+            heapq.heappush(self._heap, (self._priority_key(item), item.seq, item.url_key))
 
     async def take(self, now: datetime.datetime, gate: GateFn) -> FrontierItem | None:
         """Return the highest-priority item currently allowed by the gate.
@@ -99,6 +100,7 @@ class PriorityQueue:
         call so a non-time-based deferral cannot cause an infinite loop.
         """
         deferred: set[str] = set()
+        self._drain_pending(now)
         while True:
             found = self._scan(now, gate, deferred)
             if found is not None:
@@ -157,8 +159,15 @@ class PriorityQueue:
                 item.seq = _next_seq()
                 self._items[item.url_key] = item
                 # Do not compound aging across deferred scans; persist it only when taking the item.
-                heapq.heappush(self._heap, (-self._effective_priority(item, now), item.seq, item.url_key))
+                heapq.heappush(self._heap, (self._priority_key(item), item.seq, item.url_key))
         return len(ready) > 0
+
+    def _priority_key(self, item: FrontierItem) -> float:
+        # All items gain the same rate * now term, so their relative order is fixed.
+        if self._aging_window <= 0:
+            return -item.priority
+        age_offset = (item.enqueued_at - self._origin).total_seconds()
+        return -item.priority + self._age_factor * age_offset / self._aging_window
 
     def _effective_priority(self, item: FrontierItem, now: datetime.datetime) -> float:
         """Age waiting items upward so a low score cannot starve forever.
@@ -189,7 +198,7 @@ class PriorityQueue:
         for raw in state.get("heap", []):
             item = _as_item(raw)
             self._items[item.url_key] = item
-            heapq.heappush(self._heap, (-item.priority, item.seq, item.url_key))
+            heapq.heappush(self._heap, (self._priority_key(item), item.seq, item.url_key))
 
 
 def _as_item(raw: Any) -> FrontierItem:

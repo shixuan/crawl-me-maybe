@@ -7,6 +7,11 @@ and performance work remain open. Measurements below retain their original dates
 The goal is clearer ownership and less wasted work. Moving code is not evidence of
 higher throughput. Measure network, model, parsing and scheduler time separately.
 
+Queue aging now uses a time-independent heap key. All waiting items gain the same
+linear time term, so ordering by base priority minus enqueue time times the aging
+rate gives the same result as comparing their current effective scores. Cooled-down
+items rejoin before selection, and restored queues rebuild the same keys.
+
 ## Current structure
 
 ```text
