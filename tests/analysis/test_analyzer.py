@@ -770,3 +770,48 @@ async def test_correction_keeps_analysis():
     assert result.summary == "A one-day event."
     assert result.starts_on is None and result.ends_on is None
     assert result.tokens_used == 720
+
+
+async def test_pause_retains_retry():
+    entered = asyncio.Event()
+    calls = 0
+
+    class Client:
+        async def chat(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise LLMError("retry")
+            if calls == 2:
+                entered.set()
+                await asyncio.Event().wait()
+            return _resp(_valid_json())
+
+    analyzer = PageAnalyzer(Client(), retry_delay=0)
+    results = []
+    analyzer.bind_sink(results.append)
+    try:
+        await analyzer.analyze(_page(), _goal())
+        await asyncio.wait_for(entered.wait(), 2)
+        await analyzer.pause()
+        assert analyzer._parked_count == 1
+        assert analyzer._drain_task is None
+        await asyncio.sleep(0)
+        assert calls == 2 and not results
+        analyzer.resume()
+        await asyncio.wait_for(analyzer.drain_pending(), 2)
+        assert len(results) == 1 and calls == 3
+    finally:
+        await analyzer.aclose()
+    assert analyzer._pending.empty()
+
+
+async def test_retry_failure_surfaces():
+    analyzer = _analyzer(_StubClient([LLMError("retry"), RuntimeError("broken retry")]))
+    try:
+        await analyzer.analyze(_page(), _goal())
+        with pytest.raises(RuntimeError, match="broken retry"):
+            await asyncio.wait_for(analyzer.drain_pending(), 2)
+    finally:
+        with pytest.raises(RuntimeError, match="broken retry"):
+            await analyzer.aclose()

@@ -32,6 +32,7 @@ class Frontier(Protocol):
     def is_retired(self, seed_url_key: str) -> bool: ...
     async def take_for_ranking(self, n: int) -> list[Candidate]: ...
     def finish_ranking(self, n: int) -> None: ...
+    async def return_for_ranking(self, batch: list[Candidate]) -> None: ...
 
     @property
     def cooling(self) -> int:
@@ -128,6 +129,10 @@ class GatedFrontier:
     def finish_ranking(self, n: int) -> None:
         """Report that *n* candidates came back from scoring, or died there."""
         self._scoring = max(0, self._scoring - n)
+
+    async def return_for_ranking(self, batch: list[Candidate]) -> None:
+        fresh = [c for c in batch if c.url.url_key not in self._visited and not self._source.contains(c.url.url_key)]
+        await self._waiting.return_batch(fresh)
 
     @property
     def scoring(self) -> int:

@@ -40,7 +40,6 @@ from crawlme.schemas import (
     CrawlTask,
     FetchResult,
     FrontierItem,
-    FrontierSnapshot,
     Page,
 )
 from crawlme.storage.base import Storage
@@ -130,6 +129,8 @@ class CrawlScheduler:
         self._runner: asyncio.Task[Any] | None = None
         self._control = asyncio.Event()
         self._paused = asyncio.Event()
+        self._resumed = asyncio.Event()
+        self._transition = asyncio.Lock()
         self._closed = False
 
     # seed ingestion --------------------------------------------------
@@ -220,13 +221,26 @@ class CrawlScheduler:
             self.run_state.reset(goal=goal, tokens_used_start=self.run_state.progress.tokens_used)
             self._storage.save_goal(goal.model_dump(mode="json"))
             self._storage.save_task(task.model_dump(mode="json"))
-            self._control.clear()
-            self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
-            await self._supervise_pumps()
-            deadline = time.monotonic() + _SETTLE_TIMEOUT
-            await self._stop_pumps(deadline, cancel=True)
-            await self._settle_inflight(deadline)
-            await self._settle_analysis(deadline)
+            while self._state == "RUNNING":
+                self._control.clear()
+                self._paused.clear()
+                self._analysis.resume()
+                self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
+                self._resumed.set()
+                state = await self._supervise_pumps()
+                deadline = time.monotonic() + _SETTLE_TIMEOUT
+                if state == "PAUSING":
+                    if await self._pause_cycle(deadline):
+                        self._control.clear()
+                        self._paused.set()
+                        await self._control.wait()
+                        if self._state == "RUNNING":
+                            continue
+                        deadline = time.monotonic() + _SETTLE_TIMEOUT
+                await self._stop_pumps(deadline, cancel=True)
+                await self._settle_inflight(deadline)
+                await self._settle_analysis(deadline)
+                break
             if (
                 self._grouper is not None
                 and not self.run_state.progress.fatal_error
@@ -255,6 +269,7 @@ class CrawlScheduler:
             finally:
                 self._runner = None
                 self._paused.set()
+                self._resumed.set()
 
     def _finish_run(self) -> None:
         assert self._task is not None
@@ -415,43 +430,56 @@ class CrawlScheduler:
         """Run data shared with the tracker and read by CLI reporting."""
         return self._tracking.state
 
-    async def pause(self) -> None:
-        """Stop dispatch, settle in-flight work and persist a paused checkpoint."""
-        logger.debug("pause.requested inflight=%d", self.run_state.progress.in_flight)
-        self._state = "PAUSING"
-        await self._settle_inflight()
-        self._state = "PAUSED"
-        if self._task:
+    async def _pause_cycle(self, deadline: float) -> bool:
+        await self._analysis.pause()
+        await self._stop_pumps(deadline, cancel=False)
+        await self._settle_inflight(deadline)
+        if self._state != "PAUSING":
+            return False
+        if self._task is not None:
             self._task.state = "PAUSED"
+            self._storage.save_task(self._task.model_dump(mode="json"))
             await self._checkpoint()
-        if self._events:
-            self._events.emit(EventType.TASK_PAUSED)
+            if self._events:
+                self._events.emit(EventType.TASK_PAUSED)
+            await self._storage.flush()
+        if self._state != "PAUSING":
+            return False
+        self._state = "PAUSED"
         logger.info("pause.done")
+        return True
+
+    async def pause(self) -> None:
+        async with self._transition:
+            if self._runner is not None:
+                await self._resumed.wait()
+            if self._closed or self._state in ("PAUSED", "STOPPING", "COMPLETED", "FAILED"):
+                return
+            self._paused.clear()
+            self._state = "PAUSING"
+            self._control.set()
+            await self._frontier.wake_ranker()
+            if self._runner is None:
+                await self._pause_cycle(time.monotonic() + _SETTLE_TIMEOUT)
+            else:
+                await self._paused.wait()
 
     async def resume(self) -> None:
-        if self._state != "PAUSED":
-            return
-        # Restore from latest checkpoint.
-        snap = await self._load_latest_snapshot()
-        if snap:
-            logger.debug(
-                "resume.restored heap=%d pending=%d visited=%d", len(snap.heap), len(snap.pending), len(snap.visited)
-            )
-            self._frontier.restore(snap)
-        else:
-            logger.warning("resume.no_snapshot")
-        self._state = "RUNNING"
-        if self._task:
-            self._task.state = "RUNNING"
-        if self._events:
-            self._events.emit(EventType.TASK_RESUMED)
-        self.run_state.progress.started_at = time.monotonic()
-        self._pump_tasks = [
-            asyncio.create_task(self._fetch_pump()),
-            asyncio.create_task(self._rank_pump()),
-        ]
-        await self._supervise_pumps()
-        await self._stop_pumps(time.monotonic() + _SETTLE_TIMEOUT, cancel=True)
+        async with self._transition:
+            if self._state != "PAUSED" or self._closed:
+                return
+            if self._runner is None:
+                raise RuntimeError("resume requires the original run task")
+            self._resumed.clear()
+            self._paused.clear()
+            self._state = "RUNNING"
+            if self._task is not None:
+                self._task.state = "RUNNING"
+                self._storage.save_task(self._task.model_dump(mode="json"))
+            if self._events:
+                self._events.emit(EventType.TASK_RESUMED)
+            self._control.set()
+            await self._resumed.wait()
 
     async def stop(self) -> None:
         self._state = "STOPPING"
@@ -765,9 +793,13 @@ class CrawlScheduler:
             logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
             try:
                 await self._rank_and_enqueue(batch)
+            except BaseException:
+                await self._frontier.return_for_ranking(batch)
+                raise
+            else:
+                self.run_state.stats.candidates_ranked += len(batch)
             finally:
                 self._frontier.finish_ranking(len(batch))
-                self.run_state.stats.candidates_ranked += len(batch)
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         assert self._goal is not None
@@ -804,20 +836,3 @@ class CrawlScheduler:
         )
         if self._events:
             self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self.run_state.progress.pages_fetched})
-
-    async def _load_latest_snapshot(self) -> FrontierSnapshot | None:
-        if self._task is None:
-            return None
-        snap_id = f"{self._task.task_id}-latest"
-        row = await self._storage.get_snapshot(snap_id)
-        if row is None:
-            return None
-        snap_json = row.get("snapshot_json", {})
-        if isinstance(snap_json, str):
-            import json
-
-            snap_json = json.loads(snap_json)
-        # JSON serializes set -> list; restore to set for FrontierSnapshot.
-        if "visited" in snap_json and isinstance(snap_json["visited"], list):
-            snap_json["visited"] = set(snap_json["visited"])
-        return FrontierSnapshot(**snap_json)

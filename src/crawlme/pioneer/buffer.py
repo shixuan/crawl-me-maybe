@@ -37,6 +37,7 @@ class Buffer(Protocol):
 
     def load(self, state: dict[str, Any]) -> None: ...
     async def drain(self, n: int | None = None) -> list[Candidate]: ...
+    async def return_batch(self, batch: list[Candidate]) -> None: ...
 
     def ready(self, frontier_hungry: bool = False) -> bool: ...
 
@@ -145,6 +146,19 @@ class RoundRobinBuffer:
             taken = {id(c) for c in batch}
             self._candidates = [c for c in self._candidates if id(c) not in taken]
             return batch
+
+    async def return_batch(self, batch: list[Candidate]) -> None:
+        """Restore interrupted ranking ahead of newer work, without dedup rejection."""
+        async with self._cond:
+            keys = {c.url.url_key for c in self._candidates}
+            returned = []
+            for c in batch:
+                if c.url.url_key not in keys and c.seed_url_key not in self._retired:
+                    returned.append(c)
+                    keys.add(c.url.url_key)
+                    self._seen.add(c.url.url_key)
+            self._candidates = returned + self._candidates
+            self._cond.notify_all()
 
     def ready(self, frontier_hungry: bool = False) -> bool:
         """True when the buffer should be flushed for ranking."""

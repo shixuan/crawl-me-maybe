@@ -250,6 +250,12 @@ class _RecordingAnalyzer:
     async def drain_pending(self) -> None:
         pass
 
+    async def pause(self) -> None:
+        pass
+
+    def resume(self) -> None:
+        pass
+
 
 @pytest.mark.asyncio
 async def test_analyzes_all(integration_settings):

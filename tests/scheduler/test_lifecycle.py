@@ -41,7 +41,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
     cfg = Settings(_env_file=None, result_dir=tmp_path, llm_api_key="", llm_base_url="", ignore_robots=True)
     goal = CrawlGoal(prompt="compiler safety", max_pages=1)
     if stop == "time":
-        goal.max_duration_sec = 1
+        goal.max_duration_sec = 60
     if stop == "deadline":
         monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.05)
     task = CrawlTask(goal_id=goal.goal_id)
@@ -77,6 +77,8 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
             await asyncio.wait_for(settling.wait(), timeout=3)
             if stop == "tokens":
                 scheduler.note_tokens_used(goal.max_tokens)
+            elif stop == "time":
+                scheduler.run_state.progress.started_at -= 61
             elif stop == "user":
                 await scheduler.stop()
         await asyncio.wait_for(run, timeout=10 if stop is None else 3)

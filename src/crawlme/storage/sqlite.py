@@ -244,6 +244,12 @@ class SqliteStorage:
 
         to_file(str(Path(self._db_path).parent.parent / "log"))
 
+    async def flush(self) -> None:
+        """Commit all queued writes before publishing a stable pause boundary."""
+        await self._write_queue.join()
+        if self._conn is not None:
+            await self._conn.commit()
+
     async def close(self) -> None:
         if self._writer_task:
             await self._write_queue.join()

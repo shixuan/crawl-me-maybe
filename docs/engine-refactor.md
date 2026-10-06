@@ -1,8 +1,8 @@
 # Engine refactoring status
 
 Reviewed against the code on 2026-10-06. The worker split, runtime state consolidation,
-analysis retry settlement and pump supervision are implemented. Stable pause/resume
-and performance work remain open. Measurements below retain their original dates.
+analysis retry settlement, pump supervision and in-memory pause/resume are implemented.
+Performance work remains open. Measurements below retain their original dates.
 
 The goal is clearer ownership and less wasted work. Moving code is not evidence of
 higher throughput. Measure network, model, parsing and scheduler time separately.
@@ -175,8 +175,8 @@ Other limits remain:
 Failure supervision is implemented. Expected per-page fetch failures retain their
 existing storage behavior. Ranking and in-flight counts are released in `finally`.
 
-The table describes the target lifecycle. Retry settlement is implemented as
-described above. Stable pause/resume remains a proposal.
+The table describes the implemented lifecycle. The original run task owns every
+pause/resume cycle; concurrent control requests are serialized.
 
 | Exit condition | New work | In-flight work and analysis retries |
 |---|---|---|
@@ -192,8 +192,11 @@ queue ownership inside Analyzer. In-memory pause/resume and process-restart reco
 separate capabilities. Historical database migration and lossless cross-process
 recovery are outside this refactor.
 
-Pause snapshots must follow completion or restoration of in-flight ranking batches.
-Use storage queue ordering or an explicit flush barrier for persistence, not sleeps.
+Pause snapshots follow completion or restoration of in-flight ranking batches and
+a storage flush barrier. Interrupted batches return ahead of newer candidates; this
+can temporarily exceed buffer capacity by one ranking batch. Analysis retries stay
+in memory and do not run while paused. Resume preserves the original start time,
+so paused time counts toward the wall-clock limit.
 
 ## Performance work and evidence
 

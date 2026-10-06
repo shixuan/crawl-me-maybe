@@ -158,7 +158,7 @@ It splits calls by candidate count and text size. Truncated batches are subdivid
 Omitted candidates receive neutral priority. Unrecoverable errors propagate to
 Engine. Engine observes either pump's failure immediately and stops its peer.
 Unexpected page-task exceptions also stop the run and produce a FAILED task.
-Stable pause/resume remains open in the
+Pause/resume keeps one run owner and settles both pumps before checkpointing; see the
 [Engine plan](engine-refactor.md). `--recall` retains rejected candidates at low priority.
 
 `PageAnalyzer` requests a page relevance verdict and an `items` array. Each item is
@@ -305,8 +305,10 @@ not vote on relevance. Undated pages neither advance nor reset the age streak.
 Retirement removes that seed's pending candidates. `--recall` disables retirement.
 
 The scheduler exposes pause, resume and stop methods. Pause settles in-flight
-work and saves a snapshot. Resume restores the latest snapshot. The CLI does not
-expose a separate resume command. Snapshots do not include in-flight tasks,
+page work, finishes or returns ranking batches, freezes analysis retries and flushes
+a stable snapshot. Resume continues the retained in-memory state through the same
+run task. Paused time counts toward the wall-clock limit. The CLI does not expose
+a separate resume command. Snapshots do not include in-flight tasks,
 analysis retries or all source history, so they do not provide lossless crash recovery.
 
 ## Persistence and inspection

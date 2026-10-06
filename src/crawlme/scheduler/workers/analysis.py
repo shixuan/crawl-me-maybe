@@ -27,6 +27,14 @@ class AnalysisWorker:
                 return await self.analyzer.analyze(page, goal)
         return None
 
+    async def pause(self) -> None:
+        if self.analyzer is not None:
+            await self.analyzer.pause()
+
+    def resume(self) -> None:
+        if self.analyzer is not None:
+            self.analyzer.resume()
+
     async def aclose(self) -> None:
         if self.analyzer is not None:
             await self.analyzer.aclose()
