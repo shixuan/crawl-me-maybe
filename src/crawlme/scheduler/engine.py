@@ -127,6 +127,10 @@ class CrawlScheduler:
         self._pump_tasks: list[asyncio.Task[None]] = []
         self._inflight: set[asyncio.Task[None]] = set()
         self._events: EventEmitter | None = None
+        self._runner: asyncio.Task[Any] | None = None
+        self._control = asyncio.Event()
+        self._paused = asyncio.Event()
+        self._closed = False
 
     # seed ingestion --------------------------------------------------
 
@@ -200,90 +204,145 @@ class CrawlScheduler:
         self.run_state.progress.tokens_used = total
 
     async def run(self, goal: CrawlGoal, task: CrawlTask) -> None:
-        self._goal = goal
-        self._task = task
-        self._state = "RUNNING"
-        task.state = "RUNNING"
-
+        if self._runner is not None or self._closed:
+            raise RuntimeError("scheduler already started or closed")
+        self._runner = asyncio.current_task()
+        self._goal, self._task = goal, task
+        self._state = task.state = "RUNNING"
         setup_logging(self._cfg)
         logger.info(
-            "crawling, at most %d pages or %d tokens or %ds",
-            goal.max_pages,
-            goal.max_tokens,
-            goal.max_duration_sec,
+            "crawling, at most %d pages or %d tokens or %ds", goal.max_pages, goal.max_tokens, goal.max_duration_sec
         )
+        try:
+            await self._storage.start()
+            self._events = EventEmitter(self._storage, task.task_id)
+            self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
+            self.run_state.reset(goal=goal, tokens_used_start=self.run_state.progress.tokens_used)
+            self._storage.save_goal(goal.model_dump(mode="json"))
+            self._storage.save_task(task.model_dump(mode="json"))
+            self._control.clear()
+            self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
+            await self._supervise_pumps()
+            deadline = time.monotonic() + _SETTLE_TIMEOUT
+            await self._stop_pumps(deadline, cancel=True)
+            await self._settle_inflight(deadline)
+            await self._settle_analysis(deadline)
+            if (
+                self._grouper is not None
+                and not self.run_state.progress.fatal_error
+                and task.stopping_reason != "USER_REQUESTED"
+            ):
+                await self._deduplicate(goal)
+            self._finish_run()
+        except asyncio.CancelledError:
+            await self.stop()
+            deadline = time.monotonic() + _SETTLE_TIMEOUT
+            await self._stop_pumps(deadline, cancel=True)
+            await self._settle_inflight(deadline)
+            await self._analysis.aclose()
+            await self._checkpoint()
+            self._finish_run()
+            raise
+        except Exception as exc:
+            self._fail("run", exc)
+            deadline = time.monotonic() + _SETTLE_TIMEOUT
+            await self._stop_pumps(deadline, cancel=True)
+            await self._settle_inflight(deadline)
+            self._finish_run()
+        finally:
+            try:
+                await self.aclose()
+            finally:
+                self._runner = None
+                self._paused.set()
 
-        await self._storage.start()
-        self._events = EventEmitter(self._storage, task.task_id)
-        self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
-
-        self.run_state.reset(goal=goal, tokens_used_start=self.run_state.progress.tokens_used)
-        # Persist goal (with its enhanced statement / keywords / since)
-        # and task rows so replay and introspection have a record.
-        self._storage.save_goal(goal.model_dump(mode="json"))
-        self._storage.save_task(task.model_dump(mode="json"))
-
-        self._pump_tasks = [
-            asyncio.create_task(self._fetch_pump()),
-            asyncio.create_task(self._rank_pump()),
-        ]
-        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
-        await self._settle_inflight()
-
-        await self._settle_analysis()
-
-        if self._grouper is not None:
-            await self._deduplicate(goal)
-
-        task.state = "COMPLETED"
+    def _finish_run(self) -> None:
+        assert self._task is not None
+        task = self._task
+        task.state = "FAILED" if self.run_state.progress.fatal_error else "COMPLETED"
+        self._state = task.state
         task.end_at = _utcnow()
-        reason = task.stopping_reason or "none"
+        self._record_stop_reason()
         self._reconcile()
+        prog = self.run_state.progress
         logger.info(
-            "finished after %d pages and %d tokens: %s",
-            self.run_state.progress.pages_fetched,
-            self.run_state.progress.tokens_used,
-            reason,
+            "finished after %d pages and %d tokens: %s", prog.pages_fetched, prog.tokens_used, task.stopping_reason
         )
         if self._events:
-            self._events.emit(
-                EventType.STOPPED,
-                {"reason": reason, "pages_fetched": self.run_state.progress.pages_fetched},
-            )
-        # Final task row: state, counters, and the stop reason.
-        prog = self.run_state.progress
+            self._events.emit(EventType.STOPPED, {"reason": task.stopping_reason, "pages_fetched": prog.pages_fetched})
         task.counters = {"tokens_used": prog.tokens_used, "pages_fetched": prog.pages_fetched}
         self._storage.save_task(task.model_dump(mode="json"))
-        # Keep resources open on KeyboardInterrupt so the CLI can checkpoint before closing.
-        await self.aclose()
+
+    def _fail(self, stage: str, error: BaseException) -> None:
+        logger.error("%s.died error=%s", stage, error)
+        if not self.run_state.progress.fatal_error:
+            self.run_state.progress.fatal_error = str(error) or type(error).__name__
+        if self._task is not None:
+            self._task.stopping_reason = "FATAL"
+        self._state = "STOPPING"
+        self._control.set()
+
+    async def _supervise_pumps(self) -> str:
+        control = asyncio.create_task(self._control.wait())
+        try:
+            done, _ = await asyncio.wait([*self._pump_tasks, control], return_when=asyncio.FIRST_COMPLETED)
+            self._note_pump_failures([t.exception() for t in done if t is not control and not t.cancelled()])
+            if self._state == "RUNNING":
+                self._state = "STOPPING"
+            return self._state
+        finally:
+            control.cancel()
+            await asyncio.gather(control, return_exceptions=True)
+
+    async def _stop_pumps(self, deadline: float, *, cancel: bool) -> None:
+        await self._frontier.wake_ranker()
+        if not self._pump_tasks:
+            return
+        if cancel:
+            for task in self._pump_tasks:
+                task.cancel()
+        else:
+            _, pending = await asyncio.wait(self._pump_tasks, timeout=max(0, deadline - time.monotonic()))
+            for task in pending:
+                task.cancel()
+        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
+        self._pump_tasks.clear()
+
+    def _page_done(self, task: asyncio.Task[None]) -> None:
+        self._inflight.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self._fail("page", error)
 
     def _note_pump_failures(self, results: list[Any]) -> None:
-        """Record failed pumps as fatal so the run cannot silently lose a stage."""
-        for r in results:
-            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
-                logger.error("pump.died error=%s", r)
-                if not self.run_state.progress.fatal_error:
-                    self.run_state.progress.fatal_error = str(r)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                self._fail("pump", result)
 
-    async def _settle_inflight(self) -> None:
+    async def _settle_inflight(self, deadline: float | None = None) -> None:
         """Await dispatched tasks before checkpointing or closing their resources."""
         if not self._inflight:
             return
         pending = set(self._inflight)
         logger.debug("task.settling in_flight=%d", len(pending))
-        _, still = await asyncio.wait(pending, timeout=_SETTLE_TIMEOUT)
+        timeout = _SETTLE_TIMEOUT if deadline is None else max(0, deadline - time.monotonic())
+        done, still = await asyncio.wait(pending, timeout=timeout)
+        for task in done:
+            if not task.cancelled() and (error := task.exception()) is not None:
+                self._fail("page", error)
         if still:
             # Past the backstop: whatever is left was not going to
             # finish, and holding the process open for it is worse.
             logger.warning("task.settle_timeout abandoned=%d", len(still))
+            if self._state == "PAUSING":
+                self._fail("pause", TimeoutError("page settlement exceeded pause deadline"))
             for t in still:
                 t.cancel()
             await asyncio.gather(*still, return_exceptions=True)
 
-    async def _settle_analysis(self) -> None:
+    async def _settle_analysis(self, deadline: float | None = None) -> None:
         """Settle retries within run limits before grouping or closing storage."""
         assert self._task is not None
-        deadline = time.monotonic() + _SETTLE_TIMEOUT
+        deadline = deadline if deadline is not None else time.monotonic() + _SETTLE_TIMEOUT
         drain: asyncio.Task[None] | None = None
         try:
             while True:
@@ -307,9 +366,18 @@ class CrawlScheduler:
             await self._analysis.aclose()
 
     async def aclose(self) -> None:
-        await self._analysis.aclose()
-        await self._ranking.aclose()
-        await self._fetch.aclose()
+        if self._closed:
+            return
+        self._closed = True
+        for close in (self._analysis.aclose, self._ranking.aclose, self._fetch.aclose):
+            try:
+                await close()
+            except Exception as exc:
+                self._fail("cleanup", exc)
+        if self._task is not None and self.run_state.progress.fatal_error:
+            self._task.state = "FAILED"
+            self._state = "FAILED"
+            self._storage.save_task(self._task.model_dump(mode="json"))
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
@@ -382,12 +450,17 @@ class CrawlScheduler:
             asyncio.create_task(self._fetch_pump()),
             asyncio.create_task(self._rank_pump()),
         ]
-        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
+        await self._supervise_pumps()
+        await self._stop_pumps(time.monotonic() + _SETTLE_TIMEOUT, cancel=True)
 
     async def stop(self) -> None:
         self._state = "STOPPING"
-        if self._task:
+        if self._task is not None:
             self._task.state = "STOPPING"
+            if not self.run_state.progress.fatal_error:
+                self._task.stopping_reason = "USER_REQUESTED"
+        self._control.set()
+        await self._frontier.wake_ranker()
 
     def _reconcile(self) -> None:
         """Report fetched, pending and refused work alongside the stop reason."""
@@ -496,9 +569,10 @@ class CrawlScheduler:
             # Retain task handles so shutdown can await writes and analysis.
             task = asyncio.create_task(self._handle_fetch(item))
             self._inflight.add(task)
-            task.add_done_callback(self._inflight.discard)
+            task.add_done_callback(self._page_done)
 
-        self._state = "STOPPING"
+        if self._state == "RUNNING":
+            self._state = "STOPPING"
 
     async def _enqueue_next_page(
         self,
@@ -605,7 +679,8 @@ class CrawlScheduler:
             except FeedDependencyError as e:
                 # Missing format dependencies stop the run rather than producing empty listings.
                 logger.error("fetch.adapter_dependency url_key=%s: %s", item.url_key, e)
-                self.run_state.progress.fatal_error = str(e)
+                self._fail("discovery", e)
+                await self._frontier.record_outcome(item, "FAILED")
                 return
             self._consider_retirement(self._tracking.discovered(page, item, harvest))
             candidates = harvest.candidates
@@ -662,13 +737,15 @@ class CrawlScheduler:
             if self.run_state.progress.pages_fetched % _CHECKPOINT_INTERVAL == 0:
                 await self._checkpoint()
 
+        except BaseException:
+            await self._frontier.record_outcome(item, "FAILED")
+            raise
         finally:
             self.run_state.progress.in_flight = max(0, self.run_state.progress.in_flight - 1)
 
     # rank loop --------------------------------------------------------
 
     async def _rank_pump(self) -> None:
-        ranked_total = 0
         while self._state == "RUNNING":
             logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
             await self._frontier.wait_for_ranking(lambda: self._state != "RUNNING")
@@ -690,8 +767,7 @@ class CrawlScheduler:
                 await self._rank_and_enqueue(batch)
             finally:
                 self._frontier.finish_ranking(len(batch))
-                ranked_total += len(batch)
-                self.run_state.stats.candidates_ranked = ranked_total
+                self.run_state.stats.candidates_ranked += len(batch)
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         assert self._goal is not None

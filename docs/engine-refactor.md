@@ -1,7 +1,7 @@
 # Engine refactoring status
 
-Reviewed against the code on 2026-10-03. The worker split, runtime state consolidation
-and analysis retry settlement are implemented. Pump supervision, stable pause/resume
+Reviewed against the code on 2026-10-06. The worker split, runtime state consolidation,
+analysis retry settlement and pump supervision are implemented. Stable pause/resume
 and performance work remain open. Measurements below retain their original dates.
 
 The goal is clearer ownership and less wasted work. Moving code is not evidence of
@@ -141,8 +141,8 @@ On 2026-09-14, run `20260914_162309` exposed the pump supervision defect.
 - LiteLLM initialization completed in 1.4 seconds.
 - Goal enhancement and seed expansion exceeded the new 90-second request deadline.
 - Ranking exceeded the deadline at 16:29:20. The exception escapes the rank pump.
-- Engine waits for both pumps with `gather(return_exceptions=True)` before
-  inspecting failures. The fetch pump therefore keeps running.
+- Engine waited for both pumps with `gather(return_exceptions=True)` before
+  inspecting failures. The fetch pump therefore kept running.
 - With no fetchable items and 149 buffered candidates, it repeatedly tries to wake
   ranking. The log contains 3,921 `fetch_pump.waking_rank` entries.
 
@@ -150,12 +150,15 @@ The log and control flow support this failure chain. They do not establish wheth
 the model request stalled at the provider, network or client transport layer.
 The timestamps alone also do not establish continuous execution throughout the run.
 
-The current LLM client passes a 90-second timeout to LiteLLM. It does not impose an
-outer deadline or fix pump supervision. A transient timeout can still trigger the
-client's retry policy.
+The current LLM client passes a 90-second timeout to LiteLLM. A transient timeout
+can still trigger the client's retry policy. Engine now observes the first pump
+failure, cancels its peer and records a FAILED run. Unexpected page-task exceptions
+follow the same path. Cleanup attempts every worker even if one close operation fails.
 
 Analysis retries now settle independently of dedup, within run limits and a
-120-second backstop. Pump supervision and pause boundaries remain open.
+shared 120-second deadline for pump, page and retry settlement. Cancellation settles
+pages, saves a checkpoint and closes resources before propagating. Pause boundaries
+remain open.
 
 Other limits remain:
 
@@ -169,17 +172,11 @@ Other limits remain:
 
 ## Remaining lifecycle design
 
-A pump failure must be observed immediately. Record the exception, stop dispatch,
-wake or stop the other pump, and settle page tasks within one shutdown deadline.
-Do not wait for both pumps to finish before reporting the first failure.
-
-Inspect unexpected page-task exceptions as well. Expected per-page failures retain
-their existing storage behavior. Release ranking and in-flight counts in `finally`.
-TaskGroup is an implementation option, not permission to cancel pending writes
-without a defined shutdown policy.
+Failure supervision is implemented. Expected per-page fetch failures retain their
+existing storage behavior. Ranking and in-flight counts are released in `finally`.
 
 The table describes the target lifecycle. Retry settlement is implemented as
-described above. Coordinated pump shutdown and stable pause/resume remain proposals.
+described above. Stable pause/resume remains a proposal.
 
 | Exit condition | New work | In-flight work and analysis retries |
 |---|---|---|

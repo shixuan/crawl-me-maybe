@@ -156,8 +156,9 @@ its platform in `metadata.text_source`. Analysis still applies its character lim
 enhanced goal, requested fields, candidate text and previous analysis results.
 It splits calls by candidate count and text size. Truncated batches are subdivided.
 Omitted candidates receive neutral priority. Unrecoverable errors propagate to
-Engine. Engine currently checks pump exceptions only after both pumps finish,
-which can leave the surviving pump waiting. This remains open in the
+Engine. Engine observes either pump's failure immediately and stops its peer.
+Unexpected page-task exceptions also stop the run and produce a FAILED task.
+Stable pause/resume remains open in the
 [Engine plan](engine-refactor.md). `--recall` retains rejected candidates at low priority.
 
 `PageAnalyzer` requests a page relevance verdict and an `items` array. Each item is
@@ -313,8 +314,8 @@ analysis retries or all source history, so they do not provide lossless crash re
 At run completion, the scheduler settles pending Analyzer retries independently
 of dedup. Page limits and frontier exhaustion allow already-fetched pages to finish
 analysis. Token/time limits, the result target, user stop and run failures cancel
-remaining retries. Analysis settlement has a 120-second backstop, separate from
-the 120-second limit for settling page tasks. Analysis closes before
+remaining retries. Pump, page and analysis settlement share one 120-second
+shutdown deadline. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
 When dedup is enabled, the scheduler passes relevant items and source evidence to `dedup/grouper.py`.
 One LLM call proposes duplicate groups. Unassigned analyses become singletons.
