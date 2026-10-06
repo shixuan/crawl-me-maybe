@@ -65,3 +65,20 @@ def test_the_verdicts_come_out_in_declared_order(tmp_path: Path) -> None:
     _run_db(tmp_path, dates=True)
     order = serve._results(tmp_path, "20260101_000000")["classifications"]
     assert order.index("RELEVANT") < order.index("IRRELEVANT")
+
+
+@pytest.mark.parametrize("same_time", [False, True])
+def test_replay_replaces_display(tmp_path, same_time):
+    db = _run_db(tmp_path, dates=True)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO analyses VALUES ('k1', 'g1', 'RELEVANT', 0.2, '', '2020-01-01', "
+            "'new dates', '[]', '{}', 'm', ?)",
+            ("2026-01-01" if same_time else "2026-01-02",),
+        )
+    rows = serve._results(tmp_path, "20260101_000000")["rows"]
+    assert len(rows) == 1
+    assert rows[0]["when"] == "over"
+    assert rows[0]["summary"] == "new dates"
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 2

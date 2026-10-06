@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
@@ -326,11 +327,18 @@ def _policy_dates(data: dict[str, Any], page: Page) -> dict[str, Any]:
         value, evidence = entry.get("value"), entry.get("evidence")
         if not isinstance(value, str) or not isinstance(evidence, str) or not value.strip() or not evidence.strip():
             continue
-        if _normalize(evidence) not in _normalize(_page_text(page)) or _normalize(value) not in _normalize(evidence):
+        quote = _normalize(unicodedata.normalize("NFKC", evidence))
+        text = _normalize(unicodedata.normalize("NFKC", _page_text(page)))
+        if quote not in text:
             continue
         found = read_range(value, kind="on", said_on=page.published_at)
-        if found is not None and found.start == found.end:
-            dates[endpoint] = found.start
+        supported = read_range(evidence, kind="on", said_on=page.published_at)
+        if found is None or supported is None:
+            continue
+        date = found.start if endpoint == "starts_on" else found.end
+        # Compressed ranges need not contain either expanded endpoint verbatim.
+        if date is not None and date in (supported.start, supported.end):
+            dates[endpoint] = date
     start, end = dates.get("starts_on"), dates.get("ends_on")
     if start is not None and end is not None and start > end:
         return {}

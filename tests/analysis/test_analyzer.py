@@ -636,3 +636,43 @@ def test_inverted_time_window_is_unknown():
         tokens_used=0,
     )
     assert result.starts_on is None and result.ends_on is None
+
+
+@pytest.mark.parametrize(
+    "value,evidence,endpoint,expected",
+    [
+        ("September 27, 2026", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
+        ("September 25, 2026", "Valid September 25\u201327, 2026.", "starts_on", datetime.date(2026, 9, 25)),
+        ("September 25\u201327, 2026", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
+        (
+            "Oct. 31",
+            "From \U0001d5e2\U0001d5f0\U0001d601. \U0001d7ed\u2013\U0001d7ef\U0001d7ed.",
+            "ends_on",
+            datetime.date(2026, 10, 31),
+        ),
+    ],
+)
+def test_time_range_evidence(value, evidence, endpoint, expected):
+    page = _page(evidence)
+    page.published_at = datetime.datetime(2026, 9, 24, tzinfo=datetime.timezone.utc)
+    result = _parse_analysis(
+        {"classification": "RELEVANT", "time": {endpoint: {"value": value, "evidence": evidence}}},
+        page,
+        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        model="stub",
+        tokens_used=0,
+    )
+    assert getattr(result, endpoint) == expected
+
+
+@pytest.mark.parametrize("value", ["September 26, 2026", "September 27, 2027", "October 27, 2026"])
+def test_time_rejects_unsupported(value):
+    evidence = "Valid September 25\u201327, 2026."
+    result = _parse_analysis(
+        {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
+        _page(evidence),
+        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.ends_on is None

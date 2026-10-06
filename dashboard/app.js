@@ -70,7 +70,7 @@ function when(iso) {
    All that is left here is where the reader draws the line ahead of
    them, which is a knob and needs no round trip. */
 
-const WHEN_LABELS = { open: "ongoing", later: "upcoming", undated: "undated", over: "past" };
+const WHEN_LABELS = { open: "ongoing", later: "upcoming", undated: "validity unknown", over: "past" };
 
 function horizonISO() {
   if (!state.during) return "";

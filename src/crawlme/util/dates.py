@@ -6,6 +6,7 @@ import calendar
 import dataclasses
 import datetime
 import re
+import unicodedata
 
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_abbr) if m}
 _MONTHS |= {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
@@ -28,7 +29,9 @@ _DAY_MONTH = re.compile(
 _MONTH_ONLY = re.compile(r"^\s*(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s*(\d{4})?\s*$", re.I)
 #: "August 15-16", including the en dash and em dash forms: one month, two days.
 _SAME_MONTH_RANGE = re.compile(
-    r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s+(\d{1,2})\s*[-\u2013\u2014]\s*(\d{1,2})\b"
+    r"\b("
+    + "|".join(sorted(_MONTHS, key=len, reverse=True))
+    + r")\.?\s+(\d{1,2})\s*(?:[-\u2013\u2014]|to)\s*(\d{1,2})\b"
     r"(?:\s*,?\s*(\d{4}))?",
     re.IGNORECASE,
 )
@@ -42,6 +45,7 @@ def read_dates(text: str, *, said_on: datetime.datetime | None = None) -> tuple[
     """
     if not text or not text.strip():
         return None
+    text = unicodedata.normalize("NFKC", text)
     if m := _MONTH_ONLY.fullmatch(text):
         month = _MONTHS[m.group(1).lower()]
         y = int(m.group(2)) if m.group(2) else _year_for(month, 1, said_on)
@@ -135,7 +139,8 @@ def group_of(
 ) -> str:
     """Which of undated, over, open and later a range falls in.
 
-    A range with only an end is ongoing. Future starts are always upcoming;
+    A range with only an end is ongoing. A past start alone leaves validity unknown.
+    Future starts are always upcoming;
     callers apply a horizon separately without changing temporal classification.
     """
     if starts is None and ends is None:
@@ -144,4 +149,4 @@ def group_of(
         return OVER
     if starts is not None and starts > today:
         return LATER
-    return OPEN
+    return OPEN if ends is not None else UNDATED

@@ -120,14 +120,7 @@ def _print_summary(data: InspectData, *, horizon: datetime.date | None = None) -
         lines.append(f"other goals: {parts}")
 
     relevant = [a for a in data.analyses if a.get("classification") == "RELEVANT"]
-    # One line per page: replays may have judged the same page several
-    # times, but the summary lists pages, not rows.
-    best_by_key: dict[str, dict[str, Any]] = {}
-    for a in relevant or data.analyses:
-        key = a.get("url_key", "")
-        if key not in best_by_key or a.get("relevance_score", 0.0) > best_by_key[key].get("relevance_score", 0.0):
-            best_by_key[key] = a
-    lines.extend(_result_lines(best_by_key.values(), pages_by_key, horizon=horizon))
+    lines.extend(_result_lines(relevant or data.analyses, pages_by_key, horizon=horizon))
     print("\n".join(lines))
 
 
@@ -167,7 +160,7 @@ def _result_lines(
         out.append(f"Ongoing ({len(live)}):")
         out += [_one_result(a, pages_by_key, ends, today) for ends, a in live[:10]]
     if undated:
-        out.append(f"Undated ({len(undated)}):")
+        out.append(f"Validity unknown ({len(undated)}):")
         out += [_one_result(a, pages_by_key, None, today) for a in undated[:10]]
     if later:
         later.sort(key=lambda pair: pair[0])

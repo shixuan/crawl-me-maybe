@@ -181,7 +181,12 @@ what a page announces and affect result grouping only.
 Goal Enhancer independently sets `time_policy` to describe the relevant validity
 window, or null for timeless/uncertain goals. This does not require a user-requested
 date field. Analyzer returns separate `time` endpoints with source evidence in the
-same call. Unsupported, ambiguous or inverted dates remain unknown. Legacy goals
+same call, with publication date supplied as extraction context. Analyzer does not
+classify temporal status; inspect and the dashboard compare the extracted dates
+with the current UTC date.
+Evidence must match source text after whitespace and Unicode compatibility
+normalization. Expanded endpoints may be supported by a compressed source range;
+unsupported, ambiguous or inverted dates remain unknown. Legacy goals
 can still use `extraction_spec.time_field`. The parser
 reads ISO dates and English month names. Explicit years take precedence. Omitted
 years are resolved near publication, or against the current year when publication
@@ -189,7 +194,13 @@ is unknown. Relative phrases are not resolved.
 
 `group_of()` assigns `undated`, `over`, `open` or `later`. An end date before today
 is `over`. A start after today is always `later`. The UI labels are Past, Upcoming,
-Ongoing and Undated. Dashboard and inspect apply `during` as a future-start cutoff,
+Ongoing and Validity unknown. A past start without an end does not establish
+ongoing validity. Topic relevance remains separate from expiry. All temporal states are visible
+initially; the dashboard filters them only when the reader selects a filter.
+Inspect and the dashboard first select the latest analysis for each goal and URL
+(by analysis time, then insertion order for ties). Older replay revisions remain
+in storage but cannot override the current dates or verdict.
+Dashboard and inspect apply `during` as a future-start cutoff,
 not a change of status. Dashboard hides time controls for non-temporal goals.
 
 ## State and concurrency
@@ -312,6 +323,12 @@ Storage atomically publishes `dedup_runs` (input fingerprint and model),
 analyses remain intact. The dashboard reads the latest matching snapshot. A replay
 that changes the inputs invalidates it. Replay does not automatically regroup.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
+Semantic grouping remains open (reviewed 2026-10-06). Model responses can still
+merge distinct items, different editions or partially overlapping records despite
+the shared-identity rules. The correction attempt validates JSON and member IDs;
+it does not validate semantic equivalence. Evaluate explicit identity evidence and
+per-member support before treating a successful grouping as semantically verified.
+
 Both automatic and standalone dedup use `dedup/grouper.py:group_results` for reading inputs
 and publishing groups, and `Grouper.from_settings` for client configuration.
 Storage and the dashboard share the input query and row mapping in `storage/queries.py`,

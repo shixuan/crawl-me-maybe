@@ -231,7 +231,11 @@ def analysis_system(goal: CrawlGoal) -> str:
             ' On RELEVANT pages also return "time": {"starts_on": {"value": "date as written", '
             '"evidence": "verbatim quote"}, "ends_on": {"value": "date as written", '
             '"evidence": "verbatim quote"}} following the time policy. '
-            "Omit unknown endpoints. For a single-day event use that date for both endpoints. "
+            "Return time independently of the requested extracted fields; a deadline in extracted "
+            "does not replace time. Omit unknown endpoints. "
+            "For a single-day event use that date for both endpoints. "
+            "For a compressed date range, each endpoint may use the full range as written; "
+            "the application selects its start or end. "
             "Evidence must contain the date value and explicitly support its role. Never use "
             "publication dates, historical mentions or unrelated dates as validity dates. "
             "Do not guess missing dates; omit time for ambiguous or multiple incompatible windows."
@@ -255,6 +259,8 @@ def analysis_input(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> st
     lines.extend(["## Page", page.url.canonical])
     if page.title:
         lines.append(f"Title: {page.title}")
+    if goal.time_policy and page.published_at is not None:
+        lines.append(f"Page published on {page.published_at:%Y-%m-%d}.")
     lines.append("")
     lines.append(text[:max_chars])
     return "\n".join(lines)
