@@ -38,6 +38,7 @@ class Buffer(Protocol):
     def load(self, state: dict[str, Any]) -> None: ...
     async def drain(self, n: int | None = None) -> list[Candidate]: ...
     async def return_batch(self, batch: list[Candidate]) -> None: ...
+    def context_keys(self) -> set[str]: ...
 
     def ready(self, frontier_hungry: bool = False) -> bool: ...
 
@@ -181,6 +182,9 @@ class RoundRobinBuffer:
             self._cond.notify_all()
 
     # properties -------------------------------------------------------
+
+    def context_keys(self) -> set[str]:
+        return {c.source_url_key for c in self._candidates if c.source_url_key}
 
     def contains(self, url_key: str) -> bool:
         return url_key in self._seen

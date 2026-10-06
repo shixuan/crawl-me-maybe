@@ -31,7 +31,8 @@ class Frontier(Protocol):
 
     def is_retired(self, seed_url_key: str) -> bool: ...
     async def take_for_ranking(self, n: int) -> list[Candidate]: ...
-    def finish_ranking(self, n: int) -> None: ...
+    def finish_ranking(self, batch: list[Candidate]) -> None: ...
+    def context_keys(self) -> set[str]: ...
     async def return_for_ranking(self, batch: list[Candidate]) -> None: ...
 
     @property
@@ -90,7 +91,7 @@ class GatedFrontier:
         # Use the buffer contract independently of its scheduling strategy.
         self._waiting: Buffer = buffer if buffer is not None else RoundRobinBuffer()
         # Candidates out being scored: in neither half, still work.
-        self._scoring = 0
+        self._ranking: dict[str, Candidate] = {}
         # Count domain refusals separately from natural frontier exhaustion.
         self.blocked_by_domain_budget = 0
         self._lock = asyncio.Lock()
@@ -123,12 +124,16 @@ class GatedFrontier:
     async def take_for_ranking(self, n: int) -> list[Candidate]:
         """Take a batch from the buffer and account for ranking in progress."""
         batch = list(await self._waiting.drain(n))
-        self._scoring += len(batch)
+        self._ranking.update((c.candidate_id, c) for c in batch)
         return batch
 
-    def finish_ranking(self, n: int) -> None:
-        """Report that *n* candidates came back from scoring, or died there."""
-        self._scoring = max(0, self._scoring - n)
+    def finish_ranking(self, batch: list[Candidate]) -> None:
+        """Release the completed batch's ownership and parent contexts."""
+        for c in batch:
+            self._ranking.pop(c.candidate_id, None)
+
+    def context_keys(self) -> set[str]:
+        return self._waiting.context_keys() | {c.source_url_key for c in self._ranking.values() if c.source_url_key}
 
     async def return_for_ranking(self, batch: list[Candidate]) -> None:
         fresh = [c for c in batch if c.url.url_key not in self._visited and not self._source.contains(c.url.url_key)]
@@ -136,7 +141,7 @@ class GatedFrontier:
 
     @property
     def scoring(self) -> int:
-        return self._scoring
+        return len(self._ranking)
 
     @property
     def cooling(self) -> int:

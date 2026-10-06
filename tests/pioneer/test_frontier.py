@@ -309,7 +309,7 @@ async def test_ranking_wait(trigger, monkeypatch):
         assert frontier.scoring == 0
         batch = await frontier.take_for_ranking(20)
         assert frontier.scoring == len(batch)
-        frontier.finish_ranking(len(batch))
+        frontier.finish_ranking(batch)
         assert frontier.scoring == 0
     finally:
         waiting.cancel()

@@ -132,6 +132,7 @@ class CrawlScheduler:
         self._resumed = asyncio.Event()
         self._transition = asyncio.Lock()
         self._closed = False
+        self._page_keys: dict[str, set[str]] = {}
 
     # seed ingestion --------------------------------------------------
 
@@ -279,6 +280,7 @@ class CrawlScheduler:
         task.end_at = _utcnow()
         self._record_stop_reason()
         self._reconcile()
+        self._prune_pages()
         prog = self.run_state.progress
         logger.info(
             "finished after %d pages and %d tokens: %s", prog.pages_fetched, prog.tokens_used, task.stopping_reason
@@ -393,11 +395,18 @@ class CrawlScheduler:
             self._task.state = "FAILED"
             self._state = "FAILED"
             self._storage.save_task(self._task.model_dump(mode="json"))
+        self._prune_pages()
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
         self._storage.save_analysis(result.model_dump(mode="json"))
         self._consider_retirement(self._tracking.analysis(result))
+        self._prune_pages()
+
+    def _prune_pages(self) -> None:
+        if self._runner is not None:
+            active = set().union(*self._page_keys.values())
+            self._tracking.retain(active | self._analysis.pending_keys | self._frontier.context_keys())
 
     def _cast_relevance_vote(self, url_key: str) -> None:
         self._consider_retirement(self._tracking.vote(url_key))
@@ -436,6 +445,7 @@ class CrawlScheduler:
         await self._settle_inflight(deadline)
         if self._state != "PAUSING":
             return False
+        self._prune_pages()
         if self._task is not None:
             self._task.state = "PAUSED"
             self._storage.save_task(self._task.model_dump(mode="json"))
@@ -677,6 +687,7 @@ class CrawlScheduler:
         return FetchedPage(outcome, page)
 
     async def _handle_fetch(self, item: FrontierItem) -> None:
+        keys = self._page_keys[item.item_id] = {item.url_key}
         if self._events:
             self._events.emit(EventType.FETCH_STARTED, {"url_key": item.url_key, "depth": item.depth})
         try:
@@ -684,6 +695,7 @@ class CrawlScheduler:
             if fetched is None:
                 return
             result, page = fetched.result, fetched.page
+            keys.add(page.url_key)
 
             assert self._goal is not None
             self.run_state.pages.open(
@@ -769,7 +781,9 @@ class CrawlScheduler:
             await self._frontier.record_outcome(item, "FAILED")
             raise
         finally:
+            self._page_keys.pop(item.item_id, None)
             self.run_state.progress.in_flight = max(0, self.run_state.progress.in_flight - 1)
+            self._prune_pages()
 
     # rank loop --------------------------------------------------------
 
@@ -799,7 +813,8 @@ class CrawlScheduler:
             else:
                 self.run_state.stats.candidates_ranked += len(batch)
             finally:
-                self._frontier.finish_ranking(len(batch))
+                self._frontier.finish_ranking(batch)
+                self._prune_pages()
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         assert self._goal is not None

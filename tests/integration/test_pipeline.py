@@ -236,6 +236,7 @@ class _RecordingAnalyzer:
 
     def __init__(self) -> None:
         self.pages: list[str] = []
+        self.pending_keys: set[str] = set()
 
     def bind_sink(self, sink) -> None:
         pass

@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.analysis import PageAnalyzer
 from crawlme.config import Settings
 from crawlme.discovery.harvester import Harvest
+from crawlme.llm import LLMError, LLMResponse
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import Candidate, CrawlGoal, CrawlTask, FetchResult, Page, RankDecision
@@ -225,5 +227,84 @@ async def test_repeated_pause_resume(tmp_path, monkeypatch):
         await asyncio.wait_for(run, 2)
         assert task.state == "COMPLETED"
     finally:
+        run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+
+
+async def test_page_retention_tracks_work(tmp_path):
+    peaks = []
+    limit = 80
+
+    def harvest(page, depth):
+        number = int(page.url.canonical.rsplit("/", 1)[1])
+        peaks.append((len(scheduler.run_state.pages), len(scheduler.run_state.page_contexts)))
+        return Harvest([candidate(str(number + 1), source_url_key=page.url_key)] if number < limit else [])
+
+    scheduler, goal, task, fetched = build(tmp_path, harvester=MagicMock(harvest=harvest))
+    await scheduler.ingest_seeds(goal, [candidate("1")])
+    await asyncio.wait_for(scheduler.run(goal, task), 5)
+    assert len(fetched) == limit
+    assert max(p for p, _ in peaks) <= 2
+    assert max(c for _, c in peaks) <= 2
+    assert len(scheduler.run_state.pages) == len(scheduler.run_state.page_contexts) == 0
+
+
+@pytest.mark.parametrize("rank_child", [False, True])
+async def test_retry_retains_source(tmp_path, rank_child):
+    retry_entered, retry_release = asyncio.Event(), asyncio.Event()
+    rank_entered, rank_release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def chat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LLMError("retry")
+        retry_entered.set()
+        await retry_release.wait()
+        return LLMResponse(
+            '{"classification":"RELEVANT","relevance_score":0.9,"summary":"Compiler safety"}', 1, 1, "stub"
+        )
+
+    async def rank(*args, **kwargs):
+        rank_entered.set()
+        await rank_release.wait()
+        return []
+
+    def harvest(page, depth):
+        return Harvest([candidate("child", source_url_key=page.url_key)] if rank_child else [])
+
+    analyzer = PageAnalyzer(MagicMock(chat=chat), retry_delay=0)
+    scheduler, goal, task, _ = build(
+        tmp_path,
+        analyzer=analyzer,
+        harvester=MagicMock(harvest=harvest),
+        ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()),
+    )
+    seed = candidate("seed")
+    key = seed.url.url_key
+    await scheduler.ingest_seeds(goal, [seed])
+    run = asyncio.create_task(scheduler.run(goal, task))
+    try:
+        await asyncio.wait_for(retry_entered.wait(), 2)
+        await wait_until(lambda: not scheduler._inflight)
+        assert key in analyzer.pending_keys
+        assert scheduler.run_state.pages.by_url(seed.url.canonical).seed == key
+        if rank_child:
+            await asyncio.wait_for(rank_entered.wait(), 2)
+        retry_release.set()
+        await wait_until(lambda: not analyzer.pending_keys)
+        if rank_child:
+            assert scheduler.run_state.page_contexts[key]["summary"] == "Compiler safety"
+            assert scheduler.run_state.pages.by_url(seed.url.canonical).counted
+        rank_release.set()
+        await asyncio.wait_for(run, 2)
+        source = scheduler.run_state.seeds[key]
+        assert source.funnel.relevant == source.funnel.judged == 1
+        assert list(source.window) == [True]
+        assert len(scheduler.run_state.pages) == len(scheduler.run_state.page_contexts) == 0
+    finally:
+        retry_release.set()
+        rank_release.set()
         run.cancel()
         await asyncio.gather(run, return_exceptions=True)

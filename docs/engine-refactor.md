@@ -131,8 +131,11 @@ All successful analysis results, including retries, use the Engine sink for stor
 tracking and retirement. PageBook prevents duplicate source votes. This does not
 make every analysis counter idempotent under arbitrary duplicate delivery.
 
-Keep page associations while ranking or delayed analysis can still need them.
-Consolidating their ownership does not bound their memory growth.
+Page associations and contexts now retain only keys owned by active page tasks,
+queued or active analysis retries, and waiting or active ranking batches. The
+80-page chain regression previously accumulated 80 page records; it now asserts
+at most two live records and contexts, and none after completion. This is a
+retention check, not a throughput or process-memory benchmark.
 
 ## Confirmed failure and current limits
 

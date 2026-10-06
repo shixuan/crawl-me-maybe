@@ -268,7 +268,9 @@ analysis results join run-wide records by page identity.
 
 `PageBook` joins each page's seed, listing status and analysis verdict. These may
 arrive in different orders because analysis can retry. A completed non-listing
-record contributes one relevance vote to its seed.
+record contributes one relevance vote to its seed. Engine retains page records and
+contexts while page tasks, analysis retries or waiting/active ranking batches need
+them, then releases them. Bounded relevant-page summaries remain separate.
 
 The frontier owns both the scored queue and unranked buffer. Engine waits for ranking
 through `wait_for_ranking` and signals changes through `wake_ranker`. Queue counts

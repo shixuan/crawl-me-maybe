@@ -53,6 +53,8 @@ class Analyzer(Protocol):
     async def drain_pending(self) -> None: ...
     async def pause(self) -> None: ...
     def resume(self) -> None: ...
+    @property
+    def pending_keys(self) -> set[str]: ...
 
     async def aclose(self) -> None: ...
 
@@ -77,6 +79,7 @@ class PageAnalyzer:
         self._drain_task: asyncio.Task[None] | None = None
         # Count queued and active retries so drain_pending() waits for both.
         self._parked_count = 0
+        self._pending_keys: set[str] = set()
         self._paused = False
 
     @classmethod
@@ -111,6 +114,10 @@ class PageAnalyzer:
         self._publish(result)
         return result
 
+    @property
+    def pending_keys(self) -> set[str]:
+        return self._pending_keys.copy()
+
     async def pause(self) -> None:
         """Freeze retries, returning an interrupted attempt to the queue."""
         self._paused = True
@@ -134,6 +141,7 @@ class PageAnalyzer:
         finally:
             while not self._pending.empty():
                 self._pending.get_nowait()
+            self._pending_keys.clear()
             self._parked_count = 0
 
     async def drain_pending(self) -> None:
@@ -157,6 +165,7 @@ class PageAnalyzer:
                 except LLMError as e:
                     self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
                     continue
+                self._pending_keys.discard(page.url_key)
                 self._publish(result)
                 self._parked_count -= 1
                 logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
@@ -254,10 +263,12 @@ class PageAnalyzer:
                 # The drain held this page between retries; it is now
                 # settled, so release the count drain_pending() waits on.
                 self._parked_count -= 1
+                self._pending_keys.discard(page.url_key)
             logger.warning("analysis.giveup url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
             return
         logger.warning("analysis.requeue url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
         self._pending.put_nowait((page, goal, attempts))
+        self._pending_keys.add(page.url_key)
         # A fresh parking counts once; a re-parking from the drain was
         # already counted (the drain holds the count while it retries).
         if not parked:

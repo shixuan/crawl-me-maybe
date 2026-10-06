@@ -18,6 +18,11 @@ class RunTracker:
     def __init__(self, state: RunState) -> None:
         self.state = state
 
+    def retain(self, keys: set[str]) -> None:
+        """Keep page joins and context only while a stage can still consume them."""
+        self.state.pages.retain(keys)
+        self.state.page_contexts = {k: v for k, v in self.state.page_contexts.items() if k in keys}
+
     def feedback(self, goal: CrawlGoal, batch: list[Candidate]) -> tuple[RankHistorySummary, dict[str, dict[str, Any]]]:
         """Freeze the batch's source context without copying the entire crawl history."""
         sources = {c.source_url_key or "" for c in batch}
