@@ -209,6 +209,8 @@ See [Architecture](docs/arch.md) for component boundaries and [Changelog](docs/C
 
 Copy [`.env.example`](.env.example) to `.env` for credentials, model settings and tuning. Precedence for Settings-backed options is defaults → `.env` → environment → CLI.
 
+Set `NO_COLOR=1` to disable terminal logging colors. File logs, JSON and redirected output stay plain.
+
 - Browser and feed support require their optional dependencies. Automatic dispatch falls back to HTTP with a warning if Playwright is absent.
 - Platform adapters depend on site markup and responses, which may change. Login or rate-limit refusals stop the run.
 - The analyzer reads a bounded text prefix. Extracted evidence is checked, but relevance and field values remain model judgments.

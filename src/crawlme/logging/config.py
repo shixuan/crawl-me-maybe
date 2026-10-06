@@ -56,7 +56,8 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
     if settings.log_format == "json":
         h.setFormatter(JsonFormatter())
     else:
-        h.setFormatter(ConsoleFormatter())
+        color = h.stream.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+        h.setFormatter(ConsoleFormatter(color=color))
 
     root.addHandler(h)
     root.addHandler(_Backlog())
