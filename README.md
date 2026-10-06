@@ -141,6 +141,9 @@ crawl dedup <task-id> --goal <goal-id> --max-tokens 30000
 
 Use `--result-dir` to select the results root and `--log-level` to override logging verbosity.
 Model and reasoning settings are the same as for automatic dedup after crawling.
+Invalid JSON, schema or member IDs trigger one correction attempt within the budget.
+If it fails, existing results remain unchanged. Validation errors and failed response
+text are saved in the run log; duplicate and unknown IDs are reported separately.
 
 ### `crawl session <path>`
 

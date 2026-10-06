@@ -297,8 +297,13 @@ the 120-second limit for settling page tasks. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
 When dedup is enabled, the scheduler passes relevant analyses and source evidence to `dedup/grouper.py`.
 One LLM call proposes duplicate groups. Unassigned analyses become singletons.
-Duplicate or unknown member IDs invalidate the response. The grouper rejects
-truncated or malformed output. Inputs
+Duplicate or unknown member IDs invalidate the response and are reported separately.
+Malformed JSON, schema errors and invalid members trigger at most one correction
+request, with the original inputs, failed response and validation feedback. Each
+request obeys the token budget and input-size limit. Failed responses are recorded
+in the run log without printing their full content to the terminal. Truncated
+output is rejected without a correction request. A second invalid response leaves
+existing results unchanged. Inputs
 over the configured character limit are not submitted. Failure preserves original
 results. Grouping decisions do not affect source retirement or crawl stop conditions.
 

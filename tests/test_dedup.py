@@ -229,3 +229,69 @@ async def test_factory_switch_and_reasoning_default(tmp_path, enabled):
     else:
         assert scheduler._grouper is None
     await scheduler.aclose()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not json",
+        '{"groups":[{"members":["a","b"],"overview":"x"},{"members":["b"],"overview":"y"}]}',
+        '{"groups":[{"members":["a","invented"],"overview":"x"}]}',
+        '{"groups":[{"members":[],"overview":"x"}]}',
+    ],
+)
+async def test_invalid_reply_retried(bad, caplog):
+    caplog.set_level("WARNING", logger="crawlme.dedup.grouper")
+    client = client_response([{"members": ["a", "b"], "overview": "offer"}])
+    good = client.chat.return_value
+    client.chat.side_effect = [LLMResponse(bad, 1, 1, "test"), good]
+    groups = await Grouper(client, max_chars=10000).group(
+        CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+    )
+    assert [g.members for g in groups] == [["a", "b"]]
+    assert client.chat.await_count == 2
+    repair = json.loads(client.chat.call_args.args[0])["repair"]
+    assert repair["previous_response"] == bad
+    assert repair["error"]
+    assert any(bad in r.getMessage() and getattr(r, "file_only", False) for r in caplog.records)
+
+
+async def test_invalid_retry_stops(caplog):
+    client = client_response([{"members": ["a", "a", "unknown"], "overview": "offer"}])
+    with pytest.raises(Exception, match=r"duplicate IDs.*a.*unknown IDs.*unknown"):
+        await Grouper(client, max_chars=10000).group(
+            CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+        )
+    assert client.chat.await_count == 2
+
+
+async def test_repair_respects_budget(monkeypatch):
+    from types import SimpleNamespace
+
+    from crawlme.llm import LLMClient, TokenBudgetError
+
+    budget = TokenBudget(limit=10)
+    client = LLMClient("test", budget=budget)
+    complete = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1),
+        )
+    )
+    monkeypatch.setattr(client, "_complete", complete)
+    with pytest.raises(TokenBudgetError):
+        await Grouper(client, max_chars=10000).group(
+            CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+        )
+    complete.assert_awaited_once()
+    assert budget.calls == 1
+
+
+async def test_repair_input_limit():
+    client = client_response([])
+    client.chat.return_value = LLMResponse("x" * 10000, 1, 1, "test")
+    with pytest.raises(Exception, match="exceeds"):
+        await Grouper(client, max_chars=10000).group(
+            CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+        )
+    client.chat.assert_awaited_once()
