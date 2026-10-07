@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from crawlme import prompts
 from crawlme.digest.fetcher.base import FetchError
 from crawlme.llm import LLMClient, LLMError, Stage
+from crawlme.logging.progress import activity
 
 if TYPE_CHECKING:
     from crawlme.config import Settings
@@ -155,6 +156,7 @@ async def verify(
     return kept, dropped
 
 
+@activity("seed expander")
 async def expand(
     goal: CrawlGoal,
     seeds: list[str],

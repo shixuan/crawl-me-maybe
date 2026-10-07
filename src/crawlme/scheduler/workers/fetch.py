@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from crawlme.digest.fetcher import Fetcher
 from crawlme.logging import where
+from crawlme.logging.progress import activity
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.schemas import URL, FetchResult, FrontierItem
 from crawlme.storage.base import Storage
@@ -41,6 +42,7 @@ class FetchWorker:
         self._storage = storage
         self._slots = asyncio.Semaphore(concurrency)
 
+    @activity("fetch")
     async def fetch(self, item: FrontierItem) -> FetchResult | FetchFailure:
         host = (urlparse(item.url.canonical).hostname or "").lower()
         domain = item.url.reg_domain or host

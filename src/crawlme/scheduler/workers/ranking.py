@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from crawlme.logging.progress import activity
 from crawlme.pioneer.ranker import Ranker
 from crawlme.schemas import URL, Candidate, CrawlGoal, FrontierItem, RankDecision, RankHistorySummary
 
@@ -23,6 +24,7 @@ class RankingWorker:
     def __init__(self, ranker: Ranker | None) -> None:
         self.ranker = ranker
 
+    @activity("rank")
     async def rank(
         self,
         batch: list[Candidate],
