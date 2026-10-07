@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import shutil
 import time
 from collections.abc import Callable, Coroutine
 from functools import wraps
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
+from rich.console import Console, Group
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.text import Text
+
 P = ParamSpec("P")
 T = TypeVar("T")
-_FRAMES = "|/-\\"
 if TYPE_CHECKING:
     _StreamHandler = logging.StreamHandler[Any]
 else:
@@ -24,82 +26,64 @@ class ProgressHandler(_StreamHandler):
 
     def __init__(self, stream: Any, *, color: bool = False) -> None:
         super().__init__(stream)
-        self._color = color
+        self.console = Console(file=stream, no_color=not color, highlight=False)
+        self._style = "#e07ea4" if color else ""
         self.active: dict[object, tuple[str, float]] = {}
-        self._timer: asyncio.TimerHandle | None = None
-        self._lines = 0
-        self._previous: list[str] = []
-        self._frame = 0
+        self._spinners: dict[str, Spinner] = {}
+        self.live = Live(
+            console=self.console,
+            get_renderable=self._render,
+            transient=True,
+            refresh_per_second=6,
+        )
         self._stopped = False
 
     def begin(self, stage: str) -> object:
         token = object()
         self.active[token] = (stage, time.monotonic())
-        self._refresh()
+        if not self._stopped:
+            if not self.live.is_started:
+                self.live.start(refresh=True)
+            else:
+                self.live.refresh()
         return token
 
     def end(self, token: object) -> None:
         self.active.pop(token, None)
-        self._refresh()
+        if self.live.is_started:
+            if self.active:
+                self.live.refresh()
+            else:
+                self.live.stop()
+                self._spinners.clear()
 
-    def _clear(self) -> None:
-        if self._lines:
-            self.stream.write(f"\033[{self._lines}A\r\033[J")
-            self._lines = 0
-            self._previous = []
-
-    def _draw(self, message: str | None = None) -> None:
+    def _render(self) -> Group:
         stages: dict[str, list[float]] = {}
-        for stage, started in self.active.values():
+        for stage, started in self.active.copy().values():
             stages.setdefault(stage, []).append(started)
-        width, height = shutil.get_terminal_size()
         now = time.monotonic()
-        lines = []
-        for stage, starts in list(stages.items())[: max(1, height - 2)]:
+        rows = []
+        for stage, starts in stages.items():
             elapsed = int(now - min(starts))
             duration = f"{elapsed // 60}m {elapsed % 60:02d}s" if elapsed >= 60 else f"{elapsed}s"
-            line = f"{_FRAMES[self._frame % 4]} {stage}  {len(starts)} running · oldest {duration}"
-            lines.append(line[: max(1, width - 1)])
-        output = [f"\033[{self._lines}A\r"] if self._lines else []
-        if message is None and lines and [line[1:] for line in lines] == [line[1:] for line in self._previous]:
-            # The text is unchanged: overwrite only each spinner, then return below the block.
-            output.extend(self._paint(line[0]) + "\r\033[1B" for line in lines)
-        else:
-            if message is not None:
-                output.append(message.replace("\n", "\033[K\n") + "\033[K\n")
-            output.extend(self._paint(line) + "\033[K\n" for line in lines)
-            if len(lines) < self._lines:
-                output.append("\033[J")
-        self._lines = len(lines)
-        self._previous = lines
-        if output:
-            self.stream.write("".join(output))
-            self.stream.flush()
-
-    def _paint(self, text: str) -> str:
-        return f"\033[38;2;217;119;87m{text}\033[0m" if self._color else text
-
-    def _refresh(self) -> None:
-        self.acquire()
-        try:
-            if self._stopped:
-                return
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
-            self._draw()
-            if self.active:
-                self._frame += 1
-                self._timer = asyncio.get_running_loop().call_later(0.15, self._refresh)
-        finally:
-            self.release()
+            spinner = self._spinners.setdefault(stage, Spinner("line", style=self._style))
+            spinner.update(
+                text=Text(
+                    f"{stage}  {len(starts)} running · oldest {duration}",
+                    style=self._style,
+                    no_wrap=True,
+                    overflow="ellipsis",
+                )
+            )
+            rows.append(spinner)
+        return Group(*rows)
 
     def emit(self, record: logging.LogRecord) -> None:
-        if not self._lines and not self.active:
+        if not self.live.is_started:
             super().emit(record)
             return
         try:
-            self._draw(self.format(record))
+            self.console.print(Text.from_ansi(self.format(record)), soft_wrap=True)
         except Exception:
             self.handleError(record)
 
@@ -107,14 +91,9 @@ class ProgressHandler(_StreamHandler):
         self.acquire()
         try:
             self._stopped = True
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
             self.active.clear()
-            painted = self._lines > 0
-            self._clear()
-            if painted:
-                self.flush()
+            self.live.stop()
+            self._spinners.clear()
         finally:
             self.release()
             super().close()

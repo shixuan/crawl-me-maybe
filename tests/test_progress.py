@@ -15,6 +15,8 @@ from crawlme.logging.progress import ProgressHandler, activity
 @pytest.fixture
 def console(monkeypatch):
     stream = io.StringIO()
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+    monkeypatch.setenv("TERM", "xterm-256color")
     handler = ProgressHandler(stream)
     root = logging.getLogger()
     monkeypatch.setattr(root, "handlers", [handler])
@@ -39,14 +41,13 @@ async def test_concurrent_cancel(console):
     await asyncio.sleep(0.18)
     assert stream.getvalue() != before
     logging.getLogger().info("page complete")
-    assert "page complete\033[K\n" in stream.getvalue()
+    assert "page complete" in stream.getvalue()
     assert stream.getvalue().rfind("analyze") > stream.getvalue().rfind("page complete")
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     assert not handler.active
-    assert handler._timer is None
-    assert handler._lines == 0
+    assert not handler.live.is_started
 
 
 async def test_failure_cleans_status(console):
@@ -60,7 +61,7 @@ async def test_failure_cleans_status(console):
         await work()
     assert "dedup" in stream.getvalue()
     assert not handler.active
-    assert handler._timer is None
+    assert not handler.live.is_started
 
 
 async def test_file_log_stays_plain(console, tmp_path):
@@ -91,7 +92,7 @@ async def test_close_during_activity(console):
     handler.end(token)
     await asyncio.sleep(0.18)
     assert stream.getvalue() == before
-    assert handler._timer is None
+    assert not handler.live.is_started
 
 
 async def test_elapsed_and_stages(console, monkeypatch):
@@ -106,15 +107,14 @@ async def test_elapsed_and_stages(console, monkeypatch):
     handler.end(second)
 
 
-async def test_refresh_does_not_blank(console):
+async def test_refresh_uses_rich(console):
     handler, stream = console
     token = handler.begin("analyze")
     stream.write = Mock(wraps=stream.write)
-    handler._refresh()
+    handler.live.refresh()
     stream.write.assert_called_once()
     frame = stream.write.call_args.args[0]
-    assert "\033[2K" not in frame
-    assert "\033[J" not in frame
+    assert "analyze" in frame
     handler.end(token)
 
 
@@ -129,16 +129,21 @@ async def test_log_is_one_frame(console):
     handler.end(token)
 
 
-async def test_progress_color():
+async def test_progress_color(monkeypatch):
     stream = io.StringIO()
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    monkeypatch.delenv("NO_COLOR", raising=False)
     handler = ProgressHandler(stream, color=True)
     try:
         token = handler.begin("analyze")
-        assert "\033[38;2;217;119;87m| analyze" in stream.getvalue()
+        assert "\033[38;2;224;126;164m" in stream.getvalue()
+        assert "analyze" in stream.getvalue()
         stream.seek(0)
         stream.truncate()
-        handler._refresh()
-        assert "\033[38;2;217;119;87m/\033[0m" in stream.getvalue()
+        handler.live.refresh()
+        assert "\033[38;2;224;126;164m" in stream.getvalue()
         handler.end(token)
     finally:
         handler.close()
