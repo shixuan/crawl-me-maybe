@@ -11,6 +11,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from crawlme.logging.formatters import ConsoleFormatter, JsonFormatter
+from crawlme.logging.progress import ProgressHandler
 
 if TYPE_CHECKING:
     from crawlme.config import Settings
@@ -43,12 +44,20 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
 
     level = _level(settings.log_level)
     root.setLevel(level)
-    root.handlers.clear()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        handler.close()
 
     if level >= _OFF:
         return
 
-    h = logging.StreamHandler(sys.stderr)
+    interactive = sys.stderr.isatty() and os.environ.get("TERM") != "dumb"
+    color = interactive and "NO_COLOR" not in os.environ
+    h = (
+        ProgressHandler(sys.stderr, color=color)
+        if interactive and settings.log_format != "json" and level <= logging.INFO
+        else logging.StreamHandler(sys.stderr)
+    )
     h.setLevel(level)
     # Reports already printed to stdout still need a copy in the run log.
     h.addFilter(lambda record: not getattr(record, "file_only", False))
@@ -56,7 +65,7 @@ def setup_logging(settings: Settings, *, force: bool = False) -> None:
     if settings.log_format == "json":
         h.setFormatter(JsonFormatter())
     else:
-        h.setFormatter(ConsoleFormatter())
+        h.setFormatter(ConsoleFormatter(color=color))
 
     root.addHandler(h)
     root.addHandler(_Backlog())

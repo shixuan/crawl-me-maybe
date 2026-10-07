@@ -13,6 +13,7 @@ from typing import Any
 from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
+from crawlme.logging.progress import activity
 from crawlme.schemas import CrawlGoal
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class GoalEnhancer:
             )
         )
 
+    @activity("goal enhancer")
     async def enhance(self, goal: CrawlGoal) -> EnhancedGoal | None:
         """One chat call, then validation.  None means apply nothing."""
         if self._client is None:

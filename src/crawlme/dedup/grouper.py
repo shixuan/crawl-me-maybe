@@ -16,6 +16,7 @@ from crawlme.llm import Stage, TokenBudget
 from crawlme.llm.client import LLMClient
 from crawlme.llm.errors import LLMError
 from crawlme.llm.parsing import parse_json_response
+from crawlme.logging.progress import activity
 from crawlme.schemas import CrawlGoal
 from crawlme.storage.base import Storage
 
@@ -51,6 +52,7 @@ class Grouper:
         )
         return cls(client, max_chars=settings.llm_dedup_max_chars) if client is not None else None
 
+    @activity("dedup")
     async def group(self, goal: CrawlGoal, rows: list[dict[str, Any]]) -> list[Group]:
         if len(rows) < 2:
             return [Group(members=[r["analysis_id"]], overview=r.get("summary") or "Result") for r in rows]

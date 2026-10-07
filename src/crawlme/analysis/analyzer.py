@@ -16,6 +16,7 @@ from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
+from crawlme.logging.progress import activity
 from crawlme.schemas import (
     AnalysisResult,
     AnalyzerFeedback,
@@ -142,6 +143,7 @@ class PageAnalyzer:
             self._parked_count -= 1
             logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
 
+    @activity("analyze")
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
         text = _page_text(page)
         prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)

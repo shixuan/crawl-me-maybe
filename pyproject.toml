@@ -18,6 +18,7 @@ dependencies = [
     "lxml_html_clean",
     "aiosqlite",
     "litellm>=1.40",
+    "rich>=13.7",
 ]
 
 [project.optional-dependencies]
