@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.6.0...v0.7.0) (2026-10-07)
+
+
+### Features
+
+* **logging:** color logs by stage ([a6ce0c5](https://github.com/shixuan/crawl-me-maybe/commit/a6ce0c5efe5d64d2063a694c6ef0401386dbf4d2))
+
+
+### Fixes
+
+* **analysis:** validate split date evidence and retry corrections ([d8a760a](https://github.com/shixuan/crawl-me-maybe/commit/d8a760a8447eb54214fb528f84dd1e661590f0b3))
+* dedup and time policy bugs ([3c4089a](https://github.com/shixuan/crawl-me-maybe/commit/3c4089a136a935f145f8b9a9f2104f6cfb744f4b))
+* **dedup:** group only latest analyses with compact input ([0a7f6f5](https://github.com/shixuan/crawl-me-maybe/commit/0a7f6f5724f17608b6eaf10fa639b91507b1f8af))
+* **dedup:** retry invalid grouping responses with feedback ([e6d7378](https://github.com/shixuan/crawl-me-maybe/commit/e6d7378d1d154ffcd3dfd77527fa08cce4944ab4))
+* **time:** preserve expiry dates and hide past results by default ([2e08e6d](https://github.com/shixuan/crawl-me-maybe/commit/2e08e6de2d4577e168e378b5e3592b2e8bbbd9cf))
+
+
+### Changed
+
+* **logging:** render stage activity with Rich ([fe073d8](https://github.com/shixuan/crawl-me-maybe/commit/fe073d8a3f3d5f3a43f861f256afc706da7dd506))
+
 ## [0.6.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.5.1...v0.6.0) (2026-10-04)
 
 
