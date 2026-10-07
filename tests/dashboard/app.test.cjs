@@ -159,3 +159,30 @@ test('request timeout includes response body reads', async () => {
   await assert.rejects(request, /request timed out/);
   assert.equal(cleared, true);
 });
+
+test('adopting a timed goal leaves all temporal states visible', () => {
+  const context = vm.createContext({
+    URL,
+    document: { querySelector: () => ({ closest: () => ({}) }) },
+  });
+  vm.runInContext(source + `
+    renderFieldChoices = renderChips = renderWhenChips = renderCards = () => {};
+    globalThis.ui = {state, adopt, visible};
+  `, context);
+  const {ui} = context;
+  const rows = [
+    {analysis_id: 'expired', when: 'over', classification: 'RELEVANT'},
+    {analysis_id: 'live', when: 'open', classification: 'RELEVANT'},
+    {analysis_id: 'uncertain', when: 'undated', classification: 'RELEVANT'},
+  ];
+  const data = {goal_id: 'g', rows, goals: [], fields: [], time_enabled: true};
+  ui.adopt(data);
+  assert.equal(ui.state.rows.length, 3);
+  assert.equal(ui.visible().length, 3);
+  assert.equal(ui.visible().some(r => r.analysis_id === 'expired'), true);
+  ui.state.whens.clear();
+  ui.state.whens.add('over');
+  assert.equal(ui.visible()[0].analysis_id, 'expired');
+  ui.adopt({...data, time_enabled: false});
+  assert.equal(ui.visible().length, 3);
+});

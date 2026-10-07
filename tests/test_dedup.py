@@ -170,11 +170,9 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
                 {"analysis_id": key, "goal_id": goal, "classification": classification, "page_id": page_id}
             )
         rows = await storage.dedup_inputs("chosen")
-        assert [row["analysis_id"] for row in rows] == ["a", "b"]
-        assert [row["extracted"]["offer"]["value"] for row in rows] == ["a", "b"]
-        await storage.save_groups(
-            "chosen", fingerprint(rows), [{"members": ["a", "b"], "overview": "offer"}], model="test"
-        )
+        assert [row["analysis_id"] for row in rows] == ["a"]
+        assert [row["extracted"]["offer"]["value"] for row in rows] == ["a"]
+        await storage.save_groups("chosen", fingerprint(rows), [{"members": ["a"], "overview": "offer"}], model="test")
         observed = []
 
         def record_inputs(inputs):
@@ -183,11 +181,14 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
 
         monkeypatch.setattr(serve, "fingerprint", record_inputs)
         with closing(serve.connect(Path(storage.db_path))) as reader:
-            assert serve._groups(reader, "chosen")[0]["members"] == ["a", "b"]
+            assert serve._groups(reader, "chosen")[0]["members"] == ["a"]
             assert observed[-1] == rows
             assert serve._groups(reader, "other") == []
             with closing(sqlite3.connect(storage.db_path)) as writer:
                 writer.execute("UPDATE analyses SET summary = 'unrelated edit' WHERE goal_id = 'other'")
+                writer.commit()
+                assert serve._groups(reader, "chosen")
+                writer.execute("UPDATE analyses SET summary = 'old revision edit' WHERE analysis_id = 'b'")
                 writer.commit()
                 assert serve._groups(reader, "chosen")
                 writer.execute("UPDATE analyses SET extracted_json = '{}' WHERE analysis_id = 'a'")
@@ -229,3 +230,112 @@ async def test_factory_switch_and_reasoning_default(tmp_path, enabled):
     else:
         assert scheduler._grouper is None
     await scheduler.aclose()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not json",
+        '{"groups":[{"members":["a","b"],"overview":"x"},{"members":["b"],"overview":"y"}]}',
+        '{"groups":[{"members":["a","invented"],"overview":"x"}]}',
+        '{"groups":[{"members":[],"overview":"x"}]}',
+    ],
+)
+async def test_invalid_reply_retried(bad, caplog):
+    caplog.set_level("WARNING", logger="crawlme.dedup.grouper")
+    client = client_response([{"members": ["a", "b"], "overview": "offer"}])
+    good = client.chat.return_value
+    client.chat.side_effect = [LLMResponse(bad, 1, 1, "test"), good]
+    groups = await Grouper(client, max_chars=10000).group(
+        CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+    )
+    assert [g.members for g in groups] == [["a", "b"]]
+    assert client.chat.await_count == 2
+    repair = json.loads(client.chat.call_args.args[0])["repair"]
+    assert repair["previous_response"] == bad
+    assert repair["error"]
+    assert any(bad in r.getMessage() and getattr(r, "file_only", False) for r in caplog.records)
+
+
+async def test_invalid_retry_stops(caplog):
+    client = client_response([{"members": ["a", "a", "unknown"], "overview": "offer"}])
+    with pytest.raises(Exception, match=r"duplicate IDs.*a.*unknown IDs.*unknown"):
+        await Grouper(client, max_chars=10000).group(
+            CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+        )
+    assert client.chat.await_count == 2
+
+
+async def test_repair_respects_budget(monkeypatch):
+    from types import SimpleNamespace
+
+    from crawlme.llm import LLMClient, TokenBudgetError
+
+    budget = TokenBudget(limit=10)
+    client = LLMClient("test", budget=budget)
+    complete = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1),
+        )
+    )
+    monkeypatch.setattr(client, "_complete", complete)
+    with pytest.raises(TokenBudgetError):
+        await Grouper(client, max_chars=10000).group(
+            CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+        )
+    complete.assert_awaited_once()
+    assert budget.calls == 1
+
+
+async def test_repair_input_limit():
+    client = client_response([])
+    client.chat.return_value = LLMResponse("x" * 10000, 1, 1, "test")
+    with pytest.raises(Exception, match="exceeds"):
+        await Grouper(client, max_chars=10000).group(
+            CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
+        )
+    client.chat.assert_awaited_once()
+
+
+async def test_latest_verdict_before_filter(tmp_path):
+    storage = SqliteStorage.create(tmp_path)
+    await storage.start()
+    try:
+        page = Page(url=URL(raw="https://example.com", canonical="https://example.com", url_key="page"), url_key="page")
+        storage.save_page(page)
+        for key, verdict, stamp in [
+            ("old", "RELEVANT", "2026-01-01"),
+            ("new", "IRRELEVANT", "2026-01-02"),
+            ("late-insert", "RELEVANT", "2026-01-01"),
+        ]:
+            storage.save_analysis(
+                {
+                    "analysis_id": key,
+                    "page_id": page.page_id,
+                    "url_key": page.url_key,
+                    "goal_id": "goal",
+                    "classification": verdict,
+                    "analyzed_at": stamp,
+                }
+            )
+        assert await storage.dedup_inputs("goal") == []
+    finally:
+        await storage.close()
+
+
+async def test_compact_input_boundary():
+    from crawlme import prompts
+
+    goal = CrawlGoal(prompt="offers")
+    rows = [{"analysis_id": "a", "summary": "A café offer"}, {"analysis_id": "b"}]
+    payload = {"goal": goal.prompt, "spec": goal.extraction_spec, "results": rows}
+    compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    limit = len(compact) + len(prompts.DEDUP_SYSTEM)
+    client = client_response([])
+    await Grouper(client, max_chars=limit).group(goal, rows)
+    assert client.chat.call_args.args[0] == compact
+    client.chat.reset_mock()
+    with pytest.raises(Exception, match="exceeds"):
+        await Grouper(client, max_chars=limit - 1).group(goal, rows)
+    client.chat.assert_not_called()

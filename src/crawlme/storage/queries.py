@@ -8,8 +8,14 @@ from typing import Any
 GOALS = "SELECT * FROM crawl_goals ORDER BY created_at"
 PAGES = "SELECT * FROM pages ORDER BY extracted_at, page_id"
 ANALYSES = "SELECT * FROM analyses ORDER BY analyzed_at"
+# Replay appends revisions; readers select one result before filtering verdicts or dates.
+LATEST_ANALYSES = (
+    "SELECT a.* FROM analyses a WHERE a.rowid = ("
+    "SELECT n.rowid FROM analyses n WHERE n.goal_id = a.goal_id AND n.url_key = a.url_key "
+    "ORDER BY n.analyzed_at DESC, n.rowid DESC LIMIT 1)"
+)
 DEDUP_INPUTS = (
-    "SELECT a.*, p.url_json, p.published_at FROM analyses a "
+    f"SELECT a.*, p.url_json, p.published_at FROM ({LATEST_ANALYSES}) a "  # noqa: S608 — static SQL only
     "JOIN pages p ON p.page_id = a.page_id WHERE a.goal_id = ? "
     "AND a.classification = 'RELEVANT' ORDER BY a.analysis_id"
 )
