@@ -35,5 +35,5 @@ def read_results(db: Path) -> RunResults:
         return RunResults(
             goals=[dict(row) for row in con.execute(queries.GOALS)],
             pages=[dict(row) for row in con.execute(queries.PAGES)],
-            analyses=[dict(row) for row in con.execute(queries.ANALYSES)],
+            analyses=[dict(row) for row in con.execute(queries.LATEST_ANALYSES + " ORDER BY a.analyzed_at, a.rowid")],
         )

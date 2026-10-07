@@ -163,7 +163,7 @@ async def test_cmd_summary(tmp_path, monkeypatch, capsys):
     assert "pages:     3 fetched" in out
     assert "2 RELEVANT" in out
     # Results are grouped by whether they have run out, not ranked by score.
-    assert "Ongoing (" in out or "Undated (" in out
+    assert "Ongoing (" in out or "Validity unknown (" in out
     assert "Title a" in out  # highest relevance first
 
 
@@ -303,3 +303,34 @@ def test_a_later_result_reads_as_a_start() -> None:
     horizon = datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=7)
     lines = _result_lines([_dated("a", _day(2), _day(3))], {}, horizon=horizon)
     assert any("in 2d" in line for line in lines)
+
+
+@pytest.mark.parametrize("same_time", [False, True])
+async def test_replay_uses_latest_dates(tmp_path, capsys, same_time):
+    from crawlme.cli.inspect import _print_summary
+
+    run = await _write_run(tmp_path, "20260101_000001")
+    with sqlite3.connect(run / "db" / "crawl.db") as con:
+        goal = con.execute("SELECT goal_id FROM crawl_tasks WHERE task_id='task1'").fetchone()[0]
+        con.execute("UPDATE analyses SET ends_on='2099-01-01' WHERE goal_id=?", (goal,))
+    storage = SqliteStorage(str(run / "db" / "crawl.db"), str(run / "raw"))
+    await storage.start()
+    for key, classification in [("a", "RELEVANT"), ("b", "IRRELEVANT")]:
+        row = _analysis(key, goal, classification, 0.2)
+        row.update(
+            analysis_id=f"new-{key}",
+            ends_on="2020-01-01",
+            analyzed_at="2026-01-01T00:00:00Z" if same_time else "2026-01-02T00:00:00Z",
+        )
+        storage.save_analysis(row)
+    await storage.close()
+    data = await inspect_task(_cfg(tmp_path), "task1")
+    assert len(data.analyses) == 3
+    chosen = {a["url_key"]: a for a in data.analyses}
+    assert chosen["a"]["analysis_id"] == "new-a"
+    assert chosen["b"]["classification"] == "IRRELEVANT"
+    _print_summary(data)
+    out = capsys.readouterr().out
+    assert "Past (1)" in out and "Ongoing (" not in out
+    with sqlite3.connect(run / "db" / "crawl.db") as con:
+        assert con.execute("SELECT count(*) FROM analyses WHERE goal_id=?", (goal,)).fetchone()[0] == 5

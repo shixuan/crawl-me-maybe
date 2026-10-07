@@ -124,3 +124,11 @@ def test_a_start_alone_can_still_be_later() -> None:
 
 def test_ending_today_is_still_open() -> None:
     assert group_of(None, TODAY, TODAY, HORIZON) == OPEN
+
+
+def test_past_start_is_not_ongoing():
+    assert group_of(D(2026, 9, 1), None, TODAY) == UNDATED
+
+
+def test_range_with_to():
+    assert read_range("October 2 to 4, 2026", kind="on", said_on=SAID_ON) == DateRange(D(2026, 10, 2), D(2026, 10, 4))

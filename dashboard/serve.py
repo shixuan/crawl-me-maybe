@@ -87,7 +87,9 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
         # it needs no new data.
         today = datetime.now(timezone.utc).date()
         rows = []
-        for row in con.execute("SELECT * FROM analyses WHERE goal_id = ? ORDER BY relevance_score DESC", (chosen,)):
+        for row in con.execute(
+            queries.LATEST_ANALYSES + " AND a.goal_id = ? ORDER BY a.relevance_score DESC", (chosen,)
+        ):
             # A run from before the dates were stored has no such
             # columns. A dict reads those as blank instead of raising.
             a = dict(row)

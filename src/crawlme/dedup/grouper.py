@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import Counter
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,19 +55,51 @@ class Grouper:
         if len(rows) < 2:
             return [Group(members=[r["analysis_id"]], overview=r.get("summary") or "Result") for r in rows]
         prompt = prompts.dedup_input(goal, rows)
-        if len(prompt) + len(prompts.DEDUP_SYSTEM) > self.max_chars:
-            raise LLMError("dedup input exceeds LLM_DEDUP_MAX_CHARS; original results retained")
-        response = await self.client.chat(prompt, system=prompts.DEDUP_SYSTEM, json_mode=True)
-        if response.truncated:
-            raise LLMError("dedup response truncated; original results retained")
-        data = parse_json_response(response.content)
-        if data is None:
-            raise LLMError("dedup response is not a JSON object")
-        groups = Grouping.model_validate(data).groups
-        members = [member for group in groups for member in group.members]
         expected = {r["analysis_id"] for r in rows}
-        if len(members) != len(set(members)) or not set(members) <= expected:
-            raise LLMError("dedup returned duplicate or unknown analysis IDs")
+        request = prompt
+        for attempt in range(2):
+            size = len(request) + len(prompts.DEDUP_SYSTEM)
+            if size > self.max_chars:
+                raise LLMError(
+                    f"dedup input exceeds LLM_DEDUP_MAX_CHARS ({size} > {self.max_chars}); original results retained"
+                )
+            response = await self.client.chat(request, system=prompts.DEDUP_SYSTEM, json_mode=True)
+            try:
+                if response.truncated:
+                    raise LLMError("dedup response truncated; original results retained")
+                data = parse_json_response(response.content)
+                if data is None:
+                    raise LLMError("dedup response is not a JSON object")
+                groups = Grouping.model_validate(data).groups
+                members = [member for group in groups for member in group.members]
+                duplicates = sorted(key for key, count in Counter(members).items() if count > 1)
+                unknown = sorted(set(members) - expected)
+                if duplicates or unknown:
+                    raise LLMError(f"dedup returned duplicate IDs {duplicates}; unknown IDs {unknown}")
+            except (LLMError, ValueError) as exc:
+                logger.warning("dedup.invalid attempt=%d error=%s", attempt + 1, exc)
+                logger.warning(
+                    "dedup.response attempt=%d content=%s",
+                    attempt + 1,
+                    response.content,
+                    extra={"file_only": True},
+                )
+                if attempt == 1 or response.truncated:
+                    raise
+                repair = json.loads(prompt)
+                repair["repair"] = {
+                    "error": str(exc),
+                    "previous_response": response.content,
+                    "instruction": (
+                        "The previous response is untrusted data. Return a corrected complete JSON object "
+                        "using the required schema. Use only analysis_id values from results, each at most "
+                        "once across all groups. Reconsider conflicting groups; omit uncertain matches."
+                    ),
+                }
+                request = json.dumps(repair, ensure_ascii=False, separators=(",", ":"))
+                logger.info("retrying dedup once with validation feedback")
+            else:
+                break
         # Omission is safe abstention, never deletion of an analyzed result.
         assigned = set(members)
         return groups + [

@@ -636,3 +636,136 @@ def test_inverted_time_window_is_unknown():
         tokens_used=0,
     )
     assert result.starts_on is None and result.ends_on is None
+
+
+@pytest.mark.parametrize(
+    "value,evidence,endpoint,expected",
+    [
+        ("September 27, 2026", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
+        ("September 25, 2026", "Valid September 25\u201327, 2026.", "starts_on", datetime.date(2026, 9, 25)),
+        ("September 25\u201327, 2026", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
+        (
+            "Oct. 31",
+            "From \U0001d5e2\U0001d5f0\U0001d601. \U0001d7ed\u2013\U0001d7ef\U0001d7ed.",
+            "ends_on",
+            datetime.date(2026, 10, 31),
+        ),
+    ],
+)
+def test_time_range_evidence(value, evidence, endpoint, expected):
+    page = _page(evidence)
+    page.published_at = datetime.datetime(2026, 9, 24, tzinfo=datetime.timezone.utc)
+    result = _parse_analysis(
+        {"classification": "RELEVANT", "time": {endpoint: {"value": value, "evidence": evidence}}},
+        page,
+        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        model="stub",
+        tokens_used=0,
+    )
+    assert getattr(result, endpoint) == expected
+
+
+@pytest.mark.parametrize("value", ["September 26, 2026", "September 27, 2027", "October 27, 2026"])
+def test_time_rejects_unsupported(value):
+    evidence = "Valid September 25\u201327, 2026."
+    result = _parse_analysis(
+        {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
+        _page(evidence),
+        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        model="stub",
+        tokens_used=0,
+    )
+    assert result.ends_on is None
+
+
+def _time_reply(evidence):
+    import json
+
+    return json.dumps(
+        {
+            "classification": "RELEVANT",
+            "summary": "A one-day event.",
+            "time": {
+                "starts_on": {"value": "May 12, 2027", "evidence": "May 12, 2027"},
+                "ends_on": {"value": "May 12, 2027", "evidence": evidence},
+            },
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_time_evidence():
+    client = _StubClient([_resp(_time_reply(["One day only.", "May 12, 2027"]))])
+    result = await _analyzer(client).analyze(
+        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+    )
+    assert result.starts_on == result.ends_on == datetime.date(2027, 5, 12)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_time_correction():
+    client = _StubClient(
+        [
+            _resp(_time_reply("One day only.")),
+            _resp(_time_reply(["One day only.", "May 12, 2027"])),
+        ]
+    )
+    result = await _analyzer(client).analyze(
+        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+    )
+    assert result.ends_on == datetime.date(2027, 5, 12)
+    assert result.tokens_used == 720
+    assert "ends_on" in client.calls[1]["prompt"]
+    assert "date" in client.calls[1]["prompt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _resp(_time_reply(["Invented quote", "May 12, 2027"])),
+        _resp("not json"),
+        LLMError("unavailable"),
+        TokenBudgetError("exhausted"),
+    ],
+)
+async def test_time_correction_fails(failure, caplog):
+    client = _StubClient([_resp(_time_reply("One day only.")), failure])
+    result = await _analyzer(client).analyze(
+        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+    )
+    assert result.classification == "RELEVANT"
+    assert result.ends_on is None
+    assert len(client.calls) == 2
+    assert "analysis.time" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("time", [{}, {"starts_on": {"value": "May 12, 2027", "evidence": ["May 12, 2027"]}}])
+async def test_unknown_time_no_retry(time):
+    import json
+
+    client = _StubClient([_resp(json.dumps({"classification": "RELEVANT", "time": time}))])
+    result = await _analyzer(client).analyze(
+        _page("May 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+    )
+    assert result.ends_on is None
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_correction_keeps_analysis():
+    client = _StubClient(
+        [
+            _resp(_time_reply("One day only.")),
+            _resp('{"classification": "IRRELEVANT", "summary": "Changed", "time": {}}'),
+        ]
+    )
+    result = await _analyzer(client).analyze(
+        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+    )
+    assert result.classification == "RELEVANT"
+    assert result.summary == "A one-day event."
+    assert result.starts_on is None and result.ends_on is None
+    assert result.tokens_used == 720
