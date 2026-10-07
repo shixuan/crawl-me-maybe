@@ -229,14 +229,17 @@ def analysis_system(goal: CrawlGoal) -> str:
     if goal.time_policy:
         system += (
             ' On RELEVANT pages also return "time": {"starts_on": {"value": "date as written", '
-            '"evidence": "verbatim quote"}, "ends_on": {"value": "date as written", '
-            '"evidence": "verbatim quote"}} following the time policy. '
+            '"evidence": ["verbatim quote"]}, "ends_on": {"value": "date as written", '
+            '"evidence": ["verbatim quote"]}} following the time policy. '
             "Return time independently of the requested extracted fields; a deadline in extracted "
             "does not replace time. Omit unknown endpoints. "
             "For a single-day event use that date for both endpoints. "
             "For a compressed date range, each endpoint may use the full range as written; "
             "the application selects its start or end. "
-            "Evidence must contain the date value and explicitly support its role. Never use "
+            "Each evidence quote must be copied verbatim from the page. Together the quotes must "
+            "contain the date and support its role as a start or end. When the date and its role "
+            "appear separately, include both passages; for a single-day event include its date "
+            "and the passage establishing that it lasts one day. Never use "
             "publication dates, historical mentions or unrelated dates as validity dates. "
             "Do not guess missing dates; omit time for ambiguous or multiple incompatible windows."
         )

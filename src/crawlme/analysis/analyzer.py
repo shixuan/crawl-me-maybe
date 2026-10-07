@@ -6,6 +6,7 @@ retry queue; relevant-page summaries feed subsequent ranking."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import unicodedata
 from collections.abc import Callable
@@ -149,6 +150,40 @@ class PageAnalyzer:
         if data is None:
             raise LLMError(f"unparseable JSON for {page.url_key}")
         tokens = resp.input_tokens + resp.output_tokens
+        if goal.time_policy and data.get("classification") == "RELEVANT":
+            issues: list[str] = []
+            _policy_dates(data, page, issues=issues)
+            if issues:
+                logger.warning("analysis.time_retry url_key=%s errors=%s", page.url_key, "; ".join(issues))
+                correction = (
+                    prompt
+                    + "\n## Time correction\nPrevious time output:\n"
+                    + json.dumps(data.get("time"), ensure_ascii=False)
+                    + "\nValidation errors:\n"
+                    + "\n".join(issues)
+                    + '\nReturn only {"time": {...}} with corrected date evidence. '
+                    "Use multiple verbatim quotes when the date and its role occur separately. "
+                    "Omit endpoints the page does not establish."
+                )
+                try:
+                    fixed = await self._client.chat(
+                        correction,
+                        system=prompts.analysis_system(goal)
+                        + ' For this correction return only {"time": {...}}; omit all other analysis fields. '
+                        + 'If no endpoint is supported, return {"time": {}}.',
+                        json_mode=True,
+                    )
+                    tokens += fixed.input_tokens + fixed.output_tokens
+                    corrected = parse_json_response(fixed.content)
+                    if corrected is None or not isinstance(corrected.get("time"), dict):
+                        raise LLMError("time correction must return a time object")
+                    remaining: list[str] = []
+                    _policy_dates(corrected, page, issues=remaining)
+                    if remaining:
+                        raise LLMError("; ".join(remaining))
+                    data = {**data, "time": corrected["time"]}
+                except LLMError as exc:
+                    logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
         result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
         logger.info(
             "judged %s: %s (%.2f)",
@@ -315,32 +350,44 @@ def _parse_analysis(
     )
 
 
-def _policy_dates(data: dict[str, Any], page: Page) -> dict[str, Any]:
+def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None = None) -> dict[str, Any]:
+    errors = issues if issues is not None else []
     raw = data.get("time")
+    if raw is None:
+        return {}
     if not isinstance(raw, dict):
+        errors.append("time must be an object")
         return {}
     dates = {}
+    text = _normalize(unicodedata.normalize("NFKC", _page_text(page)))
     for endpoint in ("starts_on", "ends_on"):
         entry = raw.get(endpoint)
+        if entry is None:
+            continue
         if not isinstance(entry, dict):
+            errors.append(f"{endpoint}: expected a date value and evidence")
             continue
         value, evidence = entry.get("value"), entry.get("evidence")
-        if not isinstance(value, str) or not isinstance(evidence, str) or not value.strip() or not evidence.strip():
+        quotes = [evidence] if isinstance(evidence, str) else evidence
+        if not isinstance(value, str) or not value.strip() or not isinstance(quotes, list) or not quotes:
+            errors.append(f"{endpoint}: provide a date value and nonempty evidence quotes")
             continue
-        quote = _normalize(unicodedata.normalize("NFKC", evidence))
-        text = _normalize(unicodedata.normalize("NFKC", _page_text(page)))
-        if quote not in text:
+        if any(not isinstance(q, str) or not q.strip() for q in quotes):
+            errors.append(f"{endpoint}: evidence quotes must be nonempty strings")
+            continue
+        if any(_normalize(unicodedata.normalize("NFKC", q)) not in text for q in quotes):
+            errors.append(f"{endpoint}: each evidence quote must occur in the page")
             continue
         found = read_range(value, kind="on", said_on=page.published_at)
-        supported = read_range(evidence, kind="on", said_on=page.published_at)
-        if found is None or supported is None:
+        supported = [read_range(q, kind="on", said_on=page.published_at) for q in quotes]
+        date = (found.start if endpoint == "starts_on" else found.end) if found else None
+        if date is None or not any(span and date in (span.start, span.end) for span in supported):
+            errors.append(f"{endpoint}: evidence must include the stated date, including compressed ranges")
             continue
-        date = found.start if endpoint == "starts_on" else found.end
-        # Compressed ranges need not contain either expanded endpoint verbatim.
-        if date is not None and date in (supported.start, supported.end):
-            dates[endpoint] = date
+        dates[endpoint] = date
     start, end = dates.get("starts_on"), dates.get("ends_on")
     if start is not None and end is not None and start > end:
+        errors.append("time: starts_on must not be after ends_on")
         return {}
     return dates
 
