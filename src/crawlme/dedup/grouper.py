@@ -58,8 +58,11 @@ class Grouper:
         expected = {r["analysis_id"] for r in rows}
         request = prompt
         for attempt in range(2):
-            if len(request) + len(prompts.DEDUP_SYSTEM) > self.max_chars:
-                raise LLMError("dedup input exceeds LLM_DEDUP_MAX_CHARS; original results retained")
+            size = len(request) + len(prompts.DEDUP_SYSTEM)
+            if size > self.max_chars:
+                raise LLMError(
+                    f"dedup input exceeds LLM_DEDUP_MAX_CHARS ({size} > {self.max_chars}); original results retained"
+                )
             response = await self.client.chat(request, system=prompts.DEDUP_SYSTEM, json_mode=True)
             try:
                 if response.truncated:
@@ -93,7 +96,7 @@ class Grouper:
                         "once across all groups. Reconsider conflicting groups; omit uncertain matches."
                     ),
                 }
-                request = json.dumps(repair, ensure_ascii=False)
+                request = json.dumps(repair, ensure_ascii=False, separators=(",", ":"))
                 logger.info("retrying dedup once with validation feedback")
             else:
                 break

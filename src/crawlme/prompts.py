@@ -301,5 +301,6 @@ def dedup_input(goal: CrawlGoal, rows: list[dict[str, Any]]) -> str:
     return json.dumps(
         {"goal": goal.prompt, "spec": goal.extraction_spec, "results": rows},
         ensure_ascii=False,
+        separators=(",", ":"),
         default=str,
     )

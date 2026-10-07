@@ -15,7 +15,7 @@ LATEST_ANALYSES = (
     "ORDER BY n.analyzed_at DESC, n.rowid DESC LIMIT 1)"
 )
 DEDUP_INPUTS = (
-    "SELECT a.*, p.url_json, p.published_at FROM analyses a "
+    f"SELECT a.*, p.url_json, p.published_at FROM ({LATEST_ANALYSES}) a "  # noqa: S608 — static SQL only
     "JOIN pages p ON p.page_id = a.page_id WHERE a.goal_id = ? "
     "AND a.classification = 'RELEVANT' ORDER BY a.analysis_id"
 )
