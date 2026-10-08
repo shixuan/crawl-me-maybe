@@ -54,7 +54,7 @@ class SeedExpander:
             LLMClient.from_settings_if_configured(
                 settings,
                 budget=budget,
-                reasoning_effort=settings.llm_enhance_reasoning_effort,
+                reasoning_effort=settings.llm_seeds_reasoning_effort,
                 stage=Stage.SEEDS,
             )
         )

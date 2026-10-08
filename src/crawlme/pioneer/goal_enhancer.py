@@ -61,7 +61,7 @@ class GoalEnhancer:
             LLMClient.from_settings_if_configured(
                 settings,
                 budget=budget,
-                reasoning_effort=settings.llm_enhance_reasoning_effort,
+                reasoning_effort=settings.llm_goal_reasoning_effort,
                 stage=Stage.GOAL,
             )
         )
