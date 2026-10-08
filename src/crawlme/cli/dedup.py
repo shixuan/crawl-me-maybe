@@ -46,7 +46,10 @@ async def cmd_dedup(args: argparse.Namespace) -> None:
         lines += [
             f"  run:        {run_dir}",
             f"  goal:       {goal_id}",
-            f"  results:    {result['sources']} sources -> {result['groups']} groups",
+            (
+                f"  results:    {result.get('items', result['sources'])} items from "
+                f"{result['sources']} pages -> {result['groups']} groups"
+            ),
         ]
     except Exception as exc:
         failed = True

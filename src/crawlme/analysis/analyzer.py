@@ -28,6 +28,7 @@ from crawlme.schemas import (
     spec_time_field,
     spec_version,
 )
+from crawlme.schemas.analysis import ResultItem
 from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
@@ -148,11 +149,41 @@ class PageAnalyzer:
         text = _page_text(page)
         prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)
         resp = await self._client.chat(prompt, system=prompts.analysis_system(goal), json_mode=True)
+        if resp.truncated:
+            raise LLMError(f"analysis response truncated for {page.url_key}; incomplete items rejected")
         data = parse_json_response(resp.content)
         if data is None:
             raise LLMError(f"unparseable JSON for {page.url_key}")
         tokens = resp.input_tokens + resp.output_tokens
+        entries = _item_entries(data)
         if goal.time_policy and data.get("classification") == "RELEVANT":
+            for entry in entries:
+                corrected, used = await self._correct_time(entry, page, goal, prompt)
+                entry.update(corrected)
+                tokens += used
+        result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
+        logger.info(
+            "judged %s: %s (%.2f), %d items",
+            where(page.url.canonical),
+            result.classification,
+            result.relevance_score,
+            len(result.items or []),
+        )
+        logger.debug(
+            "analysis.ok url_key=%s classification=%s relevance=%.2f model=%s tokens=+%d",
+            page.url_key,
+            result.classification,
+            result.relevance_score,
+            result.model,
+            tokens,
+        )
+        return result
+
+    async def _correct_time(
+        self, data: dict[str, Any], page: Page, goal: CrawlGoal, prompt: str
+    ) -> tuple[dict[str, Any], int]:
+        tokens = 0
+        if goal.time_policy:
             issues: list[str] = []
             _policy_dates(data, page, issues=issues)
             if issues:
@@ -160,12 +191,13 @@ class PageAnalyzer:
                 correction = (
                     prompt
                     + "\n## Time correction\nPrevious time output:\n"
-                    + json.dumps(data.get("time"), ensure_ascii=False)
+                    + json.dumps(data, ensure_ascii=False)
                     + "\nValidation errors:\n"
                     + "\n".join(issues)
                     + '\nReturn only {"time": {...}} with corrected date evidence. '
                     "Use multiple verbatim quotes when the date and its role occur separately. "
                     "Omit endpoints the page does not establish."
+                    " Correct only this item's time; do not borrow dates from other items on the page."
                 )
                 try:
                     fixed = await self._client.chat(
@@ -186,22 +218,7 @@ class PageAnalyzer:
                     data = {**data, "time": corrected["time"]}
                 except LLMError as exc:
                     logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
-        result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
-        logger.info(
-            "judged %s: %s (%.2f)",
-            where(page.url.canonical),
-            result.classification,
-            result.relevance_score,
-        )
-        logger.debug(
-            "analysis.ok url_key=%s classification=%s relevance=%.2f model=%s tokens=+%d",
-            page.url_key,
-            result.classification,
-            result.relevance_score,
-            result.model,
-            tokens,
-        )
-        return result
+        return data, tokens
 
     def _publish(self, result: AnalysisResult) -> None:
         if self._sink is not None:
@@ -297,6 +314,45 @@ def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[
     return out
 
 
+def _item_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+    if "items" not in data:
+        return [data]  # Accept historical single-result responses.
+    entries = data["items"]
+    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+        raise LLMError("items must be an array of objects")
+    if data.get("classification") == "RELEVANT" and not entries:
+        raise LLMError("a relevant page must contain at least one supported item")
+    if data.get("classification") == "IRRELEVANT" and entries:
+        raise LLMError("an irrelevant page cannot contain result items")
+    return entries
+
+
+def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem:
+    summary = data.get("summary")
+    evidence = data.get("evidence")
+    if not isinstance(summary, str) or not summary.strip():
+        raise LLMError("each item requires a summary")
+    if (
+        not isinstance(evidence, list)
+        or not evidence
+        or any(
+            not isinstance(quote, str) or not quote.strip() or _normalize(quote) not in _normalize(_page_text(page))
+            for quote in evidence
+        )
+    ):
+        raise LLMError("each item requires nonempty verbatim source evidence")
+    extracted = _parse_extracted(data, page, goal)
+    dates = _policy_dates(data, page) if goal.time_policy else _dates_from(extracted, page, goal)
+    return ResultItem(
+        summary=summary.strip(),
+        relevance_score=_clamp01(data.get("relevance_score")),
+        evidence=evidence,
+        extracted=extracted,
+        tags=_str_list(data.get("tags"), _MAX_TAGS),
+        **dates,
+    )
+
+
 def _parse_analysis(
     data: dict[str, Any],
     page: Page,
@@ -321,6 +377,8 @@ def _parse_analysis(
 
     tags = _str_list(data.get("tags"), _MAX_TAGS)
     extracted = _parse_extracted(data, page, goal)
+    entries = _item_entries(data)
+    items = [_parse_item(entry, page, goal) for entry in entries] if "items" in data else None
 
     return AnalysisResult(
         page_id=page.page_id,
@@ -330,6 +388,7 @@ def _parse_analysis(
         relevance_score=relevance,
         summary=summary,
         structured_data=data,
+        items=items,
         extracted=extracted,
         spec_version=spec_version(goal.extraction_spec, goal.time_policy),
         **(

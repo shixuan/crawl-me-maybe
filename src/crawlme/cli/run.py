@@ -442,7 +442,10 @@ def _format_summary(s: dict[str, Any]) -> str:
 
     dedup = s.get("dedup") or {}
     if dedup.get("status") == "complete":
-        lines.append(f"  dedup:      {dedup['sources']} sources -> {dedup['groups']} results")
+        lines.append(
+            f"  dedup:      {dedup.get('items', dedup['sources'])} items from "
+            f"{dedup['sources']} pages -> {dedup['groups']} results"
+        )
     elif dedup:
         lines.append(f"  dedup:      {dedup['status']} (original results)")
 
@@ -459,6 +462,8 @@ def _format_summary(s: dict[str, Any]) -> str:
         )
 
     analyses = s.get("analyses") or {}
+    if "items" in s:
+        lines.append(f"  items:      {s['items']}")
     if analyses:
         parts = ", ".join(f"{analyses[c]} {c}" for c in _in_order(analyses, CLASSIFICATIONS))
         lines.append(f"  analyses:   {sum(analyses.values())} ({parts})")

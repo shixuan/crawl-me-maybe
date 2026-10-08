@@ -18,6 +18,7 @@ def summary(state: RunState) -> dict[str, Any]:
         "candidates_ranked": stats.candidates_ranked,
         "fetch_errors": stats.fetch_errors,
         "analyses": dict(stats.analyses_by_class),
+        "items": stats.items_found,
         # Preserve user seed order in the per-source report.
         "seeds": {
             key: {

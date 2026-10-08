@@ -31,6 +31,17 @@ function app() {
 
 const result = name => ({ rows: [name], goals: [], goal_id: name });
 
+test('irrelevant pages do not increase the item count', () => {
+  const ui = app();
+  ui.state.rows = [
+    {item_id: 'a', url_key: 'p1', classification: 'RELEVANT'},
+    {item_id: 'b', url_key: 'p1', classification: 'RELEVANT'},
+    {item_id: 'c', url_key: 'p2', classification: 'IRRELEVANT'},
+  ];
+  ui.renderCards();
+  assert.match(ui.elements.get('#tally').innerHTML, /2 items · 2 pages/);
+});
+
 function groupingApp() {
   const context = vm.createContext({ URL, document: {
     createElement: () => ({ innerHTML: '', className: '', children: [], append(child) { this.children.push(child); } }),
@@ -38,6 +49,20 @@ function groupingApp() {
   vm.runInContext(source + '\nglobalThis.ui = {state, groupedRows, visible, whenOf, card};', context);
   return context.ui;
 }
+
+test('items from one analysis retain separate group membership', () => {
+  const ui = groupingApp();
+  ui.state.rows = [
+    {item_id: 'a', analysis_id: 'page1', url_key: 'p1', relevance: 0.8, when: 'open'},
+    {item_id: 'b', analysis_id: 'page1', url_key: 'p1', relevance: 0.7, when: 'later'},
+    {item_id: 'c', analysis_id: 'page2', url_key: 'p2', relevance: 0.9, when: 'open'},
+  ];
+  ui.state.groups = [{members: ['a', 'c'], overview: 'Same object'}];
+  const rows = ui.groupedRows();
+  assert.equal(rows.length, 2);
+  assert.deepEqual(Array.from(rows[0].members, r => r.item_id), ['a', 'c']);
+  assert.equal(rows[1].item_id, 'b');
+});
 
 test('upcoming remains distinct and during only limits future starts', () => {
   const ui = groupingApp();
@@ -160,7 +185,7 @@ test('request timeout includes response body reads', async () => {
   assert.equal(cleared, true);
 });
 
-test('adopting a timed goal leaves all temporal states visible', () => {
+test('default filters show relevant results except past ones', () => {
   const context = vm.createContext({
     URL,
     document: { querySelector: () => ({ closest: () => ({}) }) },
@@ -174,15 +199,24 @@ test('adopting a timed goal leaves all temporal states visible', () => {
     {analysis_id: 'expired', when: 'over', classification: 'RELEVANT'},
     {analysis_id: 'live', when: 'open', classification: 'RELEVANT'},
     {analysis_id: 'uncertain', when: 'undated', classification: 'RELEVANT'},
+    {analysis_id: 'future', when: 'later', classification: 'RELEVANT'},
+    {analysis_id: 'rejected', when: 'undated', classification: 'IRRELEVANT'},
   ];
   const data = {goal_id: 'g', rows, goals: [], fields: [], time_enabled: true};
   ui.adopt(data);
-  assert.equal(ui.state.rows.length, 3);
+  assert.equal(ui.state.rows.length, 5);
+  assert.deepEqual(Array.from(ui.state.classes), ['RELEVANT']);
+  assert.deepEqual(Array.from(ui.state.whens), ['open', 'later', 'undated']);
   assert.equal(ui.visible().length, 3);
-  assert.equal(ui.visible().some(r => r.analysis_id === 'expired'), true);
+  assert.equal(ui.visible().some(r => r.analysis_id === 'expired'), false);
+  assert.equal(ui.visible().some(r => r.analysis_id === 'rejected'), false);
   ui.state.whens.clear();
   ui.state.whens.add('over');
   assert.equal(ui.visible()[0].analysis_id, 'expired');
+  ui.state.whens.clear();
+  ui.state.classes = new Set(['IRRELEVANT']);
+  assert.equal(ui.visible()[0].analysis_id, 'rejected');
   ui.adopt({...data, time_enabled: false});
-  assert.equal(ui.visible().length, 3);
+  assert.equal(ui.state.whens.size, 0);
+  assert.equal(ui.visible().length, 4);
 });

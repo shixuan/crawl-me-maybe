@@ -122,6 +122,23 @@ CREATE TABLE IF NOT EXISTS dedup_runs (
     model TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS analysis_items (
+    item_id TEXT PRIMARY KEY,
+    analysis_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    relevance_score REAL NOT NULL,
+    evidence_json TEXT NOT NULL,
+    extracted_json TEXT NOT NULL,
+    tags_json TEXT NOT NULL,
+    starts_on TEXT NOT NULL,
+    ends_on TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS analysis_items_parent ON analysis_items(analysis_id);
+CREATE TABLE IF NOT EXISTS result_item_members (
+    group_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    PRIMARY KEY (group_id, item_id)
+);
 CREATE TABLE IF NOT EXISTS result_groups (
     group_id TEXT PRIMARY KEY,
     dedup_id TEXT NOT NULL,
@@ -175,7 +192,7 @@ class SqliteStorage:
     def __init__(self, db_path: str, raw_dir: str):
         self._db_path = db_path
         self._raw_dir = Path(raw_dir)
-        self._write_queue: asyncio.Queue[tuple[str, tuple[Any, ...]]] = asyncio.Queue()
+        self._write_queue: asyncio.Queue[list[tuple[str, tuple[Any, ...]]]] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._conn: aiosqlite.Connection | None = None
 
@@ -210,6 +227,9 @@ class SqliteStorage:
         columns = await self._conn.execute("PRAGMA table_info(crawl_goals)")
         if "time_policy" not in {r[1] for r in await columns.fetchall()}:
             await self._conn.execute("ALTER TABLE crawl_goals ADD COLUMN time_policy TEXT")
+        columns = await self._conn.execute("PRAGMA table_info(analyses)")
+        if "item_count" not in {r[1] for r in await columns.fetchall()}:
+            await self._conn.execute("ALTER TABLE analyses ADD COLUMN item_count INTEGER")
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
         self._writer_task = asyncio.create_task(self._write_loop())
@@ -241,10 +261,20 @@ class SqliteStorage:
     async def _write_loop(self) -> None:
         batch = 0
         while True:
-            sql, params = await self._write_queue.get()
+            statements = await self._write_queue.get()
             try:
                 if self._conn:
-                    await self._conn.execute(sql, params)
+                    if not self._conn.in_transaction:
+                        await self._conn.execute("BEGIN")
+                    await self._conn.execute("SAVEPOINT queued_write")
+                    try:
+                        for sql, params in statements:
+                            await self._conn.execute(sql, params)
+                    except sqlite3.Error:
+                        await self._conn.execute("ROLLBACK TO queued_write")
+                        raise
+                    finally:
+                        await self._conn.execute("RELEASE queued_write")
                     batch += 1
                     # Commit every 200 writes to avoid thrashing SQLite.
                     if batch >= 200:
@@ -252,12 +282,12 @@ class SqliteStorage:
                         batch = 0
             except sqlite3.Error:
                 # Keep the writer alive and complete queue items so close() cannot deadlock.
-                logger.exception("db.write_failed sql=%s", sql.split("(", 1)[0].strip())
+                logger.exception("db.write_failed sql=%s", statements[0][0].split("(", 1)[0].strip())
             finally:
                 self._write_queue.task_done()
 
     def _enqueue_write(self, sql: str, params: tuple[Any, ...]) -> None:
-        self._write_queue.put_nowait((sql, params))
+        self._write_queue.put_nowait([(sql, params)])
 
     async def _execute_now(self, sql: str, params: tuple[Any, ...] = ()) -> aiosqlite.Cursor:
         assert self._conn is not None
@@ -266,7 +296,7 @@ class SqliteStorage:
     async def dedup_inputs(self, goal_id: str) -> list[dict[str, Any]]:
         await self._write_queue.join()
         cur = await self._execute_now(
-            queries.DEDUP_INPUTS,
+            queries.item_dedup_query(),
             (goal_id,),
         )
         return [queries.dedup_input(dict(row)) for row in await cur.fetchall()]
@@ -287,7 +317,7 @@ class SqliteStorage:
                     dedup_id,
                     goal_id,
                     fingerprint,
-                    "",  # Reserved legacy column; prompt versions are no longer tracked.
+                    "items",  # Identifies the item membership table, not a prompt revision.
                     model,
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 ),
@@ -298,7 +328,7 @@ class SqliteStorage:
                     "INSERT INTO result_groups VALUES (?, ?, ?)", (group_id, dedup_id, group["overview"])
                 )
                 await self._conn.executemany(
-                    "INSERT INTO result_members VALUES (?, ?)",
+                    "INSERT INTO result_item_members VALUES (?, ?)",
                     [(group_id, member) for member in group["members"]],
                 )
             await self._conn.commit()
@@ -483,34 +513,60 @@ class SqliteStorage:
     # analyses -----------------------------------------------------------
 
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
-        self._enqueue_write(
-            "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
-            "classification, relevance_score, starts_on, ends_on, summary, structured_data, "
-            "extracted_json, tags_json, feedback_json, model, prompt_version, spec_version, "
-            "tokens_used, analyzed_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        items = analysis_json.get("items")
+        statements: list[tuple[str, tuple[Any, ...]]] = [
             (
-                analysis_json["analysis_id"],
-                analysis_json.get("page_id", ""),
-                analysis_json.get("url_key", ""),
-                analysis_json.get("goal_id", ""),
-                analysis_json.get("classification", "UNKNOWN"),
-                analysis_json.get("relevance_score", 0.0),
-                analysis_json.get("starts_on") or "",
-                analysis_json.get("ends_on") or "",
-                analysis_json.get("summary"),
-                json.dumps(analysis_json.get("structured_data", {})),
-                json.dumps(analysis_json.get("extracted", {})),
-                json.dumps(analysis_json.get("tags", [])),
-                # The schema field is "feedback"; a plain model dump
-                # carries it under that key (never "feedback_json").
-                json.dumps(analysis_json.get("feedback", {})),
-                analysis_json.get("model", ""),
-                "",  # Reserved legacy column.
-                analysis_json.get("spec_version", ""),
-                analysis_json.get("tokens_used", 0),
-                analysis_json.get("analyzed_at", ""),
-            ),
-        )
+                (
+                    "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
+                    "classification, relevance_score, starts_on, ends_on, summary, structured_data, "
+                    "extracted_json, tags_json, feedback_json, model, prompt_version, spec_version, "
+                    "tokens_used, analyzed_at, item_count) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                ),
+                (
+                    analysis_json["analysis_id"],
+                    analysis_json.get("page_id", ""),
+                    analysis_json.get("url_key", ""),
+                    analysis_json.get("goal_id", ""),
+                    analysis_json.get("classification", "UNKNOWN"),
+                    analysis_json.get("relevance_score", 0.0),
+                    analysis_json.get("starts_on") or "",
+                    analysis_json.get("ends_on") or "",
+                    analysis_json.get("summary"),
+                    json.dumps(analysis_json.get("structured_data", {})),
+                    json.dumps(analysis_json.get("extracted", {})),
+                    json.dumps(analysis_json.get("tags", [])),
+                    # The schema field is "feedback"; a plain model dump
+                    # carries it under that key (never "feedback_json").
+                    json.dumps(analysis_json.get("feedback", {})),
+                    analysis_json.get("model", ""),
+                    "",  # Reserved legacy column.
+                    analysis_json.get("spec_version", ""),
+                    analysis_json.get("tokens_used", 0),
+                    analysis_json.get("analyzed_at", ""),
+                    len(items) if items is not None else None,
+                ),
+            )
+        ]
+        statements.append(("DELETE FROM analysis_items WHERE analysis_id = ?", (analysis_json["analysis_id"],)))
+        for item in items or []:
+            statements.append(
+                (
+                    "INSERT INTO analysis_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        item["item_id"],
+                        analysis_json["analysis_id"],
+                        item["summary"],
+                        item.get("relevance_score", 0.0),
+                        json.dumps(item.get("evidence", [])),
+                        json.dumps(item.get("extracted", {})),
+                        json.dumps(item.get("tags", [])),
+                        item.get("starts_on") or "",
+                        item.get("ends_on") or "",
+                    ),
+                )
+            )
+        self._write_queue.put_nowait(statements)
 
     async def get_analyses_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
         cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))

@@ -31,8 +31,23 @@ class AnalyzerFeedback(BaseModel):
     title: str = ""
 
 
+class ResultItem(BaseModel):
+    """One independently useful answer to the goal, supported by a page."""
+
+    item_id: str = Field(default_factory=_new_id)
+    summary: str
+    relevance_score: float = 0.0
+    evidence: list[str] = Field(default_factory=list)
+    extracted: dict[str, ExtractedField] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    starts_on: datetime.date | None = None
+    ends_on: datetime.date | None = None
+
+
 class AnalysisResult(BaseModel):
     analysis_id: str = Field(default_factory=_new_id)
+    # None identifies historical single-result analyses; [] is an explicit empty result.
+    items: list[ResultItem] | None = None
     page_id: str = ""
     url_key: str = ""
     goal_id: str = ""

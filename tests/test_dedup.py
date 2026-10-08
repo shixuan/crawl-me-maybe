@@ -107,7 +107,7 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
         storage.save_analysis(result.model_dump(mode="json"))
     try:
         rows = await storage.dedup_inputs(goal.goal_id)
-        ids = [r["analysis_id"] for r in rows]
+        ids = [r["item_id"] for r in rows]
         await storage.save_groups(
             goal.goal_id, fingerprint(rows), [{"members": ids, "overview": "one offer"}], model="test"
         )
@@ -170,7 +170,7 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
                 {"analysis_id": key, "goal_id": goal, "classification": classification, "page_id": page_id}
             )
         rows = await storage.dedup_inputs("chosen")
-        assert [row["analysis_id"] for row in rows] == ["a"]
+        assert [row["item_id"] for row in rows] == ["a"]
         assert [row["extracted"]["offer"]["value"] for row in rows] == ["a"]
         await storage.save_groups("chosen", fingerprint(rows), [{"members": ["a"], "overview": "offer"}], model="test")
         observed = []

@@ -39,6 +39,7 @@ class InspectData:
     pages: list[dict[str, Any]]
     analyses: list[dict[str, Any]]
     goal_counts: dict[str, int]
+    items: list[dict[str, Any]] | None = None
 
 
 async def inspect_task(settings: Settings, task_id: str, *, goal_id: str | None = None) -> InspectData:
@@ -68,6 +69,7 @@ async def inspect_task(settings: Settings, task_id: str, *, goal_id: str | None 
         pages=results.pages,
         analyses=analyses,
         goal_counts=goal_counts,
+        items=[item for item in results.items if item.get("goal_id") == goal_id],
     )
 
 
@@ -90,6 +92,7 @@ def _print_summary(data: InspectData, *, horizon: datetime.date | None = None) -
     goal = next((g for g in data.goals if g["goal_id"] == data.goal_id), None)
     by_class = Counter(a.get("classification", "UNKNOWN") for a in data.analyses)
     pages_by_key = {p["url_key"]: p for p in data.pages}
+    pages_by_key.update({p["page_id"]: p for p in data.pages if p.get("page_id")})
 
     lines = [
         f"task:      {data.task_id} (state={data.state}, reason={data.reason or 'none'})",
@@ -119,8 +122,10 @@ def _print_summary(data: InspectData, *, horizon: datetime.date | None = None) -
         )
         lines.append(f"other goals: {parts}")
 
-    relevant = [a for a in data.analyses if a.get("classification") == "RELEVANT"]
-    lines.extend(_result_lines(relevant or data.analyses, pages_by_key, horizon=horizon))
+    items = data.items if data.items is not None else data.analyses
+    relevant = [a for a in items if a.get("classification") == "RELEVANT"]
+    lines.append(f"items:     {len(relevant)} relevant")
+    lines.extend(_result_lines(relevant or items, pages_by_key, horizon=horizon))
     print("\n".join(lines))
 
 
@@ -182,7 +187,7 @@ def _one_result(
     ahead: bool = False,
 ) -> str:
     """One result line. *ahead* says the date is when it starts, not when it ends."""
-    page = pages_by_key.get(str(a.get("url_key") or ""))
+    page = pages_by_key.get(str(a.get("page_id") or "")) or pages_by_key.get(str(a.get("url_key") or ""))
     url = json.loads(page["url_json"]).get("canonical", "") if page else ""
     title = (page.get("title") or "") if page else ""
     when = "no date"
@@ -212,13 +217,17 @@ def _as_date(raw: Any) -> datetime.date | None:
 def _export(data: InspectData, fmt: str) -> None:
     """Export all analysis/page joins. JSON includes fields and evidence; CSV uses fixed columns."""
     pages_by_key = {p["url_key"]: p for p in data.pages}
+    pages_by_key.update({p["page_id"]: p for p in data.pages if p.get("page_id")})
     rows: list[dict[str, Any]] = []
-    for a in data.analyses:
-        page = pages_by_key.get(a.get("url_key"))
+    for a in data.items if data.items is not None else data.analyses:
+        page = pages_by_key.get(a.get("page_id")) or pages_by_key.get(a.get("url_key"))
         rows.append(
             {
                 "url": json.loads(page["url_json"]).get("canonical", "") if page else "",
                 "url_key": a.get("url_key", ""),
+                "item_id": a.get("item_id", a.get("analysis_id", "")),
+                "analysis_id": a.get("analysis_id", ""),
+                "evidence": json.loads(a.get("evidence_json") or "[]"),
                 "title": (page.get("title") or "") if page else "",
                 "published_at": (page.get("published_at") or "") if page else "",
                 "goal_id": a.get("goal_id", ""),
@@ -240,6 +249,7 @@ def _export(data: InspectData, fmt: str) -> None:
     # csv drops what has no fixed shape; see the docstring.
     for row in rows:
         row.pop("extracted", None)
+        row.pop("evidence", None)
     fieldnames = [
         "url",
         "url_key",
@@ -255,6 +265,8 @@ def _export(data: InspectData, fmt: str) -> None:
         "model",
         "spec_version",
         "analyzed_at",
+        "item_id",
+        "analysis_id",
     ]
     writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
     writer.writeheader()

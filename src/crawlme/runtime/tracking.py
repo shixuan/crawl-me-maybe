@@ -72,6 +72,7 @@ class RunTracker:
         fb = result.feedback
         # Feed relevant-page summaries into subsequent ranking prompts.
         if result.classification == "RELEVANT":
+            self.state.stats.items_found += len(result.items) if result.items is not None else 1
             rec = self.state.pages.by_url(fb.url or "")
             seed = rec.seed if rec else ""
             if seed:

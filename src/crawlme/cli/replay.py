@@ -6,6 +6,7 @@ reuse a goal row; successful analyses are appended to the run database."""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime
 import json
 import logging
@@ -149,8 +150,14 @@ async def run_replay(
         if limit is not None:
             rows = rows[:limit]
         analyzed = parked = skipped = empty = 0
-        try:
-            for row in rows:
+        remaining = iter(rows)
+        exhausted = False
+
+        async def work() -> None:
+            nonlocal analyzed, parked, skipped, empty, exhausted
+            for row in remaining:
+                if exhausted:
+                    return
                 page = _page_from_row(row)
                 # Mirrors the analyzer's own empty-text skip, so the
                 # report can tell "no text" apart from "parked".
@@ -165,14 +172,28 @@ async def run_replay(
                 ):
                     skipped += 1
                     continue
-                budget.check()
-                result = await analyzer.analyze(page, goal)
+                if exhausted:
+                    return
+                try:
+                    budget.check()
+                    result = await analyzer.analyze(page, goal)
+                except TokenBudgetError:
+                    if not exhausted:
+                        logger.warning("replay.budget_exhausted used=%d/%d", budget.used, budget.limit)
+                    exhausted = True
+                    return
                 if result is not None:
                     analyzed += 1
                 else:
                     parked += 1
-        except TokenBudgetError:
-            logger.warning("replay.budget_exhausted used=%d/%d", budget.used, budget.limit)
+
+        workers = [asyncio.create_task(work()) for _ in range(min(max(1, settings.llm_concurrency), len(rows)))]
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
         # Parked pages retry in the background; wait them out so every
         # one settles before the analyzer (and this run) closes.

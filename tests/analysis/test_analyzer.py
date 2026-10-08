@@ -405,13 +405,13 @@ async def test_evidence_case():
 
 
 async def test_no_spec_quiet():
-    """Every link-graph crawl: same prompt, same envelope as before."""
+    """Goals without requested fields still require evidence for result items."""
     client = _StubClient([_resp(_valid_json())])
     result = await _analyzer(client).analyze(_page(), _goal())
     assert result is not None
     assert result.extracted == {}
     assert "## Extract" not in client.calls[0]["prompt"]
-    assert "evidence" not in client.calls[0]["system"]
+    assert '"extracted"' not in client.calls[0]["system"]
 
 
 async def test_spec_in_prompt():
@@ -546,7 +546,8 @@ def test_extraction_is_scoped_to_keepers():
     goal = _goal()
     goal.extraction_spec = {"fields": {"merchant": "who is running it"}}
     system = _contract(goal)
-    assert "RELEVANT page only" in system
+    assert '"items": []' in system
+    assert "Within each item" in system
 
 
 def test_aggregator_is_gone():

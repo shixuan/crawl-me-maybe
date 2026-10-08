@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 from crawlme.dedup.grouper import fingerprint
 from crawlme.schemas.analysis import CLASSIFICATIONS
 from crawlme.storage import queries
-from crawlme.storage.read import connect
+from crawlme.storage.read import connect, has_items, read_items
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
@@ -79,25 +79,30 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
         raise FileNotFoundError(run)
     con = connect(db)
     try:
+        con.execute("BEGIN")
         goals = [dict(g) for g in con.execute(queries.GOALS)]
         task = con.execute("SELECT * FROM crawl_tasks ORDER BY start_at DESC LIMIT 1").fetchone()
         chosen = goal_id or (task["goal_id"] if task else "")
-        pages = {p["url_key"]: dict(p) for p in con.execute("SELECT * FROM pages")}
+        page_rows = [dict(p) for p in con.execute("SELECT * FROM pages")]
+        pages = {p["url_key"]: p for p in page_rows}
+        pages_by_id = {p["page_id"]: p for p in page_rows if p.get("page_id")}
         # No horizon here. That line is a knob on the page, and moving
         # it needs no new data.
         today = datetime.now(timezone.utc).date()
         rows = []
-        for row in con.execute(
-            queries.LATEST_ANALYSES + " AND a.goal_id = ? ORDER BY a.relevance_score DESC", (chosen,)
-        ):
+        for row in sorted(read_items(con), key=lambda r: -r["relevance_score"]):
+            if row["goal_id"] != chosen:
+                continue
             # A run from before the dates were stored has no such
             # columns. A dict reads those as blank instead of raising.
             a = dict(row)
-            page = pages.get(a["url_key"], {})
+            page = pages_by_id.get(a.get("page_id")) or pages.get(a["url_key"], {})
             url = json.loads(page.get("url_json") or "{}")
             rows.append(
                 {
                     "analysis_id": a.get("analysis_id", a["url_key"]),
+                    "item_id": a["item_id"],
+                    "evidence": json.loads(a.get("evidence_json") or "[]"),
                     "url": url.get("canonical", ""),
                     "host": url.get("domain", ""),
                     "url_key": a["url_key"],
@@ -144,17 +149,23 @@ def _groups(con: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]]:
     ).fetchone()
     if run is None:
         return []
-    inputs = [queries.dedup_input(dict(row)) for row in con.execute(queries.DEDUP_INPUTS, (goal_id,))]
+    modern = run["version"] == "items"
+    query = queries.item_dedup_query(modern=has_items(con)) if modern else queries.DEDUP_INPUTS
+    inputs = [queries.dedup_input(dict(row)) for row in con.execute(query, (goal_id,))]
+    if not modern:
+        for entry in inputs:
+            entry["analysis_id"] = entry.pop("item_id")
+            entry.pop("evidence")
     if fingerprint(inputs) != run["fingerprint"]:
         return []
     groups = []
     for group in con.execute("SELECT * FROM result_groups WHERE dedup_id = ? ORDER BY rowid", (run["dedup_id"],)):
-        members = [
-            r[0]
-            for r in con.execute(
-                "SELECT analysis_id FROM result_members WHERE group_id = ? ORDER BY rowid", (group["group_id"],)
-            )
-        ]
+        membership = (
+            "SELECT item_id FROM result_item_members WHERE group_id = ? ORDER BY rowid"
+            if modern
+            else "SELECT analysis_id FROM result_members WHERE group_id = ? ORDER BY rowid"
+        )
+        members = [r[0] for r in con.execute(membership, (group["group_id"],))]
         groups.append({"group_id": group["group_id"], "overview": group["overview"], "members": members})
     return groups
 

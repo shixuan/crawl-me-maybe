@@ -142,6 +142,7 @@ class Stats:
     candidates_ranked: int = 0
     fetch_errors: int = 0
     analyses_by_class: dict[str, int] = dataclasses.field(default_factory=dict)
+    items_found: int = 0
     # Count page problems separately from relevance judgments.
     not_content: dict[str, int] = dataclasses.field(default_factory=dict)
     # URLs robots.txt refused. Reported because a run that found nothing
@@ -157,6 +158,7 @@ class Stats:
         self.candidates_ranked = 0
         self.fetch_errors = 0
         self.analyses_by_class = {}
+        self.items_found = 0
         self.not_content = {}
         self.robots_blocked = 0
         self.listings_stale = 0
