@@ -114,13 +114,13 @@ function withinHorizon(r, horizon) {
 }
 
 function groupedRows() {
-  const byId = new Map(state.rows.map(r => [r.analysis_id, r]));
+  const byId = new Map(state.rows.map(r => [r.item_id || r.analysis_id, r]));
   const assigned = new Set();
   const groups = [];
   for (const g of state.groups) {
     const members = g.members.map(id => byId.get(id));
     if (members.some(m => !m)) continue;
-    members.forEach(m => assigned.add(m.analysis_id));
+    members.forEach(m => assigned.add(m.item_id || m.analysis_id));
     if (members.length === 1) { groups.push(members[0]); continue; }
     groups.push({
       members, title: g.overview, summary: g.overview, classification: "RELEVANT",
@@ -129,7 +129,7 @@ function groupedRows() {
       ends_on: members.every(m => m.ends_on === members[0].ends_on) ? members[0].ends_on : "",
     });
   }
-  return [...groups, ...state.rows.filter(r => !assigned.has(r.analysis_id))];
+  return [...groups, ...state.rows.filter(r => !assigned.has(r.item_id || r.analysis_id))];
 }
 
 function valueOf(field) {
@@ -330,6 +330,7 @@ function card(r) {
       ${runs ? `<span class="when-range">${escape(runs)}</span>` : ""}
     </p>
     ${r.summary ? `<p class="summary">${escape(r.summary)}</p>` : ""}
+    ${(r.evidence || []).length ? `<details><summary>Source evidence</summary>${r.evidence.map(q => `<div class="evidence">${escape(q)}</div>`).join("")}</details>` : ""}
     ${fields ? `<div class="fields">${fields}</div>` : ""}
     ${tags ? `<div class="tags">${tags}</div>` : ""}`;
   return el;
@@ -371,7 +372,8 @@ function renderCards() {
   $("#empty").hidden = rows.length > 0;
   const withFields = rows.filter((r) => (r.members || [r]).some(m => Object.keys(m.extracted || {}).length)).length;
   const extra = withFields ? ` &middot; ${withFields} with extracted fields` : "";
-  $("#tally").innerHTML = `${rows.length} of ${groupedRows().length} results · ${state.rows.length} sources${extra}`;
+  const pages = new Set(state.rows.map(r => r.url_key || r.url)).size;
+  $("#tally").innerHTML = `${rows.length} of ${groupedRows().length} results · ${state.rows.length} items · ${pages} pages${extra}`;
 }
 
 /* -- loading -------------------------------------------------------- */

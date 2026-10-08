@@ -36,7 +36,7 @@ async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
     class FakeGrouper:
         async def group(self, selected, rows):
             assert selected.goal_id == goal.goal_id
-            assert [r["analysis_id"] for r in rows] == [analysis.analysis_id]
+            assert [r["item_id"] for r in rows] == [analysis.analysis_id]
             calls.append(True)
             budget.record(10, 5, stage="dedup")
             if fail:

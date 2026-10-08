@@ -160,12 +160,22 @@ Engine. Engine currently checks pump exceptions only after both pumps finish,
 which can leave the surviving pump waiting. This remains open in the
 [Engine plan](engine-refactor.md). `--recall` retains rejected candidates at low priority.
 
-`PageAnalyzer` requests a relevance verdict and, for relevant pages, a summary,
-tags and declared fields. Each field contains a value and a verbatim evidence span.
+`PageAnalyzer` requests a page relevance verdict and an `items` array. Each item is
+an independently useful answer to the goal, with a summary, score, source quotes,
+tags, declared fields and optional dates. The page itself may be the single item.
+Object attributes and conditions stay together; distinct answers are separate.
+Each field contains a value and a verbatim evidence span.
 The parser normalizes whitespace and checks evidence against `plain_text`. This
 does not independently verify the value. Fields without matching evidence are omitted.
 Failed analyses enter a retry queue with a limit on attempts per page. Successful
 results reach the scheduler through a sink, including successes from delayed retries.
+
+`analysis_items` stores application-assigned IDs linked to their parent analysis.
+Parent and item writes are atomic. A null `analyses.item_count` denotes a legacy
+single-result record; zero denotes a new analysis with no items. Readers select the
+latest page analysis before expanding its items, so an empty replay supersedes old
+results. Legacy analyses remain single rows until replayed. Relevant-page limits
+and source-retirement votes remain page-based; reports count items separately.
 
 `AnalysisWorker` limits initial calls and checks the result target after acquiring
 its slot. `PageAnalyzer` continues to own background retries and their shutdown.
@@ -180,7 +190,7 @@ what a page announces and affect result grouping only.
 
 Goal Enhancer independently sets `time_policy` to describe the relevant validity
 window, or null for timeless/uncertain goals. This does not require a user-requested
-date field. Analyzer returns separate `time` endpoints with source evidence in the
+date field. Analyzer returns separate `time` endpoints for each item with source evidence in the
 same call, with publication date supplied as extraction context. Analyzer does not
 classify temporal status; inspect and the dashboard compare the extracted dates
 with the current UTC date.
@@ -306,7 +316,7 @@ analysis. Token/time limits, the result target, user stop and run failures cance
 remaining retries. Analysis settlement has a 120-second backstop, separate from
 the 120-second limit for settling page tasks. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
-When dedup is enabled, the scheduler passes relevant analyses and source evidence to `dedup/grouper.py`.
+When dedup is enabled, the scheduler passes relevant items and source evidence to `dedup/grouper.py`.
 One LLM call proposes duplicate groups. Unassigned analyses become singletons.
 Duplicate or unknown member IDs invalidate the response and are reported separately.
 Malformed JSON, schema errors and invalid members trigger at most one correction
@@ -319,7 +329,8 @@ over the configured character limit are not submitted. Failure preserves origina
 results. Grouping decisions do not affect source retirement or crawl stop conditions.
 
 Storage atomically publishes `dedup_runs` (input fingerprint and model),
-`result_groups` (overview), and `result_members` (analysis IDs). Original
+`result_groups` (overview), and `result_item_members` (item IDs). Legacy snapshots
+retain `result_members` (analysis IDs). Original
 analyses remain intact. The dashboard reads the latest matching snapshot. A replay
 that changes the inputs invalidates it. Replay does not automatically regroup.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.

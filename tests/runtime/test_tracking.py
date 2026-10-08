@@ -4,10 +4,26 @@ from crawlme.discovery.harvester import Harvest
 from crawlme.runtime.state import Limits, Progress, RunState, Stats
 from crawlme.runtime.tracking import RunTracker
 from crawlme.schemas import URL, AnalysisResult, AnalyzerFeedback, Candidate, CrawlGoal, FrontierItem, Page
+from crawlme.schemas.analysis import ResultItem
 
 
 def _tracking():
     return RunTracker(RunState(limits=Limits(), progress=Progress(), stats=Stats()))
+
+
+def test_items_do_not_inflate_pages():
+    tracking = _tracking()
+    result = AnalysisResult(
+        url_key="p",
+        classification="RELEVANT",
+        relevance_score=0.9,
+        feedback=AnalyzerFeedback(url="https://example.com/p"),
+        items=[ResultItem(summary="A"), ResultItem(summary="B")],
+    )
+    tracking.analysis(result)
+    assert tracking.state.progress.relevant_found == 1
+    assert tracking.state.stats.items_found == 2
+    assert tracking.state.stats.analyses_by_class == {"RELEVANT": 1}
 
 
 def test_feedback_isolated():

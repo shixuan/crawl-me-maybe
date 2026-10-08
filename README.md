@@ -81,7 +81,7 @@ The dashboard opens at `http://127.0.0.1:8765`. Use `--port` or `--results-dir` 
 
 ### `crawl run "<prompt>"`
 
-Name the fields you want in the prompt, such as “shop, offer and deadline”. Relevant results are grouped automatically. Use `--dedup off` to skip grouping.
+Name the fields you want in the prompt, such as “shop, offer and deadline”. A page can yield several independent results, each with its own fields, evidence and dates. Equivalent results are grouped automatically. Use `--dedup off` to skip grouping.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -101,7 +101,7 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”. 
 | `--domain-budget` | `50` | Pages per domain (`0` means unlimited) |
 | `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement. URL filters still apply |
 | `--analysis` | `on` | Per-page classification and field extraction (`on` or `off`) |
-| `--dedup` | `on` | Group equivalent relevant analyses after crawling (`on` or `off`). Requires an LLM |
+| `--dedup` | `on` | Group equivalent result items after crawling (`on` or `off`). Requires an LLM |
 | `--analyzer-max-chars` | `3000` | Maximum page-text characters sent to the analyzer |
 | `--result-dir` | `results` | Parent directory for run output |
 | `--log-level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` or `OFF` |

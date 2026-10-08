@@ -39,6 +39,20 @@ function groupingApp() {
   return context.ui;
 }
 
+test('items from one analysis retain separate group membership', () => {
+  const ui = groupingApp();
+  ui.state.rows = [
+    {item_id: 'a', analysis_id: 'page1', url_key: 'p1', relevance: 0.8, when: 'open'},
+    {item_id: 'b', analysis_id: 'page1', url_key: 'p1', relevance: 0.7, when: 'later'},
+    {item_id: 'c', analysis_id: 'page2', url_key: 'p2', relevance: 0.9, when: 'open'},
+  ];
+  ui.state.groups = [{members: ['a', 'c'], overview: 'Same object'}];
+  const rows = ui.groupedRows();
+  assert.equal(rows.length, 2);
+  assert.deepEqual(Array.from(rows[0].members, r => r.item_id), ['a', 'c']);
+  assert.equal(rows[1].item_id, 'b');
+});
+
 test('upcoming remains distinct and during only limits future starts', () => {
   const ui = groupingApp();
   ui.state.timeEnabled = true;
