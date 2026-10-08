@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,22 @@ class RunResults:
     goals: list[dict[str, Any]]
     pages: list[dict[str, Any]]
     analyses: list[dict[str, Any]]
+    items: list[dict[str, Any]] = field(default_factory=list)
+
+
+def has_items(con: sqlite3.Connection) -> bool:
+    return (
+        con.execute("SELECT 1 FROM sqlite_master WHERE name='analysis_items' AND type='table'").fetchone() is not None
+    )
+
+
+def read_items(con: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not has_items(con):
+        return [
+            {**dict(row), "item_id": dict(row).get("analysis_id", row["url_key"]), "evidence_json": "[]"}
+            for row in con.execute(queries.LATEST_ANALYSES)
+        ]
+    return [dict(row) for row in con.execute(queries.items_query(modern=has_items(con)))]
 
 
 def read_results(db: Path) -> RunResults:
@@ -36,4 +52,5 @@ def read_results(db: Path) -> RunResults:
             goals=[dict(row) for row in con.execute(queries.GOALS)],
             pages=[dict(row) for row in con.execute(queries.PAGES)],
             analyses=[dict(row) for row in con.execute(queries.LATEST_ANALYSES + " ORDER BY a.analyzed_at, a.rowid")],
+            items=read_items(con),
         )
