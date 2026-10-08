@@ -293,3 +293,23 @@ async def test_due_item_competes():
     assert await src.take(_now(), _always(Gate.DEFER)) is None
     await src.add([_item("low", 0.1)])
     assert (await src.take(_now(), _always(Gate.TAKE))).url_key == "high"
+
+
+async def test_discard_then_readmit():
+    src = PriorityQueue(aging_window=0)
+    await src.add([_item("same", 0.9), _item("middle", 0.5)])
+    src.discard("same")
+    await src.add([_item("same", 0.1)])
+    assert len(src.dump()["heap"]) == 2
+    assert (await src.take(_now(), _always(Gate.TAKE))).url_key == "middle"
+
+
+async def test_retirement_compacts_heap():
+    queue = PriorityQueue()
+    await queue.add([_item("live", 0.1)])
+    for index in range(200):
+        await queue.add([_item(str(index), 1, seed_url_key="retired")])
+        queue.discard_seed("retired")
+    assert queue.size == 1
+    assert len(queue._heap) <= 2 * queue.size + 64
+    assert (await queue.take(_now(), _always(Gate.TAKE))).url_key == "live"

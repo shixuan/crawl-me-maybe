@@ -90,6 +90,8 @@ class FrontierSnapshot(BaseModel):
     heap: list[FrontierItem] = Field(default_factory=list)
     pending: list[FrontierItem] = Field(default_factory=list)
     visited: set[str] = Field(default_factory=set)
+    retired: set[str] = Field(default_factory=set)
+    ranking: list[Candidate] = Field(default_factory=list)
     budgets: dict[str, Any] = Field(default_factory=dict[str, Any])
     counters: dict[str, Any] = Field(default_factory=dict[str, Any])
     created_at: datetime.datetime = Field(default_factory=_utcnow)

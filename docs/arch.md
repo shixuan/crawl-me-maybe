@@ -278,6 +278,13 @@ are public, and the buffer stays private. Scored work is gated
 by domain budgets and cooldowns. Ranking in progress and cooling items count as
 remaining work, so an empty immediate pop does not imply a drained frontier.
 
+Buffer seen keys record admission history, including drained and evicted candidates.
+Frontier visited keys record settled outcomes; duplicate outcome delivery does not
+charge budgets twice. Queue membership includes waiting, cooling and in-flight URLs.
+These histories prevent repeat admission and grow with distinct URLs. Retirement
+blocks late ranking results as well as new candidates. Snapshots retain retired
+sources and unfinished ranking batches; restored batches return to waiting.
+
 Engine bounds the combined fetch, extraction and persistence work with page slots.
 FetchWorker also bounds network fetching. Analysis has separate slots and does not
 hold a page slot. Dispatch counts in-flight pages against the page budget. The result

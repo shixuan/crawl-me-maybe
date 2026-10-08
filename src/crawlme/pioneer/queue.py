@@ -77,11 +77,18 @@ class PriorityQueue:
         self._items.pop(url_key, None)
         self._taken.discard(url_key)
         self._pending = [i for i in self._pending if i.url_key != url_key]
+        self._compact()
 
     def discard_seed(self, seed_url_key: str) -> None:
         """Remove pending items belonging to a seed."""
         self._items = {k: i for k, i in self._items.items() if i.seed_url_key != seed_url_key}
         self._pending = [i for i in self._pending if i.seed_url_key != seed_url_key]
+        self._compact()
+
+    def _compact(self) -> None:
+        if len(self._heap) > 2 * len(self._items) + 64:
+            self._heap = [(self._priority_key(i), i.seq, i.url_key) for i in self._items.values()]
+            heapq.heapify(self._heap)
 
     async def add(self, items: list[FrontierItem]) -> None:
         for item in items:
@@ -110,9 +117,9 @@ class PriorityQueue:
 
     def _scan(self, now: datetime.datetime, gate: GateFn, deferred: set[str]) -> FrontierItem | None:
         while self._heap:
-            _, _, url_key = self._heap[0]
+            _, seq, url_key = self._heap[0]
             item = self._items.get(url_key)
-            if item is None:
+            if item is None or item.seq != seq:
                 heapq.heappop(self._heap)  # stale: its item left another way
                 continue
 
@@ -141,9 +148,9 @@ class PriorityQueue:
     def peek(self) -> FrontierItem | None:
         """Return the live heap top without checking gates or refreshing aging."""
         while self._heap:
-            url_key = self._heap[0][2]
+            _, seq, url_key = self._heap[0]
             item = self._items.get(url_key)
-            if item is not None:
+            if item is not None and item.seq == seq:
                 return item
             heapq.heappop(self._heap)
         return self._pending[0] if self._pending else None
@@ -181,7 +188,7 @@ class PriorityQueue:
 
     def dump(self) -> dict[str, Any]:
         """Serialize ordering state, including deferred items."""
-        heap_items = [self._items[k] for _, _, k in self._heap if k in self._items]
+        heap_items = sorted(self._items.values(), key=lambda item: (self._priority_key(item), item.seq))
         return {
             "heap": [i.model_dump(mode="json") for i in heap_items],
             "pending": [i.model_dump(mode="json") for i in self._pending],

@@ -137,6 +137,17 @@ queued or active analysis retries, and waiting or active ranking batches. The
 at most two live records and contexts, and none after completion. This is a
 retention check, not a throughput or process-memory benchmark.
 
+Frontier snapshots include ranking candidates and retired sources. Restoring moves
+interrupted ranking back to waiting, filters visited/queued/retired candidates and
+clears prior buffer state even when the snapshot is empty. Outcome recording charges
+budgets once per URL. Queue snapshots serialize live items, and lazy heap entries
+are identified by sequence as well as URL; excess stale entries are compacted.
+
+The buffer's seen keys remain admission history, Frontier visited keys remain
+settled outcomes, and queue membership covers waiting, cooling and in-flight URLs.
+These sets serve different purposes. Exact URL history still grows with distinct
+URLs; this change does not claim constant total memory or lossless crash recovery.
+
 ## Confirmed failure and current limits
 
 On 2026-09-14, run `20260914_162309` exposed the pump supervision defect.
@@ -160,14 +171,13 @@ follow the same path. Cleanup attempts every worker even if one close operation 
 
 Analysis retries now settle independently of dedup, within run limits and a
 shared 120-second deadline for pump, page and retry settlement. Cancellation settles
-pages, saves a checkpoint and closes resources before propagating. Pause boundaries
-remain open.
+pages, saves a checkpoint and closes resources before propagating. Pause waits for
+both pumps before saving its checkpoint.
 
 Other limits remain:
 
 - Fetch dispatch polls at 0.2-second intervals and signals `Frontier.wake_ranker`.
   Frontier owns batch readiness and keeps its buffer private.
-- Pause does not explicitly await both pumps before writing its checkpoint.
 - Periodic snapshots represent Frontier, not all page tasks, source history or retries.
 - Same-host robots loads are not coalesced.
 - Candidate admission is performed one candidate at a time. Rank result mapping

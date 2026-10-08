@@ -320,3 +320,63 @@ async def test_ranking_already_interrupted():
     frontier = GatedFrontier()
     await frontier.wake_ranker()
     await asyncio.wait_for(frontier.wait_for_ranking(lambda: True), timeout=1)
+
+
+async def test_outcome_counts_once():
+    frontier = GatedFrontier(domain_budget=2)
+    await frontier.push_batch([_item("first", 1), _item("second", 0.5)])
+    first = await frontier.pop_next()
+    await frontier.record_outcome(first, "COMPLETED")
+    await frontier.record_outcome(first, "COMPLETED")
+    assert frontier.snapshot().budgets["global"] == 1
+    assert (await frontier.pop_next()).url_key == "second"
+
+
+async def test_retirement_survives_restore():
+    frontier = GatedFrontier()
+    await frontier.push_candidates([_candidate("ranked", "seed")])
+    await frontier.take_for_ranking(1)
+    frontier.retire("seed")
+    await frontier.push_batch([_item("ranked", seed_url_key="seed")])
+    assert frontier.size == 0
+    restored = GatedFrontier()
+    restored.restore(frontier.snapshot())
+    await restored.push_candidates([_candidate("new", "seed")])
+    await restored.push_batch([_item("newer", seed_url_key="seed")])
+    assert restored.is_retired("seed")
+    assert restored.waiting_size == restored.size == 0
+
+
+async def test_restore_ranking_ownership():
+    frontier = GatedFrontier()
+    await frontier.push_candidates([_candidate("first"), _candidate("second")])
+    batch = await frontier.take_for_ranking(1)
+    restored = GatedFrontier()
+    restored.restore(FrontierSnapshot.model_validate_json(frontier.snapshot().model_dump_json()))
+    assert restored.waiting_size == 2
+    assert restored.scoring == 0
+    await restored.push_candidates([_candidate("first"), _candidate("second")])
+    returned = await restored.take_for_ranking(2)
+    assert {c.url.url_key for c in returned} == {"first", "second"}
+    assert returned[0].candidate_id == batch[0].candidate_id
+
+
+async def test_empty_restore_clears_work():
+    frontier = GatedFrontier()
+    await frontier.push_candidates([_candidate("stale", "seed")])
+    frontier.restore(FrontierSnapshot())
+    assert frontier.waiting_size == frontier.scoring == 0
+    await frontier.push_candidates([_candidate("stale", "seed")])
+    assert frontier.waiting_size == 1
+
+
+async def test_restore_partial_ranking():
+    frontier = GatedFrontier()
+    await frontier.push_candidates([_candidate("first"), _candidate("second")])
+    await frontier.take_for_ranking(2)
+    await frontier.push_batch([_item("first")])
+    restored = GatedFrontier()
+    restored.restore(frontier.snapshot())
+    assert restored.size == restored.waiting_size == 1
+    assert (await restored.take_for_ranking(1))[0].url.url_key == "second"
+    assert (await restored.pop_next()).url_key == "first"
