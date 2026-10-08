@@ -6,6 +6,7 @@ is stubbed through the Analyzer protocol so no LLM is ever called.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -332,6 +333,78 @@ async def test_replay_counts(tmp_path):
     assert report.retried_ok == 1
     assert report.published == 1
     assert report.failed == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 2, 3])
+async def test_replay_concurrency(tmp_path, concurrency):
+    await _write_run(tmp_path, "20260101_000001", pages=[_page(str(i)) for i in range(7)])
+
+    class Analyzer(_StubAnalyzer):
+        active = 0
+        peak = 0
+
+        async def analyze(self, page, goal):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0.01)
+                return await super().analyze(page, goal)
+            finally:
+                self.active -= 1
+
+    analyzer = Analyzer()
+    cfg = _cfg(tmp_path)
+    cfg.llm_concurrency = concurrency
+    report = await run_replay(cfg, "task1", analyzer=analyzer)
+    assert analyzer.peak == concurrency
+    assert analyzer.active == 0
+    assert len({key for key, _ in analyzer.calls}) == 7
+    assert report.analyzed == report.published == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget_error", [True, False])
+async def test_replay_inflight_cleanup(tmp_path, budget_error):
+    await _write_run(tmp_path, "20260101_000001", pages=[_page(str(i)) for i in range(6)])
+    started = asyncio.Event()
+    failed = asyncio.Event()
+
+    class Analyzer(_StubAnalyzer):
+        entered = 0
+        active = 0
+
+        async def analyze(self, page, goal):
+            self.entered += 1
+            self.active += 1
+            try:
+                if self.entered == 1:
+                    await started.wait()
+                    failed.set()
+                    if budget_error:
+                        raise TokenBudgetError("exhausted")
+                    raise RuntimeError("broken")
+                started.set()
+                await failed.wait()
+                if not budget_error:
+                    await asyncio.Event().wait()
+                return await super().analyze(page, goal)
+            finally:
+                self.active -= 1
+
+    analyzer = Analyzer()
+    cfg = _cfg(tmp_path)
+    cfg.llm_concurrency = 2
+    if budget_error:
+        report = await asyncio.wait_for(run_replay(cfg, "task1", analyzer=analyzer), timeout=3)
+        assert report.analyzed == report.published == 1
+        assert report.failed == 0
+    else:
+        with pytest.raises(RuntimeError, match="broken"):
+            await asyncio.wait_for(run_replay(cfg, "task1", analyzer=analyzer), timeout=3)
+    assert analyzer.entered == 2
+    assert analyzer.active == 0
+    assert analyzer.closed
 
 
 @pytest.mark.asyncio
