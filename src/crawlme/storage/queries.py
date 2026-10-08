@@ -22,7 +22,7 @@ DEDUP_INPUTS = (
 
 
 def items_query(*, modern: bool = True) -> str:
-    """Latest page revisions expanded into items, with one row per legacy analysis."""
+    """Expand relevant items; retain page verdicts and legacy analyses as single rows."""
     legacy = f"SELECT a.*, a.analysis_id AS item_id, '[]' AS evidence_json FROM ({LATEST_ANALYSES}) a"  # noqa: S608
     if not modern:
         return legacy
@@ -32,7 +32,9 @@ def items_query(*, modern: bool = True) -> str:
         "i.extracted_json, i.tags_json, a.feedback_json, a.model, a.prompt_version, "
         "a.spec_version, a.tokens_used, a.analyzed_at, a.item_count, i.item_id, i.evidence_json "
         f"FROM ({LATEST_ANALYSES}) a JOIN analysis_items i ON i.analysis_id = a.analysis_id "
-        "WHERE a.classification = 'RELEVANT' UNION ALL " + legacy + " WHERE a.item_count IS NULL"
+        "WHERE a.classification = 'RELEVANT' UNION ALL "
+        + legacy
+        + " WHERE a.item_count IS NULL OR a.classification != 'RELEVANT'"
     )
 
 

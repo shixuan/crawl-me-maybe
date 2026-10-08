@@ -373,7 +373,8 @@ function renderCards() {
   const withFields = rows.filter((r) => (r.members || [r]).some(m => Object.keys(m.extracted || {}).length)).length;
   const extra = withFields ? ` &middot; ${withFields} with extracted fields` : "";
   const pages = new Set(state.rows.map(r => r.url_key || r.url)).size;
-  $("#tally").innerHTML = `${rows.length} of ${groupedRows().length} results · ${state.rows.length} items · ${pages} pages${extra}`;
+  const items = state.rows.filter(r => r.classification === "RELEVANT").length;
+  $("#tally").innerHTML = `${rows.length} of ${groupedRows().length} results · ${items} items · ${pages} pages${extra}`;
 }
 
 /* -- loading -------------------------------------------------------- */
@@ -392,8 +393,8 @@ function adopt(data) {
   const goal = data.goals.find((g) => g.goal_id === data.goal_id) || {};
   $("#goal-prompt").textContent = goal.prompt || "";
   $("#goal-block").hidden = !goal.prompt;
-  state.classes.clear();
-  state.whens.clear();
+  state.classes = new Set(["RELEVANT"]);
+  state.whens = new Set(state.timeEnabled ? ["open", "later", "undated"] : []);
   renderFieldChoices();
   renderChips();
   renderWhenChips();

@@ -1,6 +1,8 @@
 """Item boundaries, revision replacement and grouping through the stored result path."""
 
+import csv
 import datetime
+import io
 import json
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
@@ -94,7 +96,7 @@ async def test_item_time_correction():
     assert client.chat.await_count == 2
 
 
-async def test_items_replay_and_groups(tmp_path):
+async def test_items_replay_and_groups(tmp_path, capsys):
     import sys
     from pathlib import Path
 
@@ -146,9 +148,37 @@ async def test_items_replay_and_groups(tmp_path):
     finally:
         await storage.close()
     stored = read_results(Path(storage.db_path))
-    assert [i["item_id"] for i in stored.items] == [duplicate.items[0].item_id]
+    relevant = [i for i in stored.items if i["classification"] == "RELEVANT"]
+    assert [i["item_id"] for i in relevant] == [duplicate.items[0].item_id]
+    rejected = [i for i in stored.items if i["classification"] == "IRRELEVANT"]
+    assert len(rejected) == 1
+    assert rejected[0]["analysis_id"] == replacement.analysis_id
     assert len(stored.analyses) == 2
-    assert serve._results(tmp_path, Path(storage.db_path).parent.parent.name, goal.goal_id)["groups"] == []
+    shown = serve._results(tmp_path, Path(storage.db_path).parent.parent.name, goal.goal_id)
+    assert shown["groups"] == []
+    assert sorted(row["classification"] for row in shown["rows"]) == ["IRRELEVANT", "RELEVANT"]
+
+    from crawlme.cli.inspect import InspectData, _export
+
+    data = InspectData(
+        task_id="test",
+        run_dir=Path(storage.db_path).parent.parent,
+        state="COMPLETED",
+        reason="",
+        goal_id=goal.goal_id,
+        task_goal_id=goal.goal_id,
+        goals=stored.goals,
+        pages=stored.pages,
+        analyses=stored.analyses,
+        goal_counts={goal.goal_id: 2},
+        items=stored.items,
+    )
+    _export(data, "json")
+    exported = json.loads(capsys.readouterr().out)
+    assert sorted(row["classification"] for row in exported) == ["IRRELEVANT", "RELEVANT"]
+    _export(data, "csv")
+    exported = list(csv.DictReader(io.StringIO(capsys.readouterr().out)))
+    assert sorted(row["classification"] for row in exported) == ["IRRELEVANT", "RELEVANT"]
 
 
 async def test_item_write_is_atomic(tmp_path):
