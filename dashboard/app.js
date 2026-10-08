@@ -330,7 +330,7 @@ function card(r) {
       ${runs ? `<span class="when-range">${escape(runs)}</span>` : ""}
     </p>
     ${r.summary ? `<p class="summary">${escape(r.summary)}</p>` : ""}
-    ${(r.evidence || []).length ? `<details><summary>Source evidence</summary>${r.evidence.map(q => `<div class="evidence">${escape(q)}</div>`).join("")}</details>` : ""}
+    ${(r.evidence || []).length ? `<details class="source-evidence"><summary><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg>Source evidence</summary>${r.evidence.map(q => `<div class="evidence">${escape(q)}</div>`).join("")}</details>` : ""}
     ${fields ? `<div class="fields">${fields}</div>` : ""}
     ${tags ? `<div class="tags">${tags}</div>` : ""}`;
   return el;
