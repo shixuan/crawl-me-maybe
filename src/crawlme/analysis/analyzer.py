@@ -51,6 +51,10 @@ class Analyzer(Protocol):
     async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None: ...
 
     async def drain_pending(self) -> None: ...
+    async def pause(self) -> None: ...
+    def resume(self) -> None: ...
+    @property
+    def pending_keys(self) -> set[str]: ...
 
     async def aclose(self) -> None: ...
 
@@ -75,6 +79,8 @@ class PageAnalyzer:
         self._drain_task: asyncio.Task[None] | None = None
         # Count queued and active retries so drain_pending() waits for both.
         self._parked_count = 0
+        self._pending_keys: set[str] = set()
+        self._paused = False
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> PageAnalyzer | None:
@@ -108,41 +114,64 @@ class PageAnalyzer:
         self._publish(result)
         return result
 
-    async def aclose(self) -> None:
-        """Cancel the background retry loop, dropping parked pages."""
+    @property
+    def pending_keys(self) -> set[str]:
+        return self._pending_keys.copy()
+
+    async def pause(self) -> None:
+        """Freeze retries, returning an interrupted attempt to the queue."""
+        self._paused = True
         if self._drain_task is not None:
-            self._drain_task.cancel()
-            try:
-                await self._drain_task
-            except asyncio.CancelledError:
-                pass
+            task = self._drain_task
             self._drain_task = None
+            task.cancel()
+            results = await asyncio.gather(task, return_exceptions=True)
+            if isinstance(results[0], Exception):
+                raise results[0]
+
+    def resume(self) -> None:
+        self._paused = False
+        if self._parked_count and self._drain_task is None:
+            self._drain_task = asyncio.create_task(self._drain())
+
+    async def aclose(self) -> None:
+        """Cancel retries and release queued page bodies."""
+        try:
+            await self.pause()
+        finally:
+            while not self._pending.empty():
+                self._pending.get_nowait()
+            self._pending_keys.clear()
+            self._parked_count = 0
 
     async def drain_pending(self) -> None:
-        """Wait until all queued and currently retrying analyses have settled."""
+        """Wait for retries and surface a failed retry worker."""
         while self._parked_count > 0:
-            if self._drain_task is None or self._drain_task.done():
-                # The drain died on an unexpected error; nothing will
-                # settle these pages.  Stop waiting instead of hanging.
-                logger.warning("analysis.drain_dead pending_dropped=%d", self._parked_count)
-                self._parked_count = 0
-                break
+            if self._drain_task is None:
+                return
+            if self._drain_task.done():
+                await self._drain_task
+                return
             await asyncio.sleep(0.5)
 
     async def _drain(self) -> None:
-        """Background retries: wait the delay, try again, repeat."""
         while True:
-            page, goal, attempts = await self._pending.get()
-            await asyncio.sleep(self._retry_delay)
+            entry = await self._pending.get()
+            page, goal, attempts = entry
             try:
-                result = await self._analyze_once(page, goal)
-            except LLMError as e:
-                self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
-                continue
-            self._publish(result)
-            # Settled: this parked page is done either way now.
-            self._parked_count -= 1
-            logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
+                await asyncio.sleep(self._retry_delay)
+                try:
+                    result = await self._analyze_once(page, goal)
+                except LLMError as e:
+                    self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
+                    continue
+                self._pending_keys.discard(page.url_key)
+                self._publish(result)
+                self._parked_count -= 1
+                logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
+            except asyncio.CancelledError:
+                self._pending.put_nowait(entry)
+                raise
 
     @activity("analyze")
     async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
@@ -234,15 +263,17 @@ class PageAnalyzer:
                 # The drain held this page between retries; it is now
                 # settled, so release the count drain_pending() waits on.
                 self._parked_count -= 1
+                self._pending_keys.discard(page.url_key)
             logger.warning("analysis.giveup url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
             return
         logger.warning("analysis.requeue url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
         self._pending.put_nowait((page, goal, attempts))
+        self._pending_keys.add(page.url_key)
         # A fresh parking counts once; a re-parking from the drain was
         # already counted (the drain holds the count while it retries).
         if not parked:
             self._parked_count += 1
-        if self._drain_task is None:
+        if self._drain_task is None and not self._paused:
             self._drain_task = asyncio.create_task(self._drain())
 
 

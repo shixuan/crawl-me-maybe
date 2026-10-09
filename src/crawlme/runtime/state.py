@@ -92,6 +92,13 @@ class PageBook:
         rec = self._by_key.get(url_key)
         return rec.seed if rec and rec.seed else default
 
+    def retain(self, keys: set[str]) -> None:
+        self._by_key = {k: v for k, v in self._by_key.items() if k in keys}
+        self._key_of = {url: k for url, k in self._key_of.items() if k in self._by_key}
+
+    def __len__(self) -> int:
+        return len(self._by_key)
+
     def key_of(self, canonical: str, default: str = "") -> str:
         return self._key_of.get(canonical, default)
 

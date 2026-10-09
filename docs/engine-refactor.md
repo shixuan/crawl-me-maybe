@@ -1,11 +1,16 @@
 # Engine refactoring status
 
-Reviewed against the code on 2026-10-03. The worker split, runtime state consolidation
-and analysis retry settlement are implemented. Pump supervision, stable pause/resume
-and performance work remain open. Measurements below retain their original dates.
+Reviewed against the code on 2026-10-06. The worker split, runtime state consolidation,
+analysis retry settlement, pump supervision and in-memory pause/resume are implemented.
+Performance work remains open. Measurements below retain their original dates.
 
 The goal is clearer ownership and less wasted work. Moving code is not evidence of
 higher throughput. Measure network, model, parsing and scheduler time separately.
+
+Queue aging now uses a time-independent heap key. All waiting items gain the same
+linear time term, so ordering by base priority minus enqueue time times the aging
+rate gives the same result as comparing their current effective scores. Cooled-down
+items rejoin before selection, and restored queues rebuild the same keys.
 
 ## Current structure
 
@@ -126,8 +131,22 @@ All successful analysis results, including retries, use the Engine sink for stor
 tracking and retirement. PageBook prevents duplicate source votes. This does not
 make every analysis counter idempotent under arbitrary duplicate delivery.
 
-Keep page associations while ranking or delayed analysis can still need them.
-Consolidating their ownership does not bound their memory growth.
+Page associations and contexts now retain only keys owned by active page tasks,
+queued or active analysis retries, and waiting or active ranking batches. The
+80-page chain regression previously accumulated 80 page records; it now asserts
+at most two live records and contexts, and none after completion. This is a
+retention check, not a throughput or process-memory benchmark.
+
+Frontier snapshots include ranking candidates and retired sources. Restoring moves
+interrupted ranking back to waiting, filters visited/queued/retired candidates and
+clears prior buffer state even when the snapshot is empty. Outcome recording charges
+budgets once per URL. Queue snapshots serialize live items, and lazy heap entries
+are identified by sequence as well as URL; excess stale entries are compacted.
+
+The buffer's seen keys remain admission history, Frontier visited keys remain
+settled outcomes, and queue membership covers waiting, cooling and in-flight URLs.
+These sets serve different purposes. Exact URL history still grows with distinct
+URLs; this change does not claim constant total memory or lossless crash recovery.
 
 ## Confirmed failure and current limits
 
@@ -136,8 +155,8 @@ On 2026-09-14, run `20260914_162309` exposed the pump supervision defect.
 - LiteLLM initialization completed in 1.4 seconds.
 - Goal enhancement and seed expansion exceeded the new 90-second request deadline.
 - Ranking exceeded the deadline at 16:29:20. The exception escapes the rank pump.
-- Engine waits for both pumps with `gather(return_exceptions=True)` before
-  inspecting failures. The fetch pump therefore keeps running.
+- Engine waited for both pumps with `gather(return_exceptions=True)` before
+  inspecting failures. The fetch pump therefore kept running.
 - With no fetchable items and 149 buffered candidates, it repeatedly tries to wake
   ranking. The log contains 3,921 `fetch_pump.waking_rank` entries.
 
@@ -145,18 +164,20 @@ The log and control flow support this failure chain. They do not establish wheth
 the model request stalled at the provider, network or client transport layer.
 The timestamps alone also do not establish continuous execution throughout the run.
 
-The current LLM client passes a 90-second timeout to LiteLLM. It does not impose an
-outer deadline or fix pump supervision. A transient timeout can still trigger the
-client's retry policy.
+The current LLM client passes a 90-second timeout to LiteLLM. A transient timeout
+can still trigger the client's retry policy. Engine now observes the first pump
+failure, cancels its peer and records a FAILED run. Unexpected page-task exceptions
+follow the same path. Cleanup attempts every worker even if one close operation fails.
 
 Analysis retries now settle independently of dedup, within run limits and a
-120-second backstop. Pump supervision and pause boundaries remain open.
+shared 120-second deadline for pump, page and retry settlement. Cancellation settles
+pages, saves a checkpoint and closes resources before propagating. Pause waits for
+both pumps before saving its checkpoint.
 
 Other limits remain:
 
 - Fetch dispatch polls at 0.2-second intervals and signals `Frontier.wake_ranker`.
   Frontier owns batch readiness and keeps its buffer private.
-- Pause does not explicitly await both pumps before writing its checkpoint.
 - Periodic snapshots represent Frontier, not all page tasks, source history or retries.
 - Same-host robots loads are not coalesced.
 - Candidate admission is performed one candidate at a time. Rank result mapping
@@ -164,17 +185,11 @@ Other limits remain:
 
 ## Remaining lifecycle design
 
-A pump failure must be observed immediately. Record the exception, stop dispatch,
-wake or stop the other pump, and settle page tasks within one shutdown deadline.
-Do not wait for both pumps to finish before reporting the first failure.
+Failure supervision is implemented. Expected per-page fetch failures retain their
+existing storage behavior. Ranking and in-flight counts are released in `finally`.
 
-Inspect unexpected page-task exceptions as well. Expected per-page failures retain
-their existing storage behavior. Release ranking and in-flight counts in `finally`.
-TaskGroup is an implementation option, not permission to cancel pending writes
-without a defined shutdown policy.
-
-The table describes the target lifecycle. Retry settlement is implemented as
-described above. Coordinated pump shutdown and stable pause/resume remain proposals.
+The table describes the implemented lifecycle. The original run task owns every
+pause/resume cycle; concurrent control requests are serialized.
 
 | Exit condition | New work | In-flight work and analysis retries |
 |---|---|---|
@@ -190,8 +205,11 @@ queue ownership inside Analyzer. In-memory pause/resume and process-restart reco
 separate capabilities. Historical database migration and lossless cross-process
 recovery are outside this refactor.
 
-Pause snapshots must follow completion or restoration of in-flight ranking batches.
-Use storage queue ordering or an explicit flush barrier for persistence, not sleeps.
+Pause snapshots follow completion or restoration of in-flight ranking batches and
+a storage flush barrier. Interrupted batches return ahead of newer candidates; this
+can temporarily exceed buffer capacity by one ranking batch. Analysis retries stay
+in memory and do not run while paused. Resume preserves the original start time,
+so paused time counts toward the wall-clock limit.
 
 ## Performance work and evidence
 

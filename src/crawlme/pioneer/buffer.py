@@ -37,6 +37,8 @@ class Buffer(Protocol):
 
     def load(self, state: dict[str, Any]) -> None: ...
     async def drain(self, n: int | None = None) -> list[Candidate]: ...
+    async def return_batch(self, batch: list[Candidate]) -> None: ...
+    def context_keys(self) -> set[str]: ...
 
     def ready(self, frontier_hungry: bool = False) -> bool: ...
 
@@ -146,6 +148,22 @@ class RoundRobinBuffer:
             self._candidates = [c for c in self._candidates if id(c) not in taken]
             return batch
 
+    async def return_batch(self, batch: list[Candidate]) -> None:
+        """Restore interrupted ranking ahead of newer work, without dedup rejection."""
+        async with self._cond:
+            keys = {c.url.url_key for c in self._candidates}
+            returned = []
+            for c in batch:
+                if c.url.url_key not in keys and c.seed_url_key not in self._retired:
+                    returned.append(c)
+                    keys.add(c.url.url_key)
+                    self._seen.add(c.url.url_key)
+            self._candidates = returned + self._candidates
+            self._cond.notify_all()
+
+    def context_keys(self) -> set[str]:
+        return {c.source_url_key for c in self._candidates if c.source_url_key}
+
     def ready(self, frontier_hungry: bool = False) -> bool:
         """True when the buffer should be flushed for ranking."""
         if len(self._candidates) >= 100:
@@ -176,12 +194,16 @@ class RoundRobinBuffer:
             "candidates": [c.model_dump(mode="json") for c in self._candidates],
             "seen": sorted(self._seen),
             "next_seed": self._next_seed,
+            "retired": sorted(self._retired),
         }
 
     def load(self, state: dict[str, Any]) -> None:
         self._candidates = [Candidate.model_validate(c) for c in state.get("candidates") or []]
         self._seen = set(state.get("seen") or [])
         self._next_seed = str(state.get("next_seed") or "")
+        self._retired = set(state.get("retired") or [])
+        self._seen.update(c.url.url_key for c in self._candidates)
+        self._last_added_at = time.monotonic()
 
     @property
     def size(self) -> int:

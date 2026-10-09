@@ -270,3 +270,46 @@ async def test_a_high_score_goes_first():
     await src.add([_item("lo", 0.5), _item("hi", 1.0)])
     later = _now() + datetime.timedelta(seconds=30)
     assert (await src.take(later, _always(Gate.TAKE))).url_key == "hi"
+
+
+@pytest.mark.parametrize("restore", [False, True])
+async def test_aged_order(restore, monkeypatch):
+    now = _now()
+    src = PriorityQueue(aging_window=600)
+    monkeypatch.setattr("crawlme.pioneer.queue._utcnow", lambda: now - datetime.timedelta(seconds=1200))
+    await src.add([_item("old", 0.1)])
+    monkeypatch.setattr("crawlme.pioneer.queue._utcnow", lambda: now)
+    await src.add([_item("new", 0.9)])
+    if restore:
+        saved = src.dump()
+        src = PriorityQueue(aging_window=600)
+        src.load(saved)
+    assert (await src.take(now, _always(Gate.TAKE))).url_key == "old"
+
+
+async def test_due_item_competes():
+    src = PriorityQueue()
+    await src.add([_item("high", 0.9)])
+    assert await src.take(_now(), _always(Gate.DEFER)) is None
+    await src.add([_item("low", 0.1)])
+    assert (await src.take(_now(), _always(Gate.TAKE))).url_key == "high"
+
+
+async def test_discard_then_readmit():
+    src = PriorityQueue(aging_window=0)
+    await src.add([_item("same", 0.9), _item("middle", 0.5)])
+    src.discard("same")
+    await src.add([_item("same", 0.1)])
+    assert len(src.dump()["heap"]) == 2
+    assert (await src.take(_now(), _always(Gate.TAKE))).url_key == "middle"
+
+
+async def test_retirement_compacts_heap():
+    queue = PriorityQueue()
+    await queue.add([_item("live", 0.1)])
+    for index in range(200):
+        await queue.add([_item(str(index), 1, seed_url_key="retired")])
+        queue.discard_seed("retired")
+    assert queue.size == 1
+    assert len(queue._heap) <= 2 * queue.size + 64
+    assert (await queue.take(_now(), _always(Gate.TAKE))).url_key == "live"

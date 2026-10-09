@@ -85,6 +85,7 @@ def _make_sched(**overrides) -> CrawlScheduler:
     # Async in the protocol, and the fetch path awaits it before every
     # first request to a domain.
     storage.get_robots = AsyncMock(return_value=None)
+    storage.flush = AsyncMock()
 
     kwargs: dict = {
         "settings": Settings(),
@@ -926,6 +927,7 @@ async def test_robots_absent():
 
     storage = MagicMock()
     storage.get_robots = AsyncMock(return_value=None)
+    storage.flush = AsyncMock()
     fetcher = MagicMock(aclose=AsyncMock())
     fetcher.fetch = AsyncMock(side_effect=OSError("connection refused"))
     sched = _make_sched(storage=storage, fetcher=fetcher, robots=RobotsPolicy(agent="a"))

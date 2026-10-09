@@ -31,7 +31,10 @@ class Frontier(Protocol):
 
     def is_retired(self, seed_url_key: str) -> bool: ...
     async def take_for_ranking(self, n: int) -> list[Candidate]: ...
-    def finish_ranking(self, n: int) -> None: ...
+    def finish_ranking(self, batch: list[Candidate]) -> None: ...
+
+    async def return_for_ranking(self, batch: list[Candidate]) -> None: ...
+    def context_keys(self) -> set[str]: ...
 
     @property
     def cooling(self) -> int:
@@ -89,7 +92,7 @@ class GatedFrontier:
         # Use the buffer contract independently of its scheduling strategy.
         self._waiting: Buffer = buffer if buffer is not None else RoundRobinBuffer()
         # Candidates out being scored: in neither half, still work.
-        self._scoring = 0
+        self._ranking: dict[str, Candidate] = {}
         # Count domain refusals separately from natural frontier exhaustion.
         self.blocked_by_domain_budget = 0
         self._lock = asyncio.Lock()
@@ -122,16 +125,24 @@ class GatedFrontier:
     async def take_for_ranking(self, n: int) -> list[Candidate]:
         """Take a batch from the buffer and account for ranking in progress."""
         batch = list(await self._waiting.drain(n))
-        self._scoring += len(batch)
+        self._ranking.update((c.candidate_id, c) for c in batch)
         return batch
 
-    def finish_ranking(self, n: int) -> None:
-        """Report that *n* candidates came back from scoring, or died there."""
-        self._scoring = max(0, self._scoring - n)
+    def finish_ranking(self, batch: list[Candidate]) -> None:
+        """Release the completed batch's ownership and parent contexts."""
+        for c in batch:
+            self._ranking.pop(c.candidate_id, None)
+
+    async def return_for_ranking(self, batch: list[Candidate]) -> None:
+        fresh = [c for c in batch if c.url.url_key not in self._visited and not self._source.contains(c.url.url_key)]
+        await self._waiting.return_batch(fresh)
+
+    def context_keys(self) -> set[str]:
+        return self._waiting.context_keys() | {c.source_url_key for c in self._ranking.values() if c.source_url_key}
 
     @property
     def scoring(self) -> int:
-        return self._scoring
+        return len(self._ranking)
 
     @property
     def cooling(self) -> int:
@@ -155,7 +166,13 @@ class GatedFrontier:
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:
             # Candidates leave the buffer before ranking; dedup against visited and queued items here.
-            fresh = [i for i in items if i.url_key not in self._visited and not self._source.contains(i.url_key)]
+            fresh = [
+                i
+                for i in items
+                if i.seed_url_key not in self._retired
+                and i.url_key not in self._visited
+                and not self._source.contains(i.url_key)
+            ]
             await self._source.add(fresh)
 
     def holds(self, url_key: str) -> bool:
@@ -212,6 +229,8 @@ class GatedFrontier:
 
     async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None:
         async with self._lock:
+            if item.url_key in self._visited:
+                return
             item.status = status
             self._visited.add(item.url_key)
             self._source.discard(item.url_key)
@@ -252,22 +271,35 @@ class GatedFrontier:
             waiting=self._waiting.dump(),
             visited=self._visited.copy(),
             budgets={"domain": dict(self._domain_counters), "global": self._global_counter},
+            retired=self._retired.copy(),
+            ranking=list(self._ranking.values()),
         )
 
     def restore(self, snap: FrontierSnapshot) -> None:
         self._visited = snap.visited.copy()
         self._domain_counters = dict(snap.budgets.get("domain", {}))
         self._global_counter = snap.budgets.get("global", 0)
-        if snap.waiting:
-            self._waiting.load(snap.waiting)
-        if snap.ordering:
-            self._source.load(snap.ordering)
-            return
-        # A checkpoint written before orderings carried their own state.
-        self._source.load(
-            {
-                "heap": [i.model_dump(mode="json") for i in snap.heap],
-                "pending": [i.model_dump(mode="json") for i in snap.pending],
-                "seq": snap.counters.get("seq", 0),
-            }
-        )
+        self._retired = snap.retired.copy()
+        self._ranking.clear()
+        ordering = snap.ordering or {
+            # Checkpoints predating the ordering-owned snapshot.
+            "heap": [i.model_dump(mode="json") for i in snap.heap],
+            "pending": [i.model_dump(mode="json") for i in snap.pending],
+            "seq": snap.counters.get("seq", 0),
+        }
+        self._source.load(ordering)
+        for key in self._visited:
+            self._source.discard(key)
+        for seed in self._retired:
+            self._source.discard_seed(seed)
+        waiting = dict(snap.waiting)
+        candidates = snap.ranking + [Candidate.model_validate(c) for c in waiting.get("candidates", [])]
+        keys = self._visited | self._source.keys()
+        restored = []
+        for candidate in candidates:
+            key = candidate.url.url_key
+            if key not in keys and candidate.seed_url_key not in self._retired:
+                restored.append(candidate.model_dump(mode="json"))
+                keys.add(key)
+        waiting.update(candidates=restored, retired=sorted(self._retired))
+        self._waiting.load(waiting)
