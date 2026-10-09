@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.0...v0.7.1) (2026-10-09)
+
+
+### Fixes
+
+* **analysis:** extract independent items ([e913464](https://github.com/shixuan/crawl-me-maybe/commit/e9134641c124cd94090bbfe5b640d75ae244ef23))
+* **config:** split goal and seed reasoning effort ([74ecd54](https://github.com/shixuan/crawl-me-maybe/commit/74ecd54b47aebdcfa95f7155d22b0be68914232a))
+* **dashboard:** restore verdicts and set defaults ([8bfda5d](https://github.com/shixuan/crawl-me-maybe/commit/8bfda5d8be9d141eadfc2583cad1884487a98ee4))
+* **engine:** stabilize pause and resume ([67e37d9](https://github.com/shixuan/crawl-me-maybe/commit/67e37d90e104c4a9da99380fa6309cc3c73a0930))
+* **engine:** supervise failures and shutdown ([e5c67d9](https://github.com/shixuan/crawl-me-maybe/commit/e5c67d95cfb7cee86383694aa927b72af68cd36a))
+* **frontier:** preserve state across restore ([a425f82](https://github.com/shixuan/crawl-me-maybe/commit/a425f829e4755cf7dd7f1ca8c30cdd9298c3f5d1))
+* one post contains multiple target items ([70f1400](https://github.com/shixuan/crawl-me-maybe/commit/70f14003373ff0a223eaae3f7596b00753d577b5))
+* **queue:** order candidates by aging ([c5e4f5c](https://github.com/shixuan/crawl-me-maybe/commit/c5e4f5c8c8db8283dc7f55b7a9ecc7e82a567d5c))
+* **replay:** honor LLM concurrency ([4e36447](https://github.com/shixuan/crawl-me-maybe/commit/4e36447bc355195d0a187e4ddb1869057b4dadc7))
+* **results:** display and count items ([dae7461](https://github.com/shixuan/crawl-me-maybe/commit/dae74617b5947a16ca4cffdd3a3a0fcbdd70af9c))
+* **runtime:** retain pages only for active consumers ([8ca5cac](https://github.com/shixuan/crawl-me-maybe/commit/8ca5cac25439104ebee0bf3bc3148ce2d113e059))
+* stabilize crawl lifecycle and frontier restoration ([8f1fd6b](https://github.com/shixuan/crawl-me-maybe/commit/8f1fd6b3a0da21d0b5ae0c215ca11a52a4aea46e))
+* **storage:** persist and dedup items ([c9cbb82](https://github.com/shixuan/crawl-me-maybe/commit/c9cbb82f32a50c0119e2edd49881a8873f3d1a45))
+
 ## [0.7.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.6.0...v0.7.0) (2026-10-07)
 
 
