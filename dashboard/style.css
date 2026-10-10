@@ -1,25 +1,23 @@
 /* crawl me maybe — local dashboard.
-   White page, white cards, separated by shadow alone.  The one colour
-   is the pink; change it here and the whole page follows. */
+   Neutral surfaces with mint accents. */
 
 :root {
-  --pink:       #ee96b6;  /* edges and light fills */
-  /* One rule, so the page stops drifting: anything filled solid with
-     white text on it is the deep pink, anything merely edged is the
-     light one.  The button that leaves the page sets the deep value. */
-  --pink-deep:  #e07ea4;
-  --pink-wash:  #fdf3f7;  /* evidence blocks, chip fills */
+  --accent:       #00ab90;
+  --accent-deep:  var(--accent);
+  --accent-hover: #20b69e;
+  --accent-wash:  #d9eee9;
+  --on-accent:    #ffffff;
 
-  --page:  #ffffff;
+  --page:  #f6f7f8;
   --card:  #ffffff;
+  --control: #f0f2f3;
   --ink:   #24242a;
   --muted: #8b8b93;
   --line:  #eeeef1;
 
-  /* Two layers: a tight one for the edge, a wide soft one for lift.
-     With a white card on a white page this is the only separation. */
-  --shadow:       0 1px 2px rgba(20, 20, 30, .04), 0 6px 20px rgba(20, 20, 30, .06);
-  --shadow-hover: 0 2px 4px rgba(20, 20, 30, .06), 0 12px 32px rgba(20, 20, 30, .10);
+  /* Ambient shadow defines every edge; a small offset adds depth. */
+  --shadow:       0 0 8px rgba(20, 20, 30, .07), 0 3px 10px rgba(20, 20, 30, .04);
+  --shadow-hover: 0 0 12px rgba(20, 20, 30, .09), 0 5px 16px rgba(20, 20, 30, .06);
 
   --round:    18px;
   --round-sm: 12px;
@@ -54,7 +52,7 @@ body {
   font-weight: 700;
   font-size: clamp(38px, 6vw, 60px);
   letter-spacing: -0.015em;
-  color: var(--pink-deep);
+  color: var(--accent);
 }
 
 .tagline {
@@ -126,9 +124,9 @@ body {
   transition: background .12s ease, color .12s ease;
 }
 
-.run:hover { background: var(--pink-wash); }
-.run[aria-current="true"] { background: var(--pink-deep); color: #fff; }
-.run[aria-current="true"] .run-sub { color: rgba(255, 255, 255, .82); }
+.run:hover { background: var(--accent-wash); }
+.run[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
+.run[aria-current="true"] .run-sub { color: var(--on-accent); }
 
 .run-when { display: block; font-size: 13px; }
 .run-sub { display: block; font-size: 12px; font-weight: 500; color: var(--muted); }
@@ -154,7 +152,7 @@ body {
   font-family: var(--rounded);
   font-weight: 600;
   font-size: 14px;
-  color: var(--pink-deep);
+  color: var(--accent-deep);
 }
 
 .filters { margin-bottom: 18px; }
@@ -194,12 +192,10 @@ body {
   font-size: 15px;
   color: var(--ink);
   background: var(--card);
-  border: 1.5px solid var(--pink);
+  border: 1.5px solid var(--accent);
   border-radius: 999px;
   padding: 10px 18px;
   outline: none;
-  /* Lifted like the cards, in the accent rather than in grey: it is the
-     one control a reader reaches for first. */
   box-shadow: var(--shadow);
   transition: border-color .12s ease, box-shadow .16s ease;
 }
@@ -209,7 +205,7 @@ body {
 .search:hover { box-shadow: var(--shadow-hover); }
 
 .search:focus {
-  border-color: var(--pink-deep);
+  border-color: var(--accent-deep);
   box-shadow: var(--shadow-hover);
 }
 
@@ -218,7 +214,7 @@ body {
   font-weight: 600;
   font-size: 13px;
   color: var(--muted);
-  background: var(--card);
+  background: var(--control);
   border: 0;
   border-radius: 999px;
   padding: 7px 14px;
@@ -283,7 +279,7 @@ body {
   background: #f5f5f7;
   outline: none;
 }
-.select-option[aria-selected="true"] { background: var(--pink-wash); }
+.select-option[aria-selected="true"] { background: var(--accent-wash); }
 .dropdown > .select:focus-visible { outline: 2px solid var(--muted); outline-offset: 3px; }
 
 .chip {
@@ -292,7 +288,7 @@ body {
   font-size: 13px;
   border: 0;
   box-shadow: var(--shadow);
-  background: #fff;
+  background: var(--control);
   color: var(--muted);
   border-radius: 999px;
   padding: 6px 14px;
@@ -300,8 +296,8 @@ body {
   transition: all .12s ease;
 }
 
-.chip:hover { box-shadow: var(--shadow-hover); color: var(--pink-deep); }
-.chip[aria-pressed="true"] { background: var(--pink-deep); color: #fff; }
+.chip:hover { box-shadow: var(--shadow-hover); color: var(--accent-deep); }
+.chip[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
 
 .field {
   display: inline-flex;
@@ -318,13 +314,41 @@ body {
   color: var(--muted);
 }
 
-.field input { accent-color: var(--pink); width: 15px; height: 15px; cursor: pointer; }
+.field input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+#only-with-results {
+  appearance: none;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  background: var(--card);
+  display: inline-grid;
+  place-content: center;
+}
+
+#only-with-results:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+#only-with-results:checked::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+
+#only-with-results:focus-visible {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 3px;
+}
 
 .tally {
   font-family: var(--rounded);
   font-weight: 600;
   font-size: 13px;
-  color: var(--pink-deep);
+  color: var(--accent-deep);
   margin-right: auto;
 }
 
@@ -374,7 +398,7 @@ body {
   font-weight: 900;
   letter-spacing: .035em;
   white-space: nowrap;
-  color: rgba(145, 96, 115, .09);
+  color: rgba(65, 110, 95, .09);
   pointer-events: none;
   z-index: -1;
 }
@@ -391,14 +415,14 @@ body {
 }
 
 .result-title a { color: inherit; text-decoration: none; }
-.result-title a:hover { color: var(--pink-deep); }
+.result-title a:hover { color: var(--accent-deep); }
 
 .score {
   font-family: var(--rounded);
   font-weight: 700;
   font-size: 12px;
-  color: #fff;
-  background: var(--pink-deep);
+  color: var(--on-accent);
+  background: var(--accent);
   border-radius: 999px;
   padding: 3px 10px;
 }
@@ -408,7 +432,7 @@ body {
   font-weight: 600;
   font-size: 12px;
   color: var(--muted);
-  background: var(--pink-wash);
+  background: var(--accent-wash);
   border-radius: 999px;
   padding: 3px 10px;
 }
@@ -441,7 +465,7 @@ body {
   font-family: var(--rounded);
   font-weight: 700;
   font-size: 15px;
-  color: var(--pink-deep);
+  color: var(--accent-deep);
   white-space: nowrap;
 }
 
@@ -461,8 +485,8 @@ body {
   font-family: var(--rounded);
   font-weight: 600;
   font-size: 12px;
-  color: #fff;
-  background: var(--pink-deep);
+  color: var(--on-accent);
+  background: var(--accent);
   border-radius: 999px;
   padding: 3px 12px;
   text-decoration: none;
@@ -472,7 +496,7 @@ body {
 }
 
 .open:hover {
-  background: #d16d95;
+  background: var(--accent-hover);
   box-shadow: var(--shadow-hover);
   transform: translateY(-1px);
 }
@@ -498,9 +522,9 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 6px;
-  background: var(--pink-wash);
+  background: var(--accent-wash);
   fill: none;
-  stroke: var(--pink-deep);
+  stroke: var(--accent-deep);
   stroke-width: 2.5;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -522,7 +546,7 @@ body {
   font-weight: 700;
   font-size: 12px;
   letter-spacing: .04em;
-  color: var(--pink-deep);
+  color: var(--accent-deep);
 }
 
 .field-value { margin-top: 1px; font-weight: 500; }
@@ -540,7 +564,7 @@ body {
   font-family: var(--rounded);
   font-weight: 600;
   font-size: 11.5px;
-  color: var(--pink-deep);
+  color: var(--accent-deep);
   background: var(--card);
   border-radius: 999px;
   padding: 2px 10px;
