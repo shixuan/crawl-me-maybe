@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.schemas import FrontierItem
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ def _next_seq() -> int:
     return _SEQ
 
 
-class PriorityQueue:
+class PriorityQueue(Checkpointable):
     """Best-first queue with lazy removal, cooldowns and periodic aging."""
 
     def __init__(self, *, aging_window: float = 600.0, age_factor: float = 1.0) -> None:
@@ -193,13 +194,15 @@ class PriorityQueue:
             "heap": [i.model_dump(mode="json") for i in heap_items],
             "pending": [i.model_dump(mode="json") for i in self._pending],
             "seq": _SEQ,
+            "taken": sorted(self._taken),
         }
 
-    def load(self, state: dict[str, Any]) -> None:
+    def restore(self, state: dict[str, Any]) -> None:
         global _SEQ
         self._heap.clear()
         self._items.clear()
         self._taken.clear()
+        self._taken.update(state.get("taken", []))
         self._pending = [_as_item(raw) for raw in state.get("pending", [])]
         _SEQ = state.get("seq", 0)
         for raw in state.get("heap", []):

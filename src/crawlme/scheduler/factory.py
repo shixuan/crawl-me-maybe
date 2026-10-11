@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from crawlme.analysis import Analyzer, PageAnalyzer
+from crawlme.checkpoint.checkpointer import Checkpointer
 from crawlme.config import Settings
 from crawlme.dedup import Grouper
 from crawlme.digest.extractor import TrafExtractor
@@ -119,8 +120,18 @@ def create_scheduler(
         "tracking": RunTracker(state),
         "seed_expander": expand_seeds,
         "grouper": grouper,
+        "budget": budget,
     }
     kwargs.update(overrides)
+    kwargs["checkpointer"] = Checkpointer(
+        storage=kwargs["storage"],
+        settings=settings,
+        frontier=kwargs["frontier"],
+        runtime=kwargs["tracking"].state,
+        analysis=kwargs["analysis"].analyzer,
+        budget=budget,
+        robots=kwargs["robots"],
+    )
     return CrawlScheduler(**kwargs)
 
 

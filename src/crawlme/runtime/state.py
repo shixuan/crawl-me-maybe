@@ -8,6 +8,7 @@ import datetime
 import time
 from typing import Any
 
+from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.schemas import CrawlGoal
 
 # How many of a source's own analyzed pages its window keeps.
@@ -63,7 +64,7 @@ class PageRecord:
         return self.listing is not None and self.relevant is not None and not self.counted
 
 
-class PageBook:
+class PageBook(Checkpointable):
     """The pages this run fetched, and the index from address to key.
 
     The index exists because the analyzer's feedback names a URL while
@@ -98,6 +99,13 @@ class PageBook:
 
     def __len__(self) -> int:
         return len(self._by_key)
+
+    def dump(self) -> dict[str, Any]:
+        return {"records": {k: dataclasses.asdict(v) for k, v in self._by_key.items()}, "urls": dict(self._key_of)}
+
+    def restore(self, data: dict[str, Any]) -> None:
+        self._by_key = {k: PageRecord(**v) for k, v in data["records"].items()}
+        self._key_of = dict(data["urls"])
 
     def key_of(self, canonical: str, default: str = "") -> str:
         return self._key_of.get(canonical, default)
@@ -172,12 +180,13 @@ class Stats:
 
 
 @dataclasses.dataclass
-class RunState:
+class RunState(Checkpointable):
     """Run data shared by the engine, tracker and reporting; workers receive narrower inputs."""
 
     limits: Limits
     progress: Progress
     stats: Stats
+    work: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
     pages: PageBook = dataclasses.field(default_factory=PageBook)
     seeds: dict[str, SeedState] = dataclasses.field(default_factory=lambda: collections.defaultdict(SeedState))
     page_contexts: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
@@ -192,7 +201,7 @@ class RunState:
         """Reset execution history while preserving prepared seeds and expansion metadata.
 
         Seed ingestion precedes run(), so source URLs and proposal details must
-        survive startup. Resume does not call this method.
+        survive startup. Recovery loads saved execution state after this initialization.
         """
         self.limits = Limits(
             max_pages=goal.max_pages,
@@ -205,9 +214,47 @@ class RunState:
         )
         self.progress = Progress(started_at=time.monotonic(), tokens_used=tokens_used_start)
         self.stats.reset()
+        self.work.clear()
         self.pages = PageBook()
         self.page_contexts.clear()
         self.relevant_pages.clear()
         self.seeds = collections.defaultdict(
             SeedState, {key: SeedState(url=seed.url) for key, seed in self.seeds.items() if seed.url}
         )
+
+    def dump(self) -> dict[str, Any]:
+        progress = dataclasses.asdict(self.progress)
+        progress["started_at"] = max(0, time.monotonic() - self.progress.started_at)
+        progress["in_flight"] = 0
+        return {
+            "work": list(self.work.values()),
+            "progress": progress,
+            "stats": dataclasses.asdict(self.stats),
+            "seeds": {k: {**dataclasses.asdict(v), "window": list(v.window)} for k, v in self.seeds.items()},
+            "pages": self.pages.dump(),
+            "contexts": self.page_contexts,
+            "relevant": list(self.relevant_pages),
+            "seeds_asked": self.seeds_asked,
+            "rejected_seeds": self.rejected_seeds,
+            "proposed_seeds": self.proposed_seeds,
+        }
+
+    def restore(self, data: dict[str, Any]) -> None:
+        self.work = {entry["item"]["item_id"]: entry for entry in data["work"]}
+        self.progress = Progress(**data["progress"])
+        self.progress.started_at = time.monotonic() - self.progress.started_at
+        self.progress.fatal_error = ""
+        self.stats = Stats(**data["stats"])
+        self.seeds.clear()
+        for key, raw in data["seeds"].items():
+            raw = dict(raw)
+            raw["funnel"] = Funnel(**raw["funnel"])
+            raw["window"] = collections.deque(raw["window"], maxlen=RELEVANCE_WINDOW)
+            self.seeds[key] = SeedState(**raw)
+        self.pages.restore(data["pages"])
+        self.page_contexts = data["contexts"]
+        self.relevant_pages.clear()
+        self.relevant_pages.extend(data["relevant"])
+        self.seeds_asked = data["seeds_asked"]
+        self.rejected_seeds = data["rejected_seeds"]
+        self.proposed_seeds = data["proposed_seeds"]

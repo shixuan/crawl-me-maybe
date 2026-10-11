@@ -195,6 +195,7 @@ class SqliteStorage:
         self._write_queue: asyncio.Queue[list[tuple[str, tuple[Any, ...]]]] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._conn: aiosqlite.Connection | None = None
+        self._write_error: sqlite3.Error | None = None
 
     @classmethod
     def create(cls, base_dir: str | Path) -> SqliteStorage:
@@ -204,7 +205,7 @@ class SqliteStorage:
         """
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = Path(base_dir) / ts
+        run_dir = (Path(base_dir) / ts).resolve()
         (run_dir / "raw").mkdir(parents=True, exist_ok=True)
         (run_dir / "db").mkdir(parents=True, exist_ok=True)
         return cls(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
@@ -245,8 +246,10 @@ class SqliteStorage:
         to_file(str(Path(self._db_path).parent.parent / "log"))
 
     async def flush(self) -> None:
-        """Commit all queued writes before publishing a stable pause boundary."""
+        """Commit queued results and their checkpoint, surfacing any failed writes."""
         await self._write_queue.join()
+        if self._write_error is not None:
+            raise RuntimeError("database write failed; checkpoint was not saved") from self._write_error
         if self._conn is not None:
             await self._conn.commit()
 
@@ -260,7 +263,10 @@ class SqliteStorage:
                 pass
         if self._conn:
             # Final commit: flushes any writes since the last batch commit.
-            await self._conn.commit()
+            if self._write_error is None:
+                await self._conn.commit()
+            else:
+                await self._conn.rollback()
             await self._conn.close()
             self._conn = None
 
@@ -269,7 +275,7 @@ class SqliteStorage:
         while True:
             statements = await self._write_queue.get()
             try:
-                if self._conn:
+                if self._conn and self._write_error is None:
                     if not self._conn.in_transaction:
                         await self._conn.execute("BEGIN")
                     await self._conn.execute("SAVEPOINT queued_write")
@@ -286,7 +292,10 @@ class SqliteStorage:
                     if batch >= 200:
                         await self._conn.commit()
                         batch = 0
-            except sqlite3.Error:
+            except sqlite3.Error as exc:
+                self._write_error = exc
+                if self._conn is not None:
+                    await self._conn.rollback()
                 # Keep the writer alive and complete queue items so close() cannot deadlock.
                 logger.exception("db.write_failed sql=%s", statements[0][0].split("(", 1)[0].strip())
             finally:

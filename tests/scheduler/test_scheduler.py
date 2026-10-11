@@ -223,23 +223,6 @@ async def test_rank_pump_exits():
 
 
 @pytest.mark.asyncio
-async def test_pause_state():
-    """pause() should set state to PAUSED after in-flight tasks finish."""
-    sched = _make_sched()
-    sched._state = "RUNNING"
-    sched._task = _task()
-    sched._tracking.state = _ctx()
-
-    # Mock checkpoint to avoid storage calls.
-    sched._checkpoint = AsyncMock()
-
-    await sched.pause()
-
-    assert sched._state == "PAUSED"
-    assert sched._task.state == "PAUSED"
-
-
-@pytest.mark.asyncio
 async def test_stop_state():
     """stop() should set state to STOPPING."""
     sched = _make_sched()
@@ -360,6 +343,7 @@ async def test_harvest_timeout(monkeypatch):
     sched = _make_sched()
     sched._goal = _goal(max_pages=5)
     sched._task = _task()
+    sched._checkpoint = AsyncMock()
     sched._tracking.state = _ctx(max_pages=5, max_tokens=100000, max_duration_sec=3600)
     sched._discovery._timeout = 0.2
     sched._fetch.fetcher.fetch = AsyncMock(
@@ -754,32 +738,6 @@ def test_seen_bounded():
 
     assert len(sched.run_state.relevant_pages) == _SEEN_SO_FAR
     assert sched.run_state.relevant_pages[-1]["url"] == f"https://x/{_SEEN_SO_FAR + 3}"
-
-
-@pytest.mark.asyncio
-async def test_pause_settles():
-    """Polling a counter works while the loop is healthy and does
-    nothing while it is being torn down.  An interrupted run used to
-    leave its fetches pending, print "Task was destroyed but it is
-    pending", and leave its row saying RUNNING for ever."""
-    finished: list[str] = []
-
-    async def _slow() -> None:
-        await asyncio.sleep(0.05)
-        finished.append("done")
-
-    sched = _make_sched()
-    sched._task = _task()
-    sched._checkpoint = AsyncMock()
-    task = asyncio.create_task(_slow())
-    sched._inflight.add(task)
-    task.add_done_callback(sched._inflight.discard)
-
-    await sched.pause()
-
-    assert finished == ["done"], "pause returned before the fetch had finished"
-    assert task.done()
-    assert sched._state == "PAUSED"
 
 
 def _url(raw: str) -> URL:

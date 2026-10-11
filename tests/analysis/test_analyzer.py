@@ -772,7 +772,7 @@ async def test_correction_keeps_analysis():
     assert result.tokens_used == 720
 
 
-async def test_pause_retains_retry():
+async def test_checkpoint_retains_retry():
     entered = asyncio.Event()
     calls = 0
 
@@ -793,12 +793,16 @@ async def test_pause_retains_retry():
     try:
         await analyzer.analyze(_page(), _goal())
         await asyncio.wait_for(entered.wait(), 2)
-        await analyzer.pause()
-        assert analyzer._parked_count == 1
-        assert analyzer._drain_task is None
+        saved = analyzer.dump()
+        await analyzer.aclose()
+        assert saved["entries"][0]["attempts"] == 1
         await asyncio.sleep(0)
         assert calls == 2 and not results
-        analyzer.resume()
+        analyzer = PageAnalyzer(Client(), retry_delay=0)
+        analyzer.bind_sink(results.append)
+        analyzer.bind_goal(_goal())
+        analyzer.restore(saved)
+        analyzer.start_retries()
         await asyncio.wait_for(analyzer.drain_pending(), 2)
         assert len(results) == 1 and calls == 3
     finally:

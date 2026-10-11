@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, cast
 
 from crawlme import prompts
+from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.config import Settings
 from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
@@ -43,7 +44,7 @@ _MAX_TAGS = 8
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
 
 
-class Analyzer(Protocol):
+class Analyzer(Checkpointable, Protocol):
     """Contract for the page-analysis stage (see PageAnalyzer)."""
 
     def bind_sink(self, sink: Callable[[AnalysisResult], None]) -> None: ...
@@ -51,15 +52,15 @@ class Analyzer(Protocol):
     async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None: ...
 
     async def drain_pending(self) -> None: ...
-    async def pause(self) -> None: ...
-    def resume(self) -> None: ...
+    def start_retries(self) -> None: ...
+    def bind_goal(self, goal: CrawlGoal) -> None: ...
     @property
     def pending_keys(self) -> set[str]: ...
 
     async def aclose(self) -> None: ...
 
 
-class PageAnalyzer:
+class PageAnalyzer(Checkpointable):
     """Analyze pages with bounded retries and publish results through the bound sink."""
 
     def __init__(
@@ -70,6 +71,7 @@ class PageAnalyzer:
         retry_delay: float = _RETRY_DELAY_SEC,
         max_page_chars: int = _MAX_PAGE_CHARS,
     ) -> None:
+        self._goal: CrawlGoal | None = None
         self._client = client
         self._max_attempts = max_attempts
         self._retry_delay = retry_delay
@@ -80,7 +82,29 @@ class PageAnalyzer:
         # Count queued and active retries so drain_pending() waits for both.
         self._parked_count = 0
         self._pending_keys: set[str] = set()
-        self._paused = False
+        self._retry_entries: dict[str, tuple[Page, CrawlGoal, int]] = {}
+
+    def bind_goal(self, goal: CrawlGoal) -> None:
+        self._goal = goal
+
+    def dump(self) -> dict[str, Any]:
+        return {
+            "entries": [
+                {"page": page.model_dump(mode="json"), "attempts": attempts}
+                for page, _, attempts in self._retry_entries.values()
+            ]
+        }
+
+    def restore(self, state: dict[str, Any]) -> None:
+        if self._goal is None:
+            raise ValueError("bind the crawl goal before restoring analysis retries")
+        for raw in state["entries"]:
+            page = Page.model_validate(raw["page"])
+            entry = (page, self._goal, int(raw["attempts"]))
+            self._retry_entries[page.url_key] = entry
+            self._pending.put_nowait(entry)
+            self._pending_keys.add(page.url_key)
+            self._parked_count += 1
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> PageAnalyzer | None:
@@ -118,30 +142,25 @@ class PageAnalyzer:
     def pending_keys(self) -> set[str]:
         return self._pending_keys.copy()
 
-    async def pause(self) -> None:
-        """Freeze retries, returning an interrupted attempt to the queue."""
-        self._paused = True
-        if self._drain_task is not None:
-            task = self._drain_task
-            self._drain_task = None
-            task.cancel()
-            results = await asyncio.gather(task, return_exceptions=True)
-            if isinstance(results[0], Exception):
-                raise results[0]
-
-    def resume(self) -> None:
-        self._paused = False
+    def start_retries(self) -> None:
         if self._parked_count and self._drain_task is None:
             self._drain_task = asyncio.create_task(self._drain())
 
     async def aclose(self) -> None:
         """Cancel retries and release queued page bodies."""
         try:
-            await self.pause()
+            if self._drain_task is not None:
+                task = self._drain_task
+                self._drain_task = None
+                task.cancel()
+                results = await asyncio.gather(task, return_exceptions=True)
+                if isinstance(results[0], Exception):
+                    raise results[0]
         finally:
             while not self._pending.empty():
                 self._pending.get_nowait()
             self._pending_keys.clear()
+            self._retry_entries.clear()
             self._parked_count = 0
 
     async def drain_pending(self) -> None:
@@ -166,6 +185,7 @@ class PageAnalyzer:
                     self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
                     continue
                 self._pending_keys.discard(page.url_key)
+                self._retry_entries.pop(page.url_key, None)
                 self._publish(result)
                 self._parked_count -= 1
                 logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
@@ -264,17 +284,18 @@ class PageAnalyzer:
                 # settled, so release the count drain_pending() waits on.
                 self._parked_count -= 1
                 self._pending_keys.discard(page.url_key)
+                self._retry_entries.pop(page.url_key, None)
             logger.warning("analysis.giveup url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
             return
         logger.warning("analysis.requeue url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
         self._pending.put_nowait((page, goal, attempts))
+        self._retry_entries[page.url_key] = (page, goal, attempts)
         self._pending_keys.add(page.url_key)
         # A fresh parking counts once; a re-parking from the drain was
         # already counted (the drain holds the count while it retries).
         if not parked:
             self._parked_count += 1
-        if self._drain_task is None and not self._paused:
-            self._drain_task = asyncio.create_task(self._drain())
+        self.start_retries()
 
 
 def _page_text(page: Page) -> str:

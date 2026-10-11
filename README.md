@@ -108,6 +108,16 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”. 
 
 Use `crawl run --help` for all options and aliases.
 
+### `crawl resume <task-id>`
+
+Ctrl+C cancels active work and exits without draining LLM calls or running dedup. Resume from the latest checkpoint with:
+
+```bash
+crawl resume <task-id> --result-dir results
+```
+
+Resume keeps the original goal, settings and recorded budgets; time spent stopped does not count. Work after the last checkpoint may repeat. Submitted LLM requests may still be billed after cancellation. Credentials come from the current environment. Older runs without recovery checkpoints cannot resume. A second Ctrl+C exits immediately.
+
 ### `crawl dedup <task-id>`
 
 Group stored results without fetching or re-analyzing pages. Use `--goal` to select a replay goal. Refresh the dashboard after grouping.

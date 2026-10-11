@@ -15,7 +15,6 @@ def _utcnow() -> datetime.datetime:
 
 class EventType:
     TASK_STARTED = "TASK_STARTED"
-    TASK_PAUSED = "TASK_PAUSED"
     TASK_RESUMED = "TASK_RESUMED"
     TASK_STOPPED = "TASK_STOPPED"
 

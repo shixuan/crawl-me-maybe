@@ -5,10 +5,13 @@ The scheduler fetches robots.txt. ignore=True bypasses these policies."""
 from __future__ import annotations
 
 import datetime
+from typing import Any
 from urllib.robotparser import RobotFileParser
 
+from crawlme.checkpoint.checkpointable import Checkpointable
 
-class RobotsPolicy:
+
+class RobotsPolicy(Checkpointable):
     def __init__(
         self,
         *,
@@ -70,6 +73,18 @@ class RobotsPolicy:
     def next_allowed_at(self, domain: str) -> datetime.datetime:
         # Epoch leaves unknown domains immediately eligible, avoiding races with caller time.
         return self._next_allowed.get(domain, _EPOCH)
+
+    def dump(self) -> dict[str, Any]:
+        return {
+            "next_allowed": {k: v.isoformat() for k, v in self._next_allowed.items()},
+            "circuit_until": {k: v.isoformat() for k, v in self._circuit_until.items()},
+            "consecutive_fails": dict(self._consecutive_fails),
+        }
+
+    def restore(self, data: dict[str, Any]) -> None:
+        self._next_allowed = {k: datetime.datetime.fromisoformat(v) for k, v in data["next_allowed"].items()}
+        self._circuit_until = {k: datetime.datetime.fromisoformat(v) for k, v in data["circuit_until"].items()}
+        self._consecutive_fails = dict(data["consecutive_fails"])
 
     def record_response(self, domain: str, status: int, crawl_delay: float = 0) -> None:
         if self._ignore:

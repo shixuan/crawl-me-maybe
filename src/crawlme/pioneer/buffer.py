@@ -8,12 +8,13 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.schemas import Candidate
 
 logger = logging.getLogger(__name__)
 
 
-class Buffer(Protocol):
+class Buffer(Checkpointable, Protocol):
     """Contract for the in-memory candidate staging area."""
 
     @property
@@ -29,13 +30,6 @@ class Buffer(Protocol):
         """Report whether the URL is waiting in this buffer."""
         ...
 
-    def dump(self) -> dict[str, Any]:
-        """State for a checkpoint.  A crawl that stops mid-scoring holds
-        most of its work here, and a resume that cannot read it back
-        starts over without knowing what it had found."""
-        ...
-
-    def load(self, state: dict[str, Any]) -> None: ...
     async def drain(self, n: int | None = None) -> list[Candidate]: ...
     async def return_batch(self, batch: list[Candidate]) -> None: ...
     def context_keys(self) -> set[str]: ...
@@ -92,7 +86,7 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
     return out, (keys[served] if keys else "")
 
 
-class RoundRobinBuffer:
+class RoundRobinBuffer(Checkpointable):
     def __init__(self, capacity: int = 2000) -> None:
         self._capacity = capacity
         self._candidates: list[Candidate] = []
@@ -197,7 +191,7 @@ class RoundRobinBuffer:
             "retired": sorted(self._retired),
         }
 
-    def load(self, state: dict[str, Any]) -> None:
+    def restore(self, state: dict[str, Any]) -> None:
         self._candidates = [Candidate.model_validate(c) for c in state.get("candidates") or []]
         self._seen = set(state.get("seen") or [])
         self._next_seed = str(state.get("next_seed") or "")

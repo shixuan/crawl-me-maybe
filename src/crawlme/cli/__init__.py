@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import signal
 import sys
 
 from crawlme.cli import session
 from crawlme.cli.dedup import cmd_dedup
 from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
+from crawlme.cli.resume import cmd_resume
 from crawlme.cli.run import cmd_run
 
 
@@ -158,6 +161,10 @@ def main() -> None:
     dedup_p.add_argument("--max-tokens", type=int, help="Token budget for this grouping (default: unlimited)")
     dedup_p.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF"], default=None)
 
+    resume_p = sub.add_parser("resume", help="Continue an interrupted crawl from its last checkpoint")
+    resume_p.add_argument("task_id")
+    resume_p.add_argument("--result-dir")
+    resume_p.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF"])
     session.add_arguments(sub)
 
     args = parser.parse_args()
@@ -165,7 +172,31 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    asyncio.run(_dispatch(args))
+    try:
+        asyncio.run(_interruptible(args))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("Interrupted. Use crawl resume <task-id> to continue from the last checkpoint.", file=sys.stderr)
+        raise SystemExit(130) from None
+
+
+async def _interruptible(args: argparse.Namespace) -> None:
+    """Cancel the owner first, keeping the local writer alive for cleanup on Python 3.10 too."""
+    owner = asyncio.current_task()
+    interrupts = 0
+
+    def interrupt(signum: int, frame: object) -> None:
+        nonlocal interrupts
+        interrupts += 1
+        if interrupts == 1 and owner is not None:
+            owner.cancel()
+        else:
+            os._exit(130)
+
+    previous = signal.signal(signal.SIGINT, interrupt)
+    try:
+        await _dispatch(args)
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 async def _dispatch(args: argparse.Namespace) -> None:
@@ -173,6 +204,8 @@ async def _dispatch(args: argparse.Namespace) -> None:
 
     if cmd == "run":
         await cmd_run(args)
+    elif cmd == "resume":
+        await cmd_resume(args)
     elif cmd == "inspect":
         await cmd_inspect(args)
     elif cmd == "replay":

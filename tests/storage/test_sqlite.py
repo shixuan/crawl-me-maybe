@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
+import sqlite3
 
 import pytest
 
@@ -376,3 +378,19 @@ async def test_bad_sql_no_hang(tmp_path, caplog):
     with caplog.at_level(logging.ERROR):
         await asyncio.wait_for(db.close(), timeout=5)
     assert any("db.write_failed" in r.message for r in caplog.records)
+
+
+async def test_checkpoint_write_failure(tmp_path):
+    db = SqliteStorage.create(tmp_path)
+    await db.start()
+    db.save_snapshot({"snapshot_id": "latest", "snapshot_json": {"version": 1}})
+    await db.flush()
+    db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("bad",))
+    db.save_snapshot({"snapshot_id": "latest", "snapshot_json": {"version": 2}})
+    with pytest.raises(RuntimeError, match="checkpoint was not saved"):
+        await db.flush()
+    await db.close()
+    with sqlite3.connect(db.db_path) as connection:
+        assert json.loads(connection.execute("SELECT snapshot_json FROM frontier_snapshots").fetchone()[0]) == {
+            "version": 1
+        }

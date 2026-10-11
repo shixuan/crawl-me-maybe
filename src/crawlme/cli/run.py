@@ -157,12 +157,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
     try:
         await scheduler.run(goal, task)
-    except KeyboardInterrupt:
-        logger.info("interrupted: saving checkpoint")
-        await scheduler.pause()
-        # run() never closed the resources on this path; close them so
-        # the process can exit instead of hanging on leaked threads.
-        await scheduler.aclose()
     finally:
         logger.info(
             "%s after %d pages and %d tokens: %s",
@@ -171,10 +165,10 @@ async def cmd_run(args: argparse.Namespace) -> None:
             scheduler.run_state.progress.tokens_used,
             task.stopping_reason or "no reason recorded",
         )
+        await close_litellm_clients()
 
     # Tear down litellm's cached clients while the loop is still alive,
     # so its shutdown noise never prints after the report.
-    await close_litellm_clients()
     # Print the report after resource cleanup logs.
     _print_summary(scheduler, task, budget, args)
     code = exit_code(task.stopping_reason)

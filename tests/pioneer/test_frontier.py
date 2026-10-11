@@ -109,8 +109,8 @@ async def test_snapshot_roundtrip(frontier):
     popped = await frontier.pop_next()
     await frontier.record_outcome(popped, "COMPLETED")
 
-    snap = frontier.snapshot(task_id="t1")
-    assert len(snap.visited) == 1
+    snap = frontier.dump()
+    assert len(snap["visited"]) == 1
 
     f2 = GatedFrontier()
     f2.restore(snap)
@@ -127,7 +127,7 @@ async def test_snapshot_pending(frontier):
     await frontier.push_batch([item])
     await frontier.pop_next()
 
-    snap = frontier.snapshot()
+    snap = frontier.dump()
     f2 = GatedFrontier()
     f2.restore(snap)
     assert f2.size == 1, "an item waiting on a cooldown survived the round trip"
@@ -181,7 +181,7 @@ async def test_checkpoint_keeps():
     assert f.size == 2
 
     restored = GatedFrontier(source=make())
-    restored.restore(f.snapshot())
+    restored.restore(f.dump())
     assert restored.size == 2
     assert restored.get_prefilter_context().is_visited_or_queued("a")
 
@@ -190,8 +190,8 @@ async def test_checkpoint_keeps():
 async def test_checkpoint_old_shape():
     f = GatedFrontier()
     await f.push_batch([_item("old", 0.7)])
-    snap = f.snapshot()
-    legacy = snap.model_copy(update={"ordering": {}, "heap": [_item("old", 0.7)]})
+    snap = f.dump()
+    legacy = {**snap, "ordering": {}, "heap": [_item("old", 0.7).model_dump(mode="json")]}
 
     restored = GatedFrontier()
     restored.restore(legacy)
@@ -202,17 +202,17 @@ async def test_checkpoint_old_shape():
 async def test_checkpoint_json():
     """The path a real resume takes, which no test walked before.
 
-    In memory dump() and load() agreed because both spoke models; on
-    disk the state is data, and the first thing load() did with it was
+    In memory dump() and restore() agreed because both spoke models; on
+    disk the state is data, and the first thing restore() did with it was
     read an attribute.
     """
     make = PriorityQueue
     f = GatedFrontier(source=make())
     await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
 
-    on_disk = json.loads(f.snapshot().model_dump_json())
+    on_disk = json.loads(json.dumps(f.dump()))
     restored = GatedFrontier(source=make())
-    restored.restore(FrontierSnapshot.model_validate(on_disk))
+    restored.restore(on_disk)
 
     assert restored.size == 2
     got = await restored.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
@@ -328,7 +328,7 @@ async def test_outcome_counts_once():
     first = await frontier.pop_next()
     await frontier.record_outcome(first, "COMPLETED")
     await frontier.record_outcome(first, "COMPLETED")
-    assert frontier.snapshot().budgets["global"] == 1
+    assert frontier.dump()["budgets"]["global"] == 1
     assert (await frontier.pop_next()).url_key == "second"
 
 
@@ -340,7 +340,7 @@ async def test_retirement_survives_restore():
     await frontier.push_batch([_item("ranked", seed_url_key="seed")])
     assert frontier.size == 0
     restored = GatedFrontier()
-    restored.restore(frontier.snapshot())
+    restored.restore(frontier.dump())
     await restored.push_candidates([_candidate("new", "seed")])
     await restored.push_batch([_item("newer", seed_url_key="seed")])
     assert restored.is_retired("seed")
@@ -352,7 +352,7 @@ async def test_restore_ranking_ownership():
     await frontier.push_candidates([_candidate("first"), _candidate("second")])
     batch = await frontier.take_for_ranking(1)
     restored = GatedFrontier()
-    restored.restore(FrontierSnapshot.model_validate_json(frontier.snapshot().model_dump_json()))
+    restored.restore(json.loads(json.dumps(frontier.dump())))
     assert restored.waiting_size == 2
     assert restored.scoring == 0
     await restored.push_candidates([_candidate("first"), _candidate("second")])
@@ -364,7 +364,7 @@ async def test_restore_ranking_ownership():
 async def test_empty_restore_clears_work():
     frontier = GatedFrontier()
     await frontier.push_candidates([_candidate("stale", "seed")])
-    frontier.restore(FrontierSnapshot())
+    frontier.restore(FrontierSnapshot().model_dump(mode="json"))
     assert frontier.waiting_size == frontier.scoring == 0
     await frontier.push_candidates([_candidate("stale", "seed")])
     assert frontier.waiting_size == 1
@@ -376,7 +376,7 @@ async def test_restore_partial_ranking():
     await frontier.take_for_ranking(2)
     await frontier.push_batch([_item("first")])
     restored = GatedFrontier()
-    restored.restore(frontier.snapshot())
+    restored.restore(frontier.dump())
     assert restored.size == restored.waiting_size == 1
     assert (await restored.take_for_ranking(1))[0].url.url_key == "second"
     assert (await restored.pop_next()).url_key == "first"

@@ -105,9 +105,9 @@ and payloads, and discovers candidates without publishing an unextracted Page ro
    candidates. Accepted proposals receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
 5. `fetch_pump` dispatches pages while `rank_pump` scores newly discovered candidates.
-6. On exit, the scheduler settles page tasks and analysis retries, then optionally
-   groups results, records the task result and closes resources. Periodic and pause
-   checkpoints save the frontier. Retry settlement follows the limits described below.
+6. On normal completion, the scheduler settles page tasks and analysis retries, then
+   optionally groups results and closes resources. Ctrl+C cancels active work without
+   draining or grouping. Stage boundaries and a periodic timer save recovery checkpoints.
 
 Without LLM configuration, enhancement and analysis are absent and candidates are
 queued without LLM ranking. Deterministic URL filtering still runs.
@@ -158,7 +158,7 @@ It splits calls by candidate count and text size. Truncated batches are subdivid
 Omitted candidates receive neutral priority. Unrecoverable errors propagate to
 Engine. Engine observes either pump's failure immediately and stops its peer.
 Unexpected page-task exceptions also stop the run and produce a FAILED task.
-Pause/resume keeps one run owner and settles both pumps before checkpointing; see the
+Checkpoint recovery creates a new run owner from saved state; see the
 [Engine plan](engine-refactor.md). `--recall` retains rejected candidates at low priority.
 
 `PageAnalyzer` requests a page relevance verdict and an `items` array. Each item is
@@ -313,12 +313,53 @@ Sources retire independently after fewer than two relevant results in a full
 not vote on relevance. Undated pages neither advance nor reset the age streak.
 Retirement removes that seed's pending candidates. `--recall` disables retirement.
 
-The scheduler exposes pause, resume and stop methods. Pause settles in-flight
-page work, finishes or returns ranking batches, freezes analysis retries and flushes
-a stable snapshot. Resume continues the retained in-memory state through the same
-run task. Paused time counts toward the wall-clock limit. The CLI does not expose
-a separate resume command. Snapshots do not include in-flight tasks,
-analysis retries or all source history, so they do not provide lossless crash recovery.
+`crawl resume <task-id>` starts a new scheduler in the original run directory.
+Checkpoints contain the goal, non-secret settings, frontier, source history, counters,
+token usage, incomplete page stages and analysis retries. Page text stays in the
+existing page rows. Resume does not enhance the goal or expand seeds again. It restores
+elapsed execution time, excluding time spent stopped. Credentials come from the
+current environment; an OS file lock excludes another crawl owner for the same run.
+
+The scheduler saves an initial checkpoint before dispatch, after page stages and
+ranking batches, and every two seconds. Results enter the writer queue before their
+checkpoint. Recovery reads only committed snapshots; a failed write prevents a new
+checkpoint from being committed. Work newer than the snapshot can repeat. Stable
+analysis and result-item IDs replace repeated outputs for the same task and URL.
+This does not guarantee exactly-once requests or billing. Usage not present in the
+checkpoint cannot be reconstructed from an interrupted provider request.
+
+Ctrl+C cancels page, ranking and retry tasks immediately, then closes local resources.
+It does not wait for model responses or run dedup. The task becomes `INTERRUPTED`;
+a hard-killed task can still say `RUNNING`, but the OS releases its lock. A second
+Ctrl+C exits immediately. Recovery does not depend on a final checkpoint during exit.
+The old in-memory pause/resume API has been removed. Frontier-only legacy snapshots
+are not sufficient for recovery and are rejected by the resume command.
+
+Factory 显式组装 `Checkpointer`，没有动态注册表。各组件显式继承
+`checkpoint/checkpointable.py` 中的 `Checkpointable`，统一实现 `dump/restore`。
+缺少任一方法的实现类不能实例化。Checkpointer 直接调用组件，
+不经过 State 包装；analyzer 的 goal 在启动和恢复前绑定。
+在途页面进度由 `RunState.work` 持有，随运行状态一起保存和恢复。PageBook、queue、buffer 也显式实现同一接口，分别由 RunState 和 Frontier 组合保存，
+无需重复传入 Checkpointer。Frontier 仍负责其内部 queue 和 buffer，
+engine 只负责保存时机和恢复后的调度。`Checkpointer` 在首次 await 前同步捕获所有状态，
+负责快照版本、正文裁剪与回填、串行落盘；保存成功后 engine 才发出保存事件。
+
+```mermaid
+flowchart LR
+  subgraph Process["运行进程"]
+    Factory["factory 显式组装"] --> Engine
+    Factory --> CP["Checkpointer"]
+    Engine["engine 调度与保存时机"] -->|save / restore| CP
+    CP -->|dump / restore| States["frontier · runtime · analysis<br/>budget · robots"]
+    CP -->|save_snapshot / flush| Writer["SQLite writer"]
+  end
+  Writer -->|commit| DB[("Run database")]
+  DB -->|页面正文| CP
+  subgraph New["恢复进程"]
+    Resume["crawl resume"] --> Restored["factory + engine + Checkpointer"]
+  end
+  DB -->|checkpoint| Resume
+```
 
 ## Persistence and inspection
 
