@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from crawlme.cli.resume import cmd_resume
-from crawlme.storage.sqlite import SqliteStorage
+from crawlme.persist import Storage
 
 # Commands use this interpreter and test-generated arguments only.
 # ruff: noqa: S603
@@ -143,7 +143,7 @@ def test_cli_resume_process(tmp_path, interrupt):
 
 @pytest.mark.parametrize("payload", [None, {"ordering": {}}, {"version": 99}])
 async def test_reject_old_checkpoint(tmp_path, capsys, monkeypatch, payload):
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     storage.save_task({"task_id": "test", "state": "INTERRUPTED"})
     if payload is not None:

@@ -1,4 +1,4 @@
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
+from crawlme.runtime import Limits, Progress, RunState, Stats
 from crawlme.scheduler.reporting import summary
 
 

@@ -10,20 +10,19 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from crawlme.checkpoint.checkpointer import Checkpointer
+from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Grouper, group_results
-from crawlme.digest.extractor import Extractor
+from crawlme.digest import Extractor
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
+from crawlme.persist import Lock, Storage
+from crawlme.pioneer import Frontier
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
-from crawlme.runtime.events import EventEmitter, EventType
-from crawlme.runtime.state import RunState
-from crawlme.runtime.tracking import RunTracker
+from crawlme.runtime import EventEmitter, EventType, RunState, Tracker
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
 from crawlme.scheduler.workers import (
@@ -44,8 +43,6 @@ from crawlme.schemas import (
     Page,
 )
 from crawlme.schemas.core import _content_id
-from crawlme.storage.base import Storage
-from crawlme.storage.lock import RunLock
 
 SeedExpansion = Callable[
     [CrawlGoal, list[str], TokenBudget | None],
@@ -82,7 +79,7 @@ class FetchedPage:
     page: Page
 
 
-class CrawlScheduler:
+class Engine:
     """Run concurrent fetch and rank pumps over a shared frontier."""
 
     def __init__(
@@ -100,7 +97,7 @@ class CrawlScheduler:
         robots: RobotsPolicy,
         prefilter: PreFilter,
         canonicalizer: Canonicalizer,
-        tracking: RunTracker,
+        tracking: Tracker,
         seed_expander: SeedExpansion,
         grouper: Grouper | None = None,
         budget: TokenBudget | None = None,
@@ -216,12 +213,12 @@ class CrawlScheduler:
         task: CrawlTask,
         *,
         checkpoint: dict[str, Any] | None = None,
-        lock: RunLock | None = None,
+        lock: Lock | None = None,
     ) -> None:
         if self._runner is not None or self._closed:
             raise RuntimeError("scheduler already started or closed")
         own_lock = lock is None
-        lock = lock or RunLock(self._storage.db_path)
+        lock = lock or Lock(self._storage.db_path)
         if own_lock:
             lock.acquire()
         self._runner = asyncio.current_task()

@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis.analyzer import PageAnalyzer, _parse_analysis
+from crawlme.analysis import Analyzer
+from crawlme.analysis.analyzer import _parse_analysis
 from crawlme.dedup.grouper import Grouper, group_results
-from crawlme.llm import LLMError, LLMResponse
+from crawlme.llm import Error, LLMResponse
+from crawlme.persist import Storage, read_results
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
-from crawlme.storage.read import read_results
-from crawlme.storage.sqlite import SqliteStorage
 
 
 def page(text):
@@ -63,7 +63,7 @@ def test_general_item_protocol(goal_text, entries):
 
 @pytest.mark.parametrize("items", [None, {}, ["bad"], [], [{"summary": "invented", "evidence": ["missing"]}]])
 def test_invalid_items_rejected(items):
-    with pytest.raises(LLMError):
+    with pytest.raises(Error):
         _parse_analysis(
             {"classification": "RELEVANT", "items": items},
             page("source"),
@@ -87,7 +87,7 @@ async def test_item_time_correction():
             ),
         ]
     )
-    analyzer = PageAnalyzer(client)
+    analyzer = Analyzer(client)
     result = await analyzer.analyze(
         page("\n".join(entries)), CrawlGoal(prompt="find offers", time_policy="offer expiry")
     )
@@ -103,7 +103,7 @@ async def test_items_replay_and_groups(tmp_path, capsys):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
     import serve
 
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     goal = CrawlGoal(prompt="find products", extraction_spec={"fields": {"name": "product name"}})
     source = page("Aster camera.\nBirch camera.")
@@ -182,7 +182,7 @@ async def test_items_replay_and_groups(tmp_path, capsys):
 
 
 async def test_item_write_is_atomic(tmp_path):
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     data = {"analysis_id": "bad", "items": [{"item_id": "duplicate", "summary": "A"}] * 2}
     storage.save_analysis(data)

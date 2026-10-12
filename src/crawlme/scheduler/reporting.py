@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from crawlme.runtime.state import RunState, SeedState
+from crawlme.runtime import RunState, SeedState
 
 
 def summary(state: RunState) -> dict[str, Any]:

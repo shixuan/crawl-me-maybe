@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.discovery.harvester import PageHarvester
+from crawlme.discovery import Harvester
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.platforms import rss
 from crawlme.platforms.base import FeedDependencyError
@@ -75,7 +75,7 @@ def test_claims_no_url() -> None:
 
 def test_entry_has_text(tmp_path: Path) -> None:
     """The funnel used to rank a bare URL while the post sat in the feed."""
-    out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _ATOM), depth=0)
+    out = Harvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _ATOM), depth=0)
     assert out.listing
     first = out.candidates[0]
     assert first.text.startswith("Weekend giveaway")
@@ -89,14 +89,14 @@ def test_entry_has_text(tmp_path: Path) -> None:
 def test_link_post_title(tmp_path: Path) -> None:
     """ "submitted by /u/name [link] [comments]" is the feed talking, not
     the author: it must not read as a post with a body."""
-    out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _ATOM), depth=0)
+    out = Harvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _ATOM), depth=0)
     assert out.candidates[1].text == "A link post"
 
 
 def test_entry_undated(tmp_path: Path) -> None:
     """None has to stay distinguishable from a guess: the time window
     filters on this, and an invented date drops real posts silently."""
-    out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _RSS), depth=0)
+    out = Harvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _RSS), depth=0)
     assert out.candidates[0].posted_at is None
     assert out.candidates[0].text == "Only a title"
 
@@ -108,7 +108,7 @@ def test_feed_not_item() -> None:
 
 def test_html_falls_thru(tmp_path: Path) -> None:
     """Nobody claims it, so it is read the way a link graph reads."""
-    out = PageHarvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _HTML), depth=0)
+    out = Harvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _HTML), depth=0)
     assert not out.listing
     assert [c.url.canonical for c in out.candidates] == ["https://example.com/x"]
 

@@ -16,9 +16,9 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from crawlme.dedup.grouper import fingerprint
+from crawlme.persist import queries
+from crawlme.persist.read import connect, has_items, read_items
 from crawlme.schemas.analysis import CLASSIFICATIONS
-from crawlme.storage import queries
-from crawlme.storage.read import connect, has_items, read_items
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent

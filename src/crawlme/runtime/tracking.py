@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from crawlme.discovery.harvester import Harvest
+from crawlme.discovery import Harvest
 from crawlme.logging import where
 from crawlme.platforms.base import PageProblem
 from crawlme.runtime.state import RunState
@@ -14,7 +14,7 @@ from crawlme.schemas import AnalysisResult, Candidate, CrawlGoal, FrontierItem, 
 logger = logging.getLogger(__name__)
 
 
-class RunTracker:
+class Tracker:
     def __init__(self, state: RunState) -> None:
         self.state = state
 

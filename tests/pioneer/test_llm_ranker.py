@@ -11,8 +11,8 @@ import datetime
 import pytest
 
 from crawlme.config import Settings
-from crawlme.llm import LLMError, LLMResponse, TokenBudget
-from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.llm import Error, LLMResponse, TokenBudget
+from crawlme.pioneer.ranker import LLMRanker
 from crawlme.prompts import ranking_input
 from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
 
@@ -165,14 +165,14 @@ async def test_retry_parses():
 @pytest.mark.asyncio
 async def test_retry_gives_up():
     client = _StubClient([_resp("garbage"), _resp("still garbage")])
-    with pytest.raises(LLMError, match="unparseable JSON"):
+    with pytest.raises(Error, match="unparseable JSON"):
         await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
 
 @pytest.mark.asyncio
 async def test_provider_error():
-    client = _StubClient([LLMError("provider down")])
-    with pytest.raises(LLMError):
+    client = _StubClient([Error("provider down")])
+    with pytest.raises(Error):
         await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
 

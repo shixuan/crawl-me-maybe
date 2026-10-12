@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from crawlme.storage import queries
+from crawlme.persist import queries
 
 
 def readonly_uri(db: Path) -> str:
@@ -22,7 +22,7 @@ def connect(db: Path) -> sqlite3.Connection:
 
 
 @dataclass
-class RunResults:
+class Results:
     goals: list[dict[str, Any]]
     pages: list[dict[str, Any]]
     analyses: list[dict[str, Any]]
@@ -44,11 +44,11 @@ def read_items(con: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(row) for row in con.execute(queries.items_query(modern=has_items(con)))]
 
 
-def read_results(db: Path) -> RunResults:
+def read_results(db: Path) -> Results:
     with closing(connect(db)) as con:
         # Keep the three tables consistent if a crawl commits while they are read.
         con.execute("BEGIN")
-        return RunResults(
+        return Results(
             goals=[dict(row) for row in con.execute(queries.GOALS)],
             pages=[dict(row) for row in con.execute(queries.PAGES)],
             analyses=[dict(row) for row in con.execute(queries.LATEST_ANALYSES + " ORDER BY a.analyzed_at, a.rowid")],

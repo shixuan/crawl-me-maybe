@@ -8,8 +8,8 @@ import sqlite3
 
 import pytest
 
+from crawlme.persist import Storage
 from crawlme.schemas import URL, Candidate, Page, RankDecision
-from crawlme.storage.sqlite import SqliteStorage
 
 
 def _url(url_key: str = "abc") -> URL:
@@ -27,7 +27,7 @@ def storage(tmp_path):
     db = tmp_path / "test.db"
     raw = tmp_path / "raw"
     raw.mkdir()
-    s = SqliteStorage(str(db), str(raw))
+    s = Storage(str(db), str(raw))
     loop.run_until_complete(s.start())
     yield s
     loop.run_until_complete(s.close())
@@ -372,7 +372,7 @@ async def test_bad_sql_no_hang(tmp_path, caplog):
     the very end having reported everything fine, which is how a
     column added to one INSERT and not another stayed hidden.
     """
-    db = SqliteStorage.create(str(tmp_path))
+    db = Storage.create(str(tmp_path))
     await db.start()
     db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("x",))
     with caplog.at_level(logging.ERROR):
@@ -381,7 +381,7 @@ async def test_bad_sql_no_hang(tmp_path, caplog):
 
 
 async def test_checkpoint_write_failure(tmp_path):
-    db = SqliteStorage.create(tmp_path)
+    db = Storage.create(tmp_path)
     await db.start()
     db.save_snapshot({"snapshot_id": "latest", "snapshot_json": {"version": 1}})
     await db.flush()

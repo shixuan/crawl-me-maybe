@@ -1,5 +1,5 @@
 """Per-page relevance analysis and field extraction."""
 
-from crawlme.analysis.analyzer import Analyzer, PageAnalyzer
+from crawlme.analysis.analyzer import Analyzer
 
-__all__ = ["Analyzer", "PageAnalyzer"]
+__all__ = ["Analyzer"]

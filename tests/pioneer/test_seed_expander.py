@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.discovery.harvester import Harvest
-from crawlme.llm import LLMError, LLMResponse
+from crawlme.discovery import Harvest
+from crawlme.llm import Error, LLMResponse
 from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
 from crawlme.schemas import (
     URL,
@@ -113,7 +113,7 @@ async def test_no_client_proposes_nothing():
 
 async def test_an_llm_error_proposes_nothing():
     client = MagicMock()
-    client.chat = AsyncMock(side_effect=LLMError("down"))
+    client.chat = AsyncMock(side_effect=Error("down"))
     assert await SeedExpander(client).propose(_goal(), ["https://s.com/"], 4) == []
 
 

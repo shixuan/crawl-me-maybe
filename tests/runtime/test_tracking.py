@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from crawlme.discovery.harvester import Harvest
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
-from crawlme.runtime.tracking import RunTracker
+from crawlme.discovery import Harvest
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
 from crawlme.schemas import URL, AnalysisResult, AnalyzerFeedback, Candidate, CrawlGoal, FrontierItem, Page
 from crawlme.schemas.analysis import ResultItem
 
 
 def _tracking():
-    return RunTracker(RunState(limits=Limits(), progress=Progress(), stats=Stats()))
+    return Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats()))
 
 
 def test_items_do_not_inflate_pages():
@@ -74,7 +73,7 @@ def test_late_analysis_joins_run_state():
 
 def test_trackers_share_one_state():
     first = _tracking()
-    second = RunTracker(first.state)
+    second = Tracker(first.state)
     first.record_page_context("p", {"title": "shared"})
     candidate = Candidate(
         url=URL(raw="https://example.com/p", canonical="https://example.com/p", url_key="p"), source_url_key="p"

@@ -13,7 +13,7 @@ from crawlme.dedup.grouper import Grouper, group_results
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.logging.config import write_report
-from crawlme.storage.sqlite import SqliteStorage
+from crawlme.persist import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def cmd_dedup(args: argparse.Namespace) -> None:
         run_dir, task = await find_run_dir(settings.result_dir, args.task_id)
         if task.get("state") == "RUNNING":
             raise ValueError("task is still marked RUNNING; wait until it finishes before regrouping")
-        storage = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+        storage = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
         await storage.start()
         goal_id = args.goal or task["goal_id"]
         goal_row = await storage.get_goal(goal_id)

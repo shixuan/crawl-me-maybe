@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import IO
 
 
-class RunLock:
+class Lock:
     def __init__(self, db_path: str) -> None:
         self.path = Path(db_path).with_suffix(".lock")
         self.file: IO[str] | None = None

@@ -5,26 +5,25 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from crawlme.analysis import Analyzer, PageAnalyzer
-from crawlme.checkpoint.checkpointer import Checkpointer
+from crawlme.analysis import Analyzer
+from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.dedup import Grouper
-from crawlme.digest.extractor import TrafExtractor
-from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
+from crawlme.digest import DispatchingFetcher, Fetcher, HttpFetcher, TrafExtractor
 from crawlme.digest.fetcher.base import FetchError
-from crawlme.discovery.harvester import Harvest, Harvester, PageHarvester
+from crawlme.discovery import Harvest, Harvester
 from crawlme.llm import TokenBudget
+from crawlme.persist import Storage
+from crawlme.pioneer import Frontier
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.pioneer.frontier import GatedFrontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import expand
 from crawlme.platforms import ADAPTERS, FeedAdapter
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
-from crawlme.runtime.tracking import RunTracker
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
+from crawlme.scheduler.engine import Engine
 from crawlme.scheduler.workers import (
     AnalysisWorker,
     DiscoveryWorker,
@@ -34,7 +33,6 @@ from crawlme.scheduler.workers import (
     RankingWorker,
 )
 from crawlme.schemas import Candidate, CrawlGoal, FrontierItem, Page
-from crawlme.storage.sqlite import SqliteStorage
 
 
 def create_scheduler(
@@ -45,12 +43,12 @@ def create_scheduler(
     budget: TokenBudget | None = None,
     dedup_enabled: bool = True,
     **overrides: Any,
-) -> CrawlScheduler:
+) -> Engine:
     """Assemble scheduler components with optional test overrides.
 
     A missing analyzer is built from settings when enabled and configured.
     The supplied token budget is shared with that analyzer."""
-    storage = overrides.pop("storage") if "storage" in overrides else SqliteStorage.create(settings.result_dir)
+    storage = overrides.pop("storage") if "storage" in overrides else Storage.create(settings.result_dir)
     # The tracker and reporting use the same state across startup reset.
     state = overrides.pop("run_state", None)
     if state is None:
@@ -62,7 +60,7 @@ def create_scheduler(
     harvester = overrides.pop("harvester") if "harvester" in overrides else _build_harvester(settings, canonicalizer)
     ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
     if analyzer is None and settings.analysis_enabled:
-        analyzer = PageAnalyzer.from_settings(settings, budget=budget)
+        analyzer = Analyzer.from_settings(settings, budget=budget)
     grouper = None
     if dedup_enabled and settings.analysis_enabled and (settings.llm_api_key or settings.llm_base_url):
         grouper = Grouper.from_settings(settings, budget=budget)
@@ -104,7 +102,7 @@ def create_scheduler(
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
-        "frontier": GatedFrontier(
+        "frontier": Frontier(
             domain_budget=goal.domain_budget if goal else 50,
             buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         ),
@@ -117,7 +115,7 @@ def create_scheduler(
         "robots": robots,
         "prefilter": PreFilter(),
         "canonicalizer": canonicalizer,
-        "tracking": RunTracker(state),
+        "tracking": Tracker(state),
         "seed_expander": expand_seeds,
         "grouper": grouper,
         "budget": budget,
@@ -132,7 +130,7 @@ def create_scheduler(
         budget=budget,
         robots=kwargs["robots"],
     )
-    return CrawlScheduler(**kwargs)
+    return Engine(**kwargs)
 
 
 def _agent_name(settings: Settings) -> str:
@@ -160,7 +158,7 @@ def adapters_for(settings: Settings) -> list[FeedAdapter]:
 
 
 def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harvester:
-    return PageHarvester(canonicalizer, adapters=adapters_for(settings))
+    return Harvester(canonicalizer, adapters=adapters_for(settings))
 
 
 def _build_fetcher(settings: Settings) -> Fetcher:
@@ -185,7 +183,7 @@ def _build_http_fetcher(settings: Settings) -> Fetcher:
 
 def _build_browser_fetcher(settings: Settings) -> Fetcher:
     """Construct the lazy browser fetcher without importing or launching Playwright."""
-    from crawlme.digest.fetcher import PlaywrightFetcher
+    from crawlme.digest import PlaywrightFetcher
 
     # Enable scrolling if any adapter requests it; settings supply the limit.
     scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)

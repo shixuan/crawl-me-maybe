@@ -32,11 +32,10 @@ src/crawlme/
       discovery.py     Harvest saved page inputs with a bounded wait
   runtime/
     state.py           RunState, in-flight page work, sources and statistics
-    tracking.py        RunTracker updates and ranking feedback snapshots
+    tracking.py        Tracker updates and ranking feedback snapshots
     events.py          Persist crawl events
-  storage/
-    base.py            Storage protocol for run records and fetched files
-    sqlite.py          SqliteStorage implementation
+  persist/
+    storage.py         Storage using SQLite and raw files
     read.py            Read-only connections and stored result loading
     queries.py         Shared result queries and dedup input mapping
 ```
@@ -66,14 +65,14 @@ flowchart TB
     subgraph components["Existing component contracts"]
         ranker["Ranker"]
         fetcher["Fetcher"]
-        analyzer["PageAnalyzer · includes delayed retries"]
+        analyzer["Analyzer · includes delayed retries"]
         harvester["Harvester · reads saved HTML and payloads"]
     end
     rank --> ranker
     fetch --> fetcher
     analysis --> analyzer
     discovery --> harvester
-    analyzer -->|successful result through Engine sink| tracker["RunTracker"]
+    analyzer -->|successful result through Engine sink| tracker["Tracker"]
     tracker -->|update| state["RunState"]
     state -. feedback snapshot through tracker and Engine .-> rank
     state --> reporting["reporting.summary"]
@@ -92,9 +91,9 @@ retry later while discovery proceeds.
 | Checkpointer | Fixed component composition through dump/restore, snapshot format, page hydration and durable storage |
 | Frontier | Waiting, scored and cooling work, deduplication, ranking-in-progress count and snapshots |
 | RunState | Limits, progress, reporting statistics, page/source associations, feedback and seed expansion metadata |
-| RunTracker | Synchronous updates and joins over one RunState |
+| Tracker | Synchronous updates and joins over one RunState |
 | TokenBudget | Token accounting and stage usage, with a callback updating the progress mirror |
-| PageAnalyzer | Analysis execution, delayed retry queue and result sink |
+| Analyzer | Analysis execution, delayed retry queue and result sink |
 | Workers | Stage execution through existing component contracts |
 | Reporting | Read RunState without mutating it |
 
@@ -246,7 +245,7 @@ outputs in a serial run before checking permitted concurrent interleavings.
 | High candidate volume | Capacity boundaries, admission time, memory and event-loop delay |
 | Slow or failed stages | Backpressure, exception propagation, bounded shutdown and retry settlement |
 | No LLM | Existing filtering and neutral-priority behavior |
-| State joins | Analysis before/after listing discovery, one vote, reset and shared state identity |
+| RunState joins | Analysis before/after listing discovery, one vote, reset and shared state identity |
 | Pump supervision | Run both pumps, fail either one and assert bounded exit and visible failure |
 | Checkpoint recovery | New-process restart after SIGINT or SIGKILL, incomplete stages, retry ownership and duplicate outputs |
 | Notifications | Early notification, spurious wakeups, cooldown-only and deadline-only wakeups |

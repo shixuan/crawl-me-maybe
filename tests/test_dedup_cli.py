@@ -7,13 +7,13 @@ import pytest
 from crawlme.cli.dedup import cmd_dedup
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Group
+from crawlme.persist import Storage
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, CrawlTask, Page
-from crawlme.storage.sqlite import SqliteStorage
 
 
 @pytest.mark.parametrize("fail", [False, True])
 async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     goal = CrawlGoal(prompt="find gifts")
     other = CrawlGoal(prompt="another goal")

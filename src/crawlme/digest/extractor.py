@@ -27,7 +27,7 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class TrafExtractor:
+class TrafExtractor(Extractor):
     def __init__(self, adapters: Sequence[FeedAdapter] = ()) -> None:
         self._adapters = tuple(adapters)
 

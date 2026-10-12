@@ -10,9 +10,9 @@ import pytest
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Grouper, fingerprint
 from crawlme.llm import LLMResponse, TokenBudget
+from crawlme.persist import Storage
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
-from crawlme.storage.sqlite import SqliteStorage
 
 
 def client_response(groups, *, truncated=False):
@@ -86,7 +86,7 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
     import serve
 
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     goal = CrawlGoal(prompt="gifts")
     storage.save_goal(goal.model_dump(mode="json"))
@@ -139,7 +139,7 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
     import serve
 
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     try:
         for key in ("b", "a"):
@@ -199,9 +199,9 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
 
 
 async def test_grouping_failure_retains_results():
-    from crawlme.scheduler.engine import CrawlScheduler
+    from crawlme.scheduler import Engine
 
-    scheduler = object.__new__(CrawlScheduler)
+    scheduler = object.__new__(Engine)
     scheduler._cfg = Settings(_env_file=None)
     scheduler._grouper = MagicMock()
     scheduler._grouper.group = AsyncMock(side_effect=ValueError("bad model reply"))
@@ -269,10 +269,10 @@ async def test_invalid_retry_stops(caplog):
 async def test_repair_respects_budget(monkeypatch):
     from types import SimpleNamespace
 
-    from crawlme.llm import LLMClient, TokenBudgetError
+    from crawlme.llm import Client, TokenBudgetError
 
     budget = TokenBudget(limit=10)
-    client = LLMClient("test", budget=budget)
+    client = Client("test", budget=budget)
     complete = AsyncMock(
         return_value=SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))],
@@ -299,7 +299,7 @@ async def test_repair_input_limit():
 
 
 async def test_latest_verdict_before_filter(tmp_path):
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     try:
         page = Page(url=URL(raw="https://example.com", canonical="https://example.com", url_key="page"), url_key="page")

@@ -8,7 +8,9 @@
 
     canonicalizer, robots, sources, goal_enhancer  --  supporting parts
 
-Each module holds one concept and, where that concept has a contract,
-the contract sits with it.  A second implementation is what earns a
-concept its own package; none has one yet.
+Frontier is exported here; interchangeable components keep their contracts.
 """
+
+from crawlme.pioneer.frontier import Frontier
+
+__all__ = ["Frontier"]

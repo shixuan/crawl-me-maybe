@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.runtime.state import Limits, Progress
+from crawlme.pioneer import Frontier
+from crawlme.runtime import Limits, Progress
 from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
 from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
 
@@ -15,13 +15,13 @@ def _task(state: str = "RUNNING") -> CrawlTask:
     return CrawlTask(task_id="t1", state=state)  # type: ignore[arg-type]
 
 
-def _frontier(size: int = 0, scoring: int = 0, waiting: int = 0) -> GatedFrontier:
+def _frontier(size: int = 0, scoring: int = 0, waiting: int = 0) -> Frontier:
     """Populate through the public API rather than the heap internals.
 
     Reaching into _heap/_items coupled these tests to one ordering
     implementation, which is exactly what the Ordering seam removes.
     """
-    f = GatedFrontier()
+    f = Frontier()
     items = [
         FrontierItem(
             url=URL(raw=f"https://x.com/{i}", canonical=f"https://x.com/{i}", url_key=f"k{i}"),
@@ -306,7 +306,7 @@ def test_a_stop_condition_cannot_see_the_ledger():
     away."""
     import inspect
 
-    from crawlme.runtime.state import Stats
+    from crawlme.runtime import Stats
 
     params = inspect.signature(check_stop).parameters
     assert "stats" not in params
@@ -320,7 +320,7 @@ def test_every_progress_field_is_read_by_some_check():
     import dataclasses
     import inspect
 
-    from crawlme.runtime.state import Progress
+    from crawlme.runtime import Progress
     from crawlme.scheduler import stop_conds
 
     source = inspect.getsource(stop_conds)

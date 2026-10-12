@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from crawlme.checkpoint.checkpointable import Checkpointable
+from crawlme.checkpoint import Checkpointable
 from crawlme.schemas import FrontierItem
 
 logger = logging.getLogger(__name__)

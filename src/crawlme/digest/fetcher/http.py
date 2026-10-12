@@ -14,7 +14,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from crawlme.digest.fetcher.base import DEFAULT_UA, FetchError, with_retries
+from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError, with_retries
 from crawlme.schemas import URL, FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def _utcnow() -> datetime.datetime:
 _MAX_REDIRECTS = 10
 
 
-class HttpFetcher:
+class HttpFetcher(Fetcher):
     def __init__(
         self,
         user_agents: list[str] | None = None,

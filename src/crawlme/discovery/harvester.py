@@ -7,7 +7,6 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
 
 from crawlme.discovery.links import extract_links
 from crawlme.pioneer.canonicalizer import Canonicalizer
@@ -33,13 +32,7 @@ class Harvest:
     degraded: bool = False
 
 
-class Harvester(Protocol):
-    """Turn one fetched page into the candidates it offers."""
-
-    def harvest(self, page: Page, depth: int) -> Harvest: ...
-
-
-class PageHarvester:
+class Harvester:
     """Dispatch saved documents to adapters, falling back to web link extraction."""
 
     def __init__(self, canonicalizer: Canonicalizer, adapters: Sequence[FeedAdapter] = ()) -> None:

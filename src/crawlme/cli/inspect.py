@@ -17,7 +17,7 @@ from typing import Any
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
-from crawlme.storage.read import read_results
+from crawlme.persist import read_results
 from crawlme.util.dates import LATER, OVER, UNDATED, group_of
 
 

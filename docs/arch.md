@@ -11,9 +11,9 @@ Stage modules own model calls, retries and response validation.
 flowchart TB
     subgraph pioneer["1. pioneer/ · candidate selection · coordinated by Engine"]
         candidates["Candidate<br>URL, text, source, depth"] --> filter["PreFilter<br>scope, depth, dedup, robots, publication cutoff"]
-        filter -->|allowed| buffer["GatedFrontier / RoundRobinBuffer<br>unranked candidates, rotation between sources"]
-        buffer -->|rank_pump drains a batch| ranker["pioneer/ranker/ · LLMRanker<br>scheduled by RankingWorker"]
-        ranker -->|engine enqueues kept items| queue["GatedFrontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
+        filter -->|allowed| buffer["Frontier / RoundRobinBuffer<br>unranked candidates, rotation between sources"]
+        buffer -->|rank_pump drains a batch| ranker["pioneer/ranker.py · LLMRanker<br>scheduled by RankingWorker"]
+        ranker -->|engine enqueues kept items| queue["Frontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
         ranker -->|dropped| dropped["No fetch"]
     end
 
@@ -28,15 +28,15 @@ flowchart TB
     dispatch --> fetcher
 
     subgraph analysis["3. analysis/ · classify pages · scheduled by AnalysisWorker"]
-        analyzer["PageAnalyzer<br>relevance, fields, evidence checks"]
+        analyzer["Analyzer<br>relevance, fields, evidence checks"]
         analyzer -->|failed call| retry["Retry queue with limited attempts"]
         retry -. delayed attempt .-> analyzer
     end
     extractor -->|Page| analyzer
-    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through RunTracker, apply retirement"]
+    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through Tracker, apply retirement"]
 
     subgraph discovery["4. discovery/ · find candidates · scheduled by DiscoveryWorker"]
-        harvest["PageHarvester<br>reads saved HTML and payloads"]
+        harvest["Harvester<br>reads saved HTML and payloads"]
         harvest -->|unclaimed page| links[extract_links]
         canonical["pioneer/Canonicalizer"]
         links --> canonical
@@ -75,10 +75,9 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
-| `storage/base.py` | Storage protocol for run records and fetched files |
-| `storage/sqlite.py` | SqliteStorage implementation using SQLite and raw files |
-| `storage/read.py` | Open existing databases read-only and load stored results |
-| `storage/queries.py` | Share result queries and dedup input mapping across readers |
+| `persist/storage.py` | Storage implementation using SQLite and raw files |
+| `persist/read.py` | Open existing databases read-only and load stored results |
+| `persist/queries.py` | Share result queries and dedup input mapping across readers |
 | `scheduler/workers/persist.py` | Coordinate page file writes and database queuing through Storage |
 | `util/dates.py` | Parse event dates and assign result groups |
 | `dashboard/` | Local HTTP server and browser UI for stored results |
@@ -86,7 +85,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 Workers are concrete classes with different input and output types, not interchangeable
 pipeline steps. They neither call one another nor receive the engine or mutable run
 state. The engine owns ordering and queue admission. Workers use the existing
-Fetcher, Extractor, Analyzer, Harvester and Ranker contracts.
+Fetcher, Extractor and Ranker protocols, and the concrete Analyzer and Harvester stages.
 
 The factory creates workers and binds seed expansion to its dependencies.
 Seed verification receives a probe that uses the same FetchWorker, PersistWorker
@@ -126,7 +125,7 @@ candidate URLs, which return to the unranked buffer through the pre-filter.
   Adapters select response payloads to retain and whether to scroll.
 - `TrafExtractor` uses trafilatura for text and Markdown, with BeautifulSoup as a
   fallback. Publication dates come from declared metadata, JSON-LD or time tags.
-- `PageHarvester` asks adapters in order. A recognized post is a leaf. A listing
+- `Harvester` asks adapters in order. A recognized post is a leaf. A listing
   supplies post candidates and optional pagination. An unclaimed page supplies links.
 - Pagination keeps the listing's depth and has a per-listing cap. Discovered posts
   and ordinary links increment depth.
@@ -140,7 +139,8 @@ candidate URLs, which return to the unranked buffer through the pre-filter.
 | RSS/Atom | Document root. Entries provide content, links and publication dates. Requires `feedparser` |
 
 Adapters parse saved inputs and perform no network requests. Adding a platform
-requires implementing `FeedAdapter` and registering it in `platforms/__init__.py`.
+requires a module implementing `FeedAdapter` and registration in
+`platforms/__init__.py`.
 
 The extractor also asks the first URL-matching adapter for page text through
 `extract_text(FetchResult)`. Instagram matches the requested post in captured payloads
@@ -161,7 +161,7 @@ Unexpected page-task exceptions also stop the run and produce a FAILED task.
 Checkpoint recovery creates a new run owner from saved state; see the
 [Engine plan](engine-refactor.md). `--recall` retains rejected candidates at low priority.
 
-`PageAnalyzer` requests a page relevance verdict and an `items` array. Each item is
+`Analyzer` requests a page relevance verdict and an `items` array. Each item is
 an independently useful answer to the goal, with a summary, score, source quotes,
 tags, declared fields and optional dates. The page itself may be the single item.
 Object attributes and conditions stay together; distinct answers are separate.
@@ -179,7 +179,7 @@ results. Legacy analyses remain single rows until replayed. Relevant-page limits
 and source-retirement votes remain page-based; reports count items separately.
 
 `AnalysisWorker` limits initial calls and checks the result target after acquiring
-its slot. `PageAnalyzer` continues to own background retries and their shutdown.
+its slot. `Analyzer` continues to own background retries and their shutdown.
 
 Analysis feeds relevant-page summaries back to ranking. It does not nominate links
 or bypass the harvester. Platform posts are leaves in the current traversal.
@@ -214,6 +214,13 @@ in storage but cannot override the current dates or verdict.
 Dashboard and inspect apply `during` as a future-start cutoff,
 not a change of status. Dashboard hides time controls for non-temporal goals.
 
+Public types are exported from package entry points, including `runtime.RunState`,
+`runtime.Tracker`, `persist.Lock`, `persist.Results`, `scheduler.Engine`, and
+`llm.Client`, `llm.LLMResponse` and `llm.TokenBudget`. Analyzer, Harvester and Frontier are
+concrete classes exported by `analysis`, `discovery` and `pioneer`; each has one
+implementation. Class implementations inherit their protocols explicitly; platform
+adapters implement `FeedAdapter` as modules.
+
 ## State and concurrency
 
 The scheduler connects stage outputs to shared services. These are coordination
@@ -221,19 +228,19 @@ and data dependencies, rather than additional steps in the candidate path above.
 
 ```mermaid
 flowchart LR
-    ranker[LLMRanker] --> clients["llm/LLMClient<br>provider calls and retries"]
-    analyzer[PageAnalyzer] --> clients
+    ranker[LLMRanker] --> clients["llm/Client<br>provider calls and retries"]
+    analyzer[Analyzer] --> clients
     clients --> budget["Shared TokenBudget<br>usage by stage"]
 
     analyzer -->|successful analysis, including retries| sink["scheduler._on_analysis"]
-    sink --> tracker[RunTracker]
+    sink --> tracker[Tracker]
     tracker -->|update| state["RunState<br>limits, counters, page/source history, ranking feedback"]
     state -->|batch feedback snapshot via tracker and engine| ranker
     state --> policies["stop_conds<br>run stopping / source retirement"]
     budget -->|usage callback via engine| state
     policies -->|scheduler applies decisions| control["Stop dispatch / retire pending source work"]
 
-    ranker -->|decisions via scheduler| storage["storage/sqlite.py · SqliteStorage"]
+    ranker -->|decisions via scheduler| storage["persist/storage.py · Storage"]
     sink -->|analyses| storage
     scheduler["Engine<br>candidate admission, events, checkpoints"] -->|links, events, snapshots| storage
     scheduler --> persistence[PersistWorker]
@@ -255,7 +262,7 @@ Startup reset clears execution history and counters while preserving prepared se
 URLs, proposal metadata and recorded pre-run token usage. It retains the RunState
 object's identity. Resume does not reset it.
 
-`RunTracker` holds only a reference to RunState and updates it synchronously on the
+`Tracker` holds only a reference to RunState and updates it synchronously on the
 event loop. It returns source keys for the engine to check with `why_retire`. The
 engine removes queued work. Reporting reads RunState directly. Ranking receives
 a snapshot of recent relevant pages and the current batch's source contexts, so
@@ -338,7 +345,7 @@ are not sufficient for recovery and are rejected by the resume command.
 Factory 显式组装 `Checkpointer`，没有动态注册表。各组件显式继承
 `checkpoint/checkpointable.py` 中的 `Checkpointable`，统一实现 `dump/restore`。
 缺少任一方法的实现类不能实例化。Checkpointer 直接调用组件，
-不经过 State 包装；analyzer 的 goal 在启动和恢复前绑定。
+不经过 RunState 包装；analyzer 的 goal 在启动和恢复前绑定。
 在途页面进度由 `RunState.work` 持有，随运行状态一起保存和恢复。PageBook、queue、buffer 也显式实现同一接口，分别由 RunState 和 Frontier 组合保存，
 无需重复传入 Checkpointer。Frontier 仍负责其内部 queue 和 buffer，
 engine 只负责保存时机和恢复后的调度。`Checkpointer` 在首次 await 前同步捕获所有状态，
@@ -395,7 +402,7 @@ per-member support before treating a successful grouping as semantically verifie
 
 Both automatic and standalone dedup use `dedup/grouper.py:group_results` for reading inputs
 and publishing groups, and `Grouper.from_settings` for client configuration.
-Storage and the dashboard share the input query and row mapping in `storage/queries.py`,
+Storage and the dashboard share the input query and row mapping in `persist/queries.py`,
 so snapshot validation uses the same evidence as grouping. Analyses join their exact
 page version by `page_id`.
 Each multi-source card shows an overview, arithmetic mean relevance, and source
@@ -434,7 +441,7 @@ queued on the event loop. A failed payload write is logged and omitted from the
 saved paths. Storage owns paths and the underlying file and database operations.
 
 `crawl inspect` displays stored results and exports JSON or CSV. It loads results
-through `storage/read.py` in a worker thread using a read-only transaction, without
+through `persist/read.py` in a worker thread using a read-only transaction, without
 schema setup, a write queue or a run log handler. Run lookup also opens databases
 read-only. The dashboard uses the same read-only connection helper and filters
 results in the browser.

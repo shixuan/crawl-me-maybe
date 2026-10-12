@@ -223,7 +223,7 @@ def test_cli_bad_since(site: str, tmp_path: Path) -> None:
 
 
 class _ScriptedLLM:
-    """Stands in for LLMClient: same chat() shape, canned answers.
+    """Stands in for Client: same chat() shape, canned answers.
 
     Replies are chosen by looking for a marker in the prompt, so one
     client can serve the enhancer, the ranker, and the analyzer without
@@ -274,15 +274,15 @@ def _settings(tmp_path: Path) -> Settings:
 @pytest.mark.asyncio
 async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     """Analyzer and LLM ranker both run, on scripted answers."""
-    from crawlme.analysis import PageAnalyzer
-    from crawlme.pioneer.ranker.llm import LLMRanker
+    from crawlme.analysis import Analyzer
+    from crawlme.pioneer.ranker import LLMRanker
 
     cfg = _settings(tmp_path)
     goal = CrawlGoal(prompt=_PROMPT, max_pages=5, domain_budget=20)
     task = CrawlTask(goal_id=goal.goal_id)
 
     client = _ScriptedLLM()
-    analyzer = PageAnalyzer(client)  # type: ignore[arg-type]
+    analyzer = Analyzer(client)  # type: ignore[arg-type]
     scheduler = create_scheduler(
         cfg,
         goal=goal,

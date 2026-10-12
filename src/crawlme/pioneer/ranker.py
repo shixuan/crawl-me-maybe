@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 from crawlme import prompts
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
+from crawlme.llm import Client, Error, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
 
@@ -35,12 +35,26 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class LLMRanker:
+class Ranker(Protocol):
+    """Score candidate batches using the goal, history and source-page context."""
+
+    async def rank_batch(
+        self,
+        goal: CrawlGoal,
+        candidates: list[Candidate],
+        history: RankHistorySummary,
+        page_contexts: dict[str, dict[str, Any]] | None = None,
+    ) -> list[RankDecision]: ...
+
+    async def aclose(self) -> None: ...
+
+
+class LLMRanker(Ranker):
     """Rank candidates in batches bounded by count and text size."""
 
     def __init__(
         self,
-        client: LLMClient,
+        client: Client,
         batch_size: int = _BATCH_SIZE,
         demote_dropped: bool = False,
         max_batch_chars: int = _MAX_BATCH_CHARS,
@@ -59,7 +73,7 @@ class LLMRanker:
         is nothing to call, so the stage is skipped entirely.  *budget*
         is shared across all LLM consumers of the task."""
         # Each LLM stage has an independent reasoning-effort setting.
-        client = LLMClient.from_settings_if_configured(
+        client = Client.from_settings_if_configured(
             settings,
             budget=budget,
             reasoning_effort=settings.llm_rank_reasoning_effort,
@@ -149,7 +163,7 @@ class LLMRanker:
                 )
             data = _parse_response(resp.content)
         if data is None:
-            raise LLMError(f"unparseable JSON for {len(chunk)} candidates after repair retry")
+            raise Error(f"unparseable JSON for {len(chunk)} candidates after repair retry")
 
         tokens = resp.input_tokens + resp.output_tokens
         decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow(), demote_dropped=self._demote_dropped)

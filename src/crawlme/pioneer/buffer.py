@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from crawlme.checkpoint.checkpointable import Checkpointable
+from crawlme.checkpoint import Checkpointable
 from crawlme.schemas import Candidate
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def _take_turns(candidates: list[Candidate], n: int, start: str = "") -> tuple[l
     return out, (keys[served] if keys else "")
 
 
-class RoundRobinBuffer(Checkpointable):
+class RoundRobinBuffer(Buffer):
     def __init__(self, capacity: int = 2000) -> None:
         self._capacity = capacity
         self._candidates: list[Candidate] = []

@@ -3,7 +3,7 @@ from contextlib import closing
 
 import pytest
 
-from crawlme.storage.read import connect
+from crawlme.persist.read import connect
 
 
 def test_connection_refuses_writes(tmp_path):

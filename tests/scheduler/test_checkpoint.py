@@ -10,12 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import PageAnalyzer
-from crawlme.llm import LLMError, LLMResponse, TokenBudget
+from crawlme.analysis import Analyzer
+from crawlme.llm import Error, LLMResponse, TokenBudget
+from crawlme.persist import Lock, Storage
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.schemas import CrawlTask, RankDecision
-from crawlme.storage.lock import RunLock
-from crawlme.storage.sqlite import SqliteStorage
 from tests.scheduler.test_control import build, candidate
 
 
@@ -25,7 +24,7 @@ def snapshot(scheduler):
 
 
 def reopen(scheduler):
-    return SqliteStorage(scheduler._storage.db_path, str(scheduler._storage.raw_dir))
+    return Storage(scheduler._storage.db_path, str(scheduler._storage.raw_dir))
 
 
 @pytest.mark.parametrize("stage", ["fetch", "analysis", "discovery", "ranking", "retry"])
@@ -38,14 +37,14 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     async def chat(*args, **kwargs):
         calls.append("analysis")
         if stage == "retry" and calls.count("analysis") == 1:
-            raise LLMError("retry")
+            raise Error("retry")
         if stage in {"analysis", "retry"}:
             entered.set()
             await asyncio.Event().wait()
         budget.record(2, 1, stage="analysis")
         return LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 2, 1, "stub")
 
-    analyzer = PageAnalyzer(MagicMock(chat=chat), retry_delay=0)
+    analyzer = Analyzer(MagicMock(chat=chat), retry_delay=0)
     scheduler, goal, task, fetched = build(tmp_path, analyzer=analyzer, budget=budget)
     budget.bind_sink(scheduler.note_tokens_used)
 
@@ -89,7 +88,7 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     fresh, _, _, fetched = build(
         tmp_path,
         storage=reopen(scheduler),
-        analyzer=PageAnalyzer(MagicMock(chat=complete), retry_delay=0),
+        analyzer=Analyzer(MagicMock(chat=complete), retry_delay=0),
         ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()),
         budget=TokenBudget(100),
     )
@@ -113,7 +112,7 @@ async def test_resume_older_snapshot(tmp_path):
         await asyncio.Event().wait()
 
     response = LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 0, 0, "stub")
-    first, goal, task, _ = build(tmp_path, analyzer=PageAnalyzer(MagicMock(chat=AsyncMock(return_value=response))))
+    first, goal, task, _ = build(tmp_path, analyzer=Analyzer(MagicMock(chat=AsyncMock(return_value=response))))
     first._discovery.discover = block
     await first.ingest_seeds(goal, [candidate()])
     # Keep the initial checkpoint; allow results to advance ahead of it.
@@ -132,7 +131,7 @@ async def test_resume_older_snapshot(tmp_path):
     run.cancel()
     await asyncio.gather(run, return_exceptions=True)
     fresh, _, _, _ = build(
-        tmp_path, storage=reopen(first), analyzer=PageAnalyzer(MagicMock(chat=AsyncMock(return_value=response)))
+        tmp_path, storage=reopen(first), analyzer=Analyzer(MagicMock(chat=AsyncMock(return_value=response)))
     )
     await fresh.run(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved)
     with sqlite3.connect(first._storage.db_path) as db:
@@ -141,8 +140,8 @@ async def test_resume_older_snapshot(tmp_path):
 
 
 def test_run_lock(tmp_path):
-    first = RunLock(str(tmp_path / "crawl.db"))
-    second = RunLock(str(tmp_path / "crawl.db"))
+    first = Lock(str(tmp_path / "crawl.db"))
+    second = Lock(str(tmp_path / "crawl.db"))
     first.acquire()
     try:
         with pytest.raises(ValueError, match="already active"):

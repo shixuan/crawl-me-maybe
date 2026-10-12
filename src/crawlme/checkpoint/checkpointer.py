@@ -8,11 +8,12 @@ import datetime
 import json
 from typing import Any
 
-from crawlme.checkpoint import VERSION
 from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.config import Settings
+from crawlme.persist import Storage
 from crawlme.schemas import CrawlGoal, CrawlTask
-from crawlme.storage.base import Storage
+
+VERSION = 1
 
 
 class Checkpointer:

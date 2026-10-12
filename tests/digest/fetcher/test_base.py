@@ -11,7 +11,8 @@ import asyncio
 
 import pytest
 
-from crawlme.digest.fetcher import FetchError, with_retries
+from crawlme.digest import FetchError
+from crawlme.digest.fetcher import with_retries
 from crawlme.schemas import URL, FetchResult
 
 

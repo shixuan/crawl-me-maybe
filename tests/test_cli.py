@@ -9,8 +9,8 @@ import pytest
 from crawlme.cli import main
 from crawlme.cli.run import _build_source
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
-from crawlme.pioneer.ranker.llm import LLMRanker
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
+from crawlme.pioneer.ranker import LLMRanker
+from crawlme.runtime import Limits, Progress, RunState, Stats
 
 
 @pytest.fixture(autouse=True)
@@ -222,7 +222,7 @@ def test_session_browser(_installed, tmp_path):
                 main()
             except SystemExit:
                 pass
-    from crawlme.digest.fetcher import PlaywrightFetcher
+    from crawlme.digest import PlaywrightFetcher
     from crawlme.scheduler.factory import _build_fetcher
 
     cfg = captured["cfg"]

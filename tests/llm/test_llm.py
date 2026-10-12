@@ -17,9 +17,9 @@ import httpx
 import pytest
 
 import crawlme.llm.client as llm_mod
-from crawlme.analysis import PageAnalyzer
+from crawlme.analysis import Analyzer
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, TokenBudget, TokenBudgetError
+from crawlme.llm import Client, Error, TokenBudget, TokenBudgetError
 
 
 class _StubLitellm:
@@ -84,7 +84,7 @@ def no_sleep(monkeypatch):
 
 
 async def test_chat_returns(provider, no_sleep):
-    client = LLMClient("openai/gpt-4o-mini")
+    client = Client("openai/gpt-4o-mini")
     r = await client.chat("hello?", system="be brief")
     assert r.content == "hello"
     assert r.input_tokens == 10
@@ -107,19 +107,19 @@ async def test_model_wins(provider, no_sleep):
     # Providers may answer under an alias for the configured model
     # (deepseek/deepseek-chat -> deepseek-v4-flash); the configured
     # string is the stable identity replay's check matches on.
-    client = LLMClient("deepseek/deepseek-chat")
+    client = Client("deepseek/deepseek-chat")
     r = await client.chat("hi")
     assert r.model == "deepseek/deepseek-chat"
 
 
 async def test_model_reported(provider, no_sleep):
-    client = LLMClient("")
+    client = Client("")
     r = await client.chat("hi")
     assert r.model == "stub-model"
 
 
 async def test_json_mode(provider):
-    client = LLMClient("openai/gpt-4o-mini")
+    client = Client("openai/gpt-4o-mini")
     await client.chat("return json", json_mode=True)
     assert provider.kwargs[0]["response_format"] == {"type": "json_object"}
 
@@ -128,12 +128,12 @@ async def test_creds_optional(monkeypatch):
     stub = _StubLitellm([_resp("a"), _resp("b")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
 
-    bare = LLMClient("openai/gpt-4o-mini")
+    bare = Client("openai/gpt-4o-mini")
     await bare.chat("hi")
     assert "api_key" not in stub.kwargs[0]
     assert "api_base" not in stub.kwargs[0]
 
-    wired = LLMClient("openai/gpt-4o-mini", api_key="sk-1", base_url="http://localhost:11434/v1")
+    wired = Client("openai/gpt-4o-mini", api_key="sk-1", base_url="http://localhost:11434/v1")
     await wired.chat("hi")
     assert stub.kwargs[1]["api_key"] == "sk-1"
     assert stub.kwargs[1]["api_base"] == "http://localhost:11434/v1"
@@ -142,7 +142,7 @@ async def test_creds_optional(monkeypatch):
 async def test_retry_succeeds(monkeypatch, no_sleep):
     stub = _StubLitellm([_StubLitellm.RateLimitError(), _resp("ok")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    r = await LLMClient("openai/gpt-4o-mini").chat("hi")
+    r = await Client("openai/gpt-4o-mini").chat("hi")
     assert r.content == "ok"
     assert len(stub.kwargs) == 2
     assert no_sleep == [1.0]
@@ -151,8 +151,8 @@ async def test_retry_succeeds(monkeypatch, no_sleep):
 async def test_retry_exhausted(monkeypatch, no_sleep):
     stub = _StubLitellm([_StubLitellm.RateLimitError(), _StubLitellm.Timeout(), _StubLitellm.ServiceUnavailableError()])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    with pytest.raises(LLMError, match="3 attempts"):
-        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    with pytest.raises(Error, match="3 attempts"):
+        await Client("openai/gpt-4o-mini").chat("hi")
     assert len(stub.kwargs) == 3
     assert no_sleep == [1.0, 2.0]
 
@@ -160,7 +160,7 @@ async def test_retry_exhausted(monkeypatch, no_sleep):
 async def test_connect_retried(monkeypatch, no_sleep):
     stub = _StubLitellm([httpx.ConnectError("provider down"), _resp("ok")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    r = await LLMClient("openai/gpt-4o-mini").chat("hi")
+    r = await Client("openai/gpt-4o-mini").chat("hi")
     assert r.content == "ok"
     assert no_sleep == [1.0]
 
@@ -168,8 +168,8 @@ async def test_connect_retried(monkeypatch, no_sleep):
 async def test_permanent_raises(monkeypatch, no_sleep):
     stub = _StubLitellm([ValueError("bad request body")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    with pytest.raises(LLMError, match="rejected"):
-        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    with pytest.raises(Error, match="rejected"):
+        await Client("openai/gpt-4o-mini").chat("hi")
     assert len(stub.kwargs) == 1
     assert no_sleep == []
 
@@ -179,8 +179,8 @@ async def test_no_creds_raises(monkeypatch, no_sleep):
     # normally transient.  The message check must win.
     stub = _StubLitellm([_StubLitellm.InternalServerError("Missing credentials. Please pass an `api_key`.")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    with pytest.raises(LLMError, match="rejected"):
-        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    with pytest.raises(Error, match="rejected"):
+        await Client("openai/gpt-4o-mini").chat("hi")
     assert len(stub.kwargs) == 1
     assert no_sleep == []
 
@@ -188,7 +188,7 @@ async def test_no_creds_raises(monkeypatch, no_sleep):
 async def test_concurrency_cap(monkeypatch):
     stub = _StubLitellm([_resp("r") for _ in range(6)], hold=0.01)
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    client = LLMClient("openai/gpt-4o-mini", concurrency=2)
+    client = Client("openai/gpt-4o-mini", concurrency=2)
     results = await asyncio.gather(*[client.chat("hi") for _ in range(6)])
     assert all(r.content == "r" for r in results)
     assert stub.max_active == 2
@@ -204,8 +204,8 @@ async def test_no_litellm(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(LLMError, match="litellm"):
-        await LLMClient("openai/gpt-4o-mini").chat("hi")
+    with pytest.raises(Error, match="litellm"):
+        await Client("openai/gpt-4o-mini").chat("hi")
 
 
 def test_wires_knobs():
@@ -215,7 +215,7 @@ def test_wires_knobs():
         llm_base_url="http://localhost:11434/v1",
         llm_concurrency=5,
     )
-    client = LLMClient.from_settings(settings)
+    client = Client.from_settings(settings)
     assert client._model == "anthropic/claude-haiku-4-5"
     assert client._api_key == "sk-test"
     assert client._base_url == "http://localhost:11434/v1"
@@ -252,7 +252,7 @@ async def test_budget_blocks(monkeypatch, no_sleep):
     budget = TokenBudget(limit=1)
     budget.record(1, 0)
     with pytest.raises(TokenBudgetError):
-        await LLMClient("openai/gpt-4o-mini", budget=budget).chat("hi")
+        await Client("openai/gpt-4o-mini", budget=budget).chat("hi")
     assert stub.kwargs == []
     assert no_sleep == []
 
@@ -261,15 +261,15 @@ async def test_chat_tallies(monkeypatch):
     stub = _StubLitellm([_resp("hello", in_tok=12, out_tok=7)])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     budget = TokenBudget(limit=1000)
-    await LLMClient("openai/gpt-4o-mini", budget=budget).chat("hi")
+    await Client("openai/gpt-4o-mini", budget=budget).chat("hi")
     assert budget.used == 19
     assert budget.calls == 1
 
 
 def test_is_configured():
-    assert not LLMClient("openai/gpt-4o-mini").configured
-    assert LLMClient("openai/gpt-4o-mini", api_key="sk-1").configured
-    assert LLMClient("openai/gpt-4o-mini", base_url="http://localhost:11434/v1").configured
+    assert not Client("openai/gpt-4o-mini").configured
+    assert Client("openai/gpt-4o-mini", api_key="sk-1").configured
+    assert Client("openai/gpt-4o-mini", base_url="http://localhost:11434/v1").configured
 
 
 @pytest.mark.parametrize(
@@ -284,7 +284,7 @@ def test_is_configured():
 )
 def test_settings_gate(api_key, base_url, built):
     settings = Settings(llm_model="", llm_api_key=api_key, llm_base_url=base_url)
-    client = LLMClient.from_settings_if_configured(settings)
+    client = Client.from_settings_if_configured(settings)
     assert (client is not None) is built
     if client is not None:
         assert client._api_key == api_key
@@ -293,7 +293,7 @@ def test_settings_gate(api_key, base_url, built):
 
 
 def test_default_model():
-    assert LLMClient.from_settings(Settings(llm_model=""))._model == "openai/gpt-4o-mini"
+    assert Client.from_settings(Settings(llm_model=""))._model == "openai/gpt-4o-mini"
 
 
 @pytest.mark.asyncio
@@ -305,7 +305,7 @@ async def test_ceiling_flagged(monkeypatch, caplog):
     go looking at the parser, which is the wrong place.
     """
     monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("{", out_tok=64)]))
-    client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
+    client = Client("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
     with caplog.at_level(logging.WARNING):
         resp = await client.chat("hi")
     assert resp.truncated is True
@@ -315,7 +315,7 @@ async def test_ceiling_flagged(monkeypatch, caplog):
 @pytest.mark.asyncio
 async def test_under_ceiling(monkeypatch):
     monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("ok", out_tok=5)]))
-    client = LLMClient("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
+    client = Client("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
     assert (await client.chat("hi")).truncated is False
 
 
@@ -408,14 +408,14 @@ async def test_effort_optional(monkeypatch):
     )
 
     model = "deepseek/deepseek-chat"
-    await LLMClient(model, api_key="k").chat("hi")
+    await Client(model, api_key="k").chat("hi")
     assert "reasoning_effort" not in sent[-1]
 
-    await LLMClient(model, api_key="k", reasoning_effort="medium").chat("hi")
+    await Client(model, api_key="k", reasoning_effort="medium").chat("hi")
     assert sent[-1]["reasoning_effort"] == "medium"
 
     # A model that cannot think is sent nothing, whatever was configured.
-    await LLMClient("openai/gpt-4o-mini", api_key="k", reasoning_effort="medium").chat("hi")
+    await Client("openai/gpt-4o-mini", api_key="k", reasoning_effort="medium").chat("hi")
     assert "reasoning_effort" not in sent[-1]
 
 
@@ -429,7 +429,7 @@ def test_effort_stage(monkeypatch):
     assert ranker is not None
     assert ranker._client._reasoning_effort == "off"
 
-    assert PageAnalyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
+    assert Analyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
 
 
 def test_effort_absent():
@@ -460,7 +460,7 @@ async def test_every_call_reports_its_wall_clock(monkeypatch, caplog):
 
     monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
     with caplog.at_level("DEBUG"):
-        await LLMClient("m", api_key="k").chat("hi")
+        await Client("m", api_key="k").chat("hi")
     assert "llm.chat.wall" in caplog.text
 
 
@@ -488,7 +488,7 @@ async def test_thinking_only_retried(monkeypatch):
     second try thinks less. More room would only buy a longer silence."""
     stub = _StubLitellm([_thinking_resp("", 100, 100), _thinking_resp("ok", 20, 5)])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium")
+    client = Client(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium")
     resp = await client.chat("hi")
     assert resp.content == "ok"
     assert len(stub.kwargs) == 2
@@ -500,7 +500,7 @@ async def test_answer_not_retried(monkeypatch):
     """A reply that says something is not a blowout, however long."""
     stub = _StubLitellm([_thinking_resp("ok", 100, 95)])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium")
+    client = Client(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium")
     assert (await client.chat("hi")).content == "ok"
     assert len(stub.kwargs) == 1
 
@@ -509,7 +509,7 @@ async def test_floor_not_retried(monkeypatch):
     """Already as quiet as it goes, so there is nowhere to step down to."""
     stub = _StubLitellm([_thinking_resp("", 100, 100)])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="off")
+    client = Client(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="off")
     assert (await client.chat("hi")).content == ""
     assert len(stub.kwargs) == 1
 
@@ -519,6 +519,6 @@ async def test_retry_billed(monkeypatch):
     stub = _StubLitellm([_thinking_resp("", 100, 100), _thinking_resp("ok", 20, 5)])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
     budget = TokenBudget(limit=10_000)
-    client = LLMClient(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium", budget=budget)
+    client = Client(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium", budget=budget)
     await client.chat("hi")
     assert budget.used == 10 + 100 + 10 + 20

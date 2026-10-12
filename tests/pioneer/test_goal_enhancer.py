@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from crawlme.llm import LLMError, LLMResponse, TokenBudgetError
+from crawlme.llm import Error, LLMResponse, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.schemas import CrawlGoal
 
@@ -109,7 +109,7 @@ async def test_prose_json_ok():
 
 
 async def test_llm_error_none():
-    enhancer = GoalEnhancer(_StubClient([LLMError("provider down")]))
+    enhancer = GoalEnhancer(_StubClient([Error("provider down")]))
     assert await enhancer.enhance(_goal()) is None
 
 

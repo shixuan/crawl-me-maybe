@@ -1,4 +1,4 @@
-"""Frontier contract and implementation for queued and unranked candidates."""
+"""Own queued and unranked candidates, domain gates and checkpoints."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import asyncio
 import datetime
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any
 
-from crawlme.checkpoint.checkpointable import Checkpointable
+from crawlme.checkpoint import Checkpointable
 from crawlme.pioneer.buffer import Buffer, RoundRobinBuffer
 from crawlme.pioneer.prefilter import PreFilterContext
 from crawlme.pioneer.queue import Gate, GateFn, PriorityQueue
@@ -17,63 +17,11 @@ from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, Frontie
 logger = logging.getLogger(__name__)
 
 
-class Frontier(Checkpointable, Protocol):
-    """Contract for the priority-queue URL frontier."""
-
-    @property
-    def size(self) -> int: ...
-
-    # the unscored half: candidates waiting for someone to score them.
-    async def push_candidates(self, candidates: list[Candidate]) -> None: ...
-
-    def retire(self, seed_url_key: str) -> None:
-        """Drop a seed's queued work and refuse new work; in-flight tasks continue."""
-        ...
-
-    def is_retired(self, seed_url_key: str) -> bool: ...
-    async def take_for_ranking(self, n: int) -> list[Candidate]: ...
-    def finish_ranking(self, batch: list[Candidate]) -> None: ...
-
-    async def return_for_ranking(self, batch: list[Candidate]) -> None: ...
-    def context_keys(self) -> set[str]: ...
-
-    @property
-    def cooling(self) -> int:
-        """Scored items a cooldown will release on its own."""
-        ...
-
-    @property
-    def scoring(self) -> int:
-        """Candidates out being scored, in neither half but still work."""
-        ...
-
-    async def wait_for_ranking(self, interrupted: Callable[[], bool]) -> None: ...
-
-    async def wake_ranker(self) -> None: ...
-
-    @property
-    def waiting_size(self) -> int: ...
-
-    # the scored half.
-    async def push_batch(self, items: list[FrontierItem]) -> None: ...
-
-    async def pop_next(
-        self,
-        now: datetime.datetime | None = None,
-        next_allowed: Callable[[str], datetime.datetime] | None = None,
-        global_budget: int | None = None,
-    ) -> FrontierItem | None: ...
-
-    async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None: ...
-
-    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
-
-
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class GatedFrontier(Checkpointable):
+class Frontier(Checkpointable):
     """Own both candidate queues, deduplication, domain gates and snapshots."""
 
     def __init__(

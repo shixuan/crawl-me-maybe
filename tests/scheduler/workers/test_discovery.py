@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from crawlme.discovery.harvester import Harvest
+from crawlme.discovery import Harvest
 from crawlme.platforms.base import FeedDependencyError
 from crawlme.scheduler.workers import DiscoveryWorker
 from crawlme.schemas import URL, Page

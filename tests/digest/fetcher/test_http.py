@@ -6,7 +6,7 @@ import time
 import pytest
 from pytest_httpx import HTTPXMock
 
-from crawlme.digest.fetcher import FetchError, HttpFetcher
+from crawlme.digest import FetchError, HttpFetcher
 from crawlme.schemas import URL, FetchResult, FrontierItem
 
 

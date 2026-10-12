@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from crawlme.runtime.state import Limits, Progress, RunState, SeedState, Stats
+from crawlme.runtime import Limits, Progress, RunState, SeedState, Stats
 from crawlme.schemas import CrawlGoal
 
 

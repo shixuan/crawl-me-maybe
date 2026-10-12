@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import PageAnalyzer
+from crawlme.analysis import Analyzer
 from crawlme.config import Settings
-from crawlme.discovery.harvester import Harvest
-from crawlme.llm import LLMError, LLMResponse
+from crawlme.discovery import Harvest
+from crawlme.llm import Error, LLMResponse
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.schemas import Candidate, CrawlGoal, CrawlTask, FetchResult, Page
@@ -156,7 +156,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise LLMError("retry")
+            raise Error("retry")
         retry_entered.set()
         await retry_release.wait()
         return LLMResponse(
@@ -171,7 +171,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
     def harvest(page, depth):
         return Harvest([candidate("child", source_url_key=page.url_key)] if rank_child else [])
 
-    analyzer = PageAnalyzer(MagicMock(chat=chat), retry_delay=0)
+    analyzer = Analyzer(MagicMock(chat=chat), retry_delay=0)
     scheduler, goal, task, _ = build(
         tmp_path,
         analyzer=analyzer,

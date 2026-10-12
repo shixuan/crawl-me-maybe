@@ -65,8 +65,8 @@ def test_each_item_handled_gets_both_lines():
     wanted = [
         ("scheduler/workers/fetch.py", "info", "fetching "),
         ("scheduler/engine.py", "debug", "fetch.ok "),
-        ("pioneer/ranker/llm.py", "info", "scored "),
-        ("pioneer/ranker/llm.py", "debug", "rank.scored "),
+        ("pioneer/ranker.py", "info", "scored "),
+        ("pioneer/ranker.py", "debug", "rank.scored "),
         ("analysis/analyzer.py", "info", "judged "),
         ("analysis/analyzer.py", "debug", "analysis.ok "),
     ]

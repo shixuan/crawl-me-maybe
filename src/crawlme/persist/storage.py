@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
-from crawlme.storage import queries
+from crawlme.persist import queries
 
 if TYPE_CHECKING:
     from crawlme.schemas import Candidate, Page, RankDecision
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS robots_cache (
 """
 
 
-class SqliteStorage:
+class Storage:
     """Store run records in SQLite and fetched files alongside the database."""
 
     def __init__(self, db_path: str, raw_dir: str):
@@ -198,7 +198,7 @@ class SqliteStorage:
         self._write_error: sqlite3.Error | None = None
 
     @classmethod
-    def create(cls, base_dir: str | Path) -> SqliteStorage:
+    def create(cls, base_dir: str | Path) -> Storage:
         """Create a Storage with a timestamped subdirectory under *base_dir*.
 
         Each crawl gets an isolated directory: ``base_dir/YYYYMMDD_HHMMSS/``

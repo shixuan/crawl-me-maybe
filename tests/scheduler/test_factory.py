@@ -45,7 +45,7 @@ def test_scheduler_no_analyzer(tmp_path: Path):
 
 def test_sched_run_state(tmp_path: Path):
     """The engine and tracker use the state supplied to the factory."""
-    from crawlme.runtime.state import Limits, Progress, RunState, Stats
+    from crawlme.runtime import Limits, Progress, RunState, Stats
 
     state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
     sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
@@ -59,7 +59,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     import sqlite3
 
     from crawlme.pioneer.seed_expander import SeedExpander
-    from crawlme.pioneer.sources.manual import ManualSource
+    from crawlme.pioneer.sources import ManualSource
     from crawlme.schemas import CrawlGoal, FetchResult, Payload
 
     url = "https://example.com/source"

@@ -1,4 +1,4 @@
-"""Unit tests for CrawlScheduler (mock all I/O, verify control flow)."""
+"""Unit tests for Engine (mock all I/O, verify control flow)."""
 
 from __future__ import annotations
 
@@ -12,12 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.config import Settings
-from crawlme.discovery.harvester import Harvest, PageHarvester
-from crawlme.pioneer.frontier import Frontier
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
-from crawlme.scheduler.engine import CrawlScheduler, FetchedPage
+from crawlme.discovery import Harvest, Harvester
+from crawlme.pioneer import Frontier
+from crawlme.runtime import RELEVANCE_WINDOW, Limits, Progress, RunState, Stats
+from crawlme.scheduler import Engine
+from crawlme.scheduler.engine import FetchedPage
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.scheduler.stop_conds import MAX_STALE_STREAK, RELEVANCE_WINDOW
+from crawlme.scheduler.stop_conds import MAX_STALE_STREAK
 from crawlme.schemas import (
     URL,
     AnalysisResult,
@@ -68,7 +69,7 @@ def _ctx(**kw) -> RunState:
     return RunState(limits=Limits(**lim), progress=Progress(**prog), stats=Stats())
 
 
-def _make_sched(**overrides) -> CrawlScheduler:
+def _make_sched(**overrides) -> Engine:
     """Build a scheduler with all-mock components for unit tests."""
     frontier_mock = MagicMock(spec=Frontier)
     frontier_mock.wake_ranker = AsyncMock()
@@ -102,7 +103,7 @@ def _make_sched(**overrides) -> CrawlScheduler:
     settings = kwargs.pop("settings")
     if overrides.get("analyzer") is None:
         settings.analysis_enabled = False
-    kwargs.setdefault("harvester", PageHarvester(kwargs["canonicalizer"]))
+    kwargs.setdefault("harvester", Harvester(kwargs["canonicalizer"]))
     return create_scheduler(settings, **kwargs)
 
 
@@ -531,7 +532,7 @@ def test_rank_drain_once():
     a half minutes later, after the run had stopped for lack of anything
     to fetch. The drain size is that latency, not a throughput knob.
     """
-    from crawlme.pioneer.ranker.llm import _BATCH_SIZE
+    from crawlme.pioneer.ranker import _BATCH_SIZE
     from crawlme.scheduler.engine import _RANK_BATCH_SIZE
 
     assert _RANK_BATCH_SIZE <= _BATCH_SIZE, "a drain larger than one call reintroduces the wait"
@@ -1233,10 +1234,10 @@ def test_a_dead_pump_ends_the_run():
     """Both pumps are gathered with return_exceptions, so one that died
     left its exception in a list nobody read: a rank pump that lost its
     provider stopped scoring and the report said the run completed."""
-    from crawlme.llm import LLMError
+    from crawlme.llm import Error
 
     sched = _make_sched()
-    sched._note_pump_failures([None, LLMError("provider rejected the request")])
+    sched._note_pump_failures([None, Error("provider rejected the request")])
     assert sched.run_state.progress.fatal_error == "provider rejected the request"
 
 

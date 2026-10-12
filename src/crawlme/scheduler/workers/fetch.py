@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from crawlme.digest.fetcher import Fetcher
+from crawlme.digest import Fetcher
 from crawlme.logging import where
 from crawlme.logging.progress import activity
+from crawlme.persist import Storage
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.schemas import URL, FetchResult, FrontierItem
-from crawlme.storage.base import Storage
 
 logger = logging.getLogger(__name__)
 

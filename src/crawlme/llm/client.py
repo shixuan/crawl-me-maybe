@@ -12,7 +12,7 @@ import httpx
 
 from crawlme.config import Settings
 from crawlme.llm.budget import TokenBudget
-from crawlme.llm.errors import LLMError
+from crawlme.llm.errors import Error
 from crawlme.llm.reasoning import effort_for, step_down
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def _litellm_module() -> Any:
         try:
             import litellm
         except ImportError as e:
-            raise LLMError(
+            raise Error(
                 "LLM features require the 'litellm' package, which ships as a core "
                 "dependency: reinstall with `pip install -e .`"
             ) from e
@@ -130,7 +130,7 @@ def _is_transient(exc: BaseException) -> bool:
     )
 
 
-class LLMClient:
+class Client:
     """Async chat client: concurrency cap, retries, token accounting.
 
     *model* is a litellm model id ("openai/gpt-4o-mini", ...).
@@ -168,7 +168,7 @@ class LLMClient:
         budget: TokenBudget | None = None,
         reasoning_effort: str = "",
         stage: str = "",
-    ) -> LLMClient:
+    ) -> Client:
         """Build from Settings: llm_model, llm_api_key, llm_base_url,
         llm_concurrency.  An empty llm_model resolves to the provider
         default, so a key alone is enough to get a working client."""
@@ -193,7 +193,7 @@ class LLMClient:
         budget: TokenBudget | None = None,
         reasoning_effort: str = "",
         stage: str = "",
-    ) -> LLMClient | None:
+    ) -> Client | None:
         """Default-on with graceful auto-off, mirroring the analysis
         provider.  Without a key and without a custom endpoint there is
         no way to authenticate, so return None and let the caller skip
@@ -298,11 +298,11 @@ class LLMClient:
                         model=str(self._model or getattr(resp, "model", "")),
                         truncated=truncated,
                     )
-                except LLMError:
+                except Error:
                     raise
                 except Exception as exc:
                     if not _is_transient(exc):
-                        raise LLMError(f"LLM call rejected by provider: {exc}") from exc
+                        raise Error(f"LLM call rejected by provider: {exc}") from exc
                     last_err = exc
                     if attempt < _LLM_MAX_RETRIES:
                         delay = _LLM_RETRY_BASE * (2**attempt)
@@ -313,7 +313,7 @@ class LLMClient:
                             exc,
                         )
                         await _sleep(delay)
-        raise LLMError(f"LLM call failed after {_LLM_MAX_RETRIES + 1} attempts: {last_err}") from last_err
+        raise Error(f"LLM call failed after {_LLM_MAX_RETRIES + 1} attempts: {last_err}") from last_err
 
     def _quieter(self) -> str:
         """The effort to retry at, or empty when retrying cannot help.

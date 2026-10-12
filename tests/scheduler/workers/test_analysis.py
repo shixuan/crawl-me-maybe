@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import PageAnalyzer
-from crawlme.llm import LLMError, LLMResponse
+from crawlme.analysis import Analyzer
+from crawlme.llm import Error, LLMResponse
 from crawlme.scheduler.workers import AnalysisWorker
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
 
@@ -50,7 +50,7 @@ async def test_retry_reaches_sink():
     client = MagicMock(
         chat=AsyncMock(
             side_effect=[
-                LLMError("temporary"),
+                Error("temporary"),
                 LLMResponse(
                     content='{"classification":"RELEVANT","relevance_score":0.9}',
                     input_tokens=10,
@@ -60,7 +60,7 @@ async def test_retry_reaches_sink():
             ]
         )
     )
-    analyzer = PageAnalyzer(client, retry_delay=0)
+    analyzer = Analyzer(client, retry_delay=0)
     worker = AnalysisWorker(analyzer, concurrency=1)
     results = []
     worker.bind_sink(results.append)

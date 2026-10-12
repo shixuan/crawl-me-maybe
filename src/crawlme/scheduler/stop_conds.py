@@ -6,9 +6,9 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from crawlme.pioneer.frontier import Frontier
+from crawlme.pioneer import Frontier
 from crawlme.platforms.base import PageProblem
-from crawlme.runtime.state import RELEVANCE_WINDOW, Limits, Progress
+from crawlme.runtime import RELEVANCE_WINDOW, Limits, Progress
 from crawlme.schemas import CrawlTask
 
 # has stopped finding anything worth the budget.

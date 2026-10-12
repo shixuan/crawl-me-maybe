@@ -8,7 +8,7 @@ import datetime
 from typing import Any
 from urllib.robotparser import RobotFileParser
 
-from crawlme.checkpoint.checkpointable import Checkpointable
+from crawlme.checkpoint import Checkpointable
 
 
 class RobotsPolicy(Checkpointable):
