@@ -12,9 +12,10 @@ from crawlme.runtime.state import (
     SeedState,
     Stats,
 )
-from crawlme.runtime.tracking import Tracker
+from crawlme.runtime.tracking import MAX_STALE_STREAK, Tracker, why_retire
 
 __all__ = [
+    "MAX_STALE_STREAK",
     "RELEVANCE_WINDOW",
     "EventEmitter",
     "EventType",
@@ -27,4 +28,5 @@ __all__ = [
     "SeedState",
     "Stats",
     "Tracker",
+    "why_retire",
 ]

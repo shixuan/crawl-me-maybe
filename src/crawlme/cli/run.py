@@ -101,7 +101,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
     scheduler = create_scheduler(
         cfg, goal=goal, llm_ranker=llm_ranker, budget=budget, dedup_enabled=getattr(args, "dedup", "on") == "on"
     )
-    budget.bind_sink(scheduler.note_tokens_used)
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.
     scheduler.attach_log_file()
@@ -145,8 +144,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
     # After the user's own, so theirs are ingested whatever the model
     # says.
-    candidates += await scheduler.expand_seeds(goal, candidates, budget)
-    await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
+    candidates += await scheduler.pipeline.expand_seeds(goal, candidates, budget)
+    await scheduler.pipeline.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(
         "looking for: %s",
@@ -160,7 +159,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
             "%s after %d pages and %d tokens: %s",
             task.state.lower(),
             scheduler.run_state.progress.pages_fetched,
-            scheduler.run_state.progress.tokens_used,
+            budget.used,
             task.stopping_reason or "no reason recorded",
         )
         await close_litellm_clients()

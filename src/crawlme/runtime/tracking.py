@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from crawlme.discovery import Harvest
 from crawlme.logging import where
 from crawlme.platforms.base import PageProblem
-from crawlme.runtime.state import RunState
+from crawlme.runtime.state import RELEVANCE_WINDOW, RunState
 from crawlme.schemas import AnalysisResult, Candidate, CrawlGoal, FrontierItem, Page, RankDecision, RankHistorySummary
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,7 @@ class Tracker:
             self.problem(harvest.problem)
         candidates = harvest.candidates
         if harvest.listing:
-            self.state.progress.listings_seen += 1
-            self.state.progress.listings_empty += int(not candidates)
+            self.state.listing_completed(empty=not candidates)
             self.state.stats.listings_stale += int(harvest.degraded)
             logger.info("read %d posts from %s", len(candidates), where(page.url.canonical))
         self.state.pages.of(page.url_key).listing = harvest.listing
@@ -104,7 +104,7 @@ class Tracker:
         )
         relevant = result.relevance_score >= self.state.limits.relevance_threshold
         # The result tally counts all relevant pages; retirement votes exclude listings.
-        self.state.progress.relevant_found += relevant
+        self.state.analysis_completed(relevant)
         rec = self.state.pages.of(result.url_key)
         rec.relevant = relevant
         # Answered, whatever the answer. The gap between this and
@@ -155,5 +155,26 @@ class Tracker:
         stats = self.state.stats
         stats.not_content[problem.value] = stats.not_content.get(problem.value, 0) + 1
         if problem.refuses_the_run and not self.state.progress.refused_by:
-            self.state.progress.refused_by = problem.value
+            self.state.record_refusal(problem.value)
             logger.warning("crawl.refused problem=%s pages=%d", problem.value, self.state.progress.pages_fetched)
+
+
+# How few relevant pages in a full window mean a source has stopped
+# paying off. How big the window is belongs to the state that holds it.
+MIN_RELEVANT_IN_WINDOW = 2
+# Consecutive pages older than the goal's window before a source reads as
+# walked past its end.
+MAX_STALE_STREAK = 5
+
+
+def why_retire(window: Sequence[bool], stale: int) -> str | None:
+    """Whether one source has stopped being worth reading, and why.
+
+    The reason travels with the judgement, as a StopReason's does: a run
+    that retires a source it should have kept has to be arguable.
+    """
+    if len(window) >= RELEVANCE_WINDOW and sum(window) < MIN_RELEVANT_IN_WINDOW:
+        return f"nothing in its last {RELEVANCE_WINDOW} pages"
+    if stale >= MAX_STALE_STREAK:
+        return f"{stale} pages in a row older than the window"
+    return None

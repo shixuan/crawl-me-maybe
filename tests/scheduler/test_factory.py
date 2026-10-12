@@ -25,14 +25,14 @@ def test_ranker_no_creds(tmp_path: Path):
 def test_sched_no_ranker(tmp_path: Path):
     """A scheduler with no credentials still builds and still crawls."""
     sched = create_scheduler(Settings(result_dir=tmp_path, llm_api_key="", llm_base_url=""))
-    assert sched._ranking.ranker is None
+    assert sched.pipeline._ranking.ranker is None
 
 
 def test_sched_analyzer(tmp_path: Path):
-    """A passed analyzer reaches the engine, which binds its sink."""
+    """The factory binds the supplied analyzer to the shared result sink."""
     analyzer = MagicMock()
     sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
-    assert sched._analysis.analyzer is analyzer
+    assert sched.pipeline._analysis.analyzer is analyzer
     analyzer.bind_sink.assert_called_once()
 
 
@@ -40,7 +40,7 @@ def test_scheduler_no_analyzer(tmp_path: Path):
     """analysis_enabled off: the engine runs with the subsystem absent."""
     cfg = Settings(result_dir=tmp_path, analysis_enabled=False)
     sched = create_scheduler(cfg)
-    assert sched._analysis.analyzer is None
+    assert sched.pipeline._analysis.analyzer is None
 
 
 def test_sched_run_state(tmp_path: Path):
@@ -50,7 +50,7 @@ def test_sched_run_state(tmp_path: Path):
     state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
     sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
     assert sched.run_state is state
-    assert sched._tracking.state is state
+    assert sched.pipeline._tracking.state is state
 
 
 @pytest.mark.parametrize(("disallow", "ignore"), [(True, False), (True, True), (False, False)])
@@ -89,7 +89,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     goal = CrawlGoal(prompt="compiler safety")
     seeds = await ManualSource(["https://example.com/start"]).discover(goal)
     try:
-        kept = await scheduler.expand_seeds(goal, seeds)
+        kept = await scheduler.pipeline.expand_seeds(goal, seeds)
         assert bool(kept) == (ignore or not disallow)
         assert (url in calls) == (ignore or not disallow)
         assert ("https://example.com/robots.txt" in calls) == (not ignore)

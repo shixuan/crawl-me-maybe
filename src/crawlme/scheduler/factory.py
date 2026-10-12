@@ -9,30 +9,32 @@ from crawlme.analysis import Analyzer
 from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.dedup import Grouper
-from crawlme.digest import DispatchingFetcher, Fetcher, HttpFetcher, TrafExtractor
-from crawlme.digest.fetcher.base import FetchError
-from crawlme.discovery import Harvest, Harvester
+from crawlme.digest import TrafExtractor
+from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
+from crawlme.discovery import Harvester
 from crawlme.llm import TokenBudget
 from crawlme.persist import Storage
-from crawlme.pioneer import Frontier
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.canonicalizer import Canonicalizer
+from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import expand
 from crawlme.platforms import ADAPTERS, FeedAdapter
 from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.engine import Engine
+from crawlme.scheduler.monitor import StopMonitor
+from crawlme.scheduler.pipelines.crawl import CrawlPipeline
+from crawlme.scheduler.pipelines.page import PagePipeline
 from crawlme.scheduler.workers import (
     AnalysisWorker,
+    DedupWorker,
     DiscoveryWorker,
-    FetchFailure,
     FetchWorker,
     PersistWorker,
     RankingWorker,
 )
-from crawlme.schemas import Candidate, CrawlGoal, FrontierItem, Page
+from crawlme.schemas import CrawlGoal
 
 
 def create_scheduler(
@@ -59,6 +61,7 @@ def create_scheduler(
     robots = overrides.pop("robots", None) or RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots)
     harvester = overrides.pop("harvester") if "harvester" in overrides else _build_harvester(settings, canonicalizer)
     ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
+    budget = budget if budget is not None else TokenBudget(limit=goal.max_tokens if goal else 0)
     if analyzer is None and settings.analysis_enabled:
         analyzer = Analyzer.from_settings(settings, budget=budget)
     grouper = None
@@ -71,34 +74,6 @@ def create_scheduler(
     persist = overrides.pop("persist", None) or PersistWorker(storage)
     discovery = overrides.pop("discovery", None) or DiscoveryWorker(harvester, timeout=settings.extract_timeout)
 
-    async def probe(item: FrontierItem) -> Harvest:
-        # Verification precedes run(), but the shared robots cache already needs storage.
-        await storage.start()
-        result = await fetch.fetch(item)
-        if isinstance(result, FetchFailure):
-            raise FetchError("blocked by robots" if result.reason == "robots" else "could not be fetched")
-        page = Page(
-            url_key=item.url_key,
-            url=item.url,
-            raw_html_path=await persist.save_raw(item.url_key, result),
-            payload_paths=await persist.save_payloads(item.url_key, result),
-        )
-        return await discovery.discover(page, item.depth)
-
-    async def expand_seeds(
-        goal: CrawlGoal,
-        seeds: list[str],
-        budget: TokenBudget | None,
-    ) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
-        return await expand(
-            goal,
-            seeds,
-            settings=settings,
-            budget=budget,
-            probe=probe,
-            canonicalizer=canonicalizer,
-        )
-
     kwargs: dict[str, Any] = {
         "settings": settings,
         "storage": storage,
@@ -109,19 +84,40 @@ def create_scheduler(
         "fetch": fetch,
         "persist": persist,
         "extractor": extractor,
-        "ranking": RankingWorker(ranker),
-        "analysis": AnalysisWorker(analyzer, concurrency=settings.llm_concurrency),
         "discovery": discovery,
         "robots": robots,
         "prefilter": PreFilter(),
         "canonicalizer": canonicalizer,
         "tracking": Tracker(state),
-        "seed_expander": expand_seeds,
         "grouper": grouper,
-        "budget": budget,
     }
     kwargs.update(overrides)
-    kwargs["checkpointer"] = Checkpointer(
+    if "analysis" not in kwargs:
+        kwargs["analysis"] = AnalysisWorker(
+            analyzer, concurrency=settings.llm_concurrency, storage=storage, tracking=kwargs["tracking"]
+        )
+    state = kwargs["tracking"].state
+    kwargs["frontier"].bind_changes(state.notify_change)
+    budget.bind_changes(state.notify_change)
+    state.notify_change()
+    analysis = kwargs["analysis"]
+    kwargs["dedup"] = DedupWorker(kwargs.pop("grouper"), storage=storage, model=settings.llm_model)
+    kwargs["ranking"] = RankingWorker(ranker, storage=storage, frontier=kwargs["frontier"], tracking=kwargs["tracking"])
+    kwargs["page"] = PagePipeline(
+        settings=settings,
+        storage=storage,
+        frontier=kwargs["frontier"],
+        fetch=kwargs.pop("fetch"),
+        persist=kwargs.pop("persist"),
+        extractor=kwargs.pop("extractor"),
+        analysis=analysis,
+        discovery=kwargs.pop("discovery"),
+        robots=robots,
+        prefilter=kwargs["prefilter"],
+        canonicalizer=canonicalizer,
+        tracking=kwargs["tracking"],
+    )
+    checkpointer = Checkpointer(
         storage=kwargs["storage"],
         settings=settings,
         frontier=kwargs["frontier"],
@@ -130,7 +126,13 @@ def create_scheduler(
         budget=budget,
         robots=kwargs["robots"],
     )
-    return Engine(**kwargs)
+    return Engine(
+        settings=settings,
+        storage=storage,
+        pipeline=CrawlPipeline(**kwargs),
+        checkpointer=checkpointer,
+        monitor=StopMonitor(state, kwargs["frontier"], budget),
+    )
 
 
 def _agent_name(settings: Settings) -> str:
@@ -183,7 +185,7 @@ def _build_http_fetcher(settings: Settings) -> Fetcher:
 
 def _build_browser_fetcher(settings: Settings) -> Fetcher:
     """Construct the lazy browser fetcher without importing or launching Playwright."""
-    from crawlme.digest import PlaywrightFetcher
+    from crawlme.digest.fetcher import PlaywrightFetcher
 
     # Enable scrolling if any adapter requests it; settings supply the limit.
     scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)

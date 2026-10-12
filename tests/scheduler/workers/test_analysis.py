@@ -7,6 +7,7 @@ import pytest
 
 from crawlme.analysis import Analyzer
 from crawlme.llm import Error, LLMResponse
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.workers import AnalysisWorker
 from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
 
@@ -31,7 +32,13 @@ async def test_admission_after_wait():
         return AnalysisResult(url_key=page.url_key)
 
     analyzer = MagicMock(analyze=AsyncMock(side_effect=analyze))
-    worker = AnalysisWorker(analyzer, concurrency=1)
+    storage = MagicMock()
+    worker = AnalysisWorker(
+        analyzer,
+        concurrency=1,
+        storage=storage,
+        tracking=Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats())),
+    )
     goal = CrawlGoal(prompt="test")
     first = asyncio.create_task(worker.analyze(_page(), goal, allowed=lambda: allowed))
     await started.wait()
@@ -61,14 +68,22 @@ async def test_retry_reaches_sink():
         )
     )
     analyzer = Analyzer(client, retry_delay=0)
-    worker = AnalysisWorker(analyzer, concurrency=1)
+    storage = MagicMock()
+    worker = AnalysisWorker(
+        analyzer,
+        concurrency=1,
+        storage=storage,
+        tracking=Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats())),
+    )
     results = []
-    worker.bind_sink(results.append)
+    worker.bind_completion(results.append)
     try:
         assert await worker.analyze(_page(), CrawlGoal(prompt="test"), allowed=lambda: True) is None
         await asyncio.wait_for(analyzer.drain_pending(), timeout=2)
         assert len(results) == 1
-        assert results[0].url_key == "p"
-        assert results[0].classification == "RELEVANT"
+        saved = storage.save_analysis.call_args.args[0]
+        assert saved["url_key"] == "p"
+        assert saved["classification"] == "RELEVANT"
+        assert worker._tracking.state.stats.analyses_by_class == {"RELEVANT": 1}
     finally:
         await worker.aclose()

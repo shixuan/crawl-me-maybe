@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from crawlme.discovery import Harvest
-from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker, why_retire
 from crawlme.schemas import URL, AnalysisResult, AnalyzerFeedback, Candidate, CrawlGoal, FrontierItem, Page
 from crawlme.schemas.analysis import ResultItem
 
@@ -80,3 +82,21 @@ def test_trackers_share_one_state():
     )
     _, contexts = second.feedback(CrawlGoal(prompt="test"), [candidate])
     assert contexts == {"p": {"title": "shared"}}
+
+
+@pytest.mark.parametrize(
+    ("window", "stale", "why"),
+    [
+        ([False] * 20, 0, "nothing in its last 20 pages"),
+        ([True] * 2 + [False] * 18, 0, None),  # two hits is enough to keep it
+        ([False] * 19, 0, None),  # a window that is not full yet says nothing
+        ([], 5, "5 pages in a row older than the window"),
+        ([], 4, None),
+    ],
+)
+def test_why_retire(window, stale, why):
+    assert why_retire(window, stale) == why
+
+
+def test_a_full_window_of_hits_keeps_it():
+    assert why_retire([True] * 20, 0) is None

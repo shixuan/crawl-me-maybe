@@ -224,7 +224,8 @@ def test_wires_knobs():
 
 def test_budget_records():
     totals: list[int] = []
-    budget = TokenBudget(limit=100, sink=totals.append)
+    budget = TokenBudget(limit=100)
+    budget.bind_changes(lambda: totals.append(budget.used))
     budget.record(10, 5)
     assert budget.used == 15
     assert budget.input_tokens == 10

@@ -8,12 +8,12 @@ from typing import Any
 from crawlme.runtime import RunState, SeedState
 
 
-def summary(state: RunState) -> dict[str, Any]:
+def summary(state: RunState, *, tokens_used: int) -> dict[str, Any]:
     """Build CLI statistics from RunState without changing it."""
     stats = state.stats
     report: dict[str, Any] = {
         "pages_fetched": state.progress.pages_fetched,
-        "tokens_used": state.progress.tokens_used,
+        "tokens_used": tokens_used,
         "candidates_discovered": stats.links_discovered,
         "candidates_ranked": stats.candidates_ranked,
         "fetch_errors": stats.fetch_errors,

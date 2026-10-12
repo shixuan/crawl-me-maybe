@@ -46,21 +46,20 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
 
     analyzer = Analyzer(MagicMock(chat=chat), retry_delay=0)
     scheduler, goal, task, fetched = build(tmp_path, analyzer=analyzer, budget=budget)
-    budget.bind_sink(scheduler.note_tokens_used)
 
     async def blocked(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
 
     if stage == "fetch":
-        scheduler._fetch.fetcher.fetch = blocked
+        scheduler.pipeline._page._fetch.fetcher.fetch = blocked
     if stage == "discovery":
-        scheduler._discovery.discover = blocked
+        scheduler.pipeline._page._discovery.discover = blocked
     if stage == "ranking":
-        scheduler._ranking.ranker = MagicMock(rank_batch=blocked, aclose=AsyncMock())
-        await scheduler._frontier.push_candidates([candidate()])
+        scheduler.pipeline._ranking.ranker = MagicMock(rank_batch=blocked, aclose=AsyncMock())
+        await scheduler.pipeline._frontier.push_candidates([candidate()])
     else:
-        await scheduler.ingest_seeds(goal, [candidate("seed")])
+        await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
     run = asyncio.create_task(scheduler.run(goal, task))
     await asyncio.wait_for(entered.wait(), 3)
     await scheduler._checkpoint()
@@ -101,7 +100,7 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     assert fresh.run_state.stats.analyses_by_class == {"RELEVANT": 1}
     assert len(resumed_calls) == (0 if stage == "discovery" else 1)
     assert len(fetched) == (1 if stage in {"fetch", "ranking"} else 0)
-    assert fresh._budget.used == (3 if stage == "discovery" else 0)
+    assert fresh._checkpointer.budget.used == (3 if stage == "discovery" else 0)
 
 
 async def test_resume_older_snapshot(tmp_path):
@@ -113,8 +112,8 @@ async def test_resume_older_snapshot(tmp_path):
 
     response = LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 0, 0, "stub")
     first, goal, task, _ = build(tmp_path, analyzer=Analyzer(MagicMock(chat=AsyncMock(return_value=response))))
-    first._discovery.discover = block
-    await first.ingest_seeds(goal, [candidate()])
+    first.pipeline._page._discovery.discover = block
+    await first.pipeline.ingest_seeds(goal, [candidate()])
     # Keep the initial checkpoint; allow results to advance ahead of it.
     original = first._checkpoint
     saved = None
@@ -167,9 +166,8 @@ async def test_recovery_keeps_limits(tmp_path):
         robots=RobotsPolicy(circuit_threshold=1),
         fetcher=MagicMock(fetch=blocked, aclose=AsyncMock()),
     )
-    first.note_tokens_used(budget.used)
-    first._robots.record_response("example.com", 429)
-    await first.ingest_seeds(goal, [candidate()])
+    first.pipeline._robots.record_response("example.com", 429)
+    await first.pipeline.ingest_seeds(goal, [candidate()])
     run = asyncio.create_task(first.run(goal, task))
     await asyncio.wait_for(entered.wait(), 2)
     await first._checkpoint()
@@ -181,8 +179,8 @@ async def test_recovery_keeps_limits(tmp_path):
     fresh, _, _, _ = build(tmp_path, storage=reopen(first), budget=TokenBudget(10))
     await fresh.run(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved)
     assert 12 <= time.monotonic() - fresh.run_state.progress.started_at < 15
-    assert fresh._budget.used == fresh.run_state.progress.tokens_used == 6
-    assert fresh._budget.by_stage["ranking"].calls == 1
-    assert fresh._robots.next_allowed_at("example.com") == datetime.datetime.fromisoformat(
+    assert fresh._checkpointer.budget.used == fresh.summary()["tokens_used"] == 6
+    assert fresh._checkpointer.budget.by_stage["ranking"].calls == 1
+    assert fresh.pipeline._robots.next_allowed_at("example.com") == datetime.datetime.fromisoformat(
         saved["robots"]["next_allowed"]["example.com"]
     )

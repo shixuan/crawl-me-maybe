@@ -199,23 +199,14 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
 
 
 async def test_grouping_failure_retains_results():
-    from crawlme.scheduler import Engine
+    from crawlme.scheduler.workers.dedup import DedupWorker
 
-    scheduler = object.__new__(Engine)
-    scheduler._cfg = Settings(_env_file=None)
-    scheduler._grouper = MagicMock()
-    scheduler._grouper.group = AsyncMock(side_effect=ValueError("bad model reply"))
-    scheduler._analysis = MagicMock()
-    scheduler._storage = MagicMock()
-
-    async def inputs(goal_id):
-        return [{"analysis_id": "a"}]
-
-    scheduler._storage.dedup_inputs = inputs
-    scheduler._storage.save_groups = AsyncMock()
-    await scheduler._deduplicate(CrawlGoal(prompt="gifts"))
-    assert scheduler._dedup_report == {"status": "failed"}
-    scheduler._storage.save_groups.assert_not_called()
+    grouper = MagicMock(group=AsyncMock(side_effect=ValueError("bad model reply")))
+    storage = MagicMock(dedup_inputs=AsyncMock(return_value=[{"analysis_id": "a"}]), save_groups=AsyncMock())
+    worker = DedupWorker(grouper, storage=storage, model="test")
+    await worker.run(CrawlGoal(prompt="gifts"))
+    assert worker.report == {"status": "failed"}
+    storage.save_groups.assert_not_called()
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -225,10 +216,10 @@ async def test_factory_switch_and_reasoning_default(tmp_path, enabled):
     )
     scheduler = create_scheduler(cfg, budget=TokenBudget(limit=100), dedup_enabled=enabled)
     if enabled:
-        assert scheduler._grouper.client._reasoning_effort == "off"
-        assert scheduler._grouper.client._stage == "dedup"
+        assert scheduler.pipeline._dedup.grouper.client._reasoning_effort == "off"
+        assert scheduler.pipeline._dedup.grouper.client._stage == "dedup"
     else:
-        assert scheduler._grouper is None
+        assert scheduler.pipeline._dedup.grouper is None
     await scheduler.aclose()
 
 

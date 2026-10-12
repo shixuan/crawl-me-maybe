@@ -13,12 +13,11 @@ def _ctx() -> RunState:
 def test_reset_counters():
     ctx = _ctx()
     goal = CrawlGoal(prompt="p", max_pages=7, max_tokens=123, max_duration_sec=60)
-    ctx.reset(goal=goal, tokens_used_start=42)
+    ctx.reset(goal=goal)
 
     assert ctx.limits.max_pages == 7
     assert ctx.limits.max_tokens == 123
     assert ctx.limits.max_duration_sec == 60
-    assert ctx.progress.tokens_used == 42  # pre-run usage survives the reset
     assert ctx.progress.started_at > 0
     assert ctx.progress.pages_fetched == 0
 
@@ -56,7 +55,7 @@ def test_reset_keeps_prepared_seeds():
     state.page_contexts["page"] = {"title": "previous"}
     state.relevant_pages.append({"url": "https://example.com/page"})
 
-    state.reset(goal=CrawlGoal(prompt="test"), tokens_used_start=37)
+    state.reset(goal=CrawlGoal(prompt="test"))
 
     assert list(state.seeds) == ["seed"]
     assert state.seeds["seed"] == SeedState(url="https://example.com/")
@@ -66,7 +65,6 @@ def test_reset_keeps_prepared_seeds():
     assert state.seeds_asked == 2
     assert state.proposed_seeds == {"seed": ("https://example.com/", "relevant source")}
     assert state.rejected_seeds == [("https://missing.example/", "unavailable")]
-    assert state.progress.tokens_used == 37
 
 
 def test_states_do_not_share_data():

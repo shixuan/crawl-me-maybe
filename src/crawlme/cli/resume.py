@@ -54,7 +54,6 @@ async def cmd_resume(args: argparse.Namespace) -> None:
         scheduler = create_scheduler(
             cfg, goal=goal, llm_ranker=ranker, budget=budget, storage=storage, dedup_enabled=payload["dedup"]
         )
-        budget.bind_sink(scheduler.note_tokens_used)
         print(f"resuming: {task.task_id} ({run_dir})")
         await scheduler.run(goal, task, checkpoint=payload, lock=lock)
         print(f"{task.state.lower()}: {task.task_id}; {budget.used} recorded tokens")

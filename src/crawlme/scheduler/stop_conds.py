@@ -1,17 +1,13 @@
-"""Run stopping and individual source-retirement policies. The scheduler applies their decisions."""
+"""Pure run stopping policies over progress and limits."""
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from crawlme.pioneer import Frontier
 from crawlme.platforms.base import PageProblem
-from crawlme.runtime import RELEVANCE_WINDOW, Limits, Progress
-from crawlme.schemas import CrawlTask
-
-# has stopped finding anything worth the budget.
+from crawlme.runtime import Limits, Progress
 
 
 @dataclass
@@ -20,40 +16,17 @@ class StopReason:
     detail: str = ""
 
 
+_FETCH_EXHAUSTION = {"BUDGET_PAGES", "FRONTIER_DRAINED", "DOMAIN_BUDGET", "ADAPTER_EMPTY"}
+
+
 def can_drain_analysis(reasons: Sequence[StopReason]) -> bool:
     """Fetch exhaustion still permits analysis of pages already retrieved."""
-    return all(r.code in {"BUDGET_PAGES", "FRONTIER_DRAINED", "DOMAIN_BUDGET", "ADAPTER_EMPTY"} for r in reasons)
+    return all(r.code in _FETCH_EXHAUSTION for r in reasons)
 
 
-# individual checks ---------------------------------------------------
-
-# -- one source ----------------------------------------------------------
-
-# How few relevant pages in a full window mean a source has stopped
-# paying off. How big the window is belongs to the state that holds it.
-MIN_RELEVANT_IN_WINDOW = 2
-# Consecutive pages older than the goal's window before a source reads as
-# walked past its end.
-MAX_STALE_STREAK = 5
-
-
-def why_retire(window: Sequence[bool], stale: int) -> str | None:
-    """Whether one source has stopped being worth reading, and why.
-
-    The reason travels with the judgement, as a StopReason's does: a run
-    that retires a source it should have kept has to be arguable.
-    """
-    if len(window) >= RELEVANCE_WINDOW and sum(window) < MIN_RELEVANT_IN_WINDOW:
-        return f"nothing in its last {RELEVANCE_WINDOW} pages"
-    if stale >= MAX_STALE_STREAK:
-        return f"{stale} pages in a row older than the window"
-    return None
-
-
-# -- the run -------------------------------------------------------------
-
-# All checks share the same signature so _CHECKS is a flat list.
-_CheckFunc = Callable[[CrawlTask, Frontier, Limits, Progress], StopReason | None]
+def can_settle_pages(reasons: Sequence[StopReason]) -> bool:
+    """Dispatched pages may finish after fetch exhaustion or meeting the result target."""
+    return all(r.code in _FETCH_EXHAUSTION | {"MAX_RELEVANT"} for r in reasons)
 
 
 # Listings a run must have read before "all of them were empty" means
@@ -62,10 +35,8 @@ _EMPTY_LISTING_FLOOR = 3
 
 
 def _budget_pages(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    lim: Limits,
     p: Progress,
+    lim: Limits,
 ) -> StopReason | None:
     if lim.max_pages > 0 and p.pages_fetched >= lim.max_pages:
         return StopReason("BUDGET_PAGES", f"fetched {p.pages_fetched}/{lim.max_pages} pages")
@@ -73,62 +44,38 @@ def _budget_pages(
 
 
 def _budget_tokens(
-    _task: CrawlTask,
-    _frontier: Frontier,
+    tokens_used: int,
     lim: Limits,
-    p: Progress,
 ) -> StopReason | None:
-    if lim.max_tokens > 0 and p.tokens_used >= lim.max_tokens:
-        return StopReason("BUDGET_TOKENS", f"used {p.tokens_used}/{lim.max_tokens} tokens")
+    if lim.max_tokens > 0 and tokens_used >= lim.max_tokens:
+        return StopReason("BUDGET_TOKENS", f"used {tokens_used}/{lim.max_tokens} tokens")
     return None
 
 
 def _budget_time(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    lim: Limits,
     p: Progress,
+    lim: Limits,
 ) -> StopReason | None:
     if lim.max_duration_sec > 0 and p.started_at > 0 and (time.monotonic() - p.started_at) >= lim.max_duration_sec:
         return StopReason("BUDGET_TIME", f"ran {lim.max_duration_sec}s")
     return None
 
 
-def _is_drained(frontier: Frontier, p: Progress) -> bool:
-    """Nothing to fetch in either half, and nothing on its way back."""
-    return frontier.size == 0 and frontier.waiting_size == 0 and p.in_flight == 0 and frontier.scoring == 0
+def _frontier_drained(drained: bool) -> StopReason | None:
+    if drained:
+        return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
+    return None
 
 
-def _frontier_drained(
-    _task: CrawlTask,
-    frontier: Frontier,
-    lim: Limits,
-    p: Progress,
-) -> StopReason | None:
-    """The crawl read everything it found."""
-    if not _is_drained(frontier, p):
-        return None
-    return StopReason("FRONTIER_DRAINED", "no more URLs to fetch")
-
-
-def _ceiling_refused(
-    _task: CrawlTask,
-    frontier: Frontier,
-    lim: Limits,
-    p: Progress,
-) -> StopReason | None:
-    """Add domain-budget context when the frontier drains after refusing candidates."""
-    blocked = getattr(frontier, "blocked_by_domain_budget", 0)
-    if not blocked or not _is_drained(frontier, p):
-        return None
-    return StopReason("DOMAIN_BUDGET", f"{blocked} candidates refused by the per-domain ceiling")
+def _ceiling_refused(drained: bool, blocked: int) -> StopReason | None:
+    if drained and blocked:
+        return StopReason("DOMAIN_BUDGET", f"{blocked} candidates refused by the per-domain ceiling")
+    return None
 
 
 def _enough_found(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    lim: Limits,
     p: Progress,
+    lim: Limits,
 ) -> StopReason | None:
     """Stop dispatch when the result target is met; in-flight analyses may still complete."""
     if lim.max_relevant > 0 and p.relevant_found >= lim.max_relevant:
@@ -137,10 +84,8 @@ def _enough_found(
 
 
 def _platform_refused(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    lim: Limits,
     p: Progress,
+    lim: Limits,
 ) -> StopReason | None:
     """Stop on run-wide platform refusal; unavailable individual pages do not trigger this."""
     if not p.refused_by:
@@ -151,67 +96,47 @@ def _platform_refused(
 
 
 def _adapter_empty(
-    _task: CrawlTask,
-    frontier: Frontier,
-    lim: Limits,
     p: Progress,
+    drained: bool,
 ) -> StopReason | None:
     """Flag a drained run whose listings all yielded no candidates, after the minimum sample."""
-    if not _is_drained(frontier, p):
+    if not drained:
         return None
     if p.listings_seen < _EMPTY_LISTING_FLOOR or p.listings_empty < p.listings_seen:
         return None
     return StopReason("ADAPTER_EMPTY", f"all {p.listings_seen} listings parsed and none held an item")
 
 
-def _user_requested(
-    task: CrawlTask,
-    _frontier: Frontier,
-    _lim: Limits,
-    _p: Progress,
-) -> StopReason | None:
-    if task.state == "STOPPING":
-        return StopReason("USER_REQUESTED", "stop requested by user")
-    return None
-
-
 def _fatal(
-    _task: CrawlTask,
-    _frontier: Frontier,
-    lim: Limits,
     p: Progress,
+    lim: Limits,
 ) -> StopReason | None:
     if p.fatal_error:
         return StopReason("FATAL", p.fatal_error)
     return None
 
 
-# main entry ----------------------------------------------------------
-
-_CHECKS: list[_CheckFunc] = [
-    _budget_pages,
-    _budget_tokens,
-    _budget_time,
-    _fatal,
-    _platform_refused,
-    _adapter_empty,
-    _user_requested,
-    _enough_found,
-    _frontier_drained,
-    _ceiling_refused,
-]
-
-
 def check_stop(
-    task: CrawlTask,
-    frontier: Frontier,
-    limits: Limits,
     progress: Progress,
+    limits: Limits,
+    *,
+    tokens_used: int,
+    queued: int,
+    waiting: int,
+    ranking: int,
+    domain_refused: int,
 ) -> list[StopReason]:
-    """Return all applicable stop reasons using limits and progress, excluding reporting-only state."""
-    reasons: list[StopReason] = []
-    for check in _CHECKS:
-        result = check(task, frontier, limits, progress)
-        if result is not None:
-            reasons.append(result)
-    return reasons
+    """Evaluate stopping policies from run counters and the owners' current counts."""
+    drained = queued == 0 and waiting == 0 and progress.in_flight == 0 and ranking == 0
+    results = (
+        _budget_pages(progress, limits),
+        _budget_tokens(tokens_used, limits),
+        _budget_time(progress, limits),
+        _fatal(progress, limits),
+        _platform_refused(progress, limits),
+        _adapter_empty(progress, drained),
+        _enough_found(progress, limits),
+        _frontier_drained(drained),
+        _ceiling_refused(drained, domain_refused),
+    )
+    return [reason for reason in results if reason is not None]

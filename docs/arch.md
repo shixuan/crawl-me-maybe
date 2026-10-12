@@ -9,17 +9,17 @@ Stage modules own model calls, retries and response validation.
 
 ```mermaid
 flowchart TB
-    subgraph pioneer["1. pioneer/ · candidate selection · coordinated by Engine"]
+    subgraph pioneer["1. pioneer/ · candidate selection · coordinated by CrawlPipeline"]
         candidates["Candidate<br>URL, text, source, depth"] --> filter["PreFilter<br>scope, depth, dedup, robots, publication cutoff"]
         filter -->|allowed| buffer["Frontier / RoundRobinBuffer<br>unranked candidates, rotation between sources"]
         buffer -->|rank_pump drains a batch| ranker["pioneer/ranker.py · LLMRanker<br>scheduled by RankingWorker"]
-        ranker -->|engine enqueues kept items| queue["Frontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
+        ranker -->|RankingWorker enqueues kept items| queue["Frontier / PriorityQueue<br>priority, aging, budgets, domain cooldowns"]
         ranker -->|dropped| dropped["No fetch"]
     end
 
-    queue -->|fetch_pump calls pop_next| dispatch["scheduler/engine.py<br>dispatch _handle_fetch tasks"]
+    queue -->|fetch_pump calls pop_next| dispatch["scheduler/pipelines/crawl.py<br>dispatch PagePipeline tasks"]
 
-    subgraph digest["2. digest/ · fetch and extract · coordinated by Engine"]
+    subgraph digest["2. digest/ · fetch and extract · coordinated by PagePipeline"]
         fetcher[DispatchingFetcher] -->|HTTP| http[HttpFetcher]
         fetcher -->|rendering| browser["PlaywrightFetcher<br>saved session, selected response payloads"]
         http -->|FetchResult| extractor["TrafExtractor<br>text, Markdown, publication metadata"]
@@ -33,7 +33,7 @@ flowchart TB
         retry -. delayed attempt .-> analyzer
     end
     extractor -->|Page| analyzer
-    analyzer -->|AnalysisResult via sink| sink["scheduler._on_analysis<br>persist, tally through Tracker, apply retirement"]
+    analyzer -->|AnalysisResult via sink| sink["AnalysisWorker.apply<br>persist and tally through Tracker"]
 
     subgraph discovery["4. discovery/ · find candidates · scheduled by DiscoveryWorker"]
         harvest["Harvester<br>reads saved HTML and payloads"]
@@ -51,7 +51,7 @@ flowchart TB
 
 The numbered stages follow one candidate URL. `rank_pump` and `fetch_pump` run
 concurrently across different candidates, sharing the frontier's two queues.
-`FetchWorker` returns the fetched response. Engine calls `PersistWorker.save_raw`
+`FetchWorker` returns the fetched response. PagePipeline calls `PersistWorker.save_raw`
 before invoking Extractor, then `PersistWorker.save_extracted` before analysis.
 Harvesting follows the initial analysis attempt and can proceed while a failed
 analysis waits for a retry. Analyzer output goes to its sink. Discovery reads the
@@ -61,10 +61,15 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 |---|---|
 | `cli/` | Parse commands, apply settings, build goals, report results |
 | `scheduler/factory.py` | Assemble and inject workers and their component dependencies |
-| `scheduler/engine.py` | Run pumps, admit candidates, apply outcomes and manage lifecycle |
-| `scheduler/workers/` | Execute ranking, fetching, persistence, analysis and discovery |
+| `scheduler/engine.py` | Run lifecycle, stopping and admission policy, checkpoint timing |
+| `scheduler/pipelines/crawl.py` | Module calls, pumps, page tasks, retry execution and dedup |
+| `scheduler/pipelines/page.py` | Process pages, resume stages, admit candidates and paginate |
+| `scheduler/workers/ranking.py` | Rank batches, save decisions and enqueue retained items |
+| `scheduler/pipelines/pipeline.py` | Shared execution protocol and callbacks from engine |
+| `scheduler/workers/dedup.py` | Execute final grouping and retain originals on failure |
+| `scheduler/workers/` | Execute stages, persist their results and update stage statistics |
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
-| `scheduler/stop_conds.py` | Decide run stopping and individual source retirement |
+| `scheduler/stop_conds.py` | Evaluate run stopping conditions |
 | `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs, and enhance goals and expand seeds |
 | `digest/` | Fetch pages and extract text and metadata |
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
@@ -72,7 +77,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `analysis/` | Classify pages and extract fields with source evidence |
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
-| `runtime/tracking.py` | Update RunState, join page verdicts and provide ranking feedback snapshots |
+| `runtime/tracking.py` | Update RunState, join page verdicts, provide ranking feedback and define source retirement rules |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `persist/storage.py` | Storage implementation using SQLite and raw files |
@@ -83,16 +88,19 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dashboard/` | Local HTTP server and browser UI for stored results |
 
 Workers are concrete classes with different input and output types, not interchangeable
-pipeline steps. They neither call one another nor receive the engine or mutable run
-state. The engine owns ordering and queue admission. Workers use the existing
+pipeline steps. They do not receive the engine. Analysis and ranking workers update
+state through Tracker. CrawlPipeline owns module calls and task handles. PagePipeline
+owns page ordering, candidate admission and cross-stage tracking; RankingWorker applies batches.
+Both pipelines explicitly implement `Pipeline[Input, Output]`, with `run(input, context)`
+and `aclose()`. PipelineContext carries task metadata, events, admission and checkpoint callbacks. Workers use the existing
 Fetcher, Extractor and Ranker protocols, and the concrete Analyzer and Harvester stages.
 
-The factory creates workers and binds seed expansion to its dependencies.
-Seed verification receives a probe that uses the same FetchWorker, PersistWorker
+The factory assembles the pipeline and workers. CrawlPipeline runs seed expansion;
+PagePipeline provides verification using the same FetchWorker, PersistWorker
 and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
 and payloads, and discovers candidates without publishing an unextracted Page row.
 `create_scheduler(..., fetcher=stub)` overrides a component.
-`create_scheduler(..., ranking=RankingWorker(ranker))` overrides an assembled worker.
+`create_scheduler(..., ranker=stub)` supplies the ranker used by RankingWorker.
 
 ## Crawl lifecycle
 
@@ -103,7 +111,8 @@ and payloads, and discovers candidates without publishing an unextracted Page ro
 3. Optional seed expansion proposes URLs and verifies that fetched pages yield
    candidates. Accepted proposals receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
-5. `fetch_pump` dispatches pages while `rank_pump` scores newly discovered candidates.
+5. CrawlPipeline runs `fetch_pump` and `rank_pump` concurrently. Engine decides admission
+   and stopping from pending-work snapshots, limits and progress.
 6. On normal completion, the scheduler settles page tasks and analysis retries, then
    optionally groups results and closes resources. Ctrl+C cancels active work without
    draining or grouping. Stage boundaries and a periodic timer save recovery checkpoints.
@@ -139,8 +148,7 @@ candidate URLs, which return to the unranked buffer through the pre-filter.
 | RSS/Atom | Document root. Entries provide content, links and publication dates. Requires `feedparser` |
 
 Adapters parse saved inputs and perform no network requests. Adding a platform
-requires a module implementing `FeedAdapter` and registration in
-`platforms/__init__.py`.
+requires implementing `FeedAdapter` and registering it in `platforms/__init__.py`.
 
 The extractor also asks the first URL-matching adapter for page text through
 `extract_text(FetchResult)`. Instagram matches the requested post in captured payloads
@@ -156,10 +164,10 @@ its platform in `metadata.text_source`. Analysis still applies its character lim
 enhanced goal, requested fields, candidate text and previous analysis results.
 It splits calls by candidate count and text size. Truncated batches are subdivided.
 Omitted candidates receive neutral priority. Unrecoverable errors propagate to
-Engine. Engine observes either pump's failure immediately and stops its peer.
+CrawlPipeline and then Engine. Engine cancels the pipeline on failure.
 Unexpected page-task exceptions also stop the run and produce a FAILED task.
 Checkpoint recovery creates a new run owner from saved state; see the
-[Engine plan](engine-refactor.md). `--recall` retains rejected candidates at low priority.
+[Engine execution](engine.md). `--recall` retains rejected candidates at low priority.
 
 `Analyzer` requests a page relevance verdict and an `items` array. Each item is
 an independently useful answer to the goal, with a summary, score, source quotes,
@@ -232,27 +240,35 @@ flowchart LR
     analyzer[Analyzer] --> clients
     clients --> budget["Shared TokenBudget<br>usage by stage"]
 
-    analyzer -->|successful analysis, including retries| sink["scheduler._on_analysis"]
+    analyzer -->|successful analysis, including retries| sink["AnalysisWorker.apply"]
     sink --> tracker[Tracker]
     tracker -->|update| state["RunState<br>limits, counters, page/source history, ranking feedback"]
-    state -->|batch feedback snapshot via tracker and engine| ranker
-    state --> policies["stop_conds<br>run stopping / source retirement"]
-    budget -->|usage callback via engine| state
-    policies -->|scheduler applies decisions| control["Stop dispatch / retire pending source work"]
+    state -->|batch feedback snapshot via tracker and RankingWorker| ranker
+    budget -->|recorded usage| monitor
+    budget -. change notice wired by factory .-> state
+    frontier[Frontier] -->|queue counts| monitor
+    frontier -. change notice wired by factory .-> state
+    state -->|progress and changes| monitor[StopMonitor]
+    monitor --> policies["stop_conds<br>pure run stopping checks"]
+    monitor -->|stop reasons| control["Engine<br>stop dispatch and settle work"]
+    retirement["runtime.tracking<br>source policy"] -->|PagePipeline applies| frontier
 
-    ranker -->|decisions via scheduler| storage["persist/storage.py · Storage"]
+    ranker -->|decisions via RankingWorker| storage["persist/storage.py · Storage"]
     sink -->|analyses| storage
-    scheduler["Engine<br>candidate admission, events, checkpoints"] -->|links, events, snapshots| storage
+    scheduler["PagePipeline"] -->|links and page events| storage
+    engine["Engine"] -->|checkpoint timing| cp["Checkpointer"] -->|snapshots| storage
+    engine -->|normal settlement| pipeline["CrawlPipeline"] --> dedup["DedupWorker"]
     scheduler --> persistence[PersistWorker]
     persistence -->|pages| storage
     persistence -->|HTML and payload bytes| raw["raw/ files"]
     state -->|read only| report["reporting.summary"]
+    budget -->|token count via Engine| report
 ```
 
 The engine exposes `run_state`. `RunState` owns run-wide data:
 
 - `Limits` holds immutable run budgets and goal constraints.
-- `Progress` holds counters used by stopping policies.
+- `Progress` holds runtime-owned counters used by stopping policies. TokenBudget owns token usage.
 - `Stats` holds reporting statistics.
 - `seeds` holds per-source counters, retirement history and pagination counts.
 - `pages`, `page_contexts` and `relevant_pages` hold page associations and ranking feedback.
@@ -260,26 +276,27 @@ The engine exposes `run_state`. `RunState` owns run-wide data:
 
 Startup reset clears execution history and counters while preserving prepared seed
 URLs, proposal metadata and recorded pre-run token usage. It retains the RunState
-object's identity. Resume does not reset it.
+object's identity. Resume restores checkpoint data after this initialization.
 
 `Tracker` holds only a reference to RunState and updates it synchronously on the
-event loop. It returns source keys for the engine to check with `why_retire`. The
-engine removes queued work. Reporting reads RunState directly. Ranking receives
+event loop. AnalysisWorker applies initial and retried results, then notifies PagePipeline
+to check source keys with `why_retire` and retire queued work through Frontier.
+Reporting reads RunState directly. RankingWorker receives
 a snapshot of recent relevant pages and the current batch's source contexts, so
 later analysis updates affect later batches.
 
-Frontier owns queue internals, Engine owns task handles, and TokenBudget owns token
+Frontier owns queue internals, CrawlPipeline owns pump and page task handles, and TokenBudget owns token
 accounting. These resources are not duplicated in RunState. The single-page path
 passes `FrontierItem`, `FetchedPage`, `Page` and `Harvest` between stages. Delayed
 analysis results join run-wide records by page identity.
 
 `PageBook` joins each page's seed, listing status and analysis verdict. These may
 arrive in different orders because analysis can retry. A completed non-listing
-record contributes one relevance vote to its seed. Engine retains page records and
+record contributes one relevance vote to its seed. PagePipeline retains page records and
 contexts while page tasks, analysis retries or waiting/active ranking batches need
 them, then releases them. Bounded relevant-page summaries remain separate.
 
-The frontier owns both the scored queue and unranked buffer. Engine waits for ranking
+The frontier owns both the scored queue and unranked buffer. CrawlPipeline waits for ranking
 through `wait_for_ranking` and signals changes through `wake_ranker`. Queue counts
 are public, and the buffer stays private. Scored work is gated
 by domain budgets and cooldowns. Ranking in progress and cooling items count as
@@ -292,17 +309,39 @@ These histories prevent repeat admission and grow with distinct URLs. Retirement
 blocks late ranking results as well as new candidates. Snapshots retain retired
 sources and unfinished ranking batches; restored batches return to waiting.
 
-Engine bounds the combined fetch, extraction and persistence work with page slots.
+PagePipeline bounds the combined fetch, extraction and persistence work with page slots.
 FetchWorker also bounds network fetching. Analysis has separate slots and does not
 hold a page slot. Dispatch counts in-flight pages against the page budget. The result
-target is checked before analysis, but already-running calls may overshoot it.
+target and other run limits are checked through an engine callback after acquiring
+an analysis slot; already-running calls may overshoot the target.
 Blocking extraction runs in worker threads. Digest operations using libxml2 share
 `LXML_LOCK`. Extraction timeouts bound the await, not the lifetime of a running thread.
 
 ## Stopping and checkpoints
 
-`check_stop(task, frontier, limits, progress)` returns all applicable reasons.
-Reporting-only counters are not passed to it.
+`RunState.progress` holds only run-owned counters. The factory creates StopMonitor
+with RunState, Frontier and TokenBudget. Monitor reads queue counts and token usage
+directly from their owners and passes numbers alongside Progress and Limits to
+`check_stop()`. RunState does not bind owners or proxy their counts.
+
+The factory connects Frontier and TokenBudget change notices to RunState's existing
+revision event. StopMonitor waits for revisions and deadlines, then reevaluates
+stopping policies. Ordinary progress does not wake Engine. Engine waits for a stop
+result or pipeline completion. Revisions preserve changes between checking
+conditions and starting the wait.
+
+Monitor also supervises settlement. Pages may finish after fetch exhaustion or meeting
+the result target. Token/time exhaustion, platform refusal and fatal errors cancel
+remaining page work. Analysis retries may run after fetch exhaustion, but stop on the
+result target or a hard limit. Page and retry settlement share a deadline.
+Admission checks guard newly dispatched work and newly acquired analysis slots.
+Fetch dispatch retains its scheduling poll. Checkpoint intervals, domain cooldowns and
+ranking batch timers remain separate scheduling concerns.
+
+Task lifecycle has one owner, Engine, and one value, `CrawlTask.state`.
+`task.stopping_reason` records the stop decision for reporting; policy does not read it.
+Ctrl+C cancels the run directly and records `INTERRUPTED` with `USER_REQUESTED`.
+There is no separate programmatic stop interface.
 
 | Reason | Trigger |
 |---|---|
@@ -310,12 +349,11 @@ Reporting-only counters are not passed to it.
 | `MAX_RELEVANT` | The relevant-result target is met |
 | `FRONTIER_DRAINED` | No queued, buffered, scoring or in-flight work remains |
 | `DOMAIN_BUDGET` | A drained run refused candidates at a domain ceiling |
-| `USER_REQUESTED` | A stop was requested |
 | `RATE_LIMITED`, `LOGIN_REQUIRED` | An adapter reports a run-level refusal |
 | `ADAPTER_EMPTY` | A drained run read at least three listings and all yielded no candidates |
 | `FATAL` | A component reports an unrecoverable error |
 
-Sources retire independently after fewer than two relevant results in a full
+The policy in `runtime.tracking` retires sources after fewer than two relevant results in a full
 20-page window, or five consecutive dated pages older than `since`. Listings do
 not vote on relevance. Undated pages neither advance nor reset the age streak.
 Retirement removes that seed's pending candidates. `--recall` disables retirement.
@@ -342,27 +380,28 @@ Ctrl+C exits immediately. Recovery does not depend on a final checkpoint during 
 The old in-memory pause/resume API has been removed. Frontier-only legacy snapshots
 are not sufficient for recovery and are rejected by the resume command.
 
-Factory 显式组装 `Checkpointer`，没有动态注册表。各组件显式继承
-`checkpoint/checkpointable.py` 中的 `Checkpointable`，统一实现 `dump/restore`。
-缺少任一方法的实现类不能实例化。Checkpointer 直接调用组件，
-不经过 RunState 包装；analyzer 的 goal 在启动和恢复前绑定。
-在途页面进度由 `RunState.work` 持有，随运行状态一起保存和恢复。PageBook、queue、buffer 也显式实现同一接口，分别由 RunState 和 Frontier 组合保存，
-无需重复传入 Checkpointer。Frontier 仍负责其内部 queue 和 buffer，
-engine 只负责保存时机和恢复后的调度。`Checkpointer` 在首次 await 前同步捕获所有状态，
-负责快照版本、正文裁剪与回填、串行落盘；保存成功后 engine 才发出保存事件。
+The factory assembles `Checkpointer` with explicit dependencies. Each participant
+inherits `Checkpointable` and implements `dump()` and `restore()`. The analyzer's
+goal is bound before startup and recovery. `RunState` saves in-flight page stages
+and PageBook, while Frontier saves its queue and buffer.
+
+Engine owns checkpoint timing, recovery and the pipeline lifecycle. Checkpointer
+captures component state before awaiting, removes page text from snapshots, restores
+it from stored page rows and serializes writes. Engine emits the saved event only
+after persistence succeeds.
 
 ```mermaid
 flowchart LR
-  subgraph Process["运行进程"]
-    Factory["factory 显式组装"] --> Engine
+  subgraph Process["Running process"]
+    Factory["Factory"] --> Engine
     Factory --> CP["Checkpointer"]
-    Engine["engine 调度与保存时机"] -->|save / restore| CP
+    Engine["Engine · lifecycle and checkpoint timing"] -->|save / restore| CP
     CP -->|dump / restore| States["frontier · runtime · analysis<br/>budget · robots"]
     CP -->|save_snapshot / flush| Writer["SQLite writer"]
   end
   Writer -->|commit| DB[("Run database")]
-  DB -->|页面正文| CP
-  subgraph New["恢复进程"]
+  DB -->|page text| CP
+  subgraph New["Recovery process"]
     Resume["crawl resume"] --> Restored["factory + engine + Checkpointer"]
   end
   DB -->|checkpoint| Resume
@@ -434,7 +473,7 @@ snapshots, events, errors and robots cache entries. Most writes use an async que
 Grouping snapshots use an explicit transaction. Reads use the connection directly.
 Events provide an audit trail. Checkpoints restore the frontier.
 
-Engine invokes PersistWorker before and after extraction. The worker calls Storage
+PagePipeline invokes PersistWorker before and after extraction. The worker calls Storage
 to retain HTML before extraction, then saves payloads, attaches their paths to the
 Page and queues the Page record. File writes run in threads. Database writes are
 queued on the event loop. A failed payload write is logged and omitted from the

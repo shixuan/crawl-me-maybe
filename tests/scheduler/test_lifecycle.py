@@ -70,18 +70,24 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         grouper=MagicMock(group=group) if dedup else None,
     )
     seeds = await ManualSource(["https://example.com/article"]).discover(goal)
-    await scheduler.ingest_seeds(goal, seeds)
+    await scheduler.pipeline.ingest_seeds(goal, seeds)
     run = asyncio.create_task(scheduler.run(goal, task))
     try:
         if stop is not None:
             await asyncio.wait_for(settling.wait(), timeout=3)
             if stop == "tokens":
-                scheduler.note_tokens_used(goal.max_tokens)
+                scheduler._checkpointer.budget.record(goal.max_tokens, 0)
             elif stop == "time":
                 scheduler.run_state.progress.started_at -= 61
+                scheduler.run_state.notify_change()
             elif stop == "user":
-                await scheduler.stop()
-        await asyncio.wait_for(run, timeout=10 if stop is None else 3)
+                run.cancel()
+        if stop == "user":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(run, timeout=3)
+            assert task.state == "INTERRUPTED"
+        else:
+            await asyncio.wait_for(run, timeout=10 if stop is None else 3)
     finally:
         run.cancel()
         await asyncio.gather(run, return_exceptions=True)

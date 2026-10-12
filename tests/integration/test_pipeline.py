@@ -102,7 +102,7 @@ async def test_fetch_to_links(integration_settings):
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_scheduler(cfg, fetcher=_MockFetcher())
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
@@ -131,7 +131,7 @@ async def test_drops_junk(integration_settings):
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_scheduler(cfg, fetcher=_MockFetcher())
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
@@ -156,7 +156,7 @@ async def test_stop_pages(integration_settings):
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_scheduler(cfg, fetcher=_MockFetcher())
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
@@ -173,7 +173,7 @@ async def test_drains(integration_settings):
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_scheduler(cfg, fetcher=_MockFetcher())
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
@@ -191,7 +191,7 @@ async def test_events_emitted(integration_settings):
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_scheduler(cfg, fetcher=_MockFetcher())
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
@@ -212,11 +212,11 @@ async def test_events_emitted(integration_settings):
 async def test_ranks_saved(integration_settings):
     """Rank decisions should be written to the DB."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
+    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_scheduler(cfg, fetcher=_MockFetcher())
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 
@@ -273,7 +273,7 @@ async def test_analyzes_all(integration_settings):
 
     analyzer = _RecordingAnalyzer()
     sched = create_scheduler(cfg, fetcher=_MockFetcher(), analyzer=analyzer)
-    await sched._frontier.push_batch([_seed_item(_SEED_URL)])
+    await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
     await asyncio.wait_for(sched.run(goal, task), timeout=30)
 

@@ -47,7 +47,7 @@ async def test_wiki_basic(e2e_settings):
         score_source="seed",
         reg_domain=url.reg_domain,
     )
-    await sched._frontier.push_batch([item])
+    await sched.pipeline._frontier.push_batch([item])
 
     print(f"\nTask:   {task.task_id}")
     print(f"Prompt: {_PROMPT}")
@@ -148,7 +148,7 @@ async def test_wiki_budget(e2e_settings):
         score_source="seed",
         reg_domain=url.reg_domain,
     )
-    await sched._frontier.push_batch([item])
+    await sched.pipeline._frontier.push_batch([item])
 
     print("\nSmall-budget test: max_pages=2")
     try:
@@ -219,7 +219,7 @@ async def test_wiki_draining(e2e_settings):
                 reg_domain=url.reg_domain,
             )
         )
-    await sched._frontier.push_batch(items)
+    await sched.pipeline._frontier.push_batch(items)
 
     print(f"\nDraining test: {len(_DRAINING_SEEDS)} seeds, depth={_DRAINING_DEPTH}, no page limit")
     print(f"Seeds: {', '.join(s.rsplit('/', 1)[-1] for s in _DRAINING_SEEDS)}")

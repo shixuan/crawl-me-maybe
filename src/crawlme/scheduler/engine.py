@@ -1,4 +1,4 @@
-"""Coordinate fetching, analysis, discovery and ranking through injected components."""
+"""Own run lifecycle, stopping policy and checkpoint timing."""
 
 from __future__ import annotations
 
@@ -6,66 +6,22 @@ import asyncio
 import datetime
 import logging
 import time
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
-from crawlme.dedup.grouper import Grouper, group_results
-from crawlme.digest import Extractor
-from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
 from crawlme.persist import Lock, Storage
-from crawlme.pioneer import Frontier
-from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
-from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.platforms.base import FeedDependencyError
-from crawlme.runtime import EventEmitter, EventType, RunState, Tracker
+from crawlme.runtime import EventEmitter, EventType, RunState
+from crawlme.scheduler.monitor import StopMonitor
+from crawlme.scheduler.pipelines import PipelineContext
+from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.scheduler.reporting import summary
-from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
-from crawlme.scheduler.workers import (
-    AnalysisWorker,
-    DiscoveryWorker,
-    FetchFailure,
-    FetchWorker,
-    PersistWorker,
-    RankingWorker,
-)
-from crawlme.schemas import (
-    AnalysisResult,
-    Candidate,
-    CrawlGoal,
-    CrawlTask,
-    FetchResult,
-    FrontierItem,
-    Page,
-)
-from crawlme.schemas.core import _content_id
-
-SeedExpansion = Callable[
-    [CrawlGoal, list[str], TokenBudget | None],
-    Awaitable[tuple[list[Candidate], int, list[tuple[str, str]]]],
-]
+from crawlme.scheduler.stop_conds import StopReason
+from crawlme.schemas import CrawlGoal, CrawlTask
 
 logger = logging.getLogger(__name__)
-
 _CHECKPOINT_INTERVAL = 2.0
-
-
-# Maximum candidates per rank-pump batch; smaller batches release fetchable work sooner.
-_RANK_BATCH_SIZE = 20
-_POP_SLEEP = 0.2
-
-# Cap continuation pages per seed independently of traversal depth.
-_MAX_LISTING_PAGES = 5
-
-# Where the next page of a listing enters. Below anything the ranker
-# thought well of, above what it demoted.
-_LISTING_PAGE_PRIORITY = 0.5
-
-# Maximum wait for dispatched work during shutdown.
 _SETTLE_TIMEOUT = 120.0
 
 
@@ -73,127 +29,29 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-@dataclass(frozen=True)
-class FetchedPage:
-    result: FetchResult
-    page: Page
-
-
 class Engine:
-    """Run concurrent fetch and rank pumps over a shared frontier."""
+    """Apply run policy to a pipeline without invoking individual crawl stages."""
 
     def __init__(
         self,
         *,
         settings: Settings,
         storage: Storage,
-        frontier: Frontier,
-        fetch: FetchWorker,
-        persist: PersistWorker,
-        extractor: Extractor,
-        ranking: RankingWorker,
-        analysis: AnalysisWorker,
-        discovery: DiscoveryWorker,
-        robots: RobotsPolicy,
-        prefilter: PreFilter,
-        canonicalizer: Canonicalizer,
-        tracking: Tracker,
-        seed_expander: SeedExpansion,
-        grouper: Grouper | None = None,
-        budget: TokenBudget | None = None,
+        pipeline: CrawlPipeline,
         checkpointer: Checkpointer,
+        monitor: StopMonitor,
     ) -> None:
+        self.pipeline = pipeline
         self._cfg = settings
-        self._grouper = grouper
-        self._dedup_report: dict[str, Any] = {"status": "disabled" if grouper is None else "pending"}
         self._storage = storage
-        self._frontier = frontier
-        self._fetch = fetch
-        self._persist = persist
-        self._extractor = extractor
-        # Preserve the bound on fetching, extraction and persistence together.
-        self._page_slots = asyncio.Semaphore(settings.fetch_concurrency)
-        self._ranking = ranking
-        self._analysis = analysis
-        self._discovery = discovery
-        self._robots = robots
-        self._prefilter = prefilter
-        self._canonicalizer = canonicalizer
-        self._tracking = tracking
-        self._seed_expander = seed_expander
-        self._analysis.bind_sink(self._on_analysis)
-        self._state = "CREATED"
-        self._goal: CrawlGoal | None = None
+        self._checkpointer = checkpointer
         self._task: CrawlTask | None = None
-        self._pump_tasks: list[asyncio.Task[None]] = []
-        self._inflight: set[asyncio.Task[None]] = set()
         self._events: EventEmitter | None = None
         self._runner: asyncio.Task[Any] | None = None
-        self._control = asyncio.Event()
+        self._pipeline_task: asyncio.Task[None] | None = None
+        self._monitor = monitor
         self._closed = False
-        self._page_keys: dict[str, set[str]] = {}
-        self._checkpointer = checkpointer
-        self._budget = budget
         self._checkpoint_task: asyncio.Task[None] | None = None
-
-    # seed ingestion --------------------------------------------------
-
-    async def expand_seeds(
-        self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
-    ) -> list[Candidate]:
-        """Propose and verify additional seeds when enabled."""
-        if not self._cfg.expand_seeds or not seeds:
-            return []
-        proposed, n_proposed, rejected = await self._seed_expander(goal, [c.url.raw for c in seeds], budget)
-        self.run_state.seeds_asked = n_proposed
-        self.run_state.rejected_seeds = rejected
-        for c in proposed:
-            # url_key, the shape the page book counts under.
-            key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
-            self.run_state.proposed_seeds[key] = (c.url.canonical, str(c.signals.get("why", "")))
-        return proposed
-
-    async def ingest_seeds(
-        self,
-        goal: CrawlGoal,
-        candidates: list[Candidate],
-        allowed_domains: set[str] | None = None,
-    ) -> int:
-        """Canonicalize and filter seeds, then enqueue them at priority 1.0."""
-        ctx = self._frontier.get_prefilter_context(
-            allow_fetch=lambda url: True,  # seeds bypass robots
-            allowed_domains=allowed_domains,
-        )
-        items: list[FrontierItem] = []
-        n_ingested = 0
-        for c in candidates:
-            url = self._canonicalizer.canonicalize(c.url.raw, c.url.raw)
-            c.url = url
-            decision, _ = self._prefilter.check(c, goal, ctx)
-            if decision.value != "allow":
-                logger.debug("seed.rejected url=%s reason=%s", url.raw, _)
-                continue
-            items.append(
-                FrontierItem(
-                    url=url,
-                    url_key=url.url_key,
-                    priority=1.0,
-                    score_source="seed",
-                    reg_domain=url.reg_domain,
-                    seed_url_key=url.url_key,
-                    seed_ext=c.seed_ext,
-                )
-            )
-            self.run_state.seeds[url.url_key].url = url.canonical
-            n_ingested += 1
-        if items:
-            await self._frontier.push_batch(items)
-        if self._events and n_ingested > 0:
-            self._events.emit(EventType.URL_DISCOVERED, {"source": "seed", "count": n_ingested})
-        logger.info("starting from %d seed%s", n_ingested, "" if n_ingested == 1 else "s")
-        return n_ingested
-
-    # public API -------------------------------------------------------
 
     def attach_log_file(self) -> None:
         """Start writing logs to the run dir's log file.
@@ -202,10 +60,6 @@ class Engine:
         logs land in the file, not just the terminal.
         """
         self._storage.attach_log_file()
-
-    def note_tokens_used(self, total: int) -> None:
-        """Update progress from the shared token budget, including pre-run usage."""
-        self.run_state.progress.tokens_used = total
 
     async def run(
         self,
@@ -222,8 +76,8 @@ class Engine:
         if own_lock:
             lock.acquire()
         self._runner = asyncio.current_task()
-        self._goal, self._task = goal, task
-        self._state = task.state = "RUNNING"
+        self._task = task
+        task.state = "RUNNING"
         setup_logging(self._cfg)
         logger.info(
             "crawling, at most %d pages or %d tokens or %ds", goal.max_pages, goal.max_tokens, goal.max_duration_sec
@@ -235,63 +89,53 @@ class Engine:
                 EventType.TASK_RESUMED if checkpoint is not None else EventType.TASK_STARTED,
                 {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]},
             )
-            self.run_state.reset(goal=goal, tokens_used_start=self.run_state.progress.tokens_used)
-            if self._analysis.analyzer is not None:
-                self._analysis.analyzer.bind_goal(goal)
-            self._checkpointer.bind(
-                goal,
-                task,
-                dedup=self._grouper is not None,
-                ranking=self._ranking.ranker is not None,
-                analysis=self._analysis.analyzer is not None,
-            )
+            self.run_state.reset(goal=goal)
+            self.pipeline.prepare(goal, task.task_id, self._events)
+            self._checkpointer.bind(goal, task, **self.pipeline.features)
             if checkpoint is not None:
                 await self._checkpointer.restore(checkpoint)
             self._storage.save_goal(goal.model_dump(mode="json"))
             self._storage.save_task(task.model_dump(mode="json"))
             await self._checkpoint()
             self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
-            for work in list(self.run_state.work.values()):
-                self._dispatch_page(FrontierItem.model_validate(work["item"]))
-            self._control.clear()
-            self._analysis.start_retries()
-            self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
-            await self._supervise_pumps()
+            context = PipelineContext(
+                task_id=task.task_id,
+                events=self._events,
+                checkpoint=self._checkpoint,
+                can_dispatch=self._allow_dispatch,
+                can_run=self._allow_work,
+                can_analyze=self._allow_analysis,
+            )
+            self._pipeline_task = asyncio.create_task(self.pipeline.run(goal, context))
+            # Let restored work register before checking whether the pipeline is drained.
+            await asyncio.sleep(0)
+            await self._supervise()
             deadline = time.monotonic() + _SETTLE_TIMEOUT
-            await self._stop_pumps()
-            await self._settle_inflight(deadline)
-            await self._settle_analysis(deadline)
-            if (
-                self._grouper is not None
-                and not self.run_state.progress.fatal_error
-                and task.stopping_reason != "USER_REQUESTED"
-            ):
-                await self._deduplicate(goal)
+            await self.pipeline.halt()
+            await self._settle(deadline)
+            await self._drain(deadline)
+            if not self.run_state.progress.fatal_error:
+                await self.pipeline.finish()
             self._finish_run()
         except asyncio.CancelledError:
-            self._state = "INTERRUPTED"
-            # Cancel all consumers before awaiting any cleanup. No drain or dedup.
-            for pending in [*self._pump_tasks, *self._inflight]:
-                pending.cancel()
-            await self._analysis.aclose()
-            await asyncio.gather(*self._pump_tasks, *self._inflight, return_exceptions=True)
-            self._pump_tasks.clear()
             task.state = "INTERRUPTED"
+            await self.pipeline.abort()
             task.stopping_reason = "USER_REQUESTED"
             task.counters = {
                 "pages_fetched": self.run_state.progress.pages_fetched,
-                "tokens_used": self.run_state.progress.tokens_used,
+                "tokens_used": self._monitor.budget.used,
             }
             self._storage.save_task(task.model_dump(mode="json"))
             logger.info("interrupted; resume with: crawl resume %s", task.task_id)
             raise
         except Exception as exc:
             self._fail("run", exc)
-            deadline = time.monotonic() + _SETTLE_TIMEOUT
-            await self._stop_pumps()
-            await self._settle_inflight(deadline)
+            await self.pipeline.abort()
             self._finish_run()
         finally:
+            if self._pipeline_task is not None:
+                self._pipeline_task.cancel()
+                await asyncio.gather(self._pipeline_task, return_exceptions=True)
             if self._checkpoint_task is not None:
                 self._checkpoint_task.cancel()
                 await asyncio.gather(self._checkpoint_task, return_exceptions=True)
@@ -306,182 +150,126 @@ class Engine:
         assert self._task is not None
         task = self._task
         task.state = "FAILED" if self.run_state.progress.fatal_error else "COMPLETED"
-        self._state = task.state
         task.end_at = _utcnow()
         self._record_stop_reason()
         self._reconcile()
-        self._prune_pages()
         prog = self.run_state.progress
         logger.info(
-            "finished after %d pages and %d tokens: %s", prog.pages_fetched, prog.tokens_used, task.stopping_reason
+            "finished after %d pages and %d tokens: %s",
+            prog.pages_fetched,
+            self._monitor.budget.used,
+            task.stopping_reason,
         )
         if self._events:
             self._events.emit(EventType.STOPPED, {"reason": task.stopping_reason, "pages_fetched": prog.pages_fetched})
-        task.counters = {"tokens_used": prog.tokens_used, "pages_fetched": prog.pages_fetched}
+        task.counters = {"tokens_used": self._monitor.budget.used, "pages_fetched": prog.pages_fetched}
         self._storage.save_task(task.model_dump(mode="json"))
 
     def _fail(self, stage: str, error: BaseException) -> None:
         logger.error("%s.died error=%s", stage, error)
-        if not self.run_state.progress.fatal_error:
-            self.run_state.progress.fatal_error = str(error) or type(error).__name__
+        self.run_state.record_failure(error)
         if self._task is not None:
             self._task.stopping_reason = "FATAL"
-        self._state = "STOPPING"
-        self._control.set()
+            self._task.state = "STOPPING"
 
-    async def _supervise_pumps(self) -> str:
-        control = asyncio.create_task(self._control.wait())
+    def _allow_work(self) -> bool:
+        if self._task is None or self._task.state != "RUNNING":
+            return False
+        return self._monitor.can_run
+
+    def _allow_dispatch(self) -> bool:
+        if not self._allow_work():
+            return False
+        limits, progress = self.run_state.limits, self.run_state.progress
+        # Reserve budget for pages already dispatched; failed fetches release their slots.
+        return limits.max_pages <= 0 or progress.pages_fetched + progress.in_flight < limits.max_pages
+
+    def _allow_analysis(self) -> bool:
+        if self._task is None or self._task.state == "INTERRUPTED":
+            return False
+        return self._monitor.can_analyze
+
+    async def _wait_for_stop(
+        self,
+        task: asyncio.Task[None],
+        *,
+        phase: Literal["run", "pages", "analysis"] = "run",
+        deadline: float | None = None,
+    ) -> list[StopReason]:
+        stopped = asyncio.create_task(self._monitor.wait(phase=phase, deadline=deadline))
         try:
-            done, _ = await asyncio.wait([*self._pump_tasks, control], return_when=asyncio.FIRST_COMPLETED)
-            self._note_pump_failures([t.exception() for t in done if t is not control and not t.cancelled()])
-            if self._state == "RUNNING":
-                self._state = "STOPPING"
-            return self._state
+            await asyncio.wait([task, stopped], return_when=asyncio.FIRST_COMPLETED)
+            if task.done():
+                await task
+                return []
+            return await stopped
         finally:
-            control.cancel()
-            await asyncio.gather(control, return_exceptions=True)
+            stopped.cancel()
+            await asyncio.gather(stopped, return_exceptions=True)
 
-    async def _stop_pumps(self) -> None:
-        await self._frontier.wake_ranker()
-        if not self._pump_tasks:
-            return
-        for task in self._pump_tasks:
-            task.cancel()
-        self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
-        self._pump_tasks.clear()
+    async def _supervise(self) -> None:
+        assert self._pipeline_task is not None and self._task is not None
+        reasons = await self._wait_for_stop(self._pipeline_task)
+        if reasons:
+            self._task.stopping_reason = "+".join(r.code for r in reasons)
+            logger.info(
+                "stopping: %s, after %d pages", self._task.stopping_reason, self.run_state.progress.pages_fetched
+            )
+        self._task.state = "STOPPING"
 
-    def _page_done(self, task: asyncio.Task[None]) -> None:
-        self._inflight.discard(task)
-        if not task.cancelled() and (error := task.exception()) is not None:
-            self._fail("page", error)
+    async def _settle(self, deadline: float) -> None:
+        settle = asyncio.create_task(self.pipeline.settle(deadline))
+        try:
+            await self._wait_for_stop(settle, phase="pages", deadline=deadline)
+            if not settle.done():
+                if time.monotonic() >= deadline:
+                    logger.warning("task.settle_timeout")
+                await self.pipeline.abort()
+        finally:
+            settle.cancel()
+            await asyncio.gather(settle, return_exceptions=True)
 
-    def _note_pump_failures(self, results: list[Any]) -> None:
-        for result in results:
-            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-                self._fail("pump", result)
-
-    async def _settle_inflight(self, deadline: float | None = None) -> None:
-        """Await dispatched tasks before checkpointing or closing their resources."""
-        if not self._inflight:
-            return
-        pending = set(self._inflight)
-        logger.debug("task.settling in_flight=%d", len(pending))
-        timeout = _SETTLE_TIMEOUT if deadline is None else max(0, deadline - time.monotonic())
-        done, still = await asyncio.wait(pending, timeout=timeout)
-        for task in done:
-            if not task.cancelled() and (error := task.exception()) is not None:
-                self._fail("page", error)
-        if still:
-            # Past the backstop: whatever is left was not going to
-            # finish, and holding the process open for it is worse.
-            logger.warning("task.settle_timeout abandoned=%d", len(still))
-            for t in still:
-                t.cancel()
-            await asyncio.gather(*still, return_exceptions=True)
-
-    async def _settle_analysis(self, deadline: float | None = None) -> None:
-        """Settle retries within run limits before grouping or closing storage."""
-        assert self._task is not None
+    async def _drain(self, deadline: float | None = None) -> None:
+        """Wait for retry completion or a condition that forbids further analysis."""
         deadline = deadline if deadline is not None else time.monotonic() + _SETTLE_TIMEOUT
         drain: asyncio.Task[None] | None = None
         try:
-            while True:
-                reasons = check_stop(self._task, self._frontier, self.run_state.limits, self.run_state.progress)
-                if not can_drain_analysis(reasons):
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+            if self._monitor.can_analyze:
+                drain = asyncio.create_task(self.pipeline.drain())
+                await self._wait_for_stop(drain, phase="analysis", deadline=deadline)
+                if not drain.done() and time.monotonic() >= deadline:
                     logger.warning("analysis.settle_timeout")
-                    break
-                if drain is None:
-                    drain = asyncio.create_task(self._analysis.drain_pending())
-                done, _ = await asyncio.wait({drain}, timeout=min(_POP_SLEEP, remaining))
-                if done:
-                    await drain
-                    break
         finally:
             if drain is not None:
                 drain.cancel()
                 await asyncio.gather(drain, return_exceptions=True)
-            await self._analysis.aclose()
+            await self.pipeline.end_drain()
 
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for close in (self._analysis.aclose, self._ranking.aclose, self._fetch.aclose):
-            try:
-                await close()
-            except Exception as exc:
-                self._fail("cleanup", exc)
+        try:
+            await self.pipeline.aclose()
+        except Exception as exc:
+            self._fail("cleanup", exc)
         if self._task is not None and self.run_state.progress.fatal_error:
             self._task.state = "FAILED"
-            self._state = "FAILED"
             self._storage.save_task(self._task.model_dump(mode="json"))
-        self._prune_pages()
         await self._storage.close()
 
-    def _on_analysis(self, result: AnalysisResult) -> None:
-        if self._task is not None:
-            result.analysis_id = _content_id(f"{self._task.task_id}:{result.goal_id}:{result.url_key}")
-            for index, item in enumerate(result.items or []):
-                item.item_id = _content_id(f"{result.analysis_id}:{index}")
-        self._storage.save_analysis(result.model_dump(mode="json"))
-        self._consider_retirement(self._tracking.analysis(result))
-        for work in self.run_state.work.values():
-            if work.get("page", {}).get("url_key") == result.url_key:
-                work["analysis_done"] = True
-        self._prune_pages()
-
-    def _prune_pages(self) -> None:
-        if self._runner is not None:
-            active = set().union(*self._page_keys.values())
-            self._tracking.retain(active | self._analysis.pending_keys | self._frontier.context_keys())
-
-    def _cast_relevance_vote(self, url_key: str) -> None:
-        self._consider_retirement(self._tracking.vote(url_key))
-
-    def _note_page_age(self, page: Page, seed: str) -> None:
-        self._consider_retirement(self._tracking.published(page, seed))
-
-    def _consider_retirement(self, seed: str | None) -> None:
-        if seed is None:
-            return
-        state = self.run_state.seeds[seed]
-        why = why_retire(state.window, state.stale)
-        if why is not None and self._tracking.retire(seed, why):
-            self._frontier.retire(seed)
-            logger.info("done with one source: %s", why)
-
     def summary(self) -> dict[str, Any]:
-        return {**summary(self.run_state), "dedup": self._dedup_report}
-
-    async def _deduplicate(self, goal: CrawlGoal) -> None:
-        assert self._grouper is not None
-        try:
-            self._dedup_report = await group_results(self._storage, goal, self._grouper, model=self._cfg.llm_model)
-        except Exception as exc:
-            self._dedup_report = {"status": "failed"}
-            logger.warning("dedup failed; original results retained: %s", exc)
+        return {**summary(self.run_state, tokens_used=self._monitor.budget.used), **self.pipeline.summary()}
 
     @property
     def run_state(self) -> RunState:
         """Run data shared with the tracker and read by CLI reporting."""
-        return self._tracking.state
-
-    async def stop(self) -> None:
-        self._state = "STOPPING"
-        if self._task is not None:
-            self._task.state = "STOPPING"
-            if not self.run_state.progress.fatal_error:
-                self._task.stopping_reason = "USER_REQUESTED"
-        self._control.set()
-        await self._frontier.wake_ranker()
+        return self.pipeline.run_state
 
     def _reconcile(self) -> None:
         """Report fetched, pending and refused work alongside the stop reason."""
-        left_frontier = self._frontier.size
-        left_buffer = self._frontier.waiting_size
+        left_frontier = self._monitor.frontier.size
+        left_buffer = self._monitor.frontier.waiting_size
         stats = self.run_state.stats
         logger.debug(
             "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
@@ -499,354 +287,20 @@ class Engine:
                 left_buffer,
             )
 
-    def _enough_found(self) -> bool:
-        """Check the result target before starting another analysis. In-flight calls may overshoot."""
-        lim, prog = self.run_state.limits, self.run_state.progress
-        return lim.max_relevant > 0 and prog.relevant_found >= lim.max_relevant
-
     def _record_stop_reason(self) -> None:
         """Name why the run is ending, for a path that bypassed the check."""
         if self._task is None or self._task.stopping_reason:
             return
-        reasons = check_stop(self._task, self._frontier, self.run_state.limits, self.run_state.progress)
+        reasons = self._monitor.reasons()
         self._task.stopping_reason = "+".join(r.code for r in reasons) if reasons else "FRONTIER_DRAINED"
         logger.debug(
             "stop.on_exit reason=%s pages=%d", self._task.stopping_reason, self.run_state.progress.pages_fetched
         )
 
-    # fetch loop -------------------------------------------------------
-
-    async def _fetch_pump(self) -> None:
-        while self._state == "RUNNING":
-            reasons = check_stop(
-                self._task,  # type: ignore[arg-type]
-                self._frontier,
-                self.run_state.limits,
-                self.run_state.progress,
-            )
-            if reasons:
-                codes = "+".join(r.code for r in reasons)
-                self._task.stopping_reason = codes  # type: ignore[union-attr]
-                self._state = "STOPPING"
-                logger.info(
-                    "stopping: %s, after %d pages (%d still queued, %d in the air)",
-                    codes,
-                    self.run_state.progress.pages_fetched,
-                    self._frontier.size + self._frontier.waiting_size,
-                    self.run_state.progress.in_flight,
-                )
-                await self._frontier.wake_ranker()
-                break
-
-            # Count dispatched pages against the budget; wait for failed fetches to release slots.
-            if (
-                self.run_state.limits.max_pages > 0
-                and self.run_state.progress.pages_fetched + self.run_state.progress.in_flight
-                >= self.run_state.limits.max_pages
-            ):
-                await asyncio.sleep(_POP_SLEEP)
-                continue
-
-            # Bound dispatched tasks independently of the fetch and analysis semaphores.
-            if self.run_state.progress.in_flight >= self._cfg.fetch_concurrency + 2 * self._cfg.llm_concurrency:
-                await asyncio.sleep(_POP_SLEEP)
-                continue
-
-            item = await self._frontier.pop_next(
-                now=_utcnow(),
-                next_allowed=None if self._cfg.ignore_robots else self._robots.next_allowed_at,
-                global_budget=self.run_state.limits.max_pages,
-            )
-            if item is None:
-                if self._frontier.scoring > 0:
-                    # A running rank call still holds pending work; wait for it to return.
-                    await asyncio.sleep(_POP_SLEEP)
-                    continue
-                if self._frontier.waiting_size == 0:
-                    # Cooling items remain pending work even when no item can be popped now.
-                    if self.run_state.progress.in_flight == 0 and self._frontier.cooling == 0:
-                        # Record the stop reason before leaving this loop directly.
-                        self._record_stop_reason()
-                        logger.debug("fetch_pump.exhausted frontier=0 buffer=0")
-                        await self._frontier.wake_ranker()
-                        break
-                    # Wake ranking to observe state changes while fetching or cooldowns continue.
-                    await self._frontier.wake_ranker()
-                elif self._frontier.size == 0 and self.run_state.progress.in_flight == 0:
-                    # Wake ranking when buffered work remains but fetching has no candidates.
-                    logger.debug(
-                        "fetch_pump.waking_rank frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size
-                    )
-                    await self._frontier.wake_ranker()
-                await asyncio.sleep(_POP_SLEEP)
-                continue
-
-            self._dispatch_page(item)
-
-        if self._state == "RUNNING":
-            self._state = "STOPPING"
-
-    def _dispatch_page(self, item: FrontierItem) -> None:
-        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
-        self._page_keys[item.item_id] = {
-            item.url_key,
-            self.run_state.work[item.item_id].get("page", {}).get("url_key", item.url_key),
-        }
-        self.run_state.progress.in_flight += 1
-        task = asyncio.create_task(self._handle_fetch(item))
-        self._inflight.add(task)
-        task.add_done_callback(self._page_done)
-
-    async def _enqueue_next_page(
-        self,
-        next_url: str,
-        item: FrontierItem,
-        ctx: PreFilterContext,
-        seed: str,
-    ) -> None:
-        """Queue a capped listing continuation at the same depth and neutral priority."""
-        pages = self.run_state.seeds[seed].listing_pages
-        if pages >= _MAX_LISTING_PAGES:
-            logger.debug("listing.page_cap seed=%s pages=%d", seed, pages)
-            return
-        url = self._canonicalizer.canonicalize(next_url, item.url.canonical)
-        candidate = Candidate(url=url, depth=item.depth, discovered_at=_utcnow())
-        decision, why = self._prefilter.check(candidate, self._goal, ctx)  # type: ignore[arg-type]
-        if decision.value != "allow":
-            logger.debug("listing.next_dropped url=%s reason=%s", url.canonical, why)
-            return
-        self.run_state.seeds[seed].listing_pages = pages + 1
-        await self._frontier.push_batch(
-            [
-                FrontierItem(
-                    url=url,
-                    url_key=url.url_key,
-                    priority=_LISTING_PAGE_PRIORITY,
-                    score_source="listing_page",
-                    depth=item.depth,
-                    reg_domain=url.reg_domain,
-                    seed_url_key=seed,
-                )
-            ]
-        )
-        logger.debug("listing.next_page url=%s page=%d", url.canonical, pages + 2)
-
-    async def _fetch_and_extract(self, item: FrontierItem) -> FetchedPage | None:
-        async with self._page_slots:
-            return await self._process_page(item)
-
-    async def _process_page(self, item: FrontierItem) -> FetchedPage | None:
-        outcome = await self._fetch.fetch(item)
-        if isinstance(outcome, FetchFailure):
-            if outcome.reason == "robots":
-                self.run_state.stats.robots_blocked += 1
-            else:
-                self.run_state.stats.fetch_errors += 1
-                if self._events:
-                    self._events.emit(EventType.FETCH_FAILED, {"url_key": item.url_key, "depth": item.depth})
-                self._storage.save_error(
-                    {
-                        "task_id": self._task.task_id if self._task else "",
-                        "url_key": item.url_key,
-                        "stage": "fetch",
-                        "error_type": outcome.error_type,
-                        "attempt": item.attempts,
-                        "created_at": _utcnow().isoformat(),
-                    }
-                )
-            await self._frontier.record_outcome(item, "FAILED" if outcome.reason == "fetch" else "SKIPPED")
-            return None
-        raw_path = await self._persist.save_raw(item.url_key, outcome)
-        logger.debug("fetch.extracting url_key=%s size=%dKB", item.url_key, len(outcome.raw) // 1024)
-        try:
-            page = await asyncio.wait_for(
-                asyncio.to_thread(self._extractor.extract, outcome, raw_path), timeout=self._cfg.extract_timeout
-            )
-        except asyncio.TimeoutError:
-            logger.warning("fetch.extract_timeout url_key=%s size=%dKB", item.url_key, len(outcome.raw) // 1024)
-            self.run_state.progress.pages_fetched += 1
-            await self._frontier.record_outcome(item, "SKIPPED")
-            return None
-        await self._persist.save_extracted(item.url_key, outcome, page)
-        self._note_page_age(page, self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key))
-        return FetchedPage(outcome, page)
-
-    async def _handle_fetch(self, item: FrontierItem) -> None:
-        work = self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
-        keys = self._page_keys[item.item_id] = {item.url_key}
-        if self._events:
-            self._events.emit(EventType.FETCH_STARTED, {"url_key": item.url_key, "depth": item.depth})
-        try:
-            if "page" in work:
-                page = Page.model_validate(work["page"])
-            else:
-                fetched = await self._fetch_and_extract(item)
-                if fetched is None:
-                    self.run_state.work.pop(item.item_id, None)
-                    return
-                page = fetched.page
-                work["page"] = page.model_dump(mode="json")
-                work["status"] = fetched.result.status_code
-                work["size"] = len(fetched.result.raw)
-                await self._checkpoint()
-            keys.add(page.url_key)
-
-            assert self._goal is not None
-            self.run_state.pages.open(
-                page.url_key,
-                page.url.canonical,
-                self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
-            )
-            if not work.get("analysis_done"):
-                await self._analysis.analyze(page, self._goal, allowed=lambda: not self._enough_found())
-                work["analysis_done"] = True
-                await self._checkpoint()
-            if self._events:
-                self._events.emit(
-                    EventType.FETCH_COMPLETED,
-                    {"url_key": item.url_key, "status": work["status"], "size": work["size"]},
-                )
-                self._events.emit(
-                    EventType.PAGE_EXTRACTED,
-                    {"url_key": page.url_key, "title": page.title, "status": page.extraction_status},
-                )
-
-            try:
-                harvest = await self._discovery.discover(page, item.depth)
-            except FeedDependencyError as e:
-                # Missing format dependencies stop the run rather than producing empty listings.
-                logger.error("fetch.adapter_dependency url_key=%s: %s", item.url_key, e)
-                self._fail("discovery", e)
-                await self._frontier.record_outcome(item, "FAILED")
-                return
-            if not work.get("discovered"):
-                self._consider_retirement(self._tracking.discovered(page, item, harvest))
-                work["discovered"] = True
-            else:
-                for candidate in harvest.candidates:
-                    candidate.seed_url_key = item.seed_url_key or item.url_key
-                    candidate.seed_ext = item.seed_ext
-            candidates = harvest.candidates
-            seed = self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key)
-            ctx = self._frontier.get_prefilter_context(
-                allow_fetch=lambda url: self._robots.allow_fetch(url),
-            )
-            n_allowed = 0
-            n_filtered = 0
-            for c in candidates:
-                decision, _ = self._prefilter.check(c, self._goal, ctx)
-                if decision.value == "allow":
-                    c.status = "BUFFERED"
-                    await self._frontier.push_candidates([c])
-                    n_allowed += 1
-                    self._storage.save_link(c)
-                else:
-                    c.status = "FILTERED_OUT"
-                    n_filtered += 1
-                # Progress pulse: large pages take a while to persist.
-                total = n_allowed + n_filtered
-                if total % 500 == 0:
-                    logger.debug("fetch.progress url_key=%s candidates=%d/%d", page.url_key, total, len(candidates))
-            logger.debug(
-                "prefilter url_key=%s total=%d allowed=%d filtered=%d",
-                page.url_key,
-                len(candidates),
-                n_allowed,
-                n_filtered,
-            )
-            if harvest.next_url and not work.get("next_page"):
-                await self._enqueue_next_page(harvest.next_url, item, ctx, seed)
-                work["next_page"] = True
-            if self._events and n_allowed > 0:
-                self._events.emit(
-                    EventType.URL_DISCOVERED,
-                    {"source_url_key": page.url_key, "count": n_allowed, "filtered": n_filtered},
-                )
-
-            await self._frontier.record_outcome(item, "COMPLETED")
-
-            self.run_state.progress.pages_fetched = self.run_state.progress.pages_fetched + 1
-            n = self.run_state.progress.pages_fetched
-            logger.debug(
-                "fetch.ok #%d url_key=%s title=%r links=%d allowed=%d elapsed=%.1fs",
-                n,
-                page.url_key,
-                page.title,
-                len(candidates),
-                n_allowed,
-                (time.monotonic() - self.run_state.progress.started_at),
-            )
-
-            self.run_state.work.pop(item.item_id, None)
-            self._page_keys.pop(item.item_id, None)
-            self._prune_pages()
-            await self._checkpoint()
-
-        except asyncio.CancelledError:
-            raise
-        except BaseException:
-            await self._frontier.record_outcome(item, "FAILED")
-            raise
-        finally:
-            self._page_keys.pop(item.item_id, None)
-            self.run_state.progress.in_flight = max(0, self.run_state.progress.in_flight - 1)
-            self._prune_pages()
-
-    # rank loop --------------------------------------------------------
-
-    async def _rank_pump(self) -> None:
-        while self._state == "RUNNING":
-            logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
-            await self._frontier.wait_for_ranking(lambda: self._state != "RUNNING")
-            logger.debug(
-                "rank_pump.woke frontier=%d buffer=%d state=%s",
-                self._frontier.size,
-                self._frontier.waiting_size,
-                self._state,
-            )
-            if self._state != "RUNNING":
-                break
-
-            batch = await self._frontier.take_for_ranking(_RANK_BATCH_SIZE)
-            if not batch:
-                continue
-
-            logger.debug("rank_pump.drain batch=%d frontier=%d", len(batch), self._frontier.size)
-            try:
-                await self._rank_and_enqueue(batch)
-            except BaseException:
-                await self._frontier.return_for_ranking(batch)
-                raise
-            else:
-                self.run_state.stats.candidates_ranked += len(batch)
-            finally:
-                self._frontier.finish_ranking(batch)
-                self._prune_pages()
-            await self._checkpoint()
-
-    async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
-        assert self._goal is not None
-        history, page_contexts = self._tracking.feedback(self._goal, batch)
-        ranked = await self._ranking.rank(batch, self._goal, history, page_contexts)
-        for decision in ranked.decisions:
-            self._storage.save_rank_decision(decision)
-        self._tracking.ranked(batch, ranked.decisions)
-        await self._frontier.push_batch(ranked.items)
-        if self._events and ranked.items:
-            self._events.emit(
-                EventType.CANDIDATE_ENQUEUED,
-                {
-                    "count": len(ranked.items),
-                    "dropped": sum(d.dropped for d in ranked.decisions),
-                },
-            )
-
-    # checkpoint -------------------------------------------------------
-
     async def _checkpoint(self) -> None:
         if self._task is None:
             return
-        if self._state == "INTERRUPTED":
+        if self._task.state == "INTERRUPTED":
             return
         await self._checkpointer.save()
         if self._events:

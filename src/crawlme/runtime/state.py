@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import dataclasses
 import datetime
@@ -130,10 +131,9 @@ class Limits:
 
 @dataclasses.dataclass
 class Progress:
-    """Mutable counters read by stopping policies."""
+    """Run counters read by stopping policies."""
 
     pages_fetched: int = 0
-    tokens_used: int = 0
     in_flight: int = 0
     relevant_found: int = 0
     started_at: float = 0.0
@@ -197,7 +197,55 @@ class RunState(Checkpointable):
     rejected_seeds: list[tuple[str, str]] = dataclasses.field(default_factory=list)
     proposed_seeds: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
 
-    def reset(self, *, goal: CrawlGoal, tokens_used_start: int = 0) -> None:
+    _revision: int = dataclasses.field(default=0, init=False, repr=False)
+    _changed: asyncio.Event = dataclasses.field(default_factory=asyncio.Event, init=False, repr=False)
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def notify_change(self) -> None:
+        self._revision += 1
+        self._changed.set()
+
+    async def wait_for_change(self, revision: int) -> None:
+        while revision == self._revision:
+            self._changed.clear()
+            await self._changed.wait()
+
+    def page_completed(self) -> None:
+        self.progress.pages_fetched += 1
+        self.notify_change()
+
+    def work_started(self) -> None:
+        self.progress.in_flight += 1
+        self.notify_change()
+
+    def work_finished(self) -> None:
+        self.progress.in_flight -= 1
+        self.notify_change()
+
+    def analysis_completed(self, relevant: bool) -> None:
+        if relevant:
+            self.progress.relevant_found += 1
+            self.notify_change()
+
+    def listing_completed(self, *, empty: bool) -> None:
+        self.progress.listings_seen += 1
+        self.progress.listings_empty += empty
+        self.notify_change()
+
+    def record_refusal(self, reason: str) -> None:
+        if not self.progress.refused_by:
+            self.progress.refused_by = reason
+            self.notify_change()
+
+    def record_failure(self, error: BaseException) -> None:
+        if not self.progress.fatal_error:
+            self.progress.fatal_error = str(error) or type(error).__name__
+            self.notify_change()
+
+    def reset(self, *, goal: CrawlGoal) -> None:
         """Reset execution history while preserving prepared seeds and expansion metadata.
 
         Seed ingestion precedes run(), so source URLs and proposal details must
@@ -212,7 +260,7 @@ class RunState(Checkpointable):
             recall=goal.recall,
             since=goal.since,
         )
-        self.progress = Progress(started_at=time.monotonic(), tokens_used=tokens_used_start)
+        self.progress = Progress(started_at=time.monotonic())
         self.stats.reset()
         self.work.clear()
         self.pages = PageBook()
@@ -221,6 +269,7 @@ class RunState(Checkpointable):
         self.seeds = collections.defaultdict(
             SeedState, {key: SeedState(url=seed.url) for key, seed in self.seeds.items() if seed.url}
         )
+        self.notify_change()
 
     def dump(self) -> dict[str, Any]:
         progress = dataclasses.asdict(self.progress)
@@ -241,7 +290,9 @@ class RunState(Checkpointable):
 
     def restore(self, data: dict[str, Any]) -> None:
         self.work = {entry["item"]["item_id"]: entry for entry in data["work"]}
-        self.progress = Progress(**data["progress"])
+        progress = dict(data["progress"])
+        progress.pop("tokens_used", None)  # Older snapshots duplicated the budget total.
+        self.progress = Progress(**progress)
         self.progress.started_at = time.monotonic() - self.progress.started_at
         self.progress.fatal_error = ""
         self.stats = Stats(**data["stats"])
@@ -258,3 +309,4 @@ class RunState(Checkpointable):
         self.seeds_asked = data["seeds_asked"]
         self.rejected_seeds = data["rejected_seeds"]
         self.proposed_seeds = data["proposed_seeds"]
+        self.notify_change()

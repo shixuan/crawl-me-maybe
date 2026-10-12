@@ -291,7 +291,7 @@ async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     )
 
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
-    assert await scheduler.ingest_seeds(goal, [seed]) == 1
+    assert await scheduler.pipeline.ingest_seeds(goal, [seed]) == 1
     await scheduler.run(goal, task)
     await scheduler.aclose()
 
@@ -322,7 +322,7 @@ async def test_no_creds(site: str, tmp_path: Path) -> None:
 
     scheduler = create_scheduler(cfg, goal=goal)
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
-    await scheduler.ingest_seeds(goal, [seed])
+    await scheduler.pipeline.ingest_seeds(goal, [seed])
     await scheduler.run(goal, task)
     await scheduler.aclose()
 
