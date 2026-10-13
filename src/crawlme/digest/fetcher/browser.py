@@ -72,8 +72,6 @@ class PlaywrightFetcher(Fetcher):
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        # Serialize page navigation and capture within the shared browser context.
-        self._lock = asyncio.Lock()
         # Held only while starting up, so a burst of first fetches
         # produces one browser rather than one each.
         self._start_lock = asyncio.Lock()
@@ -141,24 +139,23 @@ class PlaywrightFetcher(Fetcher):
 
         context = await self._ensure_context()
         payloads: list[Payload] = []
-        async with self._lock:
-            page = await context.new_page()
+        page = await context.new_page()
+        try:
+            if self._keep_payload is not None:
+                # Attach listeners before navigation to capture initial content responses.
+                page.on("response", lambda resp: self._collect(resp, payloads))
             try:
-                if self._keep_payload is not None:
-                    # Attach listeners before navigation to capture initial content responses.
-                    page.on("response", lambda resp: self._collect(resp, payloads))
-                try:
-                    response = await page.goto(item.url.canonical, wait_until=self._wait_until)
-                except PlaywrightTimeout:
-                    # Polling pages may never become idle; preserve the rendered DOM on timeout.
-                    logger.info("%s was slow to settle, reading what it rendered", item.url.canonical)
-                    response = None
-                if self._scrolls:
-                    await self._scroll_through(page, payloads)
-                html = await page.content()
-                final_url_str = page.url
-            finally:
-                await page.close()
+                response = await page.goto(item.url.canonical, wait_until=self._wait_until)
+            except PlaywrightTimeout:
+                # Polling pages may never become idle; preserve the rendered DOM on timeout.
+                logger.info("%s was slow to settle, reading what it rendered", item.url.canonical)
+                response = None
+            if self._scrolls:
+                await self._scroll_through(page, payloads)
+            html = await page.content()
+            final_url_str = page.url
+        finally:
+            await page.close()
 
         if response is None:
             # Retry only if the timed-out navigation produced no usable content.
