@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from crawlme.analysis import Analyzer
+from crawlme.analysis import AnalysisResult, Analyzer
+from crawlme.digest import Page
 from crawlme.persist import Storage
-from crawlme.runtime import Tracker
-from crawlme.schemas import AnalysisResult, CrawlGoal, Page
-from crawlme.schemas.core import _content_id
+from crawlme.runtime import CrawlGoal, Tracker
+from crawlme.util.ids import _content_id
 
 
 class AnalysisWorker:

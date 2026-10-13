@@ -13,8 +13,9 @@ import pytest
 from crawlme.analysis import Analyzer
 from crawlme.llm import Error, LLMResponse, TokenBudget
 from crawlme.persist import Lock, Storage
+from crawlme.pioneer import RankDecision
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.schemas import CrawlTask, RankDecision
+from crawlme.runtime import CrawlTask
 from tests.scheduler.test_control import build, candidate
 
 

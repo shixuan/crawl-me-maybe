@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from crawlme.checkpoint import Checkpointable
-from crawlme.schemas import Candidate
+from crawlme.pioneer.models import Candidate
 
 logger = logging.getLogger(__name__)
 

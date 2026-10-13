@@ -30,9 +30,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, TokenBudget, close_litellm_clients
+from crawlme.llm import Client, TokenBudget, close_litellm_clients
+from crawlme.pioneer import Candidate, RankHistorySummary
 from crawlme.pioneer.ranker import LLMRanker
-from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 @dataclass
@@ -95,7 +97,7 @@ async def rank_all(goal: CrawlGoal, rows: list[Row], effort: str, batch: int) ->
     """
     cfg = Settings()
     budget = TokenBudget(limit=0)
-    client = LLMClient(
+    client = Client(
         cfg.llm_model,
         api_key=cfg.llm_api_key,
         base_url=cfg.llm_base_url,

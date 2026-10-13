@@ -19,8 +19,10 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.llm import LLMResponse
+from crawlme.pioneer import Candidate
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import URL, Candidate, CrawlGoal, CrawlTask
+from crawlme.urls import URL
 
 # A small site shaped like a real focused crawl: a topical hub that
 # links to on-topic articles, one page the prefilter must drop, and one

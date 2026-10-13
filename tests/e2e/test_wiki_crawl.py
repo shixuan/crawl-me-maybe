@@ -9,9 +9,10 @@ import aiosqlite
 import pytest
 
 from crawlme.logging import setup_logging
-from crawlme.pioneer.canonicalizer import Canonicalizer
+from crawlme.pioneer import FrontierItem
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask, FrontierItem
+from crawlme.urls import Canonicalizer
 
 pytestmark = pytest.mark.e2e
 

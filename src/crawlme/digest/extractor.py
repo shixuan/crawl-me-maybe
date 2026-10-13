@@ -12,8 +12,8 @@ from typing import Protocol
 import trafilatura
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
+from crawlme.digest.models import ExtractionStatus, FetchResult, Page
 from crawlme.platforms.base import FeedAdapter
-from crawlme.schemas import ExtractionStatus, FetchResult, Page
 from crawlme.util.lxml import LXML_LOCK
 
 

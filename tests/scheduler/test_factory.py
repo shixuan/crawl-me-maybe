@@ -58,9 +58,10 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     """The assembled seed verifier uses the same access policy as crawling."""
     import sqlite3
 
+    from crawlme.digest import FetchResult, Payload
     from crawlme.pioneer.seed_expander import SeedExpander
     from crawlme.pioneer.sources import ManualSource
-    from crawlme.schemas import CrawlGoal, FetchResult, Payload
+    from crawlme.runtime import CrawlGoal
 
     url = "https://example.com/source"
     calls = []

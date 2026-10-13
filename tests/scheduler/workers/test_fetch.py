@@ -2,9 +2,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.digest import FetchResult
+from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.workers import FetchFailure, FetchWorker
-from crawlme.schemas import URL, FetchResult, FrontierItem
+from crawlme.urls import URL
 
 
 @pytest.mark.asyncio

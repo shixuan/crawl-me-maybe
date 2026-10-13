@@ -6,7 +6,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from crawlme.platforms.base import PageProblem
+from crawlme.platforms import PageProblem
 from crawlme.runtime import Limits, Progress
 
 

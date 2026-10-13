@@ -7,7 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from crawlme.schemas.core import URL, _new_id, _utcnow
+from crawlme.urls import URL
+from crawlme.util.dates import _utcnow
+from crawlme.util.ids import _new_id
 
 
 class Payload(BaseModel):

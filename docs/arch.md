@@ -1,9 +1,32 @@
 # Architecture
 
-`crawlme` separates discovery, page processing, analysis and scheduling. Shared
-Pydantic models live in `schemas/`. Run-wide data lives in `runtime/state.py`.
+`crawlme` separates discovery, page processing, analysis and scheduling.
+Data models live in their owning packages and are exported through `__init__.py`.
+Goals and task records live in `runtime/`; run-wide data lives in `runtime/state.py`.
 `prompts.py` holds LLM instructions and input formatting.
 Stage modules own model calls, retries and response validation.
+
+## Data ownership
+
+| Location | Types |
+|---|---|
+| `urls/models.py` | URL identity and raw links |
+| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task records |
+| `pioneer/models.py` | Candidates and frontier entries |
+| `digest/models.py` | Fetch results, pages and retained payloads |
+| `analysis/models.py` | Analyses, result items, extracted fields and feedback |
+| `discovery/models.py` | Harvest results |
+| `platforms/models.py` | Feed entries, listings and content problems |
+| `dedup/models.py` | Validated groups and grouping responses |
+
+Component-specific types stay beside their component. Ranking decisions and history
+live in `pioneer/ranker.py`; frontier snapshots live in `pioneer/frontier.py`.
+Run state stays in `runtime/state.py`. ID helpers live in `util/ids.py` and date
+helpers in `util/dates.py`.
+
+Packages export their public types through `__init__.py`. Where loading an
+implementation would create an import cycle, the package loads that export when it
+is first accessed. Importing a page or analysis model does not load its workers.
 
 ## Components
 
@@ -35,10 +58,10 @@ flowchart TB
     extractor -->|Page| analyzer
     analyzer -->|AnalysisResult via sink| sink["AnalysisWorker.apply<br>persist and tally through Tracker"]
 
+    canonical["urls/Canonicalizer"]
     subgraph discovery["4. discovery/ · find candidates · scheduled by DiscoveryWorker"]
         harvest["Harvester<br>reads saved HTML and payloads"]
         harvest -->|unclaimed page| links[extract_links]
-        canonical["pioneer/Canonicalizer"]
         links --> canonical
     end
     adapters["platforms/ · FeedAdapter<br>Instagram / Reddit / RSS"]
@@ -70,7 +93,8 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `scheduler/workers/` | Execute stages, persist their results and update stage statistics |
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Evaluate run stopping conditions |
-| `pioneer/` | Canonicalize, filter, buffer and rank candidate URLs, and enhance goals and expand seeds |
+| `urls/` | URL identity, raw links and canonicalization |
+| `pioneer/` | Filter, buffer and rank candidate URLs, and enhance goals and expand seeds |
 | `digest/` | Fetch pages and extract text and metadata |
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
 | `platforms/` | Platform recognition, parsing, rendering and session requirements |
@@ -78,6 +102,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts, provide ranking feedback and define source retirement rules |
+| `runtime/goal.py`, `runtime/task.py` | Crawl goals, extraction specifications and task lifecycle records |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `persist/storage.py` | Storage implementation using SQLite and raw files |

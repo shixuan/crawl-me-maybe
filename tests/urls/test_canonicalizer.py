@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from crawlme.pioneer.canonicalizer import Canonicalizer
+from crawlme.urls import Canonicalizer
 
 
 @pytest.fixture

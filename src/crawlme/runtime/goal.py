@@ -1,15 +1,16 @@
-"""Goal and task models: the user's intent and one run of it."""
+"""Crawl goals and extraction specifications."""
 
 from __future__ import annotations
 
 import datetime
 import hashlib
 import json
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from crawlme.schemas.core import _content_id, _new_id, _utcnow
+from crawlme.util.dates import _utcnow
+from crawlme.util.ids import _content_id
 
 
 class CrawlGoal(BaseModel):
@@ -42,19 +43,6 @@ class CrawlGoal(BaseModel):
         if not self.goal_id:
             self.goal_id = _content_id(self.prompt)
         return self
-
-
-TaskState = Literal["CREATED", "RUNNING", "INTERRUPTED", "STOPPING", "COMPLETED", "FAILED"]
-
-
-class CrawlTask(BaseModel):
-    task_id: str = Field(default_factory=_new_id)
-    goal_id: str = ""
-    state: TaskState = "CREATED"
-    counters: dict[str, Any] = Field(default_factory=dict[str, Any])
-    start_at: datetime.datetime = Field(default_factory=_utcnow)
-    end_at: datetime.datetime | None = None
-    stopping_reason: str | None = None
 
 
 def spec_fields(spec: dict[str, Any] | None) -> dict[str, str]:

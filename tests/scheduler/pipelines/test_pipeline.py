@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.runtime import CrawlGoal
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
-from crawlme.schemas import CrawlGoal
 from tests.scheduler.test_control import build, candidate
 
 

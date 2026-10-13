@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 from crawlme.checkpoint import Checkpointable
-from crawlme.schemas import FrontierItem
+from crawlme.pioneer.models import FrontierItem
 
 logger = logging.getLogger(__name__)
 

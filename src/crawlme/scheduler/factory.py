@@ -15,13 +15,12 @@ from crawlme.discovery import Harvester
 from crawlme.llm import TokenBudget
 from crawlme.persist import Storage
 from crawlme.pioneer.buffer import RoundRobinBuffer
-from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms import ADAPTERS, FeedAdapter
-from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.engine import Engine
 from crawlme.scheduler.monitor import StopMonitor
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
@@ -34,7 +33,7 @@ from crawlme.scheduler.workers import (
     PersistWorker,
     RankingWorker,
 )
-from crawlme.schemas import CrawlGoal
+from crawlme.urls import Canonicalizer
 
 
 def create_scheduler(

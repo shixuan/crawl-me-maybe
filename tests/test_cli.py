@@ -324,7 +324,7 @@ def test_summary_in_log(tmp_path, capsys, log_format, log_level):
     from crawlme.config import Settings
     from crawlme.llm import TokenBudget
     from crawlme.logging import setup_logging, to_file
-    from crawlme.schemas import CrawlTask
+    from crawlme.runtime import CrawlTask
 
     scheduler = MagicMock()
     scheduler.summary.return_value = {

@@ -13,8 +13,10 @@ import pytest
 
 from crawlme.cli.inspect import InspectError, _result_lines, cmd_inspect, inspect_task
 from crawlme.config import Settings
+from crawlme.digest import Page
 from crawlme.persist import Storage
-from crawlme.schemas import URL, CrawlGoal, CrawlTask, Page
+from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.urls import URL
 
 
 def _goal(prompt: str) -> CrawlGoal:

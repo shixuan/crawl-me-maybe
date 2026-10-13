@@ -11,11 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from crawlme.analysis import AnalysisResult
 from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
 from crawlme.config import Settings
+from crawlme.digest import Page
 from crawlme.llm import TokenBudgetError
 from crawlme.persist import Storage
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, CrawlTask, Page
+from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.urls import URL
 
 
 def _goal(prompt: str = "find rust posts") -> CrawlGoal:

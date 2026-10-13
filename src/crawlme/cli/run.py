@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from crawlme.analysis import CLASSIFICATIONS
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.config import Settings
 from crawlme.llm import Stage, TokenBudget, close_litellm_clients
@@ -17,11 +18,10 @@ from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.pioneer.sources import FileSource, ManualSource, Source
-from crawlme.platforms import ADAPTERS
-from crawlme.platforms.base import PageProblem
+from crawlme.platforms import ADAPTERS, PageProblem
+from crawlme.runtime import CrawlGoal, CrawlTask, spec_fields
 from crawlme.scheduler import Engine
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CLASSIFICATIONS, CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
 

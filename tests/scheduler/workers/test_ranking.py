@@ -6,16 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.analysis import AnalysisResult, AnalyzerFeedback
+from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
+from crawlme.runtime import CrawlGoal
 from crawlme.scheduler.workers.ranking import RankingWorker
-from crawlme.schemas import (
-    URL,
-    AnalysisResult,
-    AnalyzerFeedback,
-    Candidate,
-    CrawlGoal,
-    RankDecision,
-    RankHistorySummary,
-)
+from crawlme.urls import URL
 from tests.scheduler.helpers import (
     _goal,
     _make_sched,

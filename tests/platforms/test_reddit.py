@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.platforms import reddit
-from crawlme.platforms.base import PageProblem
-from crawlme.schemas import URL, Page
+from crawlme.digest import Page
+from crawlme.platforms import PageProblem, reddit
+from crawlme.urls import URL
 
 _DATA = Path(__file__).parent / "data"
 _LISTING = (_DATA / "reddit_listing.html").read_text()

@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from crawlme.digest import TrafExtractor
+from crawlme.digest import FetchResult, Payload, TrafExtractor
 from crawlme.platforms import instagram, reddit, rss
-from crawlme.schemas import URL, FetchResult, Payload
+from crawlme.urls import URL
 
 
 def _ig_result():

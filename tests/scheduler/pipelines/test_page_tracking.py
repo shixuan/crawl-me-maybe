@@ -7,11 +7,8 @@ import datetime
 
 import pytest
 
+from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.runtime import MAX_STALE_STREAK, RELEVANCE_WINDOW
-from crawlme.schemas import (
-    AnalysisResult,
-    AnalyzerFeedback,
-)
 from tests.scheduler.helpers import (
     _FRESH,
     _SINCE,
@@ -144,8 +141,8 @@ def test_seen_bounded():
 async def test_a_proposed_seed_is_credited_for_what_it_found():
     """The report ranks them by this, and it is the whole reason to
     print them: a seed that earned its place is one to keep."""
-    from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.schemas import AnalyzerFeedback
+    from crawlme.analysis import AnalyzerFeedback
+    from crawlme.urls import Canonicalizer
 
     canon = Canonicalizer()
     seed = "https://ig.test/acct/"

@@ -7,7 +7,7 @@ from typing import Any
 
 from crawlme.dedup.grouper import Grouper, group_results
 from crawlme.persist import Storage
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
 

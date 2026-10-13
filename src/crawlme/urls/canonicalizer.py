@@ -8,7 +8,7 @@ import hashlib
 import re
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
-from crawlme.schemas import URL
+from crawlme.urls.models import URL
 
 _TRACKING_PARAMS = frozenset(
     {

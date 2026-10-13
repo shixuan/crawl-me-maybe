@@ -8,10 +8,11 @@ import pytest
 
 from crawlme.analysis import Analyzer
 from crawlme.config import Settings
+from crawlme.digest import FetchResult
 from crawlme.llm import Error, LLMResponse
 from crawlme.pioneer.sources import ManualSource
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask, FetchResult
 
 
 @pytest.mark.parametrize("dedup", [False, True])

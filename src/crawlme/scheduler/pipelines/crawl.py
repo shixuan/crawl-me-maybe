@@ -11,16 +11,16 @@ from typing import Any
 from crawlme.config import Settings
 from crawlme.llm import TokenBudget
 from crawlme.persist import Storage
-from crawlme.pioneer.canonicalizer import Canonicalizer
+from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import expand
-from crawlme.runtime import EventEmitter, EventType, RunState, Tracker
+from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
 from crawlme.scheduler.workers import AnalysisWorker, DedupWorker, RankingWorker
-from crawlme.schemas import Candidate, CrawlGoal, FrontierItem
+from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
 _RANK_BATCH_SIZE = 20

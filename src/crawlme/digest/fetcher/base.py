@@ -7,7 +7,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from crawlme.schemas import FetchResult, FrontierItem
+from crawlme.digest.models import FetchResult
+from crawlme.pioneer import FrontierItem
 
 logger = logging.getLogger(__name__)
 

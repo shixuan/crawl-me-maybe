@@ -1,4 +1,4 @@
-"""Pioneer-layer models: candidates, frontier, and ranking decisions."""
+"""Candidates and frontier entries."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from crawlme.schemas.core import URL, _new_id, _utcnow
+from crawlme.urls import URL
+from crawlme.util.dates import _utcnow
+from crawlme.util.ids import _new_id
 
 CandidateStatus = Literal["INGESTED", "FILTERED_OUT", "BUFFERED", "DROPPED", "ENQUEUED", "FETCHED"]
 
@@ -57,41 +59,3 @@ class FrontierItem(BaseModel):
     next_available_at: datetime.datetime = Field(default_factory=_utcnow)
     enqueued_at: datetime.datetime = Field(default_factory=_utcnow)
     seq: int = 0
-
-
-class RankDecision(BaseModel):
-    candidate_id: str
-    url_key: str = ""
-    priority: float = 0.0
-    dropped: bool = False
-    rationale: str | None = None
-    ranker: str = "rule"
-    tokens_used: int = 0
-    decided_at: datetime.datetime = Field(default_factory=_utcnow)
-
-
-class RankHistorySummary(BaseModel):
-    """Previous crawl findings consumed by the ranking prompt."""
-
-    goal: str = ""
-    relevant_pages: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class FrontierSnapshot(BaseModel):
-    snapshot_id: str = Field(default_factory=_new_id)
-    task_id: str = ""
-    # Opaque queue state serialized by the ordering implementation.
-    ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
-    # Pending unranked candidates included in checkpoints.
-    waiting: dict[str, Any] = Field(default_factory=dict[str, Any])
-    # The shape checkpoints were written in before `ordering` existed.
-    # Read on restore so an older checkpoint still resumes; no longer
-    # written.
-    heap: list[FrontierItem] = Field(default_factory=list)
-    pending: list[FrontierItem] = Field(default_factory=list)
-    visited: set[str] = Field(default_factory=set)
-    retired: set[str] = Field(default_factory=set)
-    ranking: list[Candidate] = Field(default_factory=list)
-    budgets: dict[str, Any] = Field(default_factory=dict[str, Any])
-    counters: dict[str, Any] = Field(default_factory=dict[str, Any])
-    created_at: datetime.datetime = Field(default_factory=_utcnow)

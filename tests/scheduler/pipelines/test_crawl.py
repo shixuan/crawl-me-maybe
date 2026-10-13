@@ -10,10 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.config import Settings
-from crawlme.schemas import (
-    URL,
-    Candidate,
-)
+from crawlme.pioneer import Candidate
+from crawlme.urls import URL
 from tests.scheduler.helpers import (
     _goal,
     _item,

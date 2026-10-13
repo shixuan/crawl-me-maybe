@@ -222,7 +222,7 @@ async def test_refusal_stops():
     there, so a rate-limited crawl kept requesting pages that would all
     be refused, and reported the empty result as a finished run.
     """
-    from crawlme.platforms.base import PageProblem
+    from crawlme.platforms import PageProblem
 
     sched = _make_sched()
     sched.run_state.stats.reset()

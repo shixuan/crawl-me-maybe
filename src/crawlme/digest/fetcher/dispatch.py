@@ -9,8 +9,9 @@ from typing import TYPE_CHECKING
 from crawlme.digest.fetcher.base import Fetcher
 
 if TYPE_CHECKING:
+    from crawlme.digest.models import FetchResult
+    from crawlme.pioneer import FrontierItem
     from crawlme.platforms import FeedAdapter
-    from crawlme.schemas import FetchResult, FrontierItem
 
 logger = logging.getLogger(__name__)
 

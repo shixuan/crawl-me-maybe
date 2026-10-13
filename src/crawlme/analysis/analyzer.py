@@ -13,23 +13,14 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from crawlme import prompts
+from crawlme.analysis.models import AnalysisResult, AnalyzerFeedback, Classification, ExtractedField, ResultItem
 from crawlme.checkpoint import Checkpointable
 from crawlme.config import Settings
+from crawlme.digest import Page
 from crawlme.llm import Client, Error, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
 from crawlme.logging.progress import activity
-from crawlme.schemas import (
-    AnalysisResult,
-    AnalyzerFeedback,
-    Classification,
-    CrawlGoal,
-    ExtractedField,
-    Page,
-    spec_fields,
-    spec_time_field,
-    spec_version,
-)
-from crawlme.schemas.analysis import ResultItem
+from crawlme.runtime import CrawlGoal, spec_fields, spec_time_field, spec_version
 from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)

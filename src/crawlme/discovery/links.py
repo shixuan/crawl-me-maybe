@@ -6,7 +6,8 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
-from crawlme.schemas import Page, RawLink
+from crawlme.digest import Page
+from crawlme.urls import RawLink
 from crawlme.util.lxml import LXML_LOCK
 
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}

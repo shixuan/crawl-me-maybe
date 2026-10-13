@@ -12,12 +12,11 @@ from pathlib import Path
 import pytest
 
 from crawlme.config import Settings
+from crawlme.digest import Page
 from crawlme.discovery import Harvester
-from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.platforms import instagram
-from crawlme.platforms.base import PageProblem
+from crawlme.platforms import PageProblem, instagram
 from crawlme.scheduler.factory import _build_harvester
-from crawlme.schemas import URL, Page
+from crawlme.urls import URL, Canonicalizer
 
 _LINKS_HTML = b"""<html><body><article>
 <h2>Rust</h2><p>Body text long enough to keep.</p>
@@ -231,7 +230,7 @@ def test_a_listing_without_its_payload_says_so():
     """Markup alone looks like a healthy read: the count is normal and
     nothing refused us. Measured on one account it ran up to 37 days
     behind."""
-    from crawlme.platforms.base import Listing
+    from crawlme.platforms import Listing
 
     assert Listing(own=[], others=[], degraded=True).degraded
     assert not Listing(own=[], others=[]).degraded

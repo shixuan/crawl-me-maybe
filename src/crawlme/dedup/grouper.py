@@ -8,30 +8,18 @@ import logging
 from collections import Counter
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from crawlme import prompts
 from crawlme.config import Settings
+from crawlme.dedup.models import Group, Grouping
 from crawlme.llm import Stage, TokenBudget
 from crawlme.llm.client import Client
 from crawlme.llm.errors import Error
 from crawlme.llm.parsing import parse_json_response
 from crawlme.logging.progress import activity
 from crawlme.persist import Storage
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
-
-
-class Group(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    members: list[str] = Field(min_length=1)
-    overview: str = Field(min_length=1, max_length=4000)
-
-
-class Grouping(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    groups: list[Group]
 
 
 def _identity(row: dict[str, Any]) -> str:

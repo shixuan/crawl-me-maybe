@@ -8,18 +8,41 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from crawlme.checkpoint import Checkpointable
 from crawlme.pioneer.buffer import Buffer, RoundRobinBuffer
+from crawlme.pioneer.models import Candidate, FrontierItem, FrontierItemStatus
 from crawlme.pioneer.prefilter import PreFilterContext
 from crawlme.pioneer.queue import Gate, GateFn, PriorityQueue
-from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, FrontierSnapshot
 from crawlme.util import notify
+from crawlme.util.ids import _new_id
 
 logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+class FrontierSnapshot(BaseModel):
+    snapshot_id: str = Field(default_factory=_new_id)
+    task_id: str = ""
+    # Opaque queue state serialized by the ordering implementation.
+    ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # Pending unranked candidates included in checkpoints.
+    waiting: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # The shape checkpoints were written in before `ordering` existed.
+    # Read on restore so an older checkpoint still resumes; no longer
+    # written.
+    heap: list[FrontierItem] = Field(default_factory=list)
+    pending: list[FrontierItem] = Field(default_factory=list)
+    visited: set[str] = Field(default_factory=set)
+    retired: set[str] = Field(default_factory=set)
+    ranking: list[Candidate] = Field(default_factory=list)
+    budgets: dict[str, Any] = Field(default_factory=dict[str, Any])
+    counters: dict[str, Any] = Field(default_factory=dict[str, Any])
+    created_at: datetime.datetime = Field(default_factory=_utcnow)
 
 
 class Frontier(Checkpointable):

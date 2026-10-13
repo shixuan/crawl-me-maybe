@@ -14,7 +14,7 @@ import pytest
 
 from crawlme.llm import Error, LLMResponse, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime import CrawlGoal
 
 
 class _StubClient:

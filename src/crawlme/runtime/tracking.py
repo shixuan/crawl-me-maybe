@@ -6,11 +6,14 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from crawlme.analysis import AnalysisResult
+from crawlme.digest import Page
 from crawlme.discovery import Harvest
 from crawlme.logging import where
-from crawlme.platforms.base import PageProblem
+from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
+from crawlme.platforms import PageProblem
+from crawlme.runtime.goal import CrawlGoal
 from crawlme.runtime.state import RELEVANCE_WINDOW, RunState
-from crawlme.schemas import AnalysisResult, Candidate, CrawlGoal, FrontierItem, Page, RankDecision, RankHistorySummary
 
 logger = logging.getLogger(__name__)
 

@@ -13,8 +13,8 @@ from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.persist import Lock, Storage
 from crawlme.pioneer.ranker import LLMRanker
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask
 
 
 async def cmd_resume(args: argparse.Namespace) -> None:

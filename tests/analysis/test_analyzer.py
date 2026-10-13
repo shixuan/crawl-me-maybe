@@ -14,9 +14,11 @@ import pytest
 from crawlme.analysis import Analyzer
 from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
 from crawlme.config import Settings
+from crawlme.digest import Page
 from crawlme.llm import Error, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.prompts import analysis_input
-from crawlme.schemas import URL, CrawlGoal, Page
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 class _StubClient:
@@ -533,7 +535,7 @@ def test_no_class_for_links_alone():
     """HUB named a page kept for its links. Seven runs fetched 17 pages
     on the analyzer's endorsement and got one result, against 25% on the
     pages the ranker chose, so the class and the links both went."""
-    from crawlme.schemas import CLASSIFICATIONS
+    from crawlme.analysis import CLASSIFICATIONS
 
     assert CLASSIFICATIONS == ("RELEVANT", "IRRELEVANT", "UNKNOWN")
     system = _contract()
@@ -553,7 +555,7 @@ def test_extraction_is_scoped_to_keepers():
 def test_aggregator_is_gone():
     """It named the same thing HUB did, nothing read them apart, and the
     model chose it zero times in three runs."""
-    from crawlme.schemas import CLASSIFICATIONS
+    from crawlme.analysis import CLASSIFICATIONS
 
     assert "AGGREGATOR" not in CLASSIFICATIONS
     assert "AGGREGATOR" not in _contract()

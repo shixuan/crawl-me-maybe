@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from crawlme.pioneer import Frontier
+from crawlme.pioneer import Candidate, Frontier, FrontierItem, FrontierSnapshot
 from crawlme.pioneer.queue import PriorityQueue
-from crawlme.schemas import URL, Candidate, FrontierItem, FrontierSnapshot
+from crawlme.urls import URL
 from crawlme.util import subscribe
 
 
@@ -410,3 +410,36 @@ async def test_partial_add_notifies(monkeypatch, cancel, request):
         await running
     assert frontier.waiting_size == 1
     assert notices == [1]
+
+
+def _model_url() -> URL:
+    return URL(
+        raw="https://example.com/page?a=1",
+        canonical="https://example.com/page",
+        url_key="abc123",
+    )
+
+
+def test_snapshot_defaults():
+    fs = FrontierSnapshot()
+    assert fs.snapshot_id
+    assert fs.visited == set()
+
+
+def test_snapshot_old_shape():
+    """`heap` predates `ordering` and still has to load.
+
+    Checkpoints written by an older build carry their items here, and
+    dropping the field would turn every one of them into an empty
+    frontier that reports itself as a finished crawl.
+    """
+    u = _model_url()
+    fs = FrontierSnapshot(
+        task_id="t1",
+        heap=[FrontierItem(url=u, url_key=u.url_key, priority=0.5)],
+        visited={"k1", "k2"},
+        budgets={"example.com": 5},
+    )
+    assert fs.heap[0].priority == 0.5
+    assert len(fs.visited) == 2
+    assert fs.budgets["example.com"] == 5

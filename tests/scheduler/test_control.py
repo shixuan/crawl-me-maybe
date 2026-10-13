@@ -11,11 +11,13 @@ import pytest
 
 from crawlme.analysis import Analyzer
 from crawlme.config import Settings
+from crawlme.digest import FetchResult, Page
 from crawlme.discovery import Harvest
 from crawlme.llm import Error, LLMResponse
-from crawlme.pioneer.canonicalizer import Canonicalizer
+from crawlme.pioneer import Candidate
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import Candidate, CrawlGoal, CrawlTask, FetchResult, Page
+from crawlme.urls import Canonicalizer
 
 
 def candidate(path="child", **kwargs):

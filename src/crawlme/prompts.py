@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import datetime
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from crawlme.schemas import Candidate, CrawlGoal, Page, RankHistorySummary, spec_fields
+from crawlme.digest import Page
+from crawlme.pioneer import Candidate
+from crawlme.runtime import CrawlGoal, spec_fields
+
+if TYPE_CHECKING:
+    from crawlme.pioneer import RankHistorySummary
 
 _GOAL_SYSTEM = (
     "You turn a user's crawl goal into structured fields. Reply with JSON only, "

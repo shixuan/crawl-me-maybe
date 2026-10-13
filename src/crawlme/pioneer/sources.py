@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from crawlme.schemas import URL, Candidate, CrawlGoal
+from crawlme.pioneer.models import Candidate
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 def _utcnow() -> datetime.datetime:

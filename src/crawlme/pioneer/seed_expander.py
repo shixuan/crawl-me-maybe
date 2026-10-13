@@ -19,8 +19,9 @@ if TYPE_CHECKING:
     from crawlme.config import Settings
     from crawlme.discovery import Harvest
     from crawlme.llm import TokenBudget
-    from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.schemas import Candidate, CrawlGoal, FrontierItem
+    from crawlme.pioneer.models import Candidate, FrontierItem
+    from crawlme.runtime import CrawlGoal
+    from crawlme.urls import Canonicalizer
 
 SeedProbe = Callable[["FrontierItem"], Awaitable["Harvest"]]
 
@@ -126,7 +127,7 @@ async def verify(
 
     The scheduler supplies policy-aware fetching and discovery. Verification checks
     discovery, not relevance; the crawl evaluates relevance after accepting a seed."""
-    from crawlme.schemas import Candidate, FrontierItem
+    from crawlme.pioneer.models import Candidate, FrontierItem
 
     kept: list[Candidate] = []
     # Retain a reason for each rejected proposal.

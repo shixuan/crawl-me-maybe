@@ -33,10 +33,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from crawlme.analysis import PageAnalyzer
+from crawlme.analysis import Analyzer
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, TokenBudget, close_litellm_clients
-from crawlme.schemas import URL, CrawlGoal, Page
+from crawlme.digest import Page
+from crawlme.llm import Client, TokenBudget, close_litellm_clients
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 class _RejectionCounter(logging.Handler):
@@ -89,7 +91,7 @@ def load(run: Path, limit: int) -> tuple[CrawlGoal, list[Page]]:
 async def analyse_all(goal: CrawlGoal, pages: list[Page], effort: str) -> dict[str, object]:
     cfg = Settings()
     budget = TokenBudget(limit=0)
-    client = LLMClient(
+    client = Client(
         cfg.llm_model,
         api_key=cfg.llm_api_key,
         base_url=cfg.llm_base_url,
@@ -98,7 +100,7 @@ async def analyse_all(goal: CrawlGoal, pages: list[Page], effort: str) -> dict[s
         max_output_tokens=cfg.llm_max_output_tokens,
         reasoning_effort=effort,
     )
-    analyzer = PageAnalyzer(client, max_page_chars=cfg.analyzer_max_chars)
+    analyzer = Analyzer(client, max_page_chars=cfg.analyzer_max_chars)
     counter = _RejectionCounter()
     logging.getLogger("crawlme.analysis.analyzer").addHandler(counter)
 

@@ -9,12 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import Analyzer
+from crawlme.analysis import AnalysisResult, Analyzer
 from crawlme.analysis.analyzer import _parse_analysis
 from crawlme.dedup.grouper import Grouper, group_results
+from crawlme.digest import Page
 from crawlme.llm import Error, LLMResponse
 from crawlme.persist import Storage, read_results
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 def page(text):

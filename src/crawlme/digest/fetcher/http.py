@@ -15,7 +15,9 @@ from urllib.parse import urljoin
 import httpx
 
 from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError, with_retries
-from crawlme.schemas import URL, FetchResult, FrontierItem
+from crawlme.digest.models import FetchResult
+from crawlme.pioneer import FrontierItem
+from crawlme.urls import URL
 
 logger = logging.getLogger(__name__)
 

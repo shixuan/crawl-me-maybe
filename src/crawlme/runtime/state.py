@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from crawlme.checkpoint import Checkpointable
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime.goal import CrawlGoal
 from crawlme.util import notify
 
 # How many of a source's own analyzed pages its window keeps.

@@ -5,11 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import Analyzer
+from crawlme.analysis import AnalysisResult, Analyzer
+from crawlme.digest import Page
 from crawlme.llm import Error, LLMResponse
-from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.workers import AnalysisWorker
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
+from crawlme.urls import URL
 
 
 def _page() -> Page:

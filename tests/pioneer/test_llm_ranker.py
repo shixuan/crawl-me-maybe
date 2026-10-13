@@ -12,9 +12,11 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.llm import Error, LLMResponse, TokenBudget
+from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.prompts import ranking_input
-from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 class _StubClient:
@@ -560,3 +562,17 @@ def test_extract_before_candidates() -> None:
     goal = CrawlGoal(prompt="g", extraction_spec={"fields": {"deadline": "d"}})
     prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert prompt.index("## Extract") < prompt.index("## Candidate links")
+
+
+def test_rank_defaults():
+    rd = RankDecision(candidate_id="c1")
+    assert rd.ranker == "rule"
+    assert rd.dropped is False
+
+
+def test_history_defaults():
+    """Only what the prompt reads.  A field nothing writes and nothing
+    reads is worse than no field: it reads as a working signal."""
+    rhs = RankHistorySummary()
+    assert (rhs.goal, rhs.relevant_pages) == ("", [])
+    assert set(RankHistorySummary.model_fields) == {"goal", "relevant_pages"}

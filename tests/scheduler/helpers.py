@@ -5,25 +5,19 @@ from __future__ import annotations
 import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.config import Settings
+from crawlme.digest import FetchResult, Page
 from crawlme.discovery import Harvester
 from crawlme.llm import TokenBudget
+from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.runtime import Limits, Progress, RunState, Stats
+from crawlme.runtime import CrawlGoal, CrawlTask, Limits, Progress, RunState, Stats
 from crawlme.scheduler.engine import Engine
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.monitor import StopMonitor
 from crawlme.scheduler.pipelines import PipelineContext
-from crawlme.schemas import (
-    URL,
-    AnalysisResult,
-    AnalyzerFeedback,
-    CrawlGoal,
-    CrawlTask,
-    FetchResult,
-    FrontierItem,
-    Page,
-)
+from crawlme.urls import URL
 
 
 def _utcnow():

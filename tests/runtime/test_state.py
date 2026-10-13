@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from crawlme.runtime import Limits, Progress, RunState, SeedState, Stats
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, SeedState, Stats
 
 
 def _ctx() -> RunState:

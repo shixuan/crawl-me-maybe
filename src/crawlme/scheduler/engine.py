@@ -12,13 +12,12 @@ from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
 from crawlme.persist import Lock, Storage
-from crawlme.runtime import EventEmitter, EventType, RunState
+from crawlme.runtime import CrawlGoal, CrawlTask, EventEmitter, EventType, RunState
 from crawlme.scheduler.monitor import StopMonitor
 from crawlme.scheduler.pipelines import PipelineContext
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.stop_conds import StopReason
-from crawlme.schemas import CrawlGoal, CrawlTask
 
 logger = logging.getLogger(__name__)
 _CHECKPOINT_INTERVAL = 2.0

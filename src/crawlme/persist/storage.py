@@ -15,7 +15,8 @@ import aiosqlite
 from crawlme.persist import queries
 
 if TYPE_CHECKING:
-    from crawlme.schemas import Candidate, Page, RankDecision
+    from crawlme.digest import Page
+    from crawlme.pioneer import Candidate, RankDecision
 
 logger = logging.getLogger(__name__)
 

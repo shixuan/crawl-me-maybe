@@ -5,31 +5,17 @@ from __future__ import annotations
 import datetime
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
+from crawlme.digest import Page, Payload
 from crawlme.discovery.links import extract_links
-from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.platforms.base import FeedAdapter, PageProblem
-from crawlme.schemas import Candidate, Page, Payload
+from crawlme.discovery.models import Harvest
+from crawlme.pioneer import Candidate
+from crawlme.platforms.base import FeedAdapter
+from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Harvest:
-    """Candidates, pagination and content-health information from a page."""
-
-    candidates: list[Candidate]
-    problem: PageProblem | None = None
-    # The rest of a paged listing, enqueued at this page's own depth: it
-    # is more of the same listing, not a hop away from it.
-    next_url: str = ""
-    # Only listings contribute to the empty-listing diagnostic; posts are leaves.
-    listing: bool = False
-    # The listing was read without the platform's own answer, so it holds
-    # whatever the markup had rather than what the account has now.
-    degraded: bool = False
 
 
 class Harvester:

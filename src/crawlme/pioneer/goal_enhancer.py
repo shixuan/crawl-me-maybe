@@ -14,7 +14,7 @@ from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import Client, Error, Stage, TokenBudget, parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
 

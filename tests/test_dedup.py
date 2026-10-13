@@ -7,12 +7,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.analysis import AnalysisResult
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Grouper, fingerprint
+from crawlme.digest import Page
 from crawlme.llm import LLMResponse, TokenBudget
 from crawlme.persist import Storage
+from crawlme.runtime import CrawlGoal
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
+from crawlme.urls import URL
 
 
 def client_response(groups, *, truncated=False):

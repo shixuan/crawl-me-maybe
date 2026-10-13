@@ -18,14 +18,16 @@ from typing import Any
 
 import aiosqlite
 
-from crawlme.analysis import Analyzer
+from crawlme.analysis import AnalysisResult, Analyzer
 from crawlme.config import Settings
+from crawlme.digest import Page
 from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.persist import Storage
 from crawlme.persist.read import readonly_uri
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page, spec_version
+from crawlme.runtime import CrawlGoal, spec_version
+from crawlme.urls import URL
 
 logger = logging.getLogger(__name__)
 

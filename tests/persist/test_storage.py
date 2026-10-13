@@ -8,8 +8,10 @@ import sqlite3
 
 import pytest
 
+from crawlme.digest import Page
 from crawlme.persist import Storage
-from crawlme.schemas import URL, Candidate, Page, RankDecision
+from crawlme.pioneer import Candidate, RankDecision
+from crawlme.urls import URL
 
 
 def _url(url_key: str = "abc") -> URL:
@@ -71,7 +73,7 @@ def test_goal_roundtrip(storage):
 
 def test_time_policy_survives_goal_restore_without_fields(storage):
     from crawlme.cli.replay import _goal_from_row
-    from crawlme.schemas import CrawlGoal, spec_version
+    from crawlme.runtime import CrawlGoal, spec_version
 
     goal = CrawlGoal(prompt="find upcoming events", time_policy="event occurrence")
     storage.save_goal(goal.model_dump(mode="json"))

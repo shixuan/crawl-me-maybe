@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from crawlme.analysis import AnalysisResult, AnalyzerFeedback, ResultItem
+from crawlme.digest import Page
 from crawlme.discovery import Harvest
-from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker, why_retire
-from crawlme.schemas import URL, AnalysisResult, AnalyzerFeedback, Candidate, CrawlGoal, FrontierItem, Page
-from crawlme.schemas.analysis import ResultItem
+from crawlme.pioneer import Candidate, FrontierItem
+from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker, why_retire
+from crawlme.urls import URL
 
 
 def _tracking():

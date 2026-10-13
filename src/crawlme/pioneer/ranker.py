@@ -9,11 +9,14 @@ import datetime
 import logging
 from typing import Any, Protocol
 
+from pydantic import BaseModel, Field
+
 from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import Client, Error, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
-from crawlme.schemas import Candidate, CrawlGoal, RankDecision, RankHistorySummary
+from crawlme.pioneer.models import Candidate
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,24 @@ _DEMOTED_TAG = "llm_drop_demoted"
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+class RankDecision(BaseModel):
+    candidate_id: str
+    url_key: str = ""
+    priority: float = 0.0
+    dropped: bool = False
+    rationale: str | None = None
+    ranker: str = "rule"
+    tokens_used: int = 0
+    decided_at: datetime.datetime = Field(default_factory=_utcnow)
+
+
+class RankHistorySummary(BaseModel):
+    """Previous crawl findings consumed by the ranking prompt."""
+
+    goal: str = ""
+    relevant_pages: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Ranker(Protocol):
