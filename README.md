@@ -11,7 +11,7 @@
 >
 > So crawl me, maybe?
 
-A goal-driven crawler. You say what you are looking for. It decides where to go, what to skip, and when to stop, within your budget.
+An LLM-powered crawler that turns a plain-language goal into structured results with source evidence. It evaluates pages for relevance, prioritizes promising links, and extracts the fields you ask for across websites and social feeds, with configurable page, token, and time budgets.
 
 ## Install
 

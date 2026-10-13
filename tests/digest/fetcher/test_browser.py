@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock
 
@@ -516,3 +518,79 @@ async def test_an_unanswered_scroll_gives_up_at_the_deadline():
     page = _Page()
     await PlaywrightFetcher(scrolls=1)._scroll_through(page, [])
     assert page.waits == _SCROLL_SETTLE_MS // _SCROLL_POLL_MS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_concurrent_pages(monkeypatch, cancel: bool) -> None:
+    api = ModuleType("playwright.async_api")
+    api.TimeoutError = TimeoutError
+    monkeypatch.setitem(sys.modules, "playwright.async_api", api)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    pages = []
+    starts = 0
+
+    class _Page:
+        def __init__(self):
+            self.url = ""
+            self.closed = False
+            self.listener = None
+
+        def on(self, event, callback):
+            assert event == "response"
+            self.listener = callback
+
+        async def goto(self, url, wait_until=None):
+            self.url = url
+            if sum(bool(page.url) for page in pages) == 3:
+                entered.set()
+            await release.wait()
+            response = SimpleNamespace(url=url, headers={"content-type": "application/json"})
+            response.body = AsyncMock(return_value=url.encode())
+            self.listener(response)
+            await asyncio.sleep(0)
+            return SimpleNamespace(status=200, headers={})
+
+        async def content(self):
+            return self.url
+
+        async def close(self):
+            self.closed = True
+
+    class _Context:
+        async def new_page(self):
+            page = _Page()
+            pages.append(page)
+            return page
+
+    fetcher = PlaywrightFetcher(keep_payload=lambda url, ctype: True)
+
+    async def start():
+        nonlocal starts
+        starts += 1
+        await asyncio.sleep(0)
+        fetcher._context = _Context()
+        return fetcher._context
+
+    monkeypatch.setattr(fetcher, "_start_context", start)
+    urls = [f"https://example.com/{i}" for i in range(3)]
+    tasks = [asyncio.create_task(fetcher.fetch(_item(url))) for url in urls]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert starts == 1
+        if cancel:
+            tasks[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[0]
+            assert pages[0].closed
+        release.set()
+        results = await asyncio.gather(*tasks[int(cancel) :])
+        for url, result in zip(urls[int(cancel) :], results):
+            assert result.raw == url.encode()
+            assert result.final_url.canonical == url
+            assert [payload.body for payload in result.payloads] == [url.encode()]
+        assert all(page.closed for page in pages)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
