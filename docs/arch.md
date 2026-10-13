@@ -432,7 +432,7 @@ flowchart LR
     Factory --> CP["Checkpointer"]
     Engine["Engine · lifecycle and checkpoint timing"] -->|save / restore| CP
     CP -->|dump / restore| States["frontier · runtime · analysis<br/>budget · robots"]
-    CP -->|save_snapshot / flush| Writer["SQLite writer"]
+    CP -->|save_checkpoint / flush| Writer["SQLite writer"]
   end
   Writer -->|commit| DB[("Run database")]
   DB -->|page text| CP

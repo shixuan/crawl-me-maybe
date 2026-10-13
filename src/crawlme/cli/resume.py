@@ -30,8 +30,8 @@ async def cmd_resume(args: argparse.Namespace) -> None:
         task_row = await storage.get_task(args.task_id)
         if task_row is None or task_row["state"] not in {"RUNNING", "INTERRUPTED", "FAILED"}:
             raise ValueError("only interrupted or failed runs can be resumed")
-        row = await storage.get_snapshot(f"{args.task_id}-latest")
-        payload = json.loads(row["snapshot_json"]) if row else {}
+        row = await storage.get_checkpoint(f"{args.task_id}-latest")
+        payload = json.loads(row["checkpoint_json"]) if row else {}
         if payload.get("version") != VERSION:
             raise ValueError("no supported recovery checkpoint; start a new crawl")
         cfg = Settings(**{**cfg.model_dump(), **payload["settings"], "result_dir": root})

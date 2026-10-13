@@ -151,11 +151,11 @@ CREATE TABLE IF NOT EXISTS result_members (
     PRIMARY KEY (group_id, analysis_id)
 );
 
-CREATE TABLE IF NOT EXISTS frontier_snapshots (
-    snapshot_id  TEXT PRIMARY KEY,
-    task_id      TEXT DEFAULT '',
-    snapshot_json TEXT NOT NULL,
-    created_at   TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS checkpoints (
+    checkpoint_id   TEXT PRIMARY KEY,
+    task_id         TEXT DEFAULT '',
+    checkpoint_json TEXT NOT NULL,
+    created_at      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -226,6 +226,17 @@ class Storage:
         # Library users may skip the early attach: cover them here.
         self.attach_log_file()
         await self._conn.executescript(DDL)
+        legacy = await self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'frontier_snapshots'"
+        )
+        if await legacy.fetchone() is not None:
+            # Copy and remove the legacy table in one transaction, preserving existing checkpoints.
+            await self._conn.execute("BEGIN")
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO checkpoints(checkpoint_id, task_id, checkpoint_json, created_at) "
+                "SELECT snapshot_id, task_id, snapshot_json, created_at FROM frontier_snapshots"
+            )
+            await self._conn.execute("DROP TABLE frontier_snapshots")
         columns = await self._conn.execute("PRAGMA table_info(crawl_goals)")
         if "time_policy" not in {r[1] for r in await columns.fetchall()}:
             await self._conn.execute("ALTER TABLE crawl_goals ADD COLUMN time_policy TEXT")
@@ -618,22 +629,22 @@ class Storage:
             cur = await self._execute_now(queries.ANALYSES)
         return [dict(r) for r in await cur.fetchall()]
 
-    # frontier_snapshots -------------------------------------------------
+    # checkpoints -------------------------------------------------
 
-    def save_snapshot(self, snapshot_json: dict[str, Any]) -> None:
+    def save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO frontier_snapshots(snapshot_id, task_id, "
-            "snapshot_json, created_at) VALUES(?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO checkpoints(checkpoint_id, task_id, "
+            "checkpoint_json, created_at) VALUES(?, ?, ?, ?)",
             (
-                snapshot_json["snapshot_id"],
-                snapshot_json.get("task_id", ""),
-                json.dumps(snapshot_json.get("snapshot_json", {})),
-                snapshot_json.get("created_at", ""),
+                checkpoint["checkpoint_id"],
+                checkpoint.get("task_id", ""),
+                json.dumps(checkpoint.get("checkpoint_json", {})),
+                checkpoint.get("created_at", ""),
             ),
         )
 
-    async def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM frontier_snapshots WHERE snapshot_id = ?", (snapshot_id,))
+    async def get_checkpoint(self, checkpoint_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM checkpoints WHERE checkpoint_id = ?", (checkpoint_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 

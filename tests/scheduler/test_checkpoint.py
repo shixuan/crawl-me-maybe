@@ -21,7 +21,7 @@ from tests.scheduler.test_control import build, candidate
 
 def snapshot(scheduler):
     with sqlite3.connect(scheduler._storage.db_path) as db:
-        return json.loads(db.execute("SELECT snapshot_json FROM frontier_snapshots").fetchone()[0])
+        return json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
 
 
 def reopen(scheduler):
