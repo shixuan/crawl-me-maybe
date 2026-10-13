@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from crawlme.checkpoint.checkpointer import Checkpointer
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Grouper, group_results
 from crawlme.digest.extractor import Extractor
@@ -42,7 +43,9 @@ from crawlme.schemas import (
     FrontierItem,
     Page,
 )
+from crawlme.schemas.core import _content_id
 from crawlme.storage.base import Storage
+from crawlme.storage.lock import RunLock
 
 SeedExpansion = Callable[
     [CrawlGoal, list[str], TokenBudget | None],
@@ -51,7 +54,7 @@ SeedExpansion = Callable[
 
 logger = logging.getLogger(__name__)
 
-_CHECKPOINT_INTERVAL = 10
+_CHECKPOINT_INTERVAL = 2.0
 
 
 # Maximum candidates per rank-pump batch; smaller batches release fetchable work sooner.
@@ -100,6 +103,8 @@ class CrawlScheduler:
         tracking: RunTracker,
         seed_expander: SeedExpansion,
         grouper: Grouper | None = None,
+        budget: TokenBudget | None = None,
+        checkpointer: Checkpointer,
     ) -> None:
         self._cfg = settings
         self._grouper = grouper
@@ -128,11 +133,11 @@ class CrawlScheduler:
         self._events: EventEmitter | None = None
         self._runner: asyncio.Task[Any] | None = None
         self._control = asyncio.Event()
-        self._paused = asyncio.Event()
-        self._resumed = asyncio.Event()
-        self._transition = asyncio.Lock()
         self._closed = False
         self._page_keys: dict[str, set[str]] = {}
+        self._checkpointer = checkpointer
+        self._budget = budget
+        self._checkpoint_task: asyncio.Task[None] | None = None
 
     # seed ingestion --------------------------------------------------
 
@@ -205,9 +210,20 @@ class CrawlScheduler:
         """Update progress from the shared token budget, including pre-run usage."""
         self.run_state.progress.tokens_used = total
 
-    async def run(self, goal: CrawlGoal, task: CrawlTask) -> None:
+    async def run(
+        self,
+        goal: CrawlGoal,
+        task: CrawlTask,
+        *,
+        checkpoint: dict[str, Any] | None = None,
+        lock: RunLock | None = None,
+    ) -> None:
         if self._runner is not None or self._closed:
             raise RuntimeError("scheduler already started or closed")
+        own_lock = lock is None
+        lock = lock or RunLock(self._storage.db_path)
+        if own_lock:
+            lock.acquire()
         self._runner = asyncio.current_task()
         self._goal, self._task = goal, task
         self._state = task.state = "RUNNING"
@@ -218,30 +234,36 @@ class CrawlScheduler:
         try:
             await self._storage.start()
             self._events = EventEmitter(self._storage, task.task_id)
-            self._events.emit(EventType.TASK_STARTED, {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]})
+            self._events.emit(
+                EventType.TASK_RESUMED if checkpoint is not None else EventType.TASK_STARTED,
+                {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]},
+            )
             self.run_state.reset(goal=goal, tokens_used_start=self.run_state.progress.tokens_used)
+            if self._analysis.analyzer is not None:
+                self._analysis.analyzer.bind_goal(goal)
+            self._checkpointer.bind(
+                goal,
+                task,
+                dedup=self._grouper is not None,
+                ranking=self._ranking.ranker is not None,
+                analysis=self._analysis.analyzer is not None,
+            )
+            if checkpoint is not None:
+                await self._checkpointer.restore(checkpoint)
             self._storage.save_goal(goal.model_dump(mode="json"))
             self._storage.save_task(task.model_dump(mode="json"))
-            while self._state == "RUNNING":
-                self._control.clear()
-                self._paused.clear()
-                self._analysis.resume()
-                self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
-                self._resumed.set()
-                state = await self._supervise_pumps()
-                deadline = time.monotonic() + _SETTLE_TIMEOUT
-                if state == "PAUSING":
-                    if await self._pause_cycle(deadline):
-                        self._control.clear()
-                        self._paused.set()
-                        await self._control.wait()
-                        if self._state == "RUNNING":
-                            continue
-                        deadline = time.monotonic() + _SETTLE_TIMEOUT
-                await self._stop_pumps(deadline, cancel=True)
-                await self._settle_inflight(deadline)
-                await self._settle_analysis(deadline)
-                break
+            await self._checkpoint()
+            self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
+            for work in list(self.run_state.work.values()):
+                self._dispatch_page(FrontierItem.model_validate(work["item"]))
+            self._control.clear()
+            self._analysis.start_retries()
+            self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
+            await self._supervise_pumps()
+            deadline = time.monotonic() + _SETTLE_TIMEOUT
+            await self._stop_pumps()
+            await self._settle_inflight(deadline)
+            await self._settle_analysis(deadline)
             if (
                 self._grouper is not None
                 and not self.run_state.progress.fatal_error
@@ -250,27 +272,38 @@ class CrawlScheduler:
                 await self._deduplicate(goal)
             self._finish_run()
         except asyncio.CancelledError:
-            await self.stop()
-            deadline = time.monotonic() + _SETTLE_TIMEOUT
-            await self._stop_pumps(deadline, cancel=True)
-            await self._settle_inflight(deadline)
+            self._state = "INTERRUPTED"
+            # Cancel all consumers before awaiting any cleanup. No drain or dedup.
+            for pending in [*self._pump_tasks, *self._inflight]:
+                pending.cancel()
             await self._analysis.aclose()
-            await self._checkpoint()
-            self._finish_run()
+            await asyncio.gather(*self._pump_tasks, *self._inflight, return_exceptions=True)
+            self._pump_tasks.clear()
+            task.state = "INTERRUPTED"
+            task.stopping_reason = "USER_REQUESTED"
+            task.counters = {
+                "pages_fetched": self.run_state.progress.pages_fetched,
+                "tokens_used": self.run_state.progress.tokens_used,
+            }
+            self._storage.save_task(task.model_dump(mode="json"))
+            logger.info("interrupted; resume with: crawl resume %s", task.task_id)
             raise
         except Exception as exc:
             self._fail("run", exc)
             deadline = time.monotonic() + _SETTLE_TIMEOUT
-            await self._stop_pumps(deadline, cancel=True)
+            await self._stop_pumps()
             await self._settle_inflight(deadline)
             self._finish_run()
         finally:
+            if self._checkpoint_task is not None:
+                self._checkpoint_task.cancel()
+                await asyncio.gather(self._checkpoint_task, return_exceptions=True)
             try:
                 await self.aclose()
             finally:
                 self._runner = None
-                self._paused.set()
-                self._resumed.set()
+                if own_lock:
+                    lock.release()
 
     def _finish_run(self) -> None:
         assert self._task is not None
@@ -311,17 +344,12 @@ class CrawlScheduler:
             control.cancel()
             await asyncio.gather(control, return_exceptions=True)
 
-    async def _stop_pumps(self, deadline: float, *, cancel: bool) -> None:
+    async def _stop_pumps(self) -> None:
         await self._frontier.wake_ranker()
         if not self._pump_tasks:
             return
-        if cancel:
-            for task in self._pump_tasks:
-                task.cancel()
-        else:
-            _, pending = await asyncio.wait(self._pump_tasks, timeout=max(0, deadline - time.monotonic()))
-            for task in pending:
-                task.cancel()
+        for task in self._pump_tasks:
+            task.cancel()
         self._note_pump_failures(await asyncio.gather(*self._pump_tasks, return_exceptions=True))
         self._pump_tasks.clear()
 
@@ -350,8 +378,6 @@ class CrawlScheduler:
             # Past the backstop: whatever is left was not going to
             # finish, and holding the process open for it is worse.
             logger.warning("task.settle_timeout abandoned=%d", len(still))
-            if self._state == "PAUSING":
-                self._fail("pause", TimeoutError("page settlement exceeded pause deadline"))
             for t in still:
                 t.cancel()
             await asyncio.gather(*still, return_exceptions=True)
@@ -399,8 +425,15 @@ class CrawlScheduler:
         await self._storage.close()
 
     def _on_analysis(self, result: AnalysisResult) -> None:
+        if self._task is not None:
+            result.analysis_id = _content_id(f"{self._task.task_id}:{result.goal_id}:{result.url_key}")
+            for index, item in enumerate(result.items or []):
+                item.item_id = _content_id(f"{result.analysis_id}:{index}")
         self._storage.save_analysis(result.model_dump(mode="json"))
         self._consider_retirement(self._tracking.analysis(result))
+        for work in self.run_state.work.values():
+            if work.get("page", {}).get("url_key") == result.url_key:
+                work["analysis_done"] = True
         self._prune_pages()
 
     def _prune_pages(self) -> None:
@@ -438,58 +471,6 @@ class CrawlScheduler:
     def run_state(self) -> RunState:
         """Run data shared with the tracker and read by CLI reporting."""
         return self._tracking.state
-
-    async def _pause_cycle(self, deadline: float) -> bool:
-        await self._analysis.pause()
-        await self._stop_pumps(deadline, cancel=False)
-        await self._settle_inflight(deadline)
-        if self._state != "PAUSING":
-            return False
-        self._prune_pages()
-        if self._task is not None:
-            self._task.state = "PAUSED"
-            self._storage.save_task(self._task.model_dump(mode="json"))
-            await self._checkpoint()
-            if self._events:
-                self._events.emit(EventType.TASK_PAUSED)
-            await self._storage.flush()
-        if self._state != "PAUSING":
-            return False
-        self._state = "PAUSED"
-        logger.info("pause.done")
-        return True
-
-    async def pause(self) -> None:
-        async with self._transition:
-            if self._runner is not None:
-                await self._resumed.wait()
-            if self._closed or self._state in ("PAUSED", "STOPPING", "COMPLETED", "FAILED"):
-                return
-            self._paused.clear()
-            self._state = "PAUSING"
-            self._control.set()
-            await self._frontier.wake_ranker()
-            if self._runner is None:
-                await self._pause_cycle(time.monotonic() + _SETTLE_TIMEOUT)
-            else:
-                await self._paused.wait()
-
-    async def resume(self) -> None:
-        async with self._transition:
-            if self._state != "PAUSED" or self._closed:
-                return
-            if self._runner is None:
-                raise RuntimeError("resume requires the original run task")
-            self._resumed.clear()
-            self._paused.clear()
-            self._state = "RUNNING"
-            if self._task is not None:
-                self._task.state = "RUNNING"
-                self._storage.save_task(self._task.model_dump(mode="json"))
-            if self._events:
-                self._events.emit(EventType.TASK_RESUMED)
-            self._control.set()
-            await self._resumed.wait()
 
     async def stop(self) -> None:
         self._state = "STOPPING"
@@ -603,14 +584,21 @@ class CrawlScheduler:
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
-            self.run_state.progress.in_flight = self.run_state.progress.in_flight + 1
-            # Retain task handles so shutdown can await writes and analysis.
-            task = asyncio.create_task(self._handle_fetch(item))
-            self._inflight.add(task)
-            task.add_done_callback(self._page_done)
+            self._dispatch_page(item)
 
         if self._state == "RUNNING":
             self._state = "STOPPING"
+
+    def _dispatch_page(self, item: FrontierItem) -> None:
+        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
+        self._page_keys[item.item_id] = {
+            item.url_key,
+            self.run_state.work[item.item_id].get("page", {}).get("url_key", item.url_key),
+        }
+        self.run_state.progress.in_flight += 1
+        task = asyncio.create_task(self._handle_fetch(item))
+        self._inflight.add(task)
+        task.add_done_callback(self._page_done)
 
     async def _enqueue_next_page(
         self,
@@ -687,14 +675,23 @@ class CrawlScheduler:
         return FetchedPage(outcome, page)
 
     async def _handle_fetch(self, item: FrontierItem) -> None:
+        work = self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
         keys = self._page_keys[item.item_id] = {item.url_key}
         if self._events:
             self._events.emit(EventType.FETCH_STARTED, {"url_key": item.url_key, "depth": item.depth})
         try:
-            fetched = await self._fetch_and_extract(item)
-            if fetched is None:
-                return
-            result, page = fetched.result, fetched.page
+            if "page" in work:
+                page = Page.model_validate(work["page"])
+            else:
+                fetched = await self._fetch_and_extract(item)
+                if fetched is None:
+                    self.run_state.work.pop(item.item_id, None)
+                    return
+                page = fetched.page
+                work["page"] = page.model_dump(mode="json")
+                work["status"] = fetched.result.status_code
+                work["size"] = len(fetched.result.raw)
+                await self._checkpoint()
             keys.add(page.url_key)
 
             assert self._goal is not None
@@ -703,11 +700,14 @@ class CrawlScheduler:
                 page.url.canonical,
                 self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
             )
-            await self._analysis.analyze(page, self._goal, allowed=lambda: not self._enough_found())
+            if not work.get("analysis_done"):
+                await self._analysis.analyze(page, self._goal, allowed=lambda: not self._enough_found())
+                work["analysis_done"] = True
+                await self._checkpoint()
             if self._events:
                 self._events.emit(
                     EventType.FETCH_COMPLETED,
-                    {"url_key": item.url_key, "status": result.status_code, "size": len(result.raw)},
+                    {"url_key": item.url_key, "status": work["status"], "size": work["size"]},
                 )
                 self._events.emit(
                     EventType.PAGE_EXTRACTED,
@@ -722,7 +722,13 @@ class CrawlScheduler:
                 self._fail("discovery", e)
                 await self._frontier.record_outcome(item, "FAILED")
                 return
-            self._consider_retirement(self._tracking.discovered(page, item, harvest))
+            if not work.get("discovered"):
+                self._consider_retirement(self._tracking.discovered(page, item, harvest))
+                work["discovered"] = True
+            else:
+                for candidate in harvest.candidates:
+                    candidate.seed_url_key = item.seed_url_key or item.url_key
+                    candidate.seed_ext = item.seed_ext
             candidates = harvest.candidates
             seed = self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key)
             ctx = self._frontier.get_prefilter_context(
@@ -751,8 +757,9 @@ class CrawlScheduler:
                 n_allowed,
                 n_filtered,
             )
-            if harvest.next_url:
+            if harvest.next_url and not work.get("next_page"):
                 await self._enqueue_next_page(harvest.next_url, item, ctx, seed)
+                work["next_page"] = True
             if self._events and n_allowed > 0:
                 self._events.emit(
                     EventType.URL_DISCOVERED,
@@ -773,10 +780,13 @@ class CrawlScheduler:
                 (time.monotonic() - self.run_state.progress.started_at),
             )
 
-            # Periodic checkpoint.
-            if self.run_state.progress.pages_fetched % _CHECKPOINT_INTERVAL == 0:
-                await self._checkpoint()
+            self.run_state.work.pop(item.item_id, None)
+            self._page_keys.pop(item.item_id, None)
+            self._prune_pages()
+            await self._checkpoint()
 
+        except asyncio.CancelledError:
+            raise
         except BaseException:
             await self._frontier.record_outcome(item, "FAILED")
             raise
@@ -815,6 +825,7 @@ class CrawlScheduler:
             finally:
                 self._frontier.finish_ranking(batch)
                 self._prune_pages()
+            await self._checkpoint()
 
     async def _rank_and_enqueue(self, batch: list[Candidate]) -> None:
         assert self._goal is not None
@@ -838,16 +849,16 @@ class CrawlScheduler:
     async def _checkpoint(self) -> None:
         if self._task is None:
             return
-        snap = self._frontier.snapshot(task_id=self._task.task_id)
-        snap_id = f"{self._task.task_id}-latest"
-        snap_dict = snap.model_dump(mode="json")
-        self._storage.save_snapshot(
-            {
-                "snapshot_id": snap_id,
-                "task_id": snap.task_id,
-                "snapshot_json": snap_dict,
-                "created_at": _utcnow().isoformat(),
-            }
-        )
+        if self._state == "INTERRUPTED":
+            return
+        await self._checkpointer.save()
         if self._events:
             self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self.run_state.progress.pages_fetched})
+
+    async def _checkpoint_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_CHECKPOINT_INTERVAL)
+                await self._checkpoint()
+        except Exception as exc:
+            self._fail("checkpoint", exc)

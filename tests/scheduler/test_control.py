@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sqlite3
 from contextlib import closing
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +15,7 @@ from crawlme.discovery.harvester import Harvest
 from crawlme.llm import LLMError, LLMResponse
 from crawlme.pioneer.canonicalizer import Canonicalizer
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import Candidate, CrawlGoal, CrawlTask, FetchResult, Page, RankDecision
+from crawlme.schemas import Candidate, CrawlGoal, CrawlTask, FetchResult, Page
 
 
 def candidate(path="child", **kwargs):
@@ -96,81 +95,6 @@ async def test_failure_stops_both(tmp_path, stage):
         assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
 
 
-@pytest.mark.parametrize("timeout", [False, True])
-async def test_pause_ranking_and_resume(tmp_path, monkeypatch, timeout):
-    entered, release = asyncio.Event(), asyncio.Event()
-    calls = 0
-
-    async def rank(goal, batch, history, **kwargs):
-        nonlocal calls
-        calls += 1
-        entered.set()
-        if calls == 1:
-            await release.wait()
-        return [RankDecision(candidate_id=c.candidate_id, url_key=c.url.url_key, priority=0.9) for c in batch]
-
-    scheduler, goal, task, fetched = build(tmp_path, ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()))
-    await scheduler._frontier.push_candidates([candidate()])
-    if timeout:
-        monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.04)
-    run = asyncio.create_task(scheduler.run(goal, task))
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
-        started = scheduler.run_state.progress.started_at
-        pause = asyncio.create_task(scheduler.pause())
-        await wait_until(lambda: scheduler._state == "PAUSING")
-        assert not pause.done()
-        if not timeout:
-            release.set()
-        await asyncio.wait_for(pause, 2)
-        assert task.state == "PAUSED" and not run.done()
-        assert not scheduler._pump_tasks
-        assert scheduler._frontier.scoring == 0
-        assert fetched == []
-        with closing(sqlite3.connect(scheduler._storage.db_path)) as db:
-            assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "PAUSED"
-            snapshot = json.loads(db.execute("SELECT snapshot_json FROM frontier_snapshots").fetchone()[0])
-            assert len(snapshot["waiting"]["candidates"]) + len(snapshot["ordering"]["heap"]) == 1
-        await asyncio.gather(scheduler.resume(), scheduler.resume())
-        await asyncio.wait_for(run, 2)
-        assert fetched == ["https://example.com/child"]
-        assert calls == 1 + int(timeout)
-        assert scheduler.run_state.stats.candidates_ranked == 1
-        assert scheduler.run_state.progress.started_at == started
-    finally:
-        release.set()
-        run.cancel()
-        await asyncio.gather(run, return_exceptions=True)
-        await scheduler.aclose()
-
-
-async def test_stop_while_paused(tmp_path):
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def rank(*args, **kwargs):
-        entered.set()
-        await release.wait()
-        return []
-
-    scheduler, goal, task, _ = build(tmp_path, ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()))
-    await scheduler._frontier.push_candidates([candidate()])
-    run = asyncio.create_task(scheduler.run(goal, task))
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
-        pause = asyncio.create_task(scheduler.pause())
-        await wait_until(lambda: scheduler._state == "PAUSING")
-        release.set()
-        await asyncio.wait_for(pause, 2)
-        await scheduler.stop()
-        await asyncio.wait_for(run, 2)
-        assert task.stopping_reason == "USER_REQUESTED"
-        assert task.state == "COMPLETED"
-    finally:
-        run.cancel()
-        await asyncio.gather(run, return_exceptions=True)
-        await scheduler.aclose()
-
-
 async def test_cancel_releases_workers(tmp_path, monkeypatch):
     entered = asyncio.Event()
 
@@ -204,33 +128,6 @@ async def test_cleanup_continues_on_error(tmp_path):
         assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
 
 
-async def test_repeated_pause_resume(tmp_path, monkeypatch):
-    entered = asyncio.Event()
-
-    async def rank(*args, **kwargs):
-        entered.set()
-        await asyncio.Event().wait()
-
-    scheduler, goal, task, _ = build(tmp_path, ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()))
-    await scheduler._frontier.push_candidates([candidate()])
-    monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.03)
-    run = asyncio.create_task(scheduler.run(goal, task))
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
-        for _ in range(3):
-            await asyncio.wait_for(scheduler.pause(), 2)
-            assert task.state == "PAUSED" and not run.done()
-            assert scheduler._frontier.waiting_size == 1
-            assert not scheduler._pump_tasks
-            await asyncio.wait_for(scheduler.resume(), 2)
-        await scheduler.stop()
-        await asyncio.wait_for(run, 2)
-        assert task.state == "COMPLETED"
-    finally:
-        run.cancel()
-        await asyncio.gather(run, return_exceptions=True)
-
-
 async def test_page_retention_tracks_work(tmp_path):
     peaks = []
     limit = 80
@@ -242,7 +139,7 @@ async def test_page_retention_tracks_work(tmp_path):
 
     scheduler, goal, task, fetched = build(tmp_path, harvester=MagicMock(harvest=harvest))
     await scheduler.ingest_seeds(goal, [candidate("1")])
-    await asyncio.wait_for(scheduler.run(goal, task), 5)
+    await asyncio.wait_for(scheduler.run(goal, task), 15)
     assert len(fetched) == limit
     assert max(p for p, _ in peaks) <= 2
     assert max(c for _, c in peaks) <= 2

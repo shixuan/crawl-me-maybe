@@ -150,11 +150,11 @@ CREATE TABLE IF NOT EXISTS result_members (
     PRIMARY KEY (group_id, analysis_id)
 );
 
-CREATE TABLE IF NOT EXISTS frontier_snapshots (
-    snapshot_id  TEXT PRIMARY KEY,
-    task_id      TEXT DEFAULT '',
-    snapshot_json TEXT NOT NULL,
-    created_at   TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS checkpoints (
+    checkpoint_id   TEXT PRIMARY KEY,
+    task_id         TEXT DEFAULT '',
+    checkpoint_json TEXT NOT NULL,
+    created_at      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -195,6 +195,7 @@ class SqliteStorage:
         self._write_queue: asyncio.Queue[list[tuple[str, tuple[Any, ...]]]] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._conn: aiosqlite.Connection | None = None
+        self._write_error: sqlite3.Error | None = None
 
     @classmethod
     def create(cls, base_dir: str | Path) -> SqliteStorage:
@@ -204,7 +205,7 @@ class SqliteStorage:
         """
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = Path(base_dir) / ts
+        run_dir = (Path(base_dir) / ts).resolve()
         (run_dir / "raw").mkdir(parents=True, exist_ok=True)
         (run_dir / "db").mkdir(parents=True, exist_ok=True)
         return cls(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
@@ -224,6 +225,17 @@ class SqliteStorage:
         # Library users may skip the early attach: cover them here.
         self.attach_log_file()
         await self._conn.executescript(DDL)
+        legacy = await self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'frontier_snapshots'"
+        )
+        if await legacy.fetchone() is not None:
+            # Copy and remove the legacy table in one transaction, preserving existing checkpoints.
+            await self._conn.execute("BEGIN")
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO checkpoints(checkpoint_id, task_id, checkpoint_json, created_at) "
+                "SELECT snapshot_id, task_id, snapshot_json, created_at FROM frontier_snapshots"
+            )
+            await self._conn.execute("DROP TABLE frontier_snapshots")
         columns = await self._conn.execute("PRAGMA table_info(crawl_goals)")
         if "time_policy" not in {r[1] for r in await columns.fetchall()}:
             await self._conn.execute("ALTER TABLE crawl_goals ADD COLUMN time_policy TEXT")
@@ -245,8 +257,10 @@ class SqliteStorage:
         to_file(str(Path(self._db_path).parent.parent / "log"))
 
     async def flush(self) -> None:
-        """Commit all queued writes before publishing a stable pause boundary."""
+        """Commit queued results and their checkpoint, surfacing any failed writes."""
         await self._write_queue.join()
+        if self._write_error is not None:
+            raise RuntimeError("database write failed; checkpoint was not saved") from self._write_error
         if self._conn is not None:
             await self._conn.commit()
 
@@ -260,7 +274,10 @@ class SqliteStorage:
                 pass
         if self._conn:
             # Final commit: flushes any writes since the last batch commit.
-            await self._conn.commit()
+            if self._write_error is None:
+                await self._conn.commit()
+            else:
+                await self._conn.rollback()
             await self._conn.close()
             self._conn = None
 
@@ -269,7 +286,7 @@ class SqliteStorage:
         while True:
             statements = await self._write_queue.get()
             try:
-                if self._conn:
+                if self._conn and self._write_error is None:
                     if not self._conn.in_transaction:
                         await self._conn.execute("BEGIN")
                     await self._conn.execute("SAVEPOINT queued_write")
@@ -286,7 +303,10 @@ class SqliteStorage:
                     if batch >= 200:
                         await self._conn.commit()
                         batch = 0
-            except sqlite3.Error:
+            except sqlite3.Error as exc:
+                self._write_error = exc
+                if self._conn is not None:
+                    await self._conn.rollback()
                 # Keep the writer alive and complete queue items so close() cannot deadlock.
                 logger.exception("db.write_failed sql=%s", statements[0][0].split("(", 1)[0].strip())
             finally:
@@ -608,22 +628,22 @@ class SqliteStorage:
             cur = await self._execute_now(queries.ANALYSES)
         return [dict(r) for r in await cur.fetchall()]
 
-    # frontier_snapshots -------------------------------------------------
+    # checkpoints -------------------------------------------------
 
-    def save_snapshot(self, snapshot_json: dict[str, Any]) -> None:
+    def save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO frontier_snapshots(snapshot_id, task_id, "
-            "snapshot_json, created_at) VALUES(?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO checkpoints(checkpoint_id, task_id, "
+            "checkpoint_json, created_at) VALUES(?, ?, ?, ?)",
             (
-                snapshot_json["snapshot_id"],
-                snapshot_json.get("task_id", ""),
-                json.dumps(snapshot_json.get("snapshot_json", {})),
-                snapshot_json.get("created_at", ""),
+                checkpoint["checkpoint_id"],
+                checkpoint.get("task_id", ""),
+                json.dumps(checkpoint.get("checkpoint_json", {})),
+                checkpoint.get("created_at", ""),
             ),
         )
 
-    async def get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM frontier_snapshots WHERE snapshot_id = ?", (snapshot_id,))
+    async def get_checkpoint(self, checkpoint_id: str) -> dict[str, Any] | None:
+        cur = await self._execute_now("SELECT * FROM checkpoints WHERE checkpoint_id = ?", (checkpoint_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 

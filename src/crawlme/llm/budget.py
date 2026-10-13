@@ -5,7 +5,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable
+from typing import Any
 
+from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.llm.errors import TokenBudgetError
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ class Usage:
         return self.input_tokens + self.output_tokens
 
 
-class TokenBudget:
+class TokenBudget(Checkpointable):
     """Shared LLM token accounting. check() rejects new calls after the limit is reached.
 
     The optional sink updates scheduler progress. Already-running calls can exceed
@@ -60,6 +62,20 @@ class TokenBudget:
     def bind_sink(self, sink: Callable[[int], None]) -> None:
         """Attach the scheduler counter sink after scheduler construction."""
         self._sink = sink
+
+    def dump(self) -> dict[str, Any]:
+        return {
+            **{
+                k: getattr(self, k)
+                for k in ("used", "input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens", "calls")
+            },
+            "by_stage": {k: dataclasses.asdict(v) for k, v in self.by_stage.items()},
+        }
+
+    def restore(self, data: dict[str, Any]) -> None:
+        for key in ("used", "input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens", "calls"):
+            setattr(self, key, data[key])
+        self.by_stage = {k: Usage(**v) for k, v in data["by_stage"].items()}
 
     def check(self) -> None:
         if self.limit > 0 and self.used >= self.limit:

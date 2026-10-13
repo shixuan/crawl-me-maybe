@@ -1,7 +1,7 @@
 # Engine refactoring status
 
-Reviewed against the code on 2026-10-06. The worker split, runtime state consolidation,
-analysis retry settlement, pump supervision and in-memory pause/resume are implemented.
+Reviewed against the code on 2026-10-11. The worker split, runtime state consolidation,
+analysis retry settlement, pump supervision and checkpoint recovery are implemented.
 Performance work remains open. Measurements below retain their original dates.
 
 The goal is clearer ownership and less wasted work. Moving code is not evidence of
@@ -16,8 +16,11 @@ items rejoin before selection, and restored queues rebuild the same keys.
 
 ```text
 src/crawlme/
+  checkpoint/
+    checkpointable.py  Explicit dump/restore contract
+    checkpointer.py    Fixed composition, persistence and recovery
   scheduler/
-    engine.py          Lifecycle, dispatch, admission, outcomes and checkpoints
+    engine.py          Lifecycle, dispatch, admission, outcomes and checkpoint timing
     factory.py         Construct and inject concrete workers
     reporting.py       Read RunState and build the CLI report
     stop_conds.py      Decide run stopping and source retirement
@@ -28,7 +31,7 @@ src/crawlme/
       analysis.py      Bound initial analysis and recheck the result target
       discovery.py     Harvest saved page inputs with a bounded wait
   runtime/
-    state.py           RunState and its page, source and statistics types
+    state.py           RunState, in-flight page work, sources and statistics
     tracking.py        RunTracker updates and ranking feedback snapshots
     events.py          Persist crawl events
   storage/
@@ -86,6 +89,7 @@ retry later while discovery proceeds.
 | Owner | Responsibility |
 |---|---|
 | Engine | Run control state, pump and page task handles, backpressure, candidate admission, queue mutations, checkpoint timing |
+| Checkpointer | Fixed component composition through dump/restore, snapshot format, page hydration and durable storage |
 | Frontier | Waiting, scored and cooling work, deduplication, ranking-in-progress count and snapshots |
 | RunState | Limits, progress, reporting statistics, page/source associations, feedback and seed expansion metadata |
 | RunTracker | Synchronous updates and joins over one RunState |
@@ -170,46 +174,42 @@ failure, cancels its peer and records a FAILED run. Unexpected page-task excepti
 follow the same path. Cleanup attempts every worker even if one close operation fails.
 
 Analysis retries now settle independently of dedup, within run limits and a
-shared 120-second deadline for pump, page and retry settlement. Cancellation settles
-pages, saves a checkpoint and closes resources before propagating. Pause waits for
-both pumps before saving its checkpoint.
+shared 120-second deadline for pump, page and retry settlement. Ctrl+C instead cancels
+active work immediately and closes resources without draining or grouping. Checkpoints
+are saved during execution, so recovery does not depend on a final save during exit.
 
 Other limits remain:
 
 - Fetch dispatch polls at 0.2-second intervals and signals `Frontier.wake_ranker`.
   Frontier owns batch readiness and keeps its buffer private.
-- Periodic snapshots represent Frontier, not all page tasks, source history or retries.
+- Requests and token usage newer than the last committed checkpoint can be repeated
+  or absent from recovered accounting. Recovery does not guarantee exactly-once billing.
 - Same-host robots loads are not coalesced.
 - Candidate admission is performed one candidate at a time. Rank result mapping
   includes repeated linear searches.
 
-## Remaining lifecycle design
+## Implemented lifecycle
 
 Failure supervision is implemented. Expected per-page fetch failures retain their
 existing storage behavior. Ranking and in-flight counts are released in `finally`.
 
-The table describes the implemented lifecycle. The original run task owns every
-pause/resume cycle; concurrent control requests are serialized.
+The table describes the implemented lifecycle. A resumed process restores the original
+run from a versioned checkpoint. An OS file lock prevents concurrent crawl owners.
 
 | Exit condition | New work | In-flight work and analysis retries |
 |---|---|---|
 | Frontier exhausted | Stop dispatch | Drain retries within remaining budgets and a shutdown deadline |
 | Result target or token/time limit | Stop the affected work | Accept returned results without starting calls beyond the limit |
 | Page limit | Stop fetching | Allow analysis of fetched pages within remaining analysis budgets |
-| User stop or fatal error | Stop dispatch and wake waiters | Bounded settlement, cancel queued retries, report unfinished work |
-| Pause | Freeze fetching and ranking | Reach a stable checkpoint boundary and retain queued retries in memory |
-| Resume | Restore scheduling | Resume retained work without duplicate pumps or retry workers |
+| Programmatic stop or fatal error | Stop dispatch and wake waiters | Bounded settlement, cancel queued retries, report unfinished work |
+| Ctrl+C | Cancel consumers | Close local resources without waiting for model completion or running dedup |
+| Resume command | Restore scheduling | Load the last committed checkpoint; repeat unfinished work |
 
-Expose any further Analyzer lifecycle operations through methods that keep retry
-queue ownership inside Analyzer. In-memory pause/resume and process-restart recovery are
-separate capabilities. Historical database migration and lossless cross-process
-recovery are outside this refactor.
-
-Pause snapshots follow completion or restoration of in-flight ranking batches and
-a storage flush barrier. Interrupted batches return ahead of newer candidates; this
-can temporarily exceed buffer capacity by one ranking batch. Analysis retries stay
-in memory and do not run while paused. Resume preserves the original start time,
-so paused time counts toward the wall-clock limit.
+The old in-memory pause/resume methods have been removed after recovery tests passed.
+Analyzer owns serialization of queued and active retries. Page work records completed
+stages, source history and contexts survive recovery, and page text is loaded from
+existing rows. Elapsed execution time excludes time spent stopped. Legacy frontier-only
+snapshots are rejected; recovery cannot reconstruct work they never recorded.
 
 ## Performance work and evidence
 
@@ -227,7 +227,7 @@ must not cancel a shared load needed by others. Clear failed loads and settle sh
 tasks at shutdown.
 
 Replacing polling requires notifications for ranked work, candidate readiness,
-completed page tasks, budget changes, stop and pause. Timers must also cover domain
+completed page tasks, budget changes and stop. Timers must also cover domain
 cooldowns, maximum batch wait and the run deadline. Use a Condition or versioned
 notification to avoid lost wakeups, and recheck the condition after waking.
 
@@ -248,7 +248,7 @@ outputs in a serial run before checking permitted concurrent interleavings.
 | No LLM | Existing filtering and neutral-priority behavior |
 | State joins | Analysis before/after listing discovery, one vote, reset and shared state identity |
 | Pump supervision | Run both pumps, fail either one and assert bounded exit and visible failure |
-| Pause/resume | In-flight ranking, stable snapshots, repeated resume and retry ownership |
+| Checkpoint recovery | New-process restart after SIGINT or SIGKILL, incomplete stages, retry ownership and duplicate outputs |
 | Notifications | Early notification, spurious wakeups, cooldown-only and deadline-only wakeups |
 | Robots | Same-host sharing, independent hosts, failed loads and waiter cancellation |
 
@@ -262,7 +262,7 @@ checks but cannot isolate a local optimization.
 
 The 2026-09-15 review recorded 918 passing tests after rebasing onto master, with 1 skipped
 and 6 deselected, plus Ruff, formatting, mypy and four dashboard tests. These checks
-do not validate the remaining lifecycle work or establish a performance improvement.
+predate checkpoint recovery and do not establish a performance improvement.
 
 Keep structural changes, lifecycle changes and performance changes independently
 reviewable. Do not maintain two engines or add migration-only user flags.

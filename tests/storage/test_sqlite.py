@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
+import sqlite3
 
 import pytest
 
@@ -40,7 +42,7 @@ def test_tables_created(storage):
         "links",
         "rank_decisions",
         "analyses",
-        "frontier_snapshots",
+        "checkpoints",
         "events",
         "errors",
         "robots_cache",
@@ -285,17 +287,17 @@ def test_has_by_fields(storage):
     assert not _run(storage.has_analysis("abc", "g1", "m1")), "a goal asking for no fields is not the same read"
 
 
-def test_snapshot_saved(storage):
-    storage.save_snapshot(
+def test_checkpoint_saved(storage):
+    storage.save_checkpoint(
         {
-            "snapshot_id": "s1",
+            "checkpoint_id": "s1",
             "task_id": "t1",
-            "snapshot_json": {"heap": [1, 2, 3]},
+            "checkpoint_json": {"heap": [1, 2, 3]},
             "created_at": "2026-01-01T00:00:00Z",
         }
     )
     _run(storage._write_queue.join())
-    snap = _run(storage.get_snapshot("s1"))
+    snap = _run(storage.get_checkpoint("s1"))
     assert snap is not None
 
 
@@ -376,3 +378,17 @@ async def test_bad_sql_no_hang(tmp_path, caplog):
     with caplog.at_level(logging.ERROR):
         await asyncio.wait_for(db.close(), timeout=5)
     assert any("db.write_failed" in r.message for r in caplog.records)
+
+
+async def test_checkpoint_write_failure(tmp_path):
+    db = SqliteStorage.create(tmp_path)
+    await db.start()
+    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"version": 1}})
+    await db.flush()
+    db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("bad",))
+    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"version": 2}})
+    with pytest.raises(RuntimeError, match="checkpoint was not saved"):
+        await db.flush()
+    await db.close()
+    with sqlite3.connect(db.db_path) as connection:
+        assert json.loads(connection.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0]) == {"version": 1}

@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.pioneer.buffer import Buffer, RoundRobinBuffer
 from crawlme.pioneer.prefilter import PreFilterContext
 from crawlme.pioneer.queue import Gate, GateFn, PriorityQueue
@@ -16,7 +17,7 @@ from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, Frontie
 logger = logging.getLogger(__name__)
 
 
-class Frontier(Protocol):
+class Frontier(Checkpointable, Protocol):
     """Contract for the priority-queue URL frontier."""
 
     @property
@@ -65,10 +66,6 @@ class Frontier(Protocol):
 
     async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None: ...
 
-    def snapshot(self, task_id: str = "") -> FrontierSnapshot: ...
-
-    def restore(self, snap: FrontierSnapshot) -> None: ...
-
     def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
 
 
@@ -76,7 +73,7 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class GatedFrontier:
+class GatedFrontier(Checkpointable):
     """Own both candidate queues, deduplication, domain gates and snapshots."""
 
     def __init__(
@@ -263,19 +260,19 @@ class GatedFrontier:
     def size(self) -> int:
         return self._source.size
 
-    def snapshot(self, task_id: str = "") -> FrontierSnapshot:
-        """Serialize queues and frontier state through their public snapshot methods."""
+    def dump(self) -> dict[str, Any]:
+        """Serialize queues and frontier state through their dump methods."""
         return FrontierSnapshot(
-            task_id=task_id,
             ordering=self._source.dump(),
             waiting=self._waiting.dump(),
             visited=self._visited.copy(),
             budgets={"domain": dict(self._domain_counters), "global": self._global_counter},
             retired=self._retired.copy(),
             ranking=list(self._ranking.values()),
-        )
+        ).model_dump(mode="json")
 
-    def restore(self, snap: FrontierSnapshot) -> None:
+    def restore(self, state: dict[str, Any]) -> None:
+        snap = FrontierSnapshot.model_validate(state)
         self._visited = snap.visited.copy()
         self._domain_counters = dict(snap.budgets.get("domain", {}))
         self._global_counter = snap.budgets.get("global", 0)
@@ -287,7 +284,7 @@ class GatedFrontier:
             "pending": [i.model_dump(mode="json") for i in snap.pending],
             "seq": snap.counters.get("seq", 0),
         }
-        self._source.load(ordering)
+        self._source.restore(ordering)
         for key in self._visited:
             self._source.discard(key)
         for seed in self._retired:
@@ -302,4 +299,4 @@ class GatedFrontier:
                 restored.append(candidate.model_dump(mode="json"))
                 keys.add(key)
         waiting.update(candidates=restored, retired=sorted(self._retired))
-        self._waiting.load(waiting)
+        self._waiting.restore(waiting)

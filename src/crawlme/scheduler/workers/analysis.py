@@ -31,13 +31,9 @@ class AnalysisWorker:
     def pending_keys(self) -> set[str]:
         return self.analyzer.pending_keys if self.analyzer is not None else set()
 
-    async def pause(self) -> None:
+    def start_retries(self) -> None:
         if self.analyzer is not None:
-            await self.analyzer.pause()
-
-    def resume(self) -> None:
-        if self.analyzer is not None:
-            self.analyzer.resume()
+            self.analyzer.start_retries()
 
     async def aclose(self) -> None:
         if self.analyzer is not None:

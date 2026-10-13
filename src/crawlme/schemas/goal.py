@@ -44,7 +44,7 @@ class CrawlGoal(BaseModel):
         return self
 
 
-TaskState = Literal["CREATED", "RUNNING", "PAUSED", "STOPPING", "COMPLETED", "FAILED"]
+TaskState = Literal["CREATED", "RUNNING", "INTERRUPTED", "STOPPING", "COMPLETED", "FAILED"]
 
 
 class CrawlTask(BaseModel):

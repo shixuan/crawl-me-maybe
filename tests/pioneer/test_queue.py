@@ -142,7 +142,7 @@ async def test_dump_load():
     state = src.dump()
 
     restored = PriorityQueue()
-    restored.load(state)
+    restored.restore(state)
     assert restored.size == 2
     assert (await restored.take(_now(), _always(Gate.TAKE))).url_key == "a"
 
@@ -283,7 +283,7 @@ async def test_aged_order(restore, monkeypatch):
     if restore:
         saved = src.dump()
         src = PriorityQueue(aging_window=600)
-        src.load(saved)
+        src.restore(saved)
     assert (await src.take(now, _always(Gate.TAKE))).url_key == "old"
 
 

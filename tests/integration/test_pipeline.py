@@ -251,10 +251,16 @@ class _RecordingAnalyzer:
     async def drain_pending(self) -> None:
         pass
 
-    async def pause(self) -> None:
+    def start_retries(self) -> None:
         pass
 
-    def resume(self) -> None:
+    def bind_goal(self, goal):
+        pass
+
+    def dump(self):
+        return {"entries": []}
+
+    def restore(self, state):
         pass
 
 
