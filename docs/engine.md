@@ -52,11 +52,14 @@ flowchart TB
     Page --> Tracker
     Ranking --> Tracker
     Tracker --> State
-    Frontier -. change notices, wired by factory .-> State
-    Budget -. change notices, wired by factory .-> State
+    Monitor -->|subscribe to selected values| Notices["util/observer.py<br/>instance subscriptions"]
+    Frontier -. decorated mutations .-> Notices
+    Budget -. decorated mutations .-> Notices
+    State -. decorated mutations .-> Notices
+    Notices -->|synchronous notification| Monitor
     Frontier -->|queue counts| Monitor
     Budget -->|recorded usage| Monitor
-    State -->|progress, limits and revisions| Monitor
+    State -->|progress and limits| Monitor
     CP --> Storage
     Persist --> Storage
     Ranking --> Storage
@@ -233,22 +236,25 @@ continuations bypass ranking and allow up to five additional pages per seed.
 
 ```mermaid
 sequenceDiagram
-    participant Owners as Frontier / TokenBudget / Tracker
-    participant State as RunState
+    participant Owners as RunState / Frontier / TokenBudget
+    participant Notify as util.observer
     participant Monitor as StopMonitor
     participant Checks as stop_conds
     participant Engine
     participant Crawl as CrawlPipeline
+    Monitor->>Notify: subscribe each owner with selected values and callback
     Engine->>Crawl: start pipeline task
     Engine->>Monitor: start wait(phase="run")
-    Monitor->>State: read revision, Progress and Limits
-    Monitor->>Owners: read current queue counts and token usage
-    Monitor->>Checks: check_stop(progress, limits, tokens_used, queue counts)
+    Monitor->>Monitor: read own revision
+    Monitor->>Owners: read Progress, Limits, queue counts and token usage
+    Monitor->>Checks: check_stop with current values
     Checks-->>Monitor: all applicable StopReasons
     loop No condition forbids the current phase
-        Monitor->>State: await wait_for_change(revision), with deadline timeout
-        Owners->>State: data changed, notify_change()
-        State-->>Monitor: revision advanced
+        Monitor->>Monitor: await own Event for this revision, with deadline timeout
+        Owners->>Notify: decorated method finishes or raises
+        Notify->>Notify: compare watched values before and after
+        Notify->>Monitor: if values differ, advance revision and set Event
+        Monitor->>Owners: read current values
         Monitor->>Checks: reevaluate stop conditions
     end
     Monitor-->>Engine: stop reasons, or settlement deadline reached
@@ -260,13 +266,31 @@ sequenceDiagram
     Engine->>Crawl: end_drain(), then finish() unless fatal
 ```
 
-RunState publishes revisions through an asyncio Event. Frontier publishes changes
-when queue, ranking or domain-refusal counts change. TokenBudget publishes token
-usage changes. Tracker updates run counters through RunState's update methods.
-The factory connects Frontier and TokenBudget notifications to RunState's existing
-revision event. Monitor reads Progress and Limits from RunState, queue counts from
-Frontier and token usage from TokenBudget. It passes those values to `check_stop()`.
-Progress contains only run-owned counters, with no owner bindings or count proxies.
+StopMonitor owns the revision and asyncio Event. It subscribes to each object's
+selected values through `util.subscribe()`. Readers capture queue counts, token
+usage, or run limits and progress as immutable values. Monitor reads current values
+directly from their owners and passes them to `check_stop()`. Progress contains
+only run-owned counters, with no owner bindings or count proxies.
+
+The monitored classes only mark mutation methods with `notify`. They do not
+store callbacks, choose watched fields, bind listeners, or maintain notification
+state. The decorator gets subscriptions from the notification tool by instance.
+
+```python
+@notify
+def page_completed(self):
+    self.progress.pages_fetched += 1
+```
+
+The decorator compares watched values in `finally`, including after partial
+mutations followed by an exception or cancellation. It invokes registered callbacks
+synchronously before the method returns or propagates its error. Unchanged values
+do not emit a notice. No polling or background notification task is added.
+
+Subscriptions use object identity, including for unhashable RunState instances.
+The tool keeps weak references to owners and bound callback receivers. Engine
+closes Monitor's subscriptions during cleanup, so later updates do not wake a
+finished monitor. A second crawl has separate subscriptions and notification state.
 
 StopMonitor waits for a revision or the next time deadline and reevaluates the
 rules internally. Ordinary updates can wake the monitor without completing
@@ -379,7 +403,8 @@ flowchart TD
     Stop --> Finally
     Normal["Normal finalization"] --> Finally
     Finally --> Tasks["Cancel and await pipeline task<br/>cancel and await checkpoint task"]
-    Tasks --> Close["pipeline.aclose<br/>close analyzer, ranker and fetcher<br/>prune retained context"]
+    Tasks --> Unsubscribe["StopMonitor.close<br/>unsubscribe from all observed objects"]
+    Unsubscribe --> Close["pipeline.aclose<br/>close analyzer, ranker and fetcher<br/>prune retained context"]
     Close --> CloseError{"Pipeline cleanup failed?"}
     CloseError -->|yes| Failed["Record cleanup fatal error<br/>persist task as FAILED"] --> Storage
     CloseError -->|no| Storage["Storage.close<br/>flush queued writes and close database"]

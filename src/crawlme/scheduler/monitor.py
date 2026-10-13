@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from typing import Literal
 
@@ -10,6 +11,7 @@ from crawlme.llm import TokenBudget
 from crawlme.pioneer import Frontier
 from crawlme.runtime import RunState
 from crawlme.scheduler.stop_conds import StopReason, can_drain_analysis, can_settle_pages, check_stop
+from crawlme.util import subscribe
 
 
 class StopMonitor:
@@ -17,6 +19,31 @@ class StopMonitor:
         self.runtime = runtime
         self.frontier = frontier
         self.budget = budget
+        self._revision = 0
+        self._updated = asyncio.Event()
+        self._unsubscribe = [
+            subscribe(runtime, lambda state: (state.limits, dataclasses.astuple(state.progress)), self._notify),
+            subscribe(
+                frontier,
+                lambda queue: (queue.size, queue.waiting_size, queue.scoring, queue.blocked_by_domain_budget),
+                self._notify,
+            ),
+            subscribe(budget, lambda tokens: tokens.used, self._notify),
+        ]
+
+    def close(self) -> None:
+        for unsubscribe in self._unsubscribe:
+            unsubscribe()
+        self._unsubscribe.clear()
+
+    def _notify(self) -> None:
+        self._revision += 1
+        self._updated.set()
+
+    async def _wait_for_update(self, revision: int) -> None:
+        while revision == self._revision:
+            self._updated.clear()
+            await self._updated.wait()
 
     def reasons(self) -> list[StopReason]:
         return check_stop(
@@ -41,7 +68,7 @@ class StopMonitor:
         self, *, phase: Literal["run", "pages", "analysis"] = "run", deadline: float | None = None
     ) -> list[StopReason]:
         while True:
-            revision = self.runtime.revision
+            revision = self._revision
             reasons = self.reasons()
             if phase == "pages":
                 allowed = can_settle_pages(reasons)
@@ -63,6 +90,6 @@ class StopMonitor:
             deadlines = [d for d in (deadline, run_deadline) if d is not None]
             timeout = max(0, min(deadlines) - now) if deadlines else None
             try:
-                await asyncio.wait_for(self.runtime.wait_for_change(revision), timeout=timeout)
+                await asyncio.wait_for(self._wait_for_update(revision), timeout=timeout)
             except asyncio.TimeoutError:
                 pass

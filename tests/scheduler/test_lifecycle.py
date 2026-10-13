@@ -79,7 +79,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
                 scheduler._checkpointer.budget.record(goal.max_tokens, 0)
             elif stop == "time":
                 scheduler.run_state.progress.started_at -= 61
-                scheduler.run_state.notify_change()
+                scheduler._monitor._notify()
             elif stop == "user":
                 run.cancel()
         if stop == "user":

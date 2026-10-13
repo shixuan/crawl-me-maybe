@@ -10,6 +10,7 @@ import pytest
 from crawlme.pioneer import Frontier
 from crawlme.pioneer.queue import PriorityQueue
 from crawlme.schemas import URL, Candidate, FrontierItem, FrontierSnapshot
+from crawlme.util import subscribe
 
 
 def _item(
@@ -380,3 +381,32 @@ async def test_restore_partial_ranking():
     assert restored.size == restored.waiting_size == 1
     assert (await restored.take_for_ranking(1))[0].url.url_key == "second"
     assert (await restored.pop_next()).url_key == "first"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_partial_add_notifies(monkeypatch, cancel, request):
+    frontier = Frontier()
+    notices = []
+    request.addfinalizer(
+        subscribe(frontier, lambda owner: owner.waiting_size, lambda: notices.append(frontier.waiting_size))
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    add = frontier._waiting.add
+
+    async def interrupted(candidates):
+        await add(candidates)
+        entered.set()
+        await release.wait()
+        raise RuntimeError("after queue mutation")
+
+    monkeypatch.setattr(frontier._waiting, "add", interrupted)
+    running = asyncio.create_task(frontier.push_candidates([_candidate("partial")]))
+    await asyncio.wait_for(entered.wait(), 1)
+    if cancel:
+        running.cancel()
+    else:
+        release.set()
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        await running
+    assert frontier.waiting_size == 1
+    assert notices == [1]

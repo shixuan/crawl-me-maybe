@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import collections
 import dataclasses
 import datetime
@@ -11,6 +10,7 @@ from typing import Any
 
 from crawlme.checkpoint import Checkpointable
 from crawlme.schemas import CrawlGoal
+from crawlme.util import notify
 
 # How many of a source's own analyzed pages its window keeps.
 RELEVANCE_WINDOW = 20
@@ -197,54 +197,39 @@ class RunState(Checkpointable):
     rejected_seeds: list[tuple[str, str]] = dataclasses.field(default_factory=list)
     proposed_seeds: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
 
-    _revision: int = dataclasses.field(default=0, init=False, repr=False)
-    _changed: asyncio.Event = dataclasses.field(default_factory=asyncio.Event, init=False, repr=False)
-
-    @property
-    def revision(self) -> int:
-        return self._revision
-
-    def notify_change(self) -> None:
-        self._revision += 1
-        self._changed.set()
-
-    async def wait_for_change(self, revision: int) -> None:
-        while revision == self._revision:
-            self._changed.clear()
-            await self._changed.wait()
-
+    @notify
     def page_completed(self) -> None:
         self.progress.pages_fetched += 1
-        self.notify_change()
 
+    @notify
     def work_started(self) -> None:
         self.progress.in_flight += 1
-        self.notify_change()
 
+    @notify
     def work_finished(self) -> None:
         self.progress.in_flight -= 1
-        self.notify_change()
 
+    @notify
     def analysis_completed(self, relevant: bool) -> None:
         if relevant:
             self.progress.relevant_found += 1
-            self.notify_change()
 
+    @notify
     def listing_completed(self, *, empty: bool) -> None:
         self.progress.listings_seen += 1
         self.progress.listings_empty += empty
-        self.notify_change()
 
+    @notify
     def record_refusal(self, reason: str) -> None:
         if not self.progress.refused_by:
             self.progress.refused_by = reason
-            self.notify_change()
 
+    @notify
     def record_failure(self, error: BaseException) -> None:
         if not self.progress.fatal_error:
             self.progress.fatal_error = str(error) or type(error).__name__
-            self.notify_change()
 
+    @notify
     def reset(self, *, goal: CrawlGoal) -> None:
         """Reset execution history while preserving prepared seeds and expansion metadata.
 
@@ -269,7 +254,6 @@ class RunState(Checkpointable):
         self.seeds = collections.defaultdict(
             SeedState, {key: SeedState(url=seed.url) for key, seed in self.seeds.items() if seed.url}
         )
-        self.notify_change()
 
     def dump(self) -> dict[str, Any]:
         progress = dataclasses.asdict(self.progress)
@@ -288,6 +272,7 @@ class RunState(Checkpointable):
             "proposed_seeds": self.proposed_seeds,
         }
 
+    @notify
     def restore(self, data: dict[str, Any]) -> None:
         self.work = {entry["item"]["item_id"]: entry for entry in data["work"]}
         progress = dict(data["progress"])
@@ -309,4 +294,3 @@ class RunState(Checkpointable):
         self.seeds_asked = data["seeds_asked"]
         self.rejected_seeds = data["rejected_seeds"]
         self.proposed_seeds = data["proposed_seeds"]
-        self.notify_change()

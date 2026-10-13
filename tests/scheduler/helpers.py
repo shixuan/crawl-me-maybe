@@ -68,10 +68,9 @@ def _set_context(sched, **kw):
     state = _ctx(**kw)
     budget = TokenBudget(limit=state.limits.max_tokens)
     budget.record(kw.get("tokens_used", 0), 0)
-    sched.pipeline._frontier.bind_changes(state.notify_change)
-    budget.bind_changes(state.notify_change)
     sched._checkpointer.budget = budget
     sched.pipeline._tracking.state = state
+    sched._monitor.close()
     sched._monitor = StopMonitor(state, sched.pipeline._frontier, budget)
 
 

@@ -97,9 +97,6 @@ def create_scheduler(
             analyzer, concurrency=settings.llm_concurrency, storage=storage, tracking=kwargs["tracking"]
         )
     state = kwargs["tracking"].state
-    kwargs["frontier"].bind_changes(state.notify_change)
-    budget.bind_changes(state.notify_change)
-    state.notify_change()
     analysis = kwargs["analysis"]
     kwargs["dedup"] = DedupWorker(kwargs.pop("grouper"), storage=storage, model=settings.llm_model)
     kwargs["ranking"] = RankingWorker(ranker, storage=storage, frontier=kwargs["frontier"], tracking=kwargs["tracking"])

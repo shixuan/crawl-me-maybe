@@ -249,6 +249,7 @@ class Engine:
         if self._closed:
             return
         self._closed = True
+        self._monitor.close()
         try:
             await self.pipeline.aclose()
         except Exception as exc:

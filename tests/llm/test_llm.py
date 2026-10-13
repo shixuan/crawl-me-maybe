@@ -20,6 +20,7 @@ import crawlme.llm.client as llm_mod
 from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.llm import Client, Error, TokenBudget, TokenBudgetError
+from crawlme.util import subscribe
 
 
 class _StubLitellm:
@@ -222,10 +223,10 @@ def test_wires_knobs():
     assert client._sem._value == 5
 
 
-def test_budget_records():
+def test_budget_records(request):
     totals: list[int] = []
     budget = TokenBudget(limit=100)
-    budget.bind_changes(lambda: totals.append(budget.used))
+    request.addfinalizer(subscribe(budget, lambda owner: owner.used, lambda: totals.append(budget.used)))
     budget.record(10, 5)
     assert budget.used == 15
     assert budget.input_tokens == 10
@@ -523,3 +524,17 @@ async def test_retry_billed(monkeypatch):
     client = Client(model=_THINKS, api_key="k", max_output_tokens=100, reasoning_effort="medium", budget=budget)
     await client.chat("hi")
     assert budget.used == 10 + 100 + 10 + 20
+
+
+def test_partial_restore_notifies(request):
+    budget = TokenBudget(10)
+    notices = []
+    request.addfinalizer(subscribe(budget, lambda owner: owner.used, lambda: notices.append(budget.used)))
+    saved = budget.dump()
+    saved["used"] = 10
+    del saved["calls"]
+    with pytest.raises(KeyError):
+        budget.restore(saved)
+    assert notices == [10]
+    with pytest.raises(TokenBudgetError):
+        budget.check()

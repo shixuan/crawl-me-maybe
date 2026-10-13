@@ -57,7 +57,7 @@ async def test_idle_then_token_wakeup(tmp_path):
 
 async def test_notice_before_wait(tmp_path):
     scheduler, goal, task, _ = build(tmp_path)
-    wait = scheduler.run_state.wait_for_change
+    wait = scheduler._monitor._wait_for_update
     injected = False
 
     async def notify_then_wait(revision):
@@ -67,7 +67,7 @@ async def test_notice_before_wait(tmp_path):
             scheduler._checkpointer.budget.record(goal.max_tokens, 0)
         await wait(revision)
 
-    scheduler.run_state.wait_for_change = notify_then_wait
+    scheduler._monitor._wait_for_update = notify_then_wait
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
     await asyncio.wait_for(scheduler.run(goal, task), 2)
     assert injected
@@ -191,13 +191,13 @@ async def test_observed_owners(tmp_path):
     scheduler, goal, _, _ = build(tmp_path)
     state = scheduler.run_state
     state.reset(goal=goal)
-    revision = state.revision
+    revision = scheduler._monitor._revision
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    await asyncio.wait_for(state.wait_for_change(revision), 1)
+    await asyncio.wait_for(scheduler._monitor._wait_for_update(revision), 1)
     assert not scheduler._monitor.reasons()
-    revision = state.revision
+    revision = scheduler._monitor._revision
     scheduler._checkpointer.budget.record(goal.max_tokens, 0)
-    await asyncio.wait_for(state.wait_for_change(revision), 1)
+    await asyncio.wait_for(scheduler._monitor._wait_for_update(revision), 1)
     assert [reason.code for reason in scheduler._monitor.reasons()] == ["BUDGET_TOKENS"]
     assert scheduler.summary()["tokens_used"] == goal.max_tokens
     assert "tokens_used" not in state.dump()["progress"]
@@ -207,14 +207,14 @@ async def test_unchanged_data_is_quiet(tmp_path):
     scheduler, _, _, _ = build(tmp_path)
     state = scheduler.run_state
     frontier = scheduler.pipeline._frontier
-    revision = state.revision
+    revision = scheduler._monitor._revision
     await frontier.pop_next()
     await frontier.push_candidates([])
     frontier.finish_ranking([])
     state.analysis_completed(False)
     state.stats.fetch_errors += 1
     scheduler._checkpointer.budget.record(0, 0)
-    assert state.revision == revision
+    assert scheduler._monitor._revision == revision
 
 
 async def test_monitor_after_state_restore(tmp_path):
@@ -226,9 +226,9 @@ async def test_monitor_after_state_restore(tmp_path):
     state.reset(goal=goal)
     saved = state.dump()
     state.restore(saved)
-    revision = state.revision
+    revision = scheduler._monitor._revision
     budget.record(goal.max_tokens, 0)
-    await asyncio.wait_for(state.wait_for_change(revision), 1)
+    await asyncio.wait_for(scheduler._monitor._wait_for_update(revision), 1)
     assert [reason.code for reason in scheduler._monitor.reasons()] == ["BUDGET_TOKENS"]
     assert scheduler.summary()["tokens_used"] == goal.max_tokens + 6
     assert "tokens_used" not in saved["progress"]

@@ -13,6 +13,7 @@ from crawlme.pioneer.buffer import Buffer, RoundRobinBuffer
 from crawlme.pioneer.prefilter import PreFilterContext
 from crawlme.pioneer.queue import Gate, GateFn, PriorityQueue
 from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, FrontierSnapshot
+from crawlme.util import notify
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,6 @@ class Frontier(Checkpointable):
         self._ranking: dict[str, Candidate] = {}
         # Count domain refusals separately from natural frontier exhaustion.
         self._blocked_by_domain_budget = 0
-        self._changed: Callable[[], None] = lambda: None
-        self._last_counts = (0, 0, 0, 0)
         self._lock = asyncio.Lock()
         self._source: PriorityQueue = source or PriorityQueue(
             aging_window=aging_window,
@@ -57,51 +56,41 @@ class Frontier(Checkpointable):
     def blocked_by_domain_budget(self) -> int:
         return self._blocked_by_domain_budget
 
-    def bind_changes(self, changed: Callable[[], None]) -> None:
-        self._changed = changed
-        self._last_counts = (self.size, self.waiting_size, self.scoring, self.blocked_by_domain_budget)
-
-    def _notify_changes(self) -> None:
-        counts = (self.size, self.waiting_size, self.scoring, self.blocked_by_domain_budget)
-        if counts != self._last_counts:
-            self._last_counts = counts
-            self._changed()
-
+    @notify
     def retire(self, seed_url_key: str) -> None:
         """Drop a seed's queued work and refuse new work; in-flight tasks continue."""
         self._retired.add(seed_url_key)
         self._waiting.retire(seed_url_key)
         self._source.discard_seed(seed_url_key)
-        self._notify_changes()
 
     def is_retired(self, seed_url_key: str) -> bool:
         return seed_url_key in self._retired
 
     # the unscored half ------------------------------------------------
 
+    @notify
     async def push_candidates(self, candidates: list[Candidate]) -> None:
         """Buffer candidates that have not been visited, queued or retired."""
         fresh = [c for c in candidates if not self.holds(c.url.url_key)]
         await self._waiting.add(fresh)
-        self._notify_changes()
 
+    @notify
     async def take_for_ranking(self, n: int) -> list[Candidate]:
         """Take a batch from the buffer and account for ranking in progress."""
         batch = list(await self._waiting.drain(n))
         self._ranking.update((c.candidate_id, c) for c in batch)
-        self._notify_changes()
         return batch
 
+    @notify
     def finish_ranking(self, batch: list[Candidate]) -> None:
         """Release the completed batch's ownership and parent contexts."""
         for c in batch:
             self._ranking.pop(c.candidate_id, None)
-        self._notify_changes()
 
+    @notify
     async def return_for_ranking(self, batch: list[Candidate]) -> None:
         fresh = [c for c in batch if c.url.url_key not in self._visited and not self._source.contains(c.url.url_key)]
         await self._waiting.return_batch(fresh)
-        self._notify_changes()
 
     def context_keys(self) -> set[str]:
         return self._waiting.context_keys() | {c.source_url_key for c in self._ranking.values() if c.source_url_key}
@@ -129,6 +118,7 @@ class Frontier(Checkpointable):
 
     # the scored half ---------------------------------------------------
 
+    @notify
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:
             # Candidates leave the buffer before ranking; dedup against visited and queued items here.
@@ -140,12 +130,12 @@ class Frontier(Checkpointable):
                 and not self._source.contains(i.url_key)
             ]
             await self._source.add(fresh)
-            self._notify_changes()
 
     def holds(self, url_key: str) -> bool:
         """Whether this URL is already spoken for, anywhere."""
         return url_key in self._visited or self._source.contains(url_key) or self._waiting.contains(url_key)
 
+    @notify
     async def pop_next(
         self,
         now: datetime.datetime | None = None,
@@ -156,7 +146,6 @@ class Frontier(Checkpointable):
         now = now or _utcnow()
         async with self._lock:
             item = await self._source.take(now, self._gate(next_allowed, global_budget))
-            self._notify_changes()
             return item
 
     def _gate(
@@ -196,6 +185,7 @@ class Frontier(Checkpointable):
 
         return gate
 
+    @notify
     async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None:
         async with self._lock:
             if item.url_key in self._visited:
@@ -206,7 +196,6 @@ class Frontier(Checkpointable):
             if status == "COMPLETED":
                 self._domain_counters[item.reg_domain] = self._domain_counters.get(item.reg_domain, 0) + 1
                 self._global_counter += 1
-            self._notify_changes()
 
     async def mark_visited(self, url_key: str) -> None:
         async with self._lock:
@@ -244,6 +233,7 @@ class Frontier(Checkpointable):
             ranking=list(self._ranking.values()),
         ).model_dump(mode="json")
 
+    @notify
     def restore(self, state: dict[str, Any]) -> None:
         snap = FrontierSnapshot.model_validate(state)
         self._visited = snap.visited.copy()
@@ -273,4 +263,3 @@ class Frontier(Checkpointable):
                 keys.add(key)
         waiting.update(candidates=restored, retired=sorted(self._retired))
         self._waiting.restore(waiting)
-        self._notify_changes()

@@ -245,10 +245,13 @@ flowchart LR
     tracker -->|update| state["RunState<br>limits, counters, page/source history, ranking feedback"]
     state -->|batch feedback snapshot via tracker and RankingWorker| ranker
     budget -->|recorded usage| monitor
-    budget -. change notice wired by factory .-> state
     frontier[Frontier] -->|queue counts| monitor
-    frontier -. change notice wired by factory .-> state
-    state -->|progress and changes| monitor[StopMonitor]
+    budget -. decorated mutations .-> notify["util.observer<br>instance subscriptions"]
+    frontier -. decorated mutations .-> notify
+    state -. decorated mutations .-> notify
+    monitor -->|subscribe to selected values| notify
+    notify -->|notifications| monitor
+    state -->|progress and limits| monitor[StopMonitor]
     monitor --> policies["stop_conds<br>pure run stopping checks"]
     monitor -->|stop reasons| control["Engine<br>stop dispatch and settle work"]
     retirement["runtime.tracking<br>source policy"] -->|PagePipeline applies| frontier
@@ -324,11 +327,18 @@ with RunState, Frontier and TokenBudget. Monitor reads queue counts and token us
 directly from their owners and passes numbers alongside Progress and Limits to
 `check_stop()`. RunState does not bind owners or proxy their counts.
 
-The factory connects Frontier and TokenBudget change notices to RunState's existing
-revision event. StopMonitor waits for revisions and deadlines, then reevaluates
-stopping policies. Ordinary progress does not wake Engine. Engine waits for a stop
-result or pipeline completion. Revisions preserve changes between checking
-conditions and starting the wait.
+Mutation methods carry only `@notify`. RunState, Frontier and TokenBudget do
+not bind listeners, store callbacks or select watched values. StopMonitor subscribes
+to those values through `util.subscribe()`. The notification tool compares them
+before and after a method, including partial mutations before an exception or
+cancellation, and invokes the callback synchronously.
+
+Monitor owns its revision and Event. It waits for notifications and deadlines,
+then reevaluates stopping policies. Ordinary progress does not wake Engine. Engine
+waits for a stop result or pipeline completion. Revisions preserve updates between
+checking conditions and starting the wait. Subscriptions are isolated by object
+identity, hold weak references to owners and bound callback receivers, and are
+removed when Engine closes Monitor.
 
 Monitor also supervises settlement. Pages may finish after fetch exhaustion or meeting
 the result target. Token/time exhaustion, platform refusal and fatal errors cancel
