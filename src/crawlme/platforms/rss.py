@@ -10,8 +10,9 @@ import logging
 import re
 from typing import Any
 
-from crawlme.platforms.base import FeedDependencyError, FeedItem, Listing, PageProblem
-from crawlme.schemas import FetchResult, Page, Payload
+from crawlme.digest import FetchResult, Page, Payload
+from crawlme.platforms.base import FeedDependencyError
+from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
 logger = logging.getLogger(__name__)
 

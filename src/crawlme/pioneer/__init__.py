@@ -1,14 +1,36 @@
-"""Pioneer: the path a candidate takes from discovery to a fetch.
+"""Candidate filtering, ranking and scheduling."""
 
-    prefilter    cheap per-candidate rules, before anything is stored
-    buffer       candidates waiting to be scored, a turn from each seed
-    ranker       what turns a candidate into a priority
-    queue        candidates that have a score, waiting for a fetch slot
-    frontier     owns both halves, plus gating, budgets and checkpoints
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
-    canonicalizer, robots, sources, goal_enhancer  --  supporting parts
+from crawlme.pioneer.models import Candidate, CandidateStatus, FrontierItem, FrontierItemStatus
 
-Each module holds one concept and, where that concept has a contract,
-the contract sits with it.  A second implementation is what earns a
-concept its own package; none has one yet.
-"""
+if TYPE_CHECKING:
+    from crawlme.pioneer.frontier import Frontier, FrontierSnapshot
+    from crawlme.pioneer.ranker import RankDecision, RankHistorySummary
+
+__all__ = [
+    "Candidate",
+    "CandidateStatus",
+    "Frontier",
+    "FrontierItem",
+    "FrontierItemStatus",
+    "FrontierSnapshot",
+    "RankDecision",
+    "RankHistorySummary",
+]
+
+
+def __getattr__(name: str) -> Any:
+    # Keep importing data types independent of loading their consumers.
+    modules = {
+        "Frontier": "crawlme.pioneer.frontier",
+        "FrontierSnapshot": "crawlme.pioneer.frontier",
+        "RankDecision": "crawlme.pioneer.ranker",
+        "RankHistorySummary": "crawlme.pioneer.ranker",
+    }
+    if name not in modules:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(modules[name]), name)
+    globals()[name] = value
+    return value

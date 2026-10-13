@@ -1,0 +1,46 @@
+"""Exercise the shared execution contract without an engine supervising it."""
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from crawlme.runtime import CrawlGoal
+from crawlme.scheduler.pipelines import Pipeline, PipelineContext
+from tests.scheduler.test_control import build, candidate
+
+
+async def test_cancel_composed_pipeline(tmp_path):
+    entered = asyncio.Event()
+
+    async def fetch(item):
+        entered.set()
+        await asyncio.Event().wait()
+
+    scheduler, goal, _, _ = build(tmp_path, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
+    scheduler.run_state.reset(goal=goal)
+    await scheduler._storage.start()
+    await scheduler.pipeline.ingest_seeds(goal, [candidate()])
+    pipeline: Pipeline[CrawlGoal, None] = scheduler.pipeline
+    context = PipelineContext(
+        task_id="run",
+        events=None,
+        checkpoint=AsyncMock(),
+        can_dispatch=lambda: True,
+        can_run=lambda: True,
+        can_analyze=lambda: True,
+    )
+    running = asyncio.create_task(pipeline.run(goal, context))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, 2)
+        assert not scheduler.pipeline._pump_tasks
+        assert not scheduler.pipeline._inflight
+        assert scheduler.run_state.progress.in_flight == 0
+        assert scheduler.summary()["dedup"]["status"] == "disabled"
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await scheduler.aclose()

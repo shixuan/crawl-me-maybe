@@ -8,8 +8,8 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from crawlme.platforms.base import FeedItem, Listing, PageProblem
-from crawlme.schemas import FetchResult, Page, Payload
+from crawlme.digest import FetchResult, Page, Payload
+from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
 logger = logging.getLogger(__name__)
 

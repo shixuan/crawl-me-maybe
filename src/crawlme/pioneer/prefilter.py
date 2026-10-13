@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from crawlme.schemas import Candidate, CrawlGoal
+from crawlme.pioneer.models import Candidate
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
 

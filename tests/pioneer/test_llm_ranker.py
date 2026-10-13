@@ -11,10 +11,12 @@ import datetime
 import pytest
 
 from crawlme.config import Settings
-from crawlme.llm import LLMError, LLMResponse, TokenBudget
-from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.llm import Error, LLMResponse, TokenBudget
+from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
+from crawlme.pioneer.ranker import LLMRanker
 from crawlme.prompts import ranking_input
-from crawlme.schemas import URL, Candidate, CrawlGoal, RankHistorySummary
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 class _StubClient:
@@ -165,14 +167,14 @@ async def test_retry_parses():
 @pytest.mark.asyncio
 async def test_retry_gives_up():
     client = _StubClient([_resp("garbage"), _resp("still garbage")])
-    with pytest.raises(LLMError, match="unparseable JSON"):
+    with pytest.raises(Error, match="unparseable JSON"):
         await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
 
 @pytest.mark.asyncio
 async def test_provider_error():
-    client = _StubClient([LLMError("provider down")])
-    with pytest.raises(LLMError):
+    client = _StubClient([Error("provider down")])
+    with pytest.raises(Error):
         await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
 
 
@@ -560,3 +562,17 @@ def test_extract_before_candidates() -> None:
     goal = CrawlGoal(prompt="g", extraction_spec={"fields": {"deadline": "d"}})
     prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert prompt.index("## Extract") < prompt.index("## Candidate links")
+
+
+def test_rank_defaults():
+    rd = RankDecision(candidate_id="c1")
+    assert rd.ranker == "rule"
+    assert rd.dropped is False
+
+
+def test_history_defaults():
+    """Only what the prompt reads.  A field nothing writes and nothing
+    reads is worse than no field: it reads as a working signal."""
+    rhs = RankHistorySummary()
+    assert (rhs.goal, rhs.relevant_pages) == ("", [])
+    assert set(RankHistorySummary.model_fields) == {"goal", "relevant_pages"}

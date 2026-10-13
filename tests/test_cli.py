@@ -9,8 +9,8 @@ import pytest
 from crawlme.cli import main
 from crawlme.cli.run import _build_source
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
-from crawlme.pioneer.ranker.llm import LLMRanker
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
+from crawlme.pioneer.ranker import LLMRanker
+from crawlme.runtime import Limits, Progress, RunState, Stats
 
 
 @pytest.fixture(autouse=True)
@@ -59,8 +59,8 @@ def test_prints_prompt(caplog):
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
         with patch("crawlme.cli.run.create_scheduler") as mock_factory:
             mock_sched = MagicMock()
-            mock_sched.ingest_seeds = AsyncMock()
-            mock_sched.expand_seeds = AsyncMock(return_value=[])
+            mock_sched.pipeline.ingest_seeds = AsyncMock()
+            mock_sched.pipeline.expand_seeds = AsyncMock(return_value=[])
             mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
@@ -88,8 +88,8 @@ def _capturing_factory(captured: dict):
         captured["goal"] = goal
         captured["overrides"] = overrides
         sched = MagicMock()
-        sched.ingest_seeds = AsyncMock()
-        sched.expand_seeds = AsyncMock(return_value=[])
+        sched.pipeline.ingest_seeds = AsyncMock()
+        sched.pipeline.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
         sched.run = AsyncMock()
         return sched
@@ -222,7 +222,7 @@ def test_session_browser(_installed, tmp_path):
                 main()
             except SystemExit:
                 pass
-    from crawlme.digest.fetcher import PlaywrightFetcher
+    from crawlme.digest import PlaywrightFetcher
     from crawlme.scheduler.factory import _build_fetcher
 
     cfg = captured["cfg"]
@@ -280,42 +280,14 @@ def test_analysis_on():
     assert captured["cfg"].analysis_enabled is True
 
 
-def test_binds_budget(monkeypatch):
-    """The shared token budget's sink reaches the scheduler, which is
-    what makes the BUDGET_TOKENS stop condition see LLM usage."""
-    from crawlme.llm import TokenBudget
-
-    note = object()
-    recorded: list = []
-
-    def _capture(cfg, goal=None, **overrides):
-        sched = MagicMock()
-        sched.ingest_seeds = AsyncMock()
-        sched.expand_seeds = AsyncMock(return_value=[])
-        sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
-        sched.run = AsyncMock()
-        sched.note_tokens_used = note
-        return sched
-
-    monkeypatch.setattr(TokenBudget, "bind_sink", lambda self, sink: recorded.append(sink))
-    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capture):
-            try:
-                main()
-            except SystemExit:
-                pass
-
-    assert recorded == [note]
-
-
 def test_prints_summary(capsys):
     """After a run, the terminal report shows the numbers that matter."""
 
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
-        sched.ingest_seeds = AsyncMock()
-        sched.expand_seeds = AsyncMock(return_value=[])
-        sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5, tokens_used=1234), stats=Stats())
+        sched.pipeline.ingest_seeds = AsyncMock()
+        sched.pipeline.expand_seeds = AsyncMock(return_value=[])
+        sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())
         sched.run = AsyncMock()
         sched.summary = lambda: {
             "pages_fetched": 5,
@@ -352,7 +324,7 @@ def test_summary_in_log(tmp_path, capsys, log_format, log_level):
     from crawlme.config import Settings
     from crawlme.llm import TokenBudget
     from crawlme.logging import setup_logging, to_file
-    from crawlme.schemas import CrawlTask
+    from crawlme.runtime import CrawlTask
 
     scheduler = MagicMock()
     scheduler.summary.return_value = {

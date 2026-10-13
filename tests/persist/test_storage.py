@@ -1,0 +1,396 @@
+from __future__ import annotations
+
+import asyncio
+import datetime
+import json
+import logging
+import sqlite3
+
+import pytest
+
+from crawlme.digest import Page
+from crawlme.persist import Storage
+from crawlme.pioneer import Candidate, RankDecision
+from crawlme.urls import URL
+
+
+def _url(url_key: str = "abc") -> URL:
+    return URL(raw="https://x.com", canonical="https://x.com", url_key=url_key, reg_domain="example.com")
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+@pytest.fixture
+def storage(tmp_path):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    db = tmp_path / "test.db"
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    s = Storage(str(db), str(raw))
+    loop.run_until_complete(s.start())
+    yield s
+    loop.run_until_complete(s.close())
+    loop.close()
+
+
+def test_tables_created(storage):
+    tables = [
+        "crawl_goals",
+        "crawl_tasks",
+        "pages",
+        "links",
+        "rank_decisions",
+        "analyses",
+        "checkpoints",
+        "events",
+        "errors",
+        "robots_cache",
+    ]
+    for t in tables:
+        cur = _run(storage._execute_now("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)))
+        row = _run(cur.fetchone())
+        assert row is not None, f"Table {t} missing"
+
+
+def test_goal_roundtrip(storage):
+    storage.save_goal(
+        {
+            "goal_id": "g1",
+            "prompt": "find AI news",
+            "max_pages": 10,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    g = _run(storage.get_goal("g1"))
+    assert g is not None
+    assert g["prompt"] == "find AI news"
+    assert g["max_pages"] == 10
+
+
+def test_time_policy_survives_goal_restore_without_fields(storage):
+    from crawlme.cli.replay import _goal_from_row
+    from crawlme.runtime import CrawlGoal, spec_version
+
+    goal = CrawlGoal(prompt="find upcoming events", time_policy="event occurrence")
+    storage.save_goal(goal.model_dump(mode="json"))
+    _run(storage._write_queue.join())
+    restored = _goal_from_row(_run(storage.get_goal(goal.goal_id)))
+    assert restored.time_policy == "event occurrence"
+    assert restored.extraction_spec is None
+    assert spec_version(None, restored.time_policy) != spec_version(None)
+
+
+def test_enhanced_goal_saved(storage):
+    """The Goal Enhancer's keywords and since survive persistence."""
+    storage.save_goal(
+        {
+            "goal_id": "g2",
+            "prompt": "最近半年的LLM推理框架进展",
+            "goal_statement": "Find recent progress on LLM inference frameworks / 找最近LLM推理框架进展",
+            "keywords": ["llm", "inference", "vllm"],
+            "since": "2026-02-13T00:00:00+00:00",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    g = _run(storage.get_goal("g2"))
+    assert g is not None
+    assert g["goal_statement"].startswith("Find recent progress")
+    assert '"vllm"' in g["keywords"]
+    assert g["since"] == "2026-02-13T00:00:00+00:00"
+
+
+def test_task_roundtrip(storage):
+    storage.save_task(
+        {
+            "task_id": "t1",
+            "goal_id": "g1",
+            "state": "RUNNING",
+            "counters": {},
+            "start_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    t = _run(storage.get_task("t1"))
+    assert t is not None
+    assert t["state"] == "RUNNING"
+
+
+def test_page_roundtrip(storage):
+    url = _url("abc")
+    storage.save_page(Page(page_id="p1", url_key="abc", url=url, title="Test Page"))
+    _run(storage._write_queue.join())
+    p = _run(storage.get_page("p1"))
+    assert p is not None
+    assert p["title"] == "Test Page"
+
+
+def test_pages_by_key(storage):
+    url = _url("abc")
+    for i in range(3):
+        storage.save_page(Page(page_id=f"p{i}", url_key="abc", url=url, title=f"Page {i}"))
+    _run(storage._write_queue.join())
+    pages = _run(storage.get_pages_by_url_key("abc"))
+    assert len(pages) == 3
+
+
+def test_pages_in_order(storage):
+    for i in (2, 0, 1):
+        storage.save_page(
+            Page(
+                page_id=f"p{i}",
+                url_key=f"k{i}",
+                url=_url(f"k{i}"),
+                extracted_at=datetime.datetime(2026, 1, 1, 0, 0, i),
+            )
+        )
+    _run(storage._write_queue.join())
+    pages = _run(storage.list_pages())
+    assert [p["page_id"] for p in pages] == ["p0", "p1", "p2"]
+
+
+def test_save_raw_html(storage):
+    path = storage.save_raw_html("abc", "f1", b"<html>hello</html>")
+    assert path.endswith(".html")
+    with open(path) as f:
+        assert "hello" in f.read()
+
+
+def test_link_roundtrip(storage):
+    storage.save_link(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
+    _run(storage._write_queue.join())
+    c = _run(storage.get_link("c1"))
+    assert c is not None
+    assert c["depth"] == 2
+
+
+def test_link_keeps_time(storage):
+    """Persist candidate publication time for inspection and re-use."""
+    import datetime
+
+    when = datetime.datetime(2026, 8, 20, 3, 54, 30, tzinfo=datetime.timezone.utc)
+    storage.save_link(Candidate(candidate_id="c2", url=_url("dated"), posted_at=when))
+    _run(storage._write_queue.join())
+    c = _run(storage.get_link("c2"))
+    assert c is not None
+    assert c["posted_at"].startswith("2026-08-20T03:54:30")
+
+
+def test_link_undated(storage):
+    """A link carries no publication time, and empty has to stay empty."""
+    storage.save_link(Candidate(candidate_id="c3", url=_url("undated")))
+    _run(storage._write_queue.join())
+    assert _run(storage.get_link("c3"))["posted_at"] == ""
+
+
+def test_rank_roundtrip(storage):
+    storage.save_rank_decision(RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm"))
+    _run(storage._write_queue.join())
+    rd = _run(storage.get_rank_decision("c1"))
+    assert rd is not None
+    assert rd["priority"] == 0.8
+    assert rd["ranker"] == "llm"
+
+
+def test_ranks_by_key(storage):
+    for i in range(2):
+        storage.save_rank_decision(RankDecision(candidate_id=f"c{i}", url_key="abc", priority=0.5 + i * 0.1))
+    _run(storage._write_queue.join())
+    rds = _run(storage.get_rank_decisions_by_url_key("abc"))
+    assert len(rds) == 2
+
+
+def test_analysis_roundtrip(storage):
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "page_id": "p1",
+            "url_key": "abc",
+            "classification": "RELEVANT",
+            "feedback": {"classification": "RELEVANT", "relevance_score": 0.6},
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    results = _run(storage.get_analyses_by_url_key("abc"))
+    assert len(results) == 1
+    assert results[0]["classification"] == "RELEVANT"
+    # The scheduler-facing feedback signals must survive persistence.
+    assert '"relevance_score": 0.6' in results[0]["feedback_json"]
+
+
+def test_analysis_keeps_the_dates_it_read(storage):
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "classification": "RELEVANT",
+            "starts_on": "2026-10-01",
+            "ends_on": "2026-10-05",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    results = _run(storage.get_analyses_by_url_key("abc"))
+    assert results[0]["starts_on"] == "2026-10-01"
+    assert results[0]["ends_on"] == "2026-10-05"
+
+
+def test_an_analysis_without_dates_stores_blanks(storage):
+    storage.save_analysis({"analysis_id": "a1", "url_key": "abc", "analyzed_at": "2026-01-01T00:00:00Z"})
+    _run(storage._write_queue.join())
+    results = _run(storage.get_analyses_by_url_key("abc"))
+    assert results[0]["starts_on"] == ""
+
+
+def test_has_analysis(storage):
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "goal_id": "g1",
+            "model": "m1",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+
+    assert _run(storage.has_analysis("abc", "g1"))  # "" matches any model
+    assert _run(storage.has_analysis("abc", "g1", "m1"))
+    assert not _run(storage.has_analysis("abc", "g1", "m2"))
+    assert not _run(storage.has_analysis("abc", "g2"))
+    assert not _run(storage.has_analysis("other", "g1"))
+
+
+def test_has_by_fields(storage):
+    """A page read for a different field list has not been read yet.
+
+    The goal is the same in both cases, so goal_id cannot tell them
+    apart; spec_version is what does.
+    """
+    storage.save_analysis(
+        {
+            "analysis_id": "a1",
+            "url_key": "abc",
+            "goal_id": "g1",
+            "model": "m1",
+            "spec_version": "aaaa1111",
+            "analyzed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+
+    assert _run(storage.has_analysis("abc", "g1", "m1", "aaaa1111"))
+    assert not _run(storage.has_analysis("abc", "g1", "m1", "bbbb2222"))
+    assert not _run(storage.has_analysis("abc", "g1", "m1")), "a goal asking for no fields is not the same read"
+
+
+def test_checkpoint_saved(storage):
+    storage.save_checkpoint(
+        {
+            "checkpoint_id": "s1",
+            "task_id": "t1",
+            "checkpoint_json": {"heap": [1, 2, 3]},
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    snap = _run(storage.get_checkpoint("s1"))
+    assert snap is not None
+
+
+def test_event_roundtrip(storage):
+    storage.save_event(
+        {
+            "ts": "2026-01-01T00:00:00Z",
+            "task_id": "t1",
+            "type": "PAGE_FETCHED",
+            "payload": {},
+        }
+    )
+    storage.save_event(
+        {
+            "ts": "2026-01-01T00:00:01Z",
+            "task_id": "t1",
+            "type": "PAGE_ANALYZED",
+            "payload": {},
+        }
+    )
+    _run(storage._write_queue.join())
+    events = _run(storage.get_events_after("t1", 0))
+    assert len(events) == 2
+    assert events[0]["type"] == "PAGE_FETCHED"
+
+
+def test_error_roundtrip(storage):
+    storage.save_error(
+        {
+            "task_id": "t1",
+            "url_key": "abc",
+            "stage": "fetch",
+            "error_type": "timeout",
+            "attempt": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    errors = _run(storage.get_errors_by_task("t1"))
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "fetch"
+    assert errors[0]["error_type"] == "timeout"
+
+    by_url = _run(storage.get_errors_by_url_key("abc"))
+    assert len(by_url) == 1
+
+
+def test_robots_roundtrip(storage):
+    storage.save_robots(
+        {
+            "domain": "example.com",
+            "raw": "User-agent: *\nDisallow: /",
+            "fetched_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    _run(storage._write_queue.join())
+    r = _run(storage.get_robots("example.com"))
+    assert r is not None
+    assert "Disallow" in r["raw"]
+
+
+def test_get_nonexistent(storage):
+    assert _run(storage.get_goal("noexist")) is None
+    assert _run(storage.get_page("noexist")) is None
+
+
+async def test_bad_sql_no_hang(tmp_path, caplog):
+    """A write that fails must not take the writer down with it.
+
+    Letting it propagate ends the task, so nothing calls task_done
+    again and close() waits on join() forever: the run would hang at
+    the very end having reported everything fine, which is how a
+    column added to one INSERT and not another stayed hidden.
+    """
+    db = Storage.create(str(tmp_path))
+    await db.start()
+    db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("x",))
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(db.close(), timeout=5)
+    assert any("db.write_failed" in r.message for r in caplog.records)
+
+
+async def test_checkpoint_write_failure(tmp_path):
+    db = Storage.create(tmp_path)
+    await db.start()
+    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"version": 1}})
+    await db.flush()
+    db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("bad",))
+    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"version": 2}})
+    with pytest.raises(RuntimeError, match="checkpoint was not saved"):
+        await db.flush()
+    await db.close()
+    with sqlite3.connect(db.db_path) as connection:
+        assert json.loads(connection.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0]) == {"version": 1}

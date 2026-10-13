@@ -1,4 +1,4 @@
-"""Tests for the PageAnalyzer with a stub LLM client.
+"""Tests for the Analyzer with a stub LLM client.
 
 The analyzer depends only on the chat(prompt, system=..., ...)
 interface, so the client is faked with a scripted responder.
@@ -11,12 +11,14 @@ import datetime
 
 import pytest
 
-from crawlme.analysis import PageAnalyzer
+from crawlme.analysis import Analyzer
 from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
 from crawlme.config import Settings
-from crawlme.llm import LLMError, LLMResponse, TokenBudget, TokenBudgetError
+from crawlme.digest import Page
+from crawlme.llm import Error, LLMResponse, TokenBudget, TokenBudgetError
 from crawlme.prompts import analysis_input
-from crawlme.schemas import URL, CrawlGoal, Page
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 class _StubClient:
@@ -65,8 +67,8 @@ def _valid_json() -> str:
     )
 
 
-def _analyzer(client: _StubClient, *, retry_delay: float = 0.0) -> PageAnalyzer:
-    return PageAnalyzer(client, retry_delay=retry_delay)
+def _analyzer(client: _StubClient, *, retry_delay: float = 0.0) -> Analyzer:
+    return Analyzer(client, retry_delay=retry_delay)
 
 
 # -- happy path ---------------------------------------------------------
@@ -125,7 +127,7 @@ async def test_char_cap():
     """The settings knob dials the page-text cap (the benchmark's C arm)."""
     long_text = "word " * 4000
     client = _StubClient([_resp(_valid_json())])
-    analyzer = PageAnalyzer(client, retry_delay=0.0, max_page_chars=200)
+    analyzer = Analyzer(client, retry_delay=0.0, max_page_chars=200)
     await analyzer.analyze(_page(long_text), _goal())
     prompt = client.calls[0]["prompt"]
     assert len(prompt) < 400  # 200-char cap plus headers
@@ -200,7 +202,7 @@ async def test_lists_capped():
 
 @pytest.mark.asyncio
 async def test_parked_retry():
-    client = _StubClient([LLMError("provider down"), _resp(_valid_json())])
+    client = _StubClient([Error("provider down"), _resp(_valid_json())])
     analyzer = _analyzer(client)
     published: list = []
     analyzer.bind_sink(published.append)
@@ -218,7 +220,7 @@ async def test_parked_retry():
 
 @pytest.mark.asyncio
 async def test_gives_up():
-    client = _StubClient([LLMError("down"), LLMError("down"), LLMError("down")])
+    client = _StubClient([Error("down"), Error("down"), Error("down")])
     analyzer = _analyzer(client)
     published: list = []
     analyzer.bind_sink(published.append)
@@ -263,7 +265,7 @@ async def test_bad_json_fails():
 
 @pytest.mark.asyncio
 async def test_aclose_cancels():
-    client = _StubClient([LLMError("down"), _resp(_valid_json())])
+    client = _StubClient([Error("down"), _resp(_valid_json())])
     analyzer = _analyzer(client, retry_delay=60.0)
 
     assert await analyzer.analyze(_page(), _goal()) is None
@@ -275,7 +277,7 @@ async def test_aclose_cancels():
 
 @pytest.mark.asyncio
 async def test_drain_waits():
-    client = _StubClient([LLMError("provider down"), _resp(_valid_json())])
+    client = _StubClient([Error("provider down"), _resp(_valid_json())])
     analyzer = _analyzer(client)
     published: list = []
     analyzer.bind_sink(published.append)
@@ -289,8 +291,8 @@ async def test_drain_waits():
 
 @pytest.mark.asyncio
 async def test_drain_giveup():
-    client = _StubClient([LLMError("down"), LLMError("down")])
-    analyzer = PageAnalyzer(client, retry_delay=0.0, max_attempts=2)
+    client = _StubClient([Error("down"), Error("down")])
+    analyzer = Analyzer(client, retry_delay=0.0, max_attempts=2)
     published: list = []
     analyzer.bind_sink(published.append)
 
@@ -319,13 +321,13 @@ async def test_sink_first_try():
 
 def test_auto_off():
     cfg = Settings(llm_api_key="", llm_base_url="")
-    assert PageAnalyzer.from_settings(cfg) is None
+    assert Analyzer.from_settings(cfg) is None
 
 
 def test_wires_client():
     cfg = Settings(llm_api_key="sk-test", llm_base_url="")
     budget = TokenBudget(limit=1000)
-    analyzer = PageAnalyzer.from_settings(cfg, budget=budget)
+    analyzer = Analyzer.from_settings(cfg, budget=budget)
     assert analyzer is not None
     assert analyzer._client._budget is budget
     assert analyzer._max_page_chars == 3000  # default knob
@@ -333,7 +335,7 @@ def test_wires_client():
 
 def test_wires_chars():
     cfg = Settings(llm_api_key="sk-test", llm_base_url="", analyzer_max_chars=3000)
-    analyzer = PageAnalyzer.from_settings(cfg)
+    analyzer = Analyzer.from_settings(cfg)
     assert analyzer is not None
     assert analyzer._max_page_chars == 3000
 
@@ -533,7 +535,7 @@ def test_no_class_for_links_alone():
     """HUB named a page kept for its links. Seven runs fetched 17 pages
     on the analyzer's endorsement and got one result, against 25% on the
     pages the ranker chose, so the class and the links both went."""
-    from crawlme.schemas import CLASSIFICATIONS
+    from crawlme.analysis import CLASSIFICATIONS
 
     assert CLASSIFICATIONS == ("RELEVANT", "IRRELEVANT", "UNKNOWN")
     system = _contract()
@@ -553,7 +555,7 @@ def test_extraction_is_scoped_to_keepers():
 def test_aggregator_is_gone():
     """It named the same thing HUB did, nothing read them apart, and the
     model chose it zero times in three runs."""
-    from crawlme.schemas import CLASSIFICATIONS
+    from crawlme.analysis import CLASSIFICATIONS
 
     assert "AGGREGATOR" not in CLASSIFICATIONS
     assert "AGGREGATOR" not in _contract()
@@ -727,7 +729,7 @@ async def test_time_correction():
     [
         _resp(_time_reply(["Invented quote", "May 12, 2027"])),
         _resp("not json"),
-        LLMError("unavailable"),
+        Error("unavailable"),
         TokenBudgetError("exhausted"),
     ],
 )
@@ -781,13 +783,13 @@ async def test_checkpoint_retains_retry():
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise LLMError("retry")
+                raise Error("retry")
             if calls == 2:
                 entered.set()
                 await asyncio.Event().wait()
             return _resp(_valid_json())
 
-    analyzer = PageAnalyzer(Client(), retry_delay=0)
+    analyzer = Analyzer(Client(), retry_delay=0)
     results = []
     analyzer.bind_sink(results.append)
     try:
@@ -798,7 +800,7 @@ async def test_checkpoint_retains_retry():
         assert saved["entries"][0]["attempts"] == 1
         await asyncio.sleep(0)
         assert calls == 2 and not results
-        analyzer = PageAnalyzer(Client(), retry_delay=0)
+        analyzer = Analyzer(Client(), retry_delay=0)
         analyzer.bind_sink(results.append)
         analyzer.bind_goal(_goal())
         analyzer.restore(saved)
@@ -811,7 +813,7 @@ async def test_checkpoint_retains_retry():
 
 
 async def test_retry_failure_surfaces():
-    analyzer = _analyzer(_StubClient([LLMError("retry"), RuntimeError("broken retry")]))
+    analyzer = _analyzer(_StubClient([Error("retry"), RuntimeError("broken retry")]))
     try:
         await analyzer.analyze(_page(), _goal())
         with pytest.raises(RuntimeError, match="broken retry"):

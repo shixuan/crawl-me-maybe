@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from crawlme.schemas import FetchResult, Page
-from crawlme.storage.base import Storage
+from crawlme.digest import FetchResult, Page
+from crawlme.persist import Storage
 
 logger = logging.getLogger(__name__)
 

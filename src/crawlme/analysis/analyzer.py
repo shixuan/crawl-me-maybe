@@ -10,26 +10,17 @@ import json
 import logging
 import unicodedata
 from collections.abc import Callable
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from crawlme import prompts
-from crawlme.checkpoint.checkpointable import Checkpointable
+from crawlme.analysis.models import AnalysisResult, AnalyzerFeedback, Classification, ExtractedField, ResultItem
+from crawlme.checkpoint import Checkpointable
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, TokenBudgetError, parse_json_response
+from crawlme.digest import Page
+from crawlme.llm import Client, Error, Stage, TokenBudget, TokenBudgetError, parse_json_response
 from crawlme.logging import where
 from crawlme.logging.progress import activity
-from crawlme.schemas import (
-    AnalysisResult,
-    AnalyzerFeedback,
-    Classification,
-    CrawlGoal,
-    ExtractedField,
-    Page,
-    spec_fields,
-    spec_time_field,
-    spec_version,
-)
-from crawlme.schemas.analysis import ResultItem
+from crawlme.runtime import CrawlGoal, spec_fields, spec_time_field, spec_version
 from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
@@ -44,28 +35,12 @@ _MAX_TAGS = 8
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
 
 
-class Analyzer(Checkpointable, Protocol):
-    """Contract for the page-analysis stage (see PageAnalyzer)."""
-
-    def bind_sink(self, sink: Callable[[AnalysisResult], None]) -> None: ...
-
-    async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None: ...
-
-    async def drain_pending(self) -> None: ...
-    def start_retries(self) -> None: ...
-    def bind_goal(self, goal: CrawlGoal) -> None: ...
-    @property
-    def pending_keys(self) -> set[str]: ...
-
-    async def aclose(self) -> None: ...
-
-
-class PageAnalyzer(Checkpointable):
+class Analyzer(Checkpointable):
     """Analyze pages with bounded retries and publish results through the bound sink."""
 
     def __init__(
         self,
-        client: LLMClient,
+        client: Client,
         *,
         max_attempts: int = _MAX_ATTEMPTS,
         retry_delay: float = _RETRY_DELAY_SEC,
@@ -107,9 +82,9 @@ class PageAnalyzer(Checkpointable):
             self._parked_count += 1
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> PageAnalyzer | None:
+    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> Analyzer | None:
         """Build from settings with the shared budget, or return None without LLM configuration."""
-        client = LLMClient.from_settings_if_configured(
+        client = Client.from_settings_if_configured(
             settings,
             budget=budget,
             reasoning_effort=settings.llm_analyze_reasoning_effort,
@@ -132,7 +107,7 @@ class PageAnalyzer(Checkpointable):
             return None
         try:
             result = await self._analyze_once(page, goal)
-        except LLMError as e:
+        except Error as e:
             self._requeue_or_giveup(page, goal, attempts=1, error=e)
             return None
         self._publish(result)
@@ -181,7 +156,7 @@ class PageAnalyzer(Checkpointable):
                 await asyncio.sleep(self._retry_delay)
                 try:
                     result = await self._analyze_once(page, goal)
-                except LLMError as e:
+                except Error as e:
                     self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
                     continue
                 self._pending_keys.discard(page.url_key)
@@ -199,10 +174,10 @@ class PageAnalyzer(Checkpointable):
         prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)
         resp = await self._client.chat(prompt, system=prompts.analysis_system(goal), json_mode=True)
         if resp.truncated:
-            raise LLMError(f"analysis response truncated for {page.url_key}; incomplete items rejected")
+            raise Error(f"analysis response truncated for {page.url_key}; incomplete items rejected")
         data = parse_json_response(resp.content)
         if data is None:
-            raise LLMError(f"unparseable JSON for {page.url_key}")
+            raise Error(f"unparseable JSON for {page.url_key}")
         tokens = resp.input_tokens + resp.output_tokens
         entries = _item_entries(data)
         if goal.time_policy and data.get("classification") == "RELEVANT":
@@ -259,13 +234,13 @@ class PageAnalyzer(Checkpointable):
                     tokens += fixed.input_tokens + fixed.output_tokens
                     corrected = parse_json_response(fixed.content)
                     if corrected is None or not isinstance(corrected.get("time"), dict):
-                        raise LLMError("time correction must return a time object")
+                        raise Error("time correction must return a time object")
                     remaining: list[str] = []
                     _policy_dates(corrected, page, issues=remaining)
                     if remaining:
-                        raise LLMError("; ".join(remaining))
+                        raise Error("; ".join(remaining))
                     data = {**data, "time": corrected["time"]}
-                except LLMError as exc:
+                except Error as exc:
                     logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
         return data, tokens
 
@@ -274,7 +249,7 @@ class PageAnalyzer(Checkpointable):
             self._sink(result)
 
     def _requeue_or_giveup(
-        self, page: Page, goal: CrawlGoal, *, attempts: int, error: LLMError, parked: bool = False
+        self, page: Page, goal: CrawlGoal, *, attempts: int, error: Error, parked: bool = False
     ) -> None:
         # An exhausted token budget never recovers within this task, so
         # don't park pages behind it.
@@ -371,11 +346,11 @@ def _item_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
         return [data]  # Accept historical single-result responses.
     entries = data["items"]
     if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
-        raise LLMError("items must be an array of objects")
+        raise Error("items must be an array of objects")
     if data.get("classification") == "RELEVANT" and not entries:
-        raise LLMError("a relevant page must contain at least one supported item")
+        raise Error("a relevant page must contain at least one supported item")
     if data.get("classification") == "IRRELEVANT" and entries:
-        raise LLMError("an irrelevant page cannot contain result items")
+        raise Error("an irrelevant page cannot contain result items")
     return entries
 
 
@@ -383,7 +358,7 @@ def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem
     summary = data.get("summary")
     evidence = data.get("evidence")
     if not isinstance(summary, str) or not summary.strip():
-        raise LLMError("each item requires a summary")
+        raise Error("each item requires a summary")
     if (
         not isinstance(evidence, list)
         or not evidence
@@ -392,7 +367,7 @@ def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem
             for quote in evidence
         )
     ):
-        raise LLMError("each item requires nonempty verbatim source evidence")
+        raise Error("each item requires nonempty verbatim source evidence")
     extracted = _parse_extracted(data, page, goal)
     dates = _policy_dates(data, page) if goal.time_policy else _dates_from(extracted, page, goal)
     return ResultItem(

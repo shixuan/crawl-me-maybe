@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from crawlme.logging.progress import activity
+from crawlme.persist import Storage
+from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
+from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.ranker import Ranker
-from crawlme.schemas import URL, Candidate, CrawlGoal, FrontierItem, RankDecision, RankHistorySummary
+from crawlme.runtime import CrawlGoal, EventEmitter, EventType, Tracker
+from crawlme.urls import URL
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +25,17 @@ class RankedBatch:
 
 
 class RankingWorker:
-    def __init__(self, ranker: Ranker | None) -> None:
+    def __init__(
+        self,
+        ranker: Ranker | None,
+        *,
+        storage: Storage,
+        frontier: Frontier,
+        tracking: Tracker,
+    ) -> None:
+        self._storage = storage
+        self._frontier = frontier
+        self._tracking = tracking
         self.ranker = ranker
 
     @activity("rank")
@@ -68,6 +82,29 @@ class RankingWorker:
             "rank.batch candidates=%d kept=%d dropped=%d", len(batch), len(items), sum(d.dropped for d in decisions)
         )
         return RankedBatch(decisions, items)
+
+    async def run(
+        self,
+        batch: list[Candidate],
+        goal: CrawlGoal,
+        events: EventEmitter | None = None,
+    ) -> None:
+        history, page_contexts = self._tracking.feedback(goal, batch)
+        ranked = await self.rank(batch, goal, history, page_contexts)
+        for decision in ranked.decisions:
+            self._storage.save_rank_decision(decision)
+        self._tracking.ranked(batch, ranked.decisions)
+        await self._frontier.push_batch(ranked.items)
+        if events and ranked.items:
+            events.emit(
+                EventType.CANDIDATE_ENQUEUED,
+                {
+                    "count": len(ranked.items),
+                    "dropped": sum(d.dropped for d in ranked.decisions),
+                },
+            )
+
+        self._tracking.state.stats.candidates_ranked += len(batch)
 
     async def aclose(self) -> None:
         if self.ranker is not None:

@@ -8,30 +8,18 @@ import logging
 from collections import Counter
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from crawlme import prompts
 from crawlme.config import Settings
+from crawlme.dedup.models import Group, Grouping
 from crawlme.llm import Stage, TokenBudget
-from crawlme.llm.client import LLMClient
-from crawlme.llm.errors import LLMError
+from crawlme.llm.client import Client
+from crawlme.llm.errors import Error
 from crawlme.llm.parsing import parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.schemas import CrawlGoal
-from crawlme.storage.base import Storage
+from crawlme.persist import Storage
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
-
-
-class Group(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    members: list[str] = Field(min_length=1)
-    overview: str = Field(min_length=1, max_length=4000)
-
-
-class Grouping(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    groups: list[Group]
 
 
 def _identity(row: dict[str, Any]) -> str:
@@ -45,13 +33,13 @@ def fingerprint(rows: list[dict[str, Any]]) -> str:
 
 
 class Grouper:
-    def __init__(self, client: LLMClient, *, max_chars: int) -> None:
+    def __init__(self, client: Client, *, max_chars: int) -> None:
         self.client = client
         self.max_chars = max_chars
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> Grouper | None:
-        client = LLMClient.from_settings_if_configured(
+        client = Client.from_settings_if_configured(
             settings, budget=budget, reasoning_effort=settings.llm_dedup_reasoning_effort, stage=Stage.DEDUP
         )
         return cls(client, max_chars=settings.llm_dedup_max_chars) if client is not None else None
@@ -66,23 +54,23 @@ class Grouper:
         for attempt in range(2):
             size = len(request) + len(prompts.DEDUP_SYSTEM)
             if size > self.max_chars:
-                raise LLMError(
+                raise Error(
                     f"dedup input exceeds LLM_DEDUP_MAX_CHARS ({size} > {self.max_chars}); original results retained"
                 )
             response = await self.client.chat(request, system=prompts.DEDUP_SYSTEM, json_mode=True)
             try:
                 if response.truncated:
-                    raise LLMError("dedup response truncated; original results retained")
+                    raise Error("dedup response truncated; original results retained")
                 data = parse_json_response(response.content)
                 if data is None:
-                    raise LLMError("dedup response is not a JSON object")
+                    raise Error("dedup response is not a JSON object")
                 groups = Grouping.model_validate(data).groups
                 members = [member for group in groups for member in group.members]
                 duplicates = sorted(key for key, count in Counter(members).items() if count > 1)
                 unknown = sorted(set(members) - expected)
                 if duplicates or unknown:
-                    raise LLMError(f"dedup returned duplicate IDs {duplicates}; unknown IDs {unknown}")
-            except (LLMError, ValueError) as exc:
+                    raise Error(f"dedup returned duplicate IDs {duplicates}; unknown IDs {unknown}")
+            except (Error, ValueError) as exc:
                 logger.warning("dedup.invalid attempt=%d error=%s", attempt + 1, exc)
                 logger.warning(
                     "dedup.response attempt=%d content=%s",

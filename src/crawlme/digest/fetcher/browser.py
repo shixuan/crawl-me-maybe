@@ -13,8 +13,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from crawlme.digest.fetcher.base import DEFAULT_UA, FetchError, with_retries
-from crawlme.schemas import URL, FetchResult, FrontierItem, Payload
+from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError, with_retries
+from crawlme.digest.models import FetchResult, Payload
+from crawlme.pioneer import FrontierItem
+from crawlme.urls import URL
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Playwright
@@ -40,7 +42,7 @@ _INSTALL_HINT = (
 )
 
 
-class PlaywrightFetcher:
+class PlaywrightFetcher(Fetcher):
     """One browser and context per instance, with a fresh page per fetch."""
 
     def __init__(

@@ -1,13 +1,13 @@
 """Shared LLM client, token accounting and response parsing."""
 
 from crawlme.llm.budget import Stage, TokenBudget
-from crawlme.llm.client import LLMClient, LLMResponse, close_litellm_clients, litellm_loaded
-from crawlme.llm.errors import LLMError, TokenBudgetError
+from crawlme.llm.client import Client, LLMResponse, close_litellm_clients, litellm_loaded
+from crawlme.llm.errors import Error, TokenBudgetError
 from crawlme.llm.parsing import parse_json_response
 
 __all__ = [
-    "LLMClient",
-    "LLMError",
+    "Client",
+    "Error",
     "LLMResponse",
     "Stage",
     "TokenBudget",

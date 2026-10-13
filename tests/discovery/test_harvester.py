@@ -12,12 +12,11 @@ from pathlib import Path
 import pytest
 
 from crawlme.config import Settings
-from crawlme.discovery.harvester import PageHarvester
-from crawlme.pioneer.canonicalizer import Canonicalizer
-from crawlme.platforms import instagram
-from crawlme.platforms.base import PageProblem
+from crawlme.digest import Page
+from crawlme.discovery import Harvester
+from crawlme.platforms import PageProblem, instagram
 from crawlme.scheduler.factory import _build_harvester
-from crawlme.schemas import URL, Page
+from crawlme.urls import URL, Canonicalizer
 
 _LINKS_HTML = b"""<html><body><article>
 <h2>Rust</h2><p>Body text long enough to keep.</p>
@@ -56,7 +55,7 @@ def _page(tmp_path: Path, html: bytes, url: str) -> Page:
 
 def test_links_resolved(tmp_path: Path) -> None:
     page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
-    out = PageHarvester(Canonicalizer()).harvest(page, depth=2).candidates
+    out = Harvester(Canonicalizer()).harvest(page, depth=2).candidates
     assert len(out) == 3
     assert all(c.depth == 3 for c in out), "candidates sit one level below their source"
     assert all(c.source_url_key == "src1" for c in out)
@@ -70,7 +69,7 @@ def test_links_resolved(tmp_path: Path) -> None:
 def test_links_meta(tmp_path: Path) -> None:
     """A link has no text of its own, so the proxies are all there is."""
     page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
-    first = PageHarvester(Canonicalizer()).harvest(page, depth=0).candidates[0]
+    first = Harvester(Canonicalizer()).harvest(page, depth=0).candidates[0]
     assert first.anchor == "first"
     assert first.text == "", "a link carries no content of its own"
 
@@ -80,7 +79,7 @@ def test_links_meta(tmp_path: Path) -> None:
 
 def test_listing_links(tmp_path: Path) -> None:
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates
+    out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates
     assert len(out) == 3
     assert all(c.signals["platform"] == "instagram" for c in out)
     assert all(c.url.reg_domain == "instagram.com" for c in out)
@@ -90,7 +89,7 @@ def test_listing_links(tmp_path: Path) -> None:
 def test_tagged_marked(tmp_path: Path) -> None:
     """Kept, but distinguishable: a reviewer's post is not the shop's."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates
+    out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates
     tagged = {c.url.canonical: c.signals["tagged_only"] for c in out}
     assert tagged["https://www.instagram.com/mollytea_canada/p/AAA111/"] is False
     assert tagged["https://www.instagram.com/hellofoodbaby_/p/CCC333/"] is True
@@ -99,7 +98,7 @@ def test_tagged_marked(tmp_path: Path) -> None:
 def test_post_is_leaf(tmp_path: Path) -> None:
     """A post is a leaf: its caption is the product, not a pointer on."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
-    assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
+    assert Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
 
 
 def test_problem_named(tmp_path: Path) -> None:
@@ -109,7 +108,7 @@ def test_problem_named(tmp_path: Path) -> None:
     answer: the harvest now carries the reason it came back empty.
     """
     page = _page(tmp_path, b"<html>Sorry, this page isn't available</html>", "https://www.instagram.com/gone/")
-    out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
+    out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
     assert out.candidates == []
     assert out.problem is PageProblem.UNAVAILABLE
     assert not out.problem.refuses_the_run, "one gone account must not end a thirty-account run"
@@ -118,7 +117,7 @@ def test_problem_named(tmp_path: Path) -> None:
 def test_quiet_is_ok(tmp_path: Path) -> None:
     """Empty and refused have to stay distinguishable in both directions."""
     page = _page(tmp_path, _EMPTY_LISTING, "https://www.instagram.com/quiet/")
-    out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
+    out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
     assert out.candidates == []
     assert out.problem is None
 
@@ -130,14 +129,14 @@ def test_block_refuses(tmp_path: Path) -> None:
         (b'<html><form action="/accounts/login/">Log in</form></html>', PageProblem.LOGIN_REQUIRED),
     ):
         page = _page(tmp_path, html, "https://www.instagram.com/someone/")
-        out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
+        out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
         assert out.problem is expected
         assert out.problem.refuses_the_run
 
 
 def test_no_html_empty(tmp_path: Path) -> None:
     page = Page(url_key="k", url=URL(raw="https://x/", canonical="https://x/", url_key="k"))
-    assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
+    assert Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0).candidates == []
 
 
 # wiring ----------------------------------------------------------------
@@ -179,7 +178,7 @@ def test_unclaimed_graph(tmp_path: Path) -> None:
     <a href="/p/BBB222/">so does this</a>
     </body></html>"""
     page = _page(tmp_path, trap, "https://mollyteaca.com/promotions")
-    out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
+    out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
     assert not out.listing, "nobody claimed it, so it was never judged as a listing"
     assert [c.url.canonical for c in out.candidates] == [
         "https://mollyteaca.com/p/AAA111/",
@@ -201,20 +200,20 @@ def test_platform_check(tmp_path: Path) -> None:
         claims = staticmethod(lambda page, document: page.url.reg_domain == "elsewhere.example")
 
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = PageHarvester(Canonicalizer(), [_Elsewhere()]).harvest(page, depth=0)
+    out = Harvester(Canonicalizer(), [_Elsewhere()]).harvest(page, depth=0)
     assert not out.listing, "this adapter does not claim instagram, so nothing parsed it as a feed"
 
 
 def test_listing_flagged(tmp_path: Path) -> None:
     """Only a listing can be judged empty, so only a listing says so."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    assert PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0).listing
+    assert Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0).listing
 
 
 def test_post_no_list(tmp_path: Path) -> None:
     """An item yields nothing by design and must never read as broken."""
     page = _page(tmp_path, _POST, "https://www.instagram.com/p/AAA111/")
-    out = PageHarvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
+    out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
     assert out.candidates == []
     assert not out.listing
 
@@ -222,7 +221,7 @@ def test_post_no_list(tmp_path: Path) -> None:
 def test_graph_no_list(tmp_path: Path) -> None:
     """A page with no links is ordinary; the graph has no listings."""
     page = _page(tmp_path, b"<html><body>no links here</body></html>", "https://example.com/")
-    out = PageHarvester(Canonicalizer()).harvest(page, depth=0)
+    out = Harvester(Canonicalizer()).harvest(page, depth=0)
     assert out.candidates == []
     assert not out.listing
 
@@ -231,7 +230,7 @@ def test_a_listing_without_its_payload_says_so():
     """Markup alone looks like a healthy read: the count is normal and
     nothing refused us. Measured on one account it ran up to 37 days
     behind."""
-    from crawlme.platforms.base import Listing
+    from crawlme.platforms import Listing
 
     assert Listing(own=[], others=[], degraded=True).degraded
     assert not Listing(own=[], others=[]).degraded

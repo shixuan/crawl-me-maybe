@@ -7,9 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from crawlme.pioneer.frontier import GatedFrontier
+from crawlme.pioneer import Candidate, Frontier, FrontierItem, FrontierSnapshot
 from crawlme.pioneer.queue import PriorityQueue
-from crawlme.schemas import URL, Candidate, FrontierItem, FrontierSnapshot
+from crawlme.urls import URL
+from crawlme.util import subscribe
 
 
 def _item(
@@ -33,8 +34,8 @@ def _candidate(url_key: str, seed_url_key: str = "") -> Candidate:
 
 
 @pytest.fixture
-def frontier() -> GatedFrontier:
-    return GatedFrontier()
+def frontier() -> Frontier:
+    return Frontier()
 
 
 @pytest.mark.asyncio
@@ -60,7 +61,7 @@ async def test_pop_gated(frontier):
 
 @pytest.mark.asyncio
 async def test_domain_spent(frontier):
-    f = GatedFrontier(domain_budget=1)
+    f = Frontier(domain_budget=1)
     items = [_item("k1", 0.5, "x.com"), _item("k2", 0.9, "x.com")]
     await f.push_batch(items)
 
@@ -112,7 +113,7 @@ async def test_snapshot_roundtrip(frontier):
     snap = frontier.dump()
     assert len(snap["visited"]) == 1
 
-    f2 = GatedFrontier()
+    f2 = Frontier()
     f2.restore(snap)
     assert f2.contains("k1")
     assert f2.contains("k2")
@@ -128,7 +129,7 @@ async def test_snapshot_pending(frontier):
     await frontier.pop_next()
 
     snap = frontier.dump()
-    f2 = GatedFrontier()
+    f2 = Frontier()
     f2.restore(snap)
     assert f2.size == 1, "an item waiting on a cooldown survived the round trip"
     assert f2.get_prefilter_context().is_visited_or_queued("k1")
@@ -157,7 +158,7 @@ async def test_inflight_once():
     Discovered again from another page mid-fetch, it would otherwise be
     read twice and analysed twice.
     """
-    f = GatedFrontier(domain_budget=0, source=PriorityQueue())
+    f = Frontier(domain_budget=0, source=PriorityQueue())
     await f.push_batch([_item("dup", priority=0.9)])
     taken = await f.pop_next(now=datetime.datetime.now(datetime.timezone.utc))
     assert taken is not None
@@ -176,11 +177,11 @@ async def test_checkpoint_keeps():
     to fetch, without an error anywhere.
     """
     make = PriorityQueue
-    f = GatedFrontier(source=make())
+    f = Frontier(source=make())
     await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
     assert f.size == 2
 
-    restored = GatedFrontier(source=make())
+    restored = Frontier(source=make())
     restored.restore(f.dump())
     assert restored.size == 2
     assert restored.get_prefilter_context().is_visited_or_queued("a")
@@ -188,12 +189,12 @@ async def test_checkpoint_keeps():
 
 @pytest.mark.asyncio
 async def test_checkpoint_old_shape():
-    f = GatedFrontier()
+    f = Frontier()
     await f.push_batch([_item("old", 0.7)])
     snap = f.dump()
     legacy = {**snap, "ordering": {}, "heap": [_item("old", 0.7).model_dump(mode="json")]}
 
-    restored = GatedFrontier()
+    restored = Frontier()
     restored.restore(legacy)
     assert restored.size == 1
 
@@ -207,11 +208,11 @@ async def test_checkpoint_json():
     read an attribute.
     """
     make = PriorityQueue
-    f = GatedFrontier(source=make())
+    f = Frontier(source=make())
     await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
 
     on_disk = json.loads(json.dumps(f.dump()))
-    restored = GatedFrontier(source=make())
+    restored = Frontier(source=make())
     restored.restore(on_disk)
 
     assert restored.size == 2
@@ -258,7 +259,7 @@ async def test_retiring_empties_both_halves():
     """Left behind, a retired seed's candidates keep the frontier
     non-empty, and a run whose sources have all retired would never read
     as drained."""
-    f = GatedFrontier()
+    f = Frontier()
     await f.push_candidates([_candidate("a", seed_url_key="dead")])
     await f.push_batch([_item("b", seed_url_key="dead")])
     assert f.size == 1 and f.waiting_size > 0
@@ -272,7 +273,7 @@ async def test_retiring_empties_both_halves():
 
 @pytest.mark.asyncio
 async def test_a_retired_seed_is_not_handed_out():
-    f = GatedFrontier()
+    f = Frontier()
     await f.push_batch([_item("a", seed_url_key="live"), _item("b", seed_url_key="dead")])
     f.retire("dead")
     got = []
@@ -286,7 +287,7 @@ async def test_ranking_wait(trigger, monkeypatch):
     """A notification rechecks readiness without exposing the candidate buffer."""
     clock = [0.0]
     monkeypatch.setattr("crawlme.pioneer.buffer.time", SimpleNamespace(monotonic=lambda: clock[0]))
-    frontier = GatedFrontier()
+    frontier = Frontier()
     await frontier.push_batch([_item("queued")])
     await frontier.push_candidates([_candidate("first")])
     interrupted = asyncio.Event()
@@ -317,13 +318,13 @@ async def test_ranking_wait(trigger, monkeypatch):
 
 
 async def test_ranking_already_interrupted():
-    frontier = GatedFrontier()
+    frontier = Frontier()
     await frontier.wake_ranker()
     await asyncio.wait_for(frontier.wait_for_ranking(lambda: True), timeout=1)
 
 
 async def test_outcome_counts_once():
-    frontier = GatedFrontier(domain_budget=2)
+    frontier = Frontier(domain_budget=2)
     await frontier.push_batch([_item("first", 1), _item("second", 0.5)])
     first = await frontier.pop_next()
     await frontier.record_outcome(first, "COMPLETED")
@@ -333,13 +334,13 @@ async def test_outcome_counts_once():
 
 
 async def test_retirement_survives_restore():
-    frontier = GatedFrontier()
+    frontier = Frontier()
     await frontier.push_candidates([_candidate("ranked", "seed")])
     await frontier.take_for_ranking(1)
     frontier.retire("seed")
     await frontier.push_batch([_item("ranked", seed_url_key="seed")])
     assert frontier.size == 0
-    restored = GatedFrontier()
+    restored = Frontier()
     restored.restore(frontier.dump())
     await restored.push_candidates([_candidate("new", "seed")])
     await restored.push_batch([_item("newer", seed_url_key="seed")])
@@ -348,10 +349,10 @@ async def test_retirement_survives_restore():
 
 
 async def test_restore_ranking_ownership():
-    frontier = GatedFrontier()
+    frontier = Frontier()
     await frontier.push_candidates([_candidate("first"), _candidate("second")])
     batch = await frontier.take_for_ranking(1)
-    restored = GatedFrontier()
+    restored = Frontier()
     restored.restore(json.loads(json.dumps(frontier.dump())))
     assert restored.waiting_size == 2
     assert restored.scoring == 0
@@ -362,7 +363,7 @@ async def test_restore_ranking_ownership():
 
 
 async def test_empty_restore_clears_work():
-    frontier = GatedFrontier()
+    frontier = Frontier()
     await frontier.push_candidates([_candidate("stale", "seed")])
     frontier.restore(FrontierSnapshot().model_dump(mode="json"))
     assert frontier.waiting_size == frontier.scoring == 0
@@ -371,12 +372,74 @@ async def test_empty_restore_clears_work():
 
 
 async def test_restore_partial_ranking():
-    frontier = GatedFrontier()
+    frontier = Frontier()
     await frontier.push_candidates([_candidate("first"), _candidate("second")])
     await frontier.take_for_ranking(2)
     await frontier.push_batch([_item("first")])
-    restored = GatedFrontier()
+    restored = Frontier()
     restored.restore(frontier.dump())
     assert restored.size == restored.waiting_size == 1
     assert (await restored.take_for_ranking(1))[0].url.url_key == "second"
     assert (await restored.pop_next()).url_key == "first"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_partial_add_notifies(monkeypatch, cancel, request):
+    frontier = Frontier()
+    notices = []
+    request.addfinalizer(
+        subscribe(frontier, lambda owner: owner.waiting_size, lambda: notices.append(frontier.waiting_size))
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    add = frontier._waiting.add
+
+    async def interrupted(candidates):
+        await add(candidates)
+        entered.set()
+        await release.wait()
+        raise RuntimeError("after queue mutation")
+
+    monkeypatch.setattr(frontier._waiting, "add", interrupted)
+    running = asyncio.create_task(frontier.push_candidates([_candidate("partial")]))
+    await asyncio.wait_for(entered.wait(), 1)
+    if cancel:
+        running.cancel()
+    else:
+        release.set()
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        await running
+    assert frontier.waiting_size == 1
+    assert notices == [1]
+
+
+def _model_url() -> URL:
+    return URL(
+        raw="https://example.com/page?a=1",
+        canonical="https://example.com/page",
+        url_key="abc123",
+    )
+
+
+def test_snapshot_defaults():
+    fs = FrontierSnapshot()
+    assert fs.snapshot_id
+    assert fs.visited == set()
+
+
+def test_snapshot_old_shape():
+    """`heap` predates `ordering` and still has to load.
+
+    Checkpoints written by an older build carry their items here, and
+    dropping the field would turn every one of them into an empty
+    frontier that reports itself as a finished crawl.
+    """
+    u = _model_url()
+    fs = FrontierSnapshot(
+        task_id="t1",
+        heap=[FrontierItem(url=u, url_key=u.url_key, priority=0.5)],
+        visited={"k1", "k2"},
+        budgets={"example.com": 5},
+    )
+    assert fs.heap[0].priority == 0.5
+    assert len(fs.visited) == 2
+    assert fs.budgets["example.com"] == 5

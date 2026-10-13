@@ -150,3 +150,7 @@ def group_of(
     if starts is not None and starts > today:
         return LATER
     return OPEN if ends is not None else UNDATED
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)

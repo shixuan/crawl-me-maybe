@@ -19,7 +19,7 @@ import pytest
 _CLI = """
 from types import SimpleNamespace
 import httpx
-from crawlme.llm.client import LLMClient
+from crawlme.llm.client import Client
 from crawlme.cli import main
 
 async def complete(self, messages, max_tokens, json_mode, effort=""):
@@ -31,7 +31,7 @@ async def complete(self, messages, max_tokens, json_mode, effort=""):
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
     )
 
-LLMClient._complete = complete
+Client._complete = complete
 main()
 """
 

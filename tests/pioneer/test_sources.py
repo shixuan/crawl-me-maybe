@@ -4,9 +4,8 @@ import json
 
 import pytest
 
-from crawlme.pioneer.sources.file import FileSource
-from crawlme.pioneer.sources.manual import ManualSource
-from crawlme.schemas import CrawlGoal
+from crawlme.pioneer.sources import FileSource, ManualSource
+from crawlme.runtime import CrawlGoal
 
 
 def _goal() -> CrawlGoal:

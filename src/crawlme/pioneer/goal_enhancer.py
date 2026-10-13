@@ -12,9 +12,9 @@ from typing import Any
 
 from crawlme import prompts
 from crawlme.config import Settings
-from crawlme.llm import LLMClient, LLMError, Stage, TokenBudget, parse_json_response
+from crawlme.llm import Client, Error, Stage, TokenBudget, parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.schemas import CrawlGoal
+from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class EnhancedGoal:
 class GoalEnhancer:
     """Enhances a CrawlGoal with one LLM call; None on any failure."""
 
-    def __init__(self, client: LLMClient | None) -> None:
+    def __init__(self, client: Client | None) -> None:
         self._client = client
 
     @classmethod
@@ -58,7 +58,7 @@ class GoalEnhancer:
         credentials means the enhancer stays inert.  *budget* is shared
         across all LLM consumers of the task."""
         return cls(
-            LLMClient.from_settings_if_configured(
+            Client.from_settings_if_configured(
                 settings,
                 budget=budget,
                 reasoning_effort=settings.llm_goal_reasoning_effort,
@@ -73,7 +73,7 @@ class GoalEnhancer:
             return None
         try:
             resp = await self._client.chat(goal.prompt, system=prompts.goal_system(), json_mode=True)
-        except LLMError as e:
+        except Error as e:
             logger.warning("goal.enhance llm error, using raw prompt: %s", e)
             return None
         if not resp.content.strip():

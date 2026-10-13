@@ -19,8 +19,10 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.llm import LLMResponse
+from crawlme.pioneer import Candidate
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import URL, Candidate, CrawlGoal, CrawlTask
+from crawlme.urls import URL
 
 # A small site shaped like a real focused crawl: a topical hub that
 # links to on-topic articles, one page the prefilter must drop, and one
@@ -223,7 +225,7 @@ def test_cli_bad_since(site: str, tmp_path: Path) -> None:
 
 
 class _ScriptedLLM:
-    """Stands in for LLMClient: same chat() shape, canned answers.
+    """Stands in for Client: same chat() shape, canned answers.
 
     Replies are chosen by looking for a marker in the prompt, so one
     client can serve the enhancer, the ranker, and the analyzer without
@@ -274,15 +276,15 @@ def _settings(tmp_path: Path) -> Settings:
 @pytest.mark.asyncio
 async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     """Analyzer and LLM ranker both run, on scripted answers."""
-    from crawlme.analysis import PageAnalyzer
-    from crawlme.pioneer.ranker.llm import LLMRanker
+    from crawlme.analysis import Analyzer
+    from crawlme.pioneer.ranker import LLMRanker
 
     cfg = _settings(tmp_path)
     goal = CrawlGoal(prompt=_PROMPT, max_pages=5, domain_budget=20)
     task = CrawlTask(goal_id=goal.goal_id)
 
     client = _ScriptedLLM()
-    analyzer = PageAnalyzer(client)  # type: ignore[arg-type]
+    analyzer = Analyzer(client)  # type: ignore[arg-type]
     scheduler = create_scheduler(
         cfg,
         goal=goal,
@@ -291,7 +293,7 @@ async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     )
 
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
-    assert await scheduler.ingest_seeds(goal, [seed]) == 1
+    assert await scheduler.pipeline.ingest_seeds(goal, [seed]) == 1
     await scheduler.run(goal, task)
     await scheduler.aclose()
 
@@ -322,7 +324,7 @@ async def test_no_creds(site: str, tmp_path: Path) -> None:
 
     scheduler = create_scheduler(cfg, goal=goal)
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
-    await scheduler.ingest_seeds(goal, [seed])
+    await scheduler.pipeline.ingest_seeds(goal, [seed])
     await scheduler.run(goal, task)
     await scheduler.aclose()
 

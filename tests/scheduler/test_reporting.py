@@ -1,4 +1,4 @@
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
+from crawlme.runtime import Limits, Progress, RunState, Stats
 from crawlme.scheduler.reporting import summary
 
 
@@ -7,7 +7,7 @@ def test_report_does_not_create_sources():
     state.proposed_seeds["missing"] = ("https://example.com/", "why")
     state.rejected_seeds.append(("https://missing.example/", "unavailable"))
 
-    report = summary(state)
+    report = summary(state, tokens_used=0)
 
     assert report["proposed_seeds"] == {"https://example.com/": ("why", (0, 0, 0, 0, 0, 0))}
     assert not state.seeds

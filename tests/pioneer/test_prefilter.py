@@ -4,8 +4,10 @@ import datetime
 
 import pytest
 
+from crawlme.pioneer import Candidate
 from crawlme.pioneer.prefilter import Decision, PreFilter, PreFilterContext
-from crawlme.schemas import URL, Candidate, CrawlGoal
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 def _url(

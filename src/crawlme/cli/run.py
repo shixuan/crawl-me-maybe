@@ -10,20 +10,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from crawlme.analysis import CLASSIFICATIONS
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.config import Settings
 from crawlme.llm import Stage, TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.pioneer.ranker.llm import LLMRanker
-from crawlme.pioneer.sources.base import UrlSource
-from crawlme.pioneer.sources.file import FileSource
-from crawlme.pioneer.sources.manual import ManualSource
-from crawlme.platforms import ADAPTERS
-from crawlme.platforms.base import PageProblem
-from crawlme.scheduler.engine import CrawlScheduler
+from crawlme.pioneer.ranker import LLMRanker
+from crawlme.pioneer.sources import FileSource, ManualSource, Source
+from crawlme.platforms import ADAPTERS, PageProblem
+from crawlme.runtime import CrawlGoal, CrawlTask, spec_fields
+from crawlme.scheduler import Engine
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CLASSIFICATIONS, CrawlGoal, CrawlTask, spec_fields
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +101,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
     scheduler = create_scheduler(
         cfg, goal=goal, llm_ranker=llm_ranker, budget=budget, dedup_enabled=getattr(args, "dedup", "on") == "on"
     )
-    budget.bind_sink(scheduler.note_tokens_used)
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.
     scheduler.attach_log_file()
@@ -147,8 +144,8 @@ async def cmd_run(args: argparse.Namespace) -> None:
 
     # After the user's own, so theirs are ingested whatever the model
     # says.
-    candidates += await scheduler.expand_seeds(goal, candidates, budget)
-    await scheduler.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
+    candidates += await scheduler.pipeline.expand_seeds(goal, candidates, budget)
+    await scheduler.pipeline.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
 
     logger.info(
         "looking for: %s",
@@ -162,7 +159,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
             "%s after %d pages and %d tokens: %s",
             task.state.lower(),
             scheduler.run_state.progress.pages_fetched,
-            scheduler.run_state.progress.tokens_used,
+            budget.used,
             task.stopping_reason or "no reason recorded",
         )
         await close_litellm_clients()
@@ -263,7 +260,7 @@ def _declared_seeds(args: argparse.Namespace) -> list[str]:
 
 
 def _print_summary(
-    scheduler: CrawlScheduler,
+    scheduler: Engine,
     task: CrawlTask,
     budget: TokenBudget,
     args: argparse.Namespace | None = None,
@@ -497,7 +494,7 @@ def _format_summary(s: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_source(args: argparse.Namespace) -> UrlSource:
+def _build_source(args: argparse.Namespace) -> Source:
     """Build a manual or file source from --seeds."""
     path = _seed_file(args.seeds)
     return FileSource(path) if path is not None else ManualSource(_split(args.seeds))

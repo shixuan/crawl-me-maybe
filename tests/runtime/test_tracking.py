@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from crawlme.discovery.harvester import Harvest
-from crawlme.runtime.state import Limits, Progress, RunState, Stats
-from crawlme.runtime.tracking import RunTracker
-from crawlme.schemas import URL, AnalysisResult, AnalyzerFeedback, Candidate, CrawlGoal, FrontierItem, Page
-from crawlme.schemas.analysis import ResultItem
+import pytest
+
+from crawlme.analysis import AnalysisResult, AnalyzerFeedback, ResultItem
+from crawlme.digest import Page
+from crawlme.discovery import Harvest
+from crawlme.pioneer import Candidate, FrontierItem
+from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker, why_retire
+from crawlme.urls import URL
 
 
 def _tracking():
-    return RunTracker(RunState(limits=Limits(), progress=Progress(), stats=Stats()))
+    return Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats()))
 
 
 def test_items_do_not_inflate_pages():
@@ -74,10 +77,28 @@ def test_late_analysis_joins_run_state():
 
 def test_trackers_share_one_state():
     first = _tracking()
-    second = RunTracker(first.state)
+    second = Tracker(first.state)
     first.record_page_context("p", {"title": "shared"})
     candidate = Candidate(
         url=URL(raw="https://example.com/p", canonical="https://example.com/p", url_key="p"), source_url_key="p"
     )
     _, contexts = second.feedback(CrawlGoal(prompt="test"), [candidate])
     assert contexts == {"p": {"title": "shared"}}
+
+
+@pytest.mark.parametrize(
+    ("window", "stale", "why"),
+    [
+        ([False] * 20, 0, "nothing in its last 20 pages"),
+        ([True] * 2 + [False] * 18, 0, None),  # two hits is enough to keep it
+        ([False] * 19, 0, None),  # a window that is not full yet says nothing
+        ([], 5, "5 pages in a row older than the window"),
+        ([], 4, None),
+    ],
+)
+def test_why_retire(window, stale, why):
+    assert why_retire(window, stale) == why
+
+
+def test_a_full_window_of_hits_keeps_it():
+    assert why_retire([True] * 20, 0) is None

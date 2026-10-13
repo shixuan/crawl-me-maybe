@@ -4,16 +4,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from crawlme.analysis import AnalysisResult
 from crawlme.cli.dedup import cmd_dedup
 from crawlme.config import Settings
-from crawlme.dedup.grouper import Group
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, CrawlTask, Page
-from crawlme.storage.sqlite import SqliteStorage
+from crawlme.dedup import Group
+from crawlme.digest import Page
+from crawlme.persist import Storage
+from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.urls import URL
 
 
 @pytest.mark.parametrize("fail", [False, True])
 async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     goal = CrawlGoal(prompt="find gifts")
     other = CrawlGoal(prompt="another goal")

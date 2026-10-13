@@ -6,12 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import PageAnalyzer
+from crawlme.analysis import Analyzer
 from crawlme.config import Settings
-from crawlme.llm import LLMError, LLMResponse
-from crawlme.pioneer.sources.manual import ManualSource
+from crawlme.digest import FetchResult
+from crawlme.llm import Error, LLMResponse
+from crawlme.pioneer.sources import ManualSource
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask, FetchResult
 
 
 @pytest.mark.parametrize("dedup", [False, True])
@@ -26,18 +27,18 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise LLMError("temporary failure")
+            raise Error("temporary failure")
         await release.wait()
         return LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 1, 1, "stub")
 
-    class Analyzer(PageAnalyzer):
+    class RetryAnalyzer(Analyzer):
         async def drain_pending(self):
             settling.set()
             if stop is None:
                 release.set()
             await super().drain_pending()
 
-    analyzer = Analyzer(MagicMock(chat=chat), retry_delay=0)
+    analyzer = RetryAnalyzer(MagicMock(chat=chat), retry_delay=0)
     cfg = Settings(_env_file=None, result_dir=tmp_path, llm_api_key="", llm_base_url="", ignore_robots=True)
     goal = CrawlGoal(prompt="compiler safety", max_pages=1)
     if stop == "time":
@@ -70,18 +71,24 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         grouper=MagicMock(group=group) if dedup else None,
     )
     seeds = await ManualSource(["https://example.com/article"]).discover(goal)
-    await scheduler.ingest_seeds(goal, seeds)
+    await scheduler.pipeline.ingest_seeds(goal, seeds)
     run = asyncio.create_task(scheduler.run(goal, task))
     try:
         if stop is not None:
             await asyncio.wait_for(settling.wait(), timeout=3)
             if stop == "tokens":
-                scheduler.note_tokens_used(goal.max_tokens)
+                scheduler._checkpointer.budget.record(goal.max_tokens, 0)
             elif stop == "time":
                 scheduler.run_state.progress.started_at -= 61
+                scheduler._monitor._notify()
             elif stop == "user":
-                await scheduler.stop()
-        await asyncio.wait_for(run, timeout=10 if stop is None else 3)
+                run.cancel()
+        if stop == "user":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(run, timeout=3)
+            assert task.state == "INTERRUPTED"
+        else:
+            await asyncio.wait_for(run, timeout=10 if stop is None else 3)
     finally:
         run.cancel()
         await asyncio.gather(run, return_exceptions=True)

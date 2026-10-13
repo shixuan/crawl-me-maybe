@@ -12,8 +12,9 @@ import datetime
 
 import pytest
 
+from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.queue import Gate, PriorityQueue
-from crawlme.schemas import URL, FrontierItem
+from crawlme.urls import URL
 
 
 def _now() -> datetime.datetime:

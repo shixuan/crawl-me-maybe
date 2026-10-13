@@ -7,14 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.discovery.harvester import Harvest
-from crawlme.llm import LLMError, LLMResponse
+from crawlme.discovery import Harvest
+from crawlme.llm import Error, LLMResponse
+from crawlme.pioneer import Candidate
 from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
-from crawlme.schemas import (
-    URL,
-    Candidate,
-    CrawlGoal,
-)
+from crawlme.runtime import CrawlGoal
+from crawlme.urls import URL
 
 
 def _reply(*pairs) -> str:
@@ -113,7 +111,7 @@ async def test_no_client_proposes_nothing():
 
 async def test_an_llm_error_proposes_nothing():
     client = MagicMock()
-    client.chat = AsyncMock(side_effect=LLMError("down"))
+    client.chat = AsyncMock(side_effect=Error("down"))
     assert await SeedExpander(client).propose(_goal(), ["https://s.com/"], 4) == []
 
 
@@ -183,7 +181,7 @@ async def test_a_seed_that_yields_nothing_is_dropped():
 
 
 async def test_a_refusal_is_dropped():
-    from crawlme.platforms.base import PageProblem
+    from crawlme.platforms import PageProblem
 
     kept, _, _ = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
     assert kept == []
@@ -203,7 +201,7 @@ async def test_seeds_are_verified_one_by_one():
 async def test_a_rejection_says_which_kind_it_was():
     """An address the model guessed and one that would not load cost the
     same fetch and mean different things."""
-    from crawlme.platforms.base import PageProblem
+    from crawlme.platforms import PageProblem
 
     _, _, gone = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
     assert gone == [("https://a.com/", "does not exist")]

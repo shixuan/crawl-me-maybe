@@ -1,4 +1,4 @@
-"""Frontier contract and implementation for queued and unranked candidates."""
+"""Own queued and unranked candidates, domain gates and checkpoints."""
 
 from __future__ import annotations
 
@@ -6,74 +6,46 @@ import asyncio
 import datetime
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any
 
-from crawlme.checkpoint.checkpointable import Checkpointable
+from pydantic import BaseModel, Field
+
+from crawlme.checkpoint import Checkpointable
 from crawlme.pioneer.buffer import Buffer, RoundRobinBuffer
+from crawlme.pioneer.models import Candidate, FrontierItem, FrontierItemStatus
 from crawlme.pioneer.prefilter import PreFilterContext
 from crawlme.pioneer.queue import Gate, GateFn, PriorityQueue
-from crawlme.schemas import Candidate, FrontierItem, FrontierItemStatus, FrontierSnapshot
+from crawlme.util import notify
+from crawlme.util.ids import _new_id
 
 logger = logging.getLogger(__name__)
-
-
-class Frontier(Checkpointable, Protocol):
-    """Contract for the priority-queue URL frontier."""
-
-    @property
-    def size(self) -> int: ...
-
-    # the unscored half: candidates waiting for someone to score them.
-    async def push_candidates(self, candidates: list[Candidate]) -> None: ...
-
-    def retire(self, seed_url_key: str) -> None:
-        """Drop a seed's queued work and refuse new work; in-flight tasks continue."""
-        ...
-
-    def is_retired(self, seed_url_key: str) -> bool: ...
-    async def take_for_ranking(self, n: int) -> list[Candidate]: ...
-    def finish_ranking(self, batch: list[Candidate]) -> None: ...
-
-    async def return_for_ranking(self, batch: list[Candidate]) -> None: ...
-    def context_keys(self) -> set[str]: ...
-
-    @property
-    def cooling(self) -> int:
-        """Scored items a cooldown will release on its own."""
-        ...
-
-    @property
-    def scoring(self) -> int:
-        """Candidates out being scored, in neither half but still work."""
-        ...
-
-    async def wait_for_ranking(self, interrupted: Callable[[], bool]) -> None: ...
-
-    async def wake_ranker(self) -> None: ...
-
-    @property
-    def waiting_size(self) -> int: ...
-
-    # the scored half.
-    async def push_batch(self, items: list[FrontierItem]) -> None: ...
-
-    async def pop_next(
-        self,
-        now: datetime.datetime | None = None,
-        next_allowed: Callable[[str], datetime.datetime] | None = None,
-        global_budget: int | None = None,
-    ) -> FrontierItem | None: ...
-
-    async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None: ...
-
-    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext: ...
 
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class GatedFrontier(Checkpointable):
+class FrontierSnapshot(BaseModel):
+    snapshot_id: str = Field(default_factory=_new_id)
+    task_id: str = ""
+    # Opaque queue state serialized by the ordering implementation.
+    ordering: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # Pending unranked candidates included in checkpoints.
+    waiting: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # The shape checkpoints were written in before `ordering` existed.
+    # Read on restore so an older checkpoint still resumes; no longer
+    # written.
+    heap: list[FrontierItem] = Field(default_factory=list)
+    pending: list[FrontierItem] = Field(default_factory=list)
+    visited: set[str] = Field(default_factory=set)
+    retired: set[str] = Field(default_factory=set)
+    ranking: list[Candidate] = Field(default_factory=list)
+    budgets: dict[str, Any] = Field(default_factory=dict[str, Any])
+    counters: dict[str, Any] = Field(default_factory=dict[str, Any])
+    created_at: datetime.datetime = Field(default_factory=_utcnow)
+
+
+class Frontier(Checkpointable):
     """Own both candidate queues, deduplication, domain gates and snapshots."""
 
     def __init__(
@@ -91,7 +63,7 @@ class GatedFrontier(Checkpointable):
         # Candidates out being scored: in neither half, still work.
         self._ranking: dict[str, Candidate] = {}
         # Count domain refusals separately from natural frontier exhaustion.
-        self.blocked_by_domain_budget = 0
+        self._blocked_by_domain_budget = 0
         self._lock = asyncio.Lock()
         self._source: PriorityQueue = source or PriorityQueue(
             aging_window=aging_window,
@@ -103,6 +75,11 @@ class GatedFrontier(Checkpointable):
         self._domain_counters: dict[str, int] = {}
         self._global_counter: int = 0
 
+    @property
+    def blocked_by_domain_budget(self) -> int:
+        return self._blocked_by_domain_budget
+
+    @notify
     def retire(self, seed_url_key: str) -> None:
         """Drop a seed's queued work and refuse new work; in-flight tasks continue."""
         self._retired.add(seed_url_key)
@@ -114,22 +91,26 @@ class GatedFrontier(Checkpointable):
 
     # the unscored half ------------------------------------------------
 
+    @notify
     async def push_candidates(self, candidates: list[Candidate]) -> None:
         """Buffer candidates that have not been visited, queued or retired."""
         fresh = [c for c in candidates if not self.holds(c.url.url_key)]
         await self._waiting.add(fresh)
 
+    @notify
     async def take_for_ranking(self, n: int) -> list[Candidate]:
         """Take a batch from the buffer and account for ranking in progress."""
         batch = list(await self._waiting.drain(n))
         self._ranking.update((c.candidate_id, c) for c in batch)
         return batch
 
+    @notify
     def finish_ranking(self, batch: list[Candidate]) -> None:
         """Release the completed batch's ownership and parent contexts."""
         for c in batch:
             self._ranking.pop(c.candidate_id, None)
 
+    @notify
     async def return_for_ranking(self, batch: list[Candidate]) -> None:
         fresh = [c for c in batch if c.url.url_key not in self._visited and not self._source.contains(c.url.url_key)]
         await self._waiting.return_batch(fresh)
@@ -160,6 +141,7 @@ class GatedFrontier(Checkpointable):
 
     # the scored half ---------------------------------------------------
 
+    @notify
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:
             # Candidates leave the buffer before ranking; dedup against visited and queued items here.
@@ -176,6 +158,7 @@ class GatedFrontier(Checkpointable):
         """Whether this URL is already spoken for, anywhere."""
         return url_key in self._visited or self._source.contains(url_key) or self._waiting.contains(url_key)
 
+    @notify
     async def pop_next(
         self,
         now: datetime.datetime | None = None,
@@ -185,7 +168,8 @@ class GatedFrontier(Checkpointable):
         """Return the highest-priority item that may be fetched right now."""
         now = now or _utcnow()
         async with self._lock:
-            return await self._source.take(now, self._gate(next_allowed, global_budget))
+            item = await self._source.take(now, self._gate(next_allowed, global_budget))
+            return item
 
     def _gate(
         self,
@@ -216,7 +200,7 @@ class GatedFrontier(Checkpointable):
                     used,
                     self._domain_budget,
                 )
-                self.blocked_by_domain_budget += 1
+                self._blocked_by_domain_budget += 1
                 return Gate.DROP
             if global_budget is not None and global_budget > 0 and self._global_counter >= global_budget:
                 return Gate.STOP
@@ -224,6 +208,7 @@ class GatedFrontier(Checkpointable):
 
         return gate
 
+    @notify
     async def record_outcome(self, item: FrontierItem, status: FrontierItemStatus) -> None:
         async with self._lock:
             if item.url_key in self._visited:
@@ -271,6 +256,7 @@ class GatedFrontier(Checkpointable):
             ranking=list(self._ranking.values()),
         ).model_dump(mode="json")
 
+    @notify
     def restore(self, state: dict[str, Any]) -> None:
         snap = FrontierSnapshot.model_validate(state)
         self._visited = snap.visited.copy()

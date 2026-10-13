@@ -12,8 +12,8 @@ from typing import Protocol
 import trafilatura
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
+from crawlme.digest.models import ExtractionStatus, FetchResult, Page
 from crawlme.platforms.base import FeedAdapter
-from crawlme.schemas import ExtractionStatus, FetchResult, Page
 from crawlme.util.lxml import LXML_LOCK
 
 
@@ -27,7 +27,7 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class TrafExtractor:
+class TrafExtractor(Extractor):
     def __init__(self, adapters: Sequence[FeedAdapter] = ()) -> None:
         self._adapters = tuple(adapters)
 

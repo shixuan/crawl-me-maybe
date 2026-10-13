@@ -27,7 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from crawlme.digest.fetcher import PlaywrightFetcher
-from crawlme.schemas import URL, FrontierItem
+from crawlme.pioneer import FrontierItem
+from crawlme.urls import URL
 
 # Signals that we got something other than the content we asked for.
 _WALL_MARKERS = {

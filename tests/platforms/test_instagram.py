@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from crawlme.digest import Payload
 from crawlme.platforms import PageProblem
 from crawlme.platforms import instagram as ig
-from crawlme.schemas import Payload
 
 _PROFILE = """<html><body>
 <a href="/mollytea_canada/p/AAA111/"><img alt="Photo shared by MollyTeaCanada on August 13, 2026"></a>

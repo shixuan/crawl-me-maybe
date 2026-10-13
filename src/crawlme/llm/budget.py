@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Callable
 from typing import Any
 
-from crawlme.checkpoint.checkpointable import Checkpointable
+from crawlme.checkpoint import Checkpointable
 from crawlme.llm.errors import TokenBudgetError
+from crawlme.util import notify
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,9 @@ class Usage:
 class TokenBudget(Checkpointable):
     """Shared LLM token accounting. check() rejects new calls after the limit is reached.
 
-    The optional sink updates scheduler progress. Already-running calls can exceed
-    the limit before their usage is recorded."""
+    Already-running calls can exceed the limit before their usage is recorded."""
 
-    def __init__(self, limit: int, *, sink: Callable[[int], None] | None = None) -> None:
+    def __init__(self, limit: int) -> None:
         self.limit = limit
         self.used = 0
         self.input_tokens = 0
@@ -57,11 +56,6 @@ class TokenBudget(Checkpointable):
         self.calls = 0
         # Unlabelled calls contribute to totals but not per-stage counts.
         self.by_stage: dict[str, Usage] = {}
-        self._sink = sink
-
-    def bind_sink(self, sink: Callable[[int], None]) -> None:
-        """Attach the scheduler counter sink after scheduler construction."""
-        self._sink = sink
 
     def dump(self) -> dict[str, Any]:
         return {
@@ -72,6 +66,7 @@ class TokenBudget(Checkpointable):
             "by_stage": {k: dataclasses.asdict(v) for k, v in self.by_stage.items()},
         }
 
+    @notify
     def restore(self, data: dict[str, Any]) -> None:
         for key in ("used", "input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens", "calls"):
             setattr(self, key, data[key])
@@ -81,6 +76,7 @@ class TokenBudget(Checkpointable):
         if self.limit > 0 and self.used >= self.limit:
             raise TokenBudgetError(f"token budget exhausted: {self.used}/{self.limit}")
 
+    @notify
     def record(
         self,
         input_tokens: int,
@@ -102,8 +98,6 @@ class TokenBudget(Checkpointable):
         self.reasoning_tokens += reasoning_tokens
         self.used += input_tokens + output_tokens
         self.calls += 1
-        if self._sink is not None:
-            self._sink(self.used)
         logger.debug(
             "llm.tokens stage=%s call=%d used=%d/%d (+%d in, +%d out, %d cached, %d thinking)",
             stage or "-",

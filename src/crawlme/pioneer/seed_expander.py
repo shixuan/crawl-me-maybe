@@ -12,15 +12,16 @@ from typing import TYPE_CHECKING
 
 from crawlme import prompts
 from crawlme.digest.fetcher.base import FetchError
-from crawlme.llm import LLMClient, LLMError, Stage
+from crawlme.llm import Client, Error, Stage
 from crawlme.logging.progress import activity
 
 if TYPE_CHECKING:
     from crawlme.config import Settings
-    from crawlme.discovery.harvester import Harvest
+    from crawlme.discovery import Harvest
     from crawlme.llm import TokenBudget
-    from crawlme.pioneer.canonicalizer import Canonicalizer
-    from crawlme.schemas import Candidate, CrawlGoal, FrontierItem
+    from crawlme.pioneer.models import Candidate, FrontierItem
+    from crawlme.runtime import CrawlGoal
+    from crawlme.urls import Canonicalizer
 
 SeedProbe = Callable[["FrontierItem"], Awaitable["Harvest"]]
 
@@ -44,14 +45,14 @@ def how_many(given: int, low: int, high: int) -> int:
 class SeedExpander:
     """Propose additional seed URLs with an optional LLM client."""
 
-    def __init__(self, client: LLMClient | None) -> None:
+    def __init__(self, client: Client | None) -> None:
         self._client = client
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> SeedExpander:
         """Inert without credentials, like the Goal Enhancer."""
         return cls(
-            LLMClient.from_settings_if_configured(
+            Client.from_settings_if_configured(
                 settings,
                 budget=budget,
                 reasoning_effort=settings.llm_seeds_reasoning_effort,
@@ -68,7 +69,7 @@ class SeedExpander:
         logger.info("asking the model for up to %d more sources to try", want)
         try:
             resp = await self._client.chat(prompt, system=prompts.SEEDS_SYSTEM, json_mode=True)
-        except LLMError as e:
+        except Error as e:
             logger.warning("seeds.propose_failed error=%s", e)
             return []
         got = _parse(resp.content, known=set(seeds), want=want)
@@ -126,7 +127,7 @@ async def verify(
 
     The scheduler supplies policy-aware fetching and discovery. Verification checks
     discovery, not relevance; the crawl evaluates relevance after accepting a seed."""
-    from crawlme.schemas import Candidate, FrontierItem
+    from crawlme.pioneer.models import Candidate, FrontierItem
 
     kept: list[Candidate] = []
     # Retain a reason for each rejected proposal.

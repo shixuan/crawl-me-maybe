@@ -1,57 +1,26 @@
 from __future__ import annotations
 
-import asyncio
+import dataclasses
 import time
 
 import pytest
 
-from crawlme.pioneer.frontier import GatedFrontier
-from crawlme.runtime.state import Limits, Progress
-from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop, why_retire
-from crawlme.schemas import URL, Candidate, CrawlTask, FrontierItem
+from crawlme.runtime import Limits, Progress
+from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop
 
 
-def _task(state: str = "RUNNING") -> CrawlTask:
-    return CrawlTask(task_id="t1", state=state)  # type: ignore[arg-type]
+def _frontier(size: int = 0, scoring: int = 0, waiting: int = 0) -> dict:
+    return dict(queued=size, ranking=scoring, waiting=waiting, domain_refused=0)
 
 
-def _frontier(size: int = 0, scoring: int = 0, waiting: int = 0) -> GatedFrontier:
-    """Populate through the public API rather than the heap internals.
-
-    Reaching into _heap/_items coupled these tests to one ordering
-    implementation, which is exactly what the Ordering seam removes.
-    """
-    f = GatedFrontier()
-    items = [
-        FrontierItem(
-            url=URL(raw=f"https://x.com/{i}", canonical=f"https://x.com/{i}", url_key=f"k{i}"),
-            url_key=f"k{i}",
-            priority=0.5,
-        )
-        for i in range(size)
-    ]
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    if items:
-        loop.run_until_complete(f.push_batch(items))
-    if scoring or waiting:
-        n = scoring + waiting
-        loop.run_until_complete(f.push_candidates([_waiting_candidate(i) for i in range(n)]))
-        if scoring:
-            loop.run_until_complete(f.take_for_ranking(scoring))
-    return f
+def _check(frontier: dict, limits: Limits, progress: Progress, tokens_used: int = 0):
+    return check_stop(progress, limits, tokens_used=tokens_used, **frontier)
 
 
-def _waiting_candidate(i: int) -> Candidate:
-    return Candidate(
-        url=URL(raw=f"https://x.com/c{i}", canonical=f"https://x.com/c{i}", url_key=f"c{i}"),
-        depth=1,
-    )
-
-
-def _split(**kw) -> tuple[Limits, Progress]:
-    """Route each field to the half that owns it."""
+def _split(**kw) -> tuple[Limits, Progress, int]:
     lim = {k: v for k, v in kw.items() if k in _LIMIT_FIELDS}
-    return Limits(**lim), Progress(**{k: v for k, v in kw.items() if k not in _LIMIT_FIELDS})
+    progress = Progress(**{k: v for k, v in kw.items() if k not in _LIMIT_FIELDS and k != "tokens_used"})
+    return Limits(**lim), progress, kw.get("tokens_used", 0)
 
 
 _LIMIT_FIELDS = {
@@ -79,7 +48,7 @@ def _codes(reasons) -> list[str]:
     ],
 )
 def test_analysis_after_fetch_stop(limits, progress, allowed):
-    reasons = check_stop(_task(), _frontier(), Limits(**limits), Progress(**progress))
+    reasons = _check(_frontier(), Limits(**limits), Progress(**progress))
     assert can_drain_analysis(reasons) is allowed
 
 
@@ -96,7 +65,7 @@ def test_analysis_after_fetch_stop(limits, progress, allowed):
     ],
 )
 def test_budget_pages(kw, fires):
-    assert ("BUDGET_PAGES" in _codes(check_stop(_task(), _frontier(), *_split(**kw)))) is fires
+    assert ("BUDGET_PAGES" in _codes(_check(_frontier(), *_split(**kw)))) is fires
 
 
 @pytest.mark.parametrize(
@@ -108,7 +77,7 @@ def test_budget_pages(kw, fires):
     ],
 )
 def test_budget_tokens(kw, fires):
-    assert ("BUDGET_TOKENS" in _codes(check_stop(_task(), _frontier(), *_split(**kw)))) is fires
+    assert ("BUDGET_TOKENS" in _codes(_check(_frontier(), *_split(**kw)))) is fires
 
 
 @pytest.mark.parametrize(
@@ -116,8 +85,8 @@ def test_budget_tokens(kw, fires):
     [(1, 10, True), (3600, 0, False)],
 )
 def test_budget_time(max_duration_sec, elapsed, fires):
-    lim, prog = _split(max_duration_sec=max_duration_sec, started_at=time.monotonic() - elapsed)
-    assert ("BUDGET_TIME" in _codes(check_stop(_task(), _frontier(), lim, prog))) is fires
+    lim, prog, _ = _split(max_duration_sec=max_duration_sec, started_at=time.monotonic() - elapsed)
+    assert ("BUDGET_TIME" in _codes(_check(_frontier(), lim, prog))) is fires
 
 
 # -- frontier drained ----------------------------------------------------
@@ -140,7 +109,7 @@ def test_budget_time(max_duration_sec, elapsed, fires):
     ],
 )
 def test_drained(frontier_kw, in_flight, fires):
-    reasons = check_stop(_task(), _frontier(**frontier_kw), *_split(in_flight=in_flight))
+    reasons = _check(_frontier(**frontier_kw), *_split(in_flight=in_flight))
     assert ("FRONTIER_DRAINED" in _codes(reasons)) is fires
 
 
@@ -148,8 +117,8 @@ def test_drained(frontier_kw, in_flight, fires):
 def test_ceiling_named(blocked):
     """Report domain refusals alongside natural exhaustion."""
     frontier = _frontier(size=0)
-    frontier.blocked_by_domain_budget = blocked
-    codes = _codes(check_stop(_task(), frontier, *_split(in_flight=0)))
+    frontier["domain_refused"] = blocked
+    codes = _codes(_check(frontier, *_split(in_flight=0)))
     assert "FRONTIER_DRAINED" in codes
     assert ("DOMAIN_BUDGET" in codes) is bool(blocked)
 
@@ -173,8 +142,8 @@ def test_max_relevant(max_relevant, found, fires):
     tells nobody how many answers that buys: one run spent sixty and
     returned twenty-two.
     """
-    lim, prog = _split(max_relevant=max_relevant, relevant_found=found)
-    assert ("MAX_RELEVANT" in _codes(check_stop(_task(), _frontier(size=9), lim, prog))) is fires
+    lim, prog, _ = _split(max_relevant=max_relevant, relevant_found=found)
+    assert ("MAX_RELEVANT" in _codes(_check(_frontier(size=9), lim, prog))) is fires
 
 
 # -- the platform refusing the crawl -------------------------------------
@@ -198,7 +167,7 @@ def test_refused(refused_by, code):
     back with no posts, the frontier drained on schedule, and the run
     reported completion having learned nothing.
     """
-    codes = _codes(check_stop(_task(), _frontier(), *_split(refused_by=refused_by)))
+    codes = _codes(_check(_frontier(), *_split(refused_by=refused_by)))
     refusals = [c for c in codes if c in ("RATE_LIMITED", "LOGIN_REQUIRED")]
     assert refusals == ([code] if code else [])
 
@@ -206,32 +175,18 @@ def test_refused(refused_by, code):
 # -- user, fatal, and everything at once ---------------------------------
 
 
-@pytest.mark.parametrize(("state", "fires"), [("STOPPING", True), ("RUNNING", False)])
-def test_user_requested(state, fires):
-    assert ("USER_REQUESTED" in _codes(check_stop(_task(state=state), _frontier(), *_split()))) is fires
-
-
 def test_fatal():
-    assert "FATAL" in _codes(check_stop(_task(), _frontier(), *_split(fatal_error="disk full")))
+    assert "FATAL" in _codes(_check(_frontier(), *_split(fatal_error="disk full")))
 
 
 def test_many_reasons():
     """Every check runs; the run reports all of them, not the first."""
-    codes = set(
-        _codes(
-            check_stop(
-                _task(state="STOPPING"),
-                _frontier(),
-                *_split(max_pages=10, pages_fetched=10, fatal_error="disk full"),
-            )
-        )
-    )
-    assert {"BUDGET_PAGES", "USER_REQUESTED", "FATAL"} <= codes
+    codes = set(_codes(_check(_frontier(), *_split(max_pages=10, pages_fetched=10, fatal_error="disk full"))))
+    assert {"BUDGET_PAGES", "FATAL"} <= codes
 
 
 def test_healthy_quiet():
-    reasons = check_stop(
-        _task(state="RUNNING"),
+    reasons = _check(
         _frontier(size=5),
         *_split(
             max_pages=50,
@@ -268,35 +223,14 @@ def test_adapter_empty(seen, empty, fires):
     pages; it recognises nothing on any of them. The run then drains on
     schedule and reports a finished crawl of a silent platform.
     """
-    lim, prog = _split(in_flight=0, listings_seen=seen, listings_empty=empty)
-    assert ("ADAPTER_EMPTY" in _codes(check_stop(_task(), _frontier(), lim, prog))) is fires
+    lim, prog, _ = _split(in_flight=0, listings_seen=seen, listings_empty=empty)
+    assert ("ADAPTER_EMPTY" in _codes(_check(_frontier(), lim, prog))) is fires
 
 
 def test_empty_waits():
     """Mid-run there is no telling a dead adapter from a slow start."""
-    lim, prog = _split(in_flight=2, listings_seen=5, listings_empty=5)
-    assert "ADAPTER_EMPTY" not in _codes(check_stop(_task(), _frontier(size=3), lim, prog))
-
-
-# -- one source ----------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("window", "stale", "why"),
-    [
-        ([False] * 20, 0, "nothing in its last 20 pages"),
-        ([True] * 2 + [False] * 18, 0, None),  # two hits is enough to keep it
-        ([False] * 19, 0, None),  # a window that is not full yet says nothing
-        ([], 5, "5 pages in a row older than the window"),
-        ([], 4, None),
-    ],
-)
-def test_why_retire(window, stale, why):
-    assert why_retire(window, stale) == why
-
-
-def test_a_full_window_of_hits_keeps_it():
-    assert why_retire([True] * 20, 0) is None
+    lim, prog, _ = _split(in_flight=2, listings_seen=5, listings_empty=5)
+    assert "ADAPTER_EMPTY" not in _codes(_check(_frontier(size=3), lim, prog))
 
 
 def test_a_stop_condition_cannot_see_the_ledger():
@@ -306,7 +240,7 @@ def test_a_stop_condition_cannot_see_the_ledger():
     away."""
     import inspect
 
-    from crawlme.runtime.state import Stats
+    from crawlme.runtime import Stats
 
     params = inspect.signature(check_stop).parameters
     assert "stats" not in params
@@ -317,12 +251,15 @@ def test_every_progress_field_is_read_by_some_check():
     """The entry rule for Progress. listings_stale once sat there and no
     condition read it, which is how a report statistic ends up looking
     like a stopping criterion."""
-    import dataclasses
     import inspect
 
-    from crawlme.runtime.state import Progress
+    from crawlme.runtime import Progress
     from crawlme.scheduler import stop_conds
 
     source = inspect.getsource(stop_conds)
-    unread = [f.name for f in dataclasses.fields(Progress) if f"p.{f.name}" not in source]
+    unread = [
+        f.name
+        for f in dataclasses.fields(Progress)
+        if f"p.{f.name}" not in source and f"progress.{f.name}" not in source
+    ]
     assert unread == [], f"Progress fields nothing stops on: {unread}"

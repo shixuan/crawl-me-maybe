@@ -5,8 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from crawlme.digest import FetchResult, Page, Payload
 from crawlme.scheduler.workers import PersistWorker
-from crawlme.schemas import URL, FetchResult, Page, Payload
+from crawlme.urls import URL
 
 
 @pytest.mark.asyncio

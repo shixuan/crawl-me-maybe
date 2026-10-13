@@ -11,19 +11,18 @@ from crawlme.cli.replay import find_run_dir
 from crawlme.config import Settings
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
-from crawlme.pioneer.ranker.llm import LLMRanker
+from crawlme.persist import Lock, Storage
+from crawlme.pioneer.ranker import LLMRanker
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import CrawlGoal, CrawlTask
-from crawlme.storage.lock import RunLock
-from crawlme.storage.sqlite import SqliteStorage
 
 
 async def cmd_resume(args: argparse.Namespace) -> None:
     cfg = Settings()
     root = Path(args.result_dir) if args.result_dir else cfg.result_dir
     run_dir, _ = await find_run_dir(root, args.task_id)
-    storage = SqliteStorage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
-    lock = RunLock(storage.db_path)
+    storage = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    lock = Lock(storage.db_path)
     scheduler = None
     try:
         lock.acquire()
@@ -55,7 +54,6 @@ async def cmd_resume(args: argparse.Namespace) -> None:
         scheduler = create_scheduler(
             cfg, goal=goal, llm_ranker=ranker, budget=budget, storage=storage, dedup_enabled=payload["dedup"]
         )
-        budget.bind_sink(scheduler.note_tokens_used)
         print(f"resuming: {task.task_id} ({run_dir})")
         await scheduler.run(goal, task, checkpoint=payload, lock=lock)
         print(f"{task.state.lower()}: {task.task_id}; {budget.used} recorded tokens")

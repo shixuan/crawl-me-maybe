@@ -19,10 +19,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from crawlme.config import Settings
-from crawlme.digest.fetcher import DispatchingFetcher, FetchError, PlaywrightFetcher
+from crawlme.digest import DispatchingFetcher, FetchError, PlaywrightFetcher
 from crawlme.digest.fetcher.browser import _load_storage_state
+from crawlme.pioneer import FrontierItem
 from crawlme.scheduler.factory import _build_fetcher
-from crawlme.schemas import URL, FrontierItem
+from crawlme.urls import URL
 
 
 def _item(url: str) -> FrontierItem:

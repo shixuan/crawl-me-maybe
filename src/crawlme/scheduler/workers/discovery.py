@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from crawlme.discovery.harvester import Harvest, Harvester
-from crawlme.schemas import Page
+from crawlme.digest import Page
+from crawlme.discovery import Harvest, Harvester
 
 logger = logging.getLogger(__name__)
 

@@ -7,12 +7,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from crawlme.analysis import AnalysisResult
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Grouper, fingerprint
+from crawlme.digest import Page
 from crawlme.llm import LLMResponse, TokenBudget
+from crawlme.persist import Storage
+from crawlme.runtime import CrawlGoal
 from crawlme.scheduler.factory import create_scheduler
-from crawlme.schemas import URL, AnalysisResult, CrawlGoal, Page
-from crawlme.storage.sqlite import SqliteStorage
+from crawlme.urls import URL
 
 
 def client_response(groups, *, truncated=False):
@@ -86,7 +89,7 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
     import serve
 
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     goal = CrawlGoal(prompt="gifts")
     storage.save_goal(goal.model_dump(mode="json"))
@@ -139,7 +142,7 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dashboard"))
     import serve
 
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     try:
         for key in ("b", "a"):
@@ -199,23 +202,14 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
 
 
 async def test_grouping_failure_retains_results():
-    from crawlme.scheduler.engine import CrawlScheduler
+    from crawlme.scheduler.workers.dedup import DedupWorker
 
-    scheduler = object.__new__(CrawlScheduler)
-    scheduler._cfg = Settings(_env_file=None)
-    scheduler._grouper = MagicMock()
-    scheduler._grouper.group = AsyncMock(side_effect=ValueError("bad model reply"))
-    scheduler._analysis = MagicMock()
-    scheduler._storage = MagicMock()
-
-    async def inputs(goal_id):
-        return [{"analysis_id": "a"}]
-
-    scheduler._storage.dedup_inputs = inputs
-    scheduler._storage.save_groups = AsyncMock()
-    await scheduler._deduplicate(CrawlGoal(prompt="gifts"))
-    assert scheduler._dedup_report == {"status": "failed"}
-    scheduler._storage.save_groups.assert_not_called()
+    grouper = MagicMock(group=AsyncMock(side_effect=ValueError("bad model reply")))
+    storage = MagicMock(dedup_inputs=AsyncMock(return_value=[{"analysis_id": "a"}]), save_groups=AsyncMock())
+    worker = DedupWorker(grouper, storage=storage, model="test")
+    await worker.run(CrawlGoal(prompt="gifts"))
+    assert worker.report == {"status": "failed"}
+    storage.save_groups.assert_not_called()
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -225,10 +219,10 @@ async def test_factory_switch_and_reasoning_default(tmp_path, enabled):
     )
     scheduler = create_scheduler(cfg, budget=TokenBudget(limit=100), dedup_enabled=enabled)
     if enabled:
-        assert scheduler._grouper.client._reasoning_effort == "off"
-        assert scheduler._grouper.client._stage == "dedup"
+        assert scheduler.pipeline._dedup.grouper.client._reasoning_effort == "off"
+        assert scheduler.pipeline._dedup.grouper.client._stage == "dedup"
     else:
-        assert scheduler._grouper is None
+        assert scheduler.pipeline._dedup.grouper is None
     await scheduler.aclose()
 
 
@@ -269,10 +263,10 @@ async def test_invalid_retry_stops(caplog):
 async def test_repair_respects_budget(monkeypatch):
     from types import SimpleNamespace
 
-    from crawlme.llm import LLMClient, TokenBudgetError
+    from crawlme.llm import Client, TokenBudgetError
 
     budget = TokenBudget(limit=10)
-    client = LLMClient("test", budget=budget)
+    client = Client("test", budget=budget)
     complete = AsyncMock(
         return_value=SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))],
@@ -299,7 +293,7 @@ async def test_repair_input_limit():
 
 
 async def test_latest_verdict_before_filter(tmp_path):
-    storage = SqliteStorage.create(tmp_path)
+    storage = Storage.create(tmp_path)
     await storage.start()
     try:
         page = Page(url=URL(raw="https://example.com", canonical="https://example.com", url_key="page"), url_key="page")

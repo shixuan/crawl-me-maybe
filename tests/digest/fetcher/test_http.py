@@ -6,8 +6,9 @@ import time
 import pytest
 from pytest_httpx import HTTPXMock
 
-from crawlme.digest.fetcher import FetchError, HttpFetcher
-from crawlme.schemas import URL, FetchResult, FrontierItem
+from crawlme.digest import FetchError, FetchResult, HttpFetcher
+from crawlme.pioneer import FrontierItem
+from crawlme.urls import URL
 
 
 def _item(url_str: str = "https://example.com/page") -> FrontierItem:

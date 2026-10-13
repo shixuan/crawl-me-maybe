@@ -4,8 +4,9 @@ import asyncio
 
 import pytest
 
+from crawlme.pioneer import Candidate
 from crawlme.pioneer.buffer import RoundRobinBuffer
-from crawlme.schemas import URL, Candidate
+from crawlme.urls import URL
 
 
 def _candidate(url_key: str = "k1", raw: str = "https://example.com", **kw) -> Candidate:
