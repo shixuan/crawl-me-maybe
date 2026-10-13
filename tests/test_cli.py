@@ -320,7 +320,7 @@ def test_prints_summary(capsys):
 def test_summary_in_log(tmp_path, capsys, log_format, log_level):
     import logging
 
-    from crawlme.cli.run import _print_summary
+    from crawlme.cli.report import print_summary
     from crawlme.config import Settings
     from crawlme.llm import TokenBudget
     from crawlme.logging import setup_logging, to_file
@@ -339,7 +339,7 @@ def test_summary_in_log(tmp_path, capsys, log_format, log_level):
         try:
             budget = TokenBudget(limit=100)
             budget.record(12, 8, stage="dedup")
-            _print_summary(scheduler, CrawlTask(goal_id="goal", state="COMPLETED"), budget)
+            print_summary(scheduler, CrawlTask(goal_id="goal", state="COMPLETED"), budget)
             captured = capsys.readouterr()
             saved = path.read_text()
             assert captured.out.strip() in saved
@@ -745,7 +745,7 @@ def test_refused_exits_one(reason, code):
     weekly that is the difference between "no new posts" and "the
     session expired a month ago".
     """
-    from crawlme.cli.run import exit_code
+    from crawlme.cli.report import exit_code
 
     assert exit_code(reason) == code
 
@@ -801,36 +801,36 @@ def test_session_ceiling(_installed, tmp_path):
 def test_login_refusal_says_how_to_fix_it():
     """The stop code is for a machine. This is the one ending with an
     obvious next step, and the run cannot say it any other way."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {"state": "COMPLETED", "reason": "LOGIN_REQUIRED", "session": "./ig.json", "platform": "instagram"}
     )
     assert "crawl session ./ig.json --feed instagram --force" in out
 
 
 def test_advice_survives_a_missing_session_path():
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary({"state": "COMPLETED", "reason": "LOGIN_REQUIRED"})
+    out = format_summary({"state": "COMPLETED", "reason": "LOGIN_REQUIRED"})
     assert "crawl session" in out
 
 
 def test_other_endings_get_no_advice():
     """Most stops have nothing to do about them, and a line per run
     saying so is noise."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
     for reason in ("BUDGET_PAGES", "FRONTIER_DRAINED", "none", "RATE_LIMITED"):
-        assert "crawl session" not in _format_summary({"state": "COMPLETED", "reason": reason})
+        assert "crawl session" not in format_summary({"state": "COMPLETED", "reason": reason})
 
 
 def test_added_seeds_are_reported_with_what_they_found():
     """Nothing keeps them, so the report is the only chance to say which
     were worth naming. Sorted by yield: that is the whole question."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "BUDGET_PAGES",
@@ -849,16 +849,16 @@ def test_added_seeds_are_reported_with_what_they_found():
 
 def test_a_run_that_added_no_seeds_says_nothing():
     """Most runs do not use this, and a line per run would be noise."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
+    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
     assert "added for itself" not in out
 
 
 def test_a_run_never_asked_says_nothing():
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
+    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
     assert "sources" not in out
 
 
@@ -866,17 +866,17 @@ def test_proposals_that_all_failed_are_reported():
     """Silence here is what a run that was never asked looks like, and
     one run lost its proposals to an empty model reply with nothing but
     a parser warning in the log to show for it."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 6, "proposed_seeds": {}})
+    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 6, "proposed_seeds": {}})
     assert "named 6 more sources" in out
     assert "none survived" in out
 
 
 def test_a_model_that_named_none_is_reported():
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 0, "proposed_seeds": {}})
+    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 0, "proposed_seeds": {}})
     assert "named none usable" in out
 
 
@@ -884,18 +884,18 @@ def test_unjudged_pages_are_reported():
     """Fetching outruns analysis, so a run that stops on a target leaves
     pages it paid to fetch and never judged. Without this line, "not in
     the results" and "never looked at" read the same."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {"state": "COMPLETED", "reason": "MAX_RELEVANT", "pages_fetched": 78, "analyses": {"RELEVANT": 41}}
     )
     assert "37 fetched pages were never judged" in out
 
 
 def test_no_gap_no_line():
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary({"state": "COMPLETED", "reason": "X", "pages_fetched": 5, "analyses": {"RELEVANT": 5}})
+    out = format_summary({"state": "COMPLETED", "reason": "X", "pages_fetched": 5, "analyses": {"RELEVANT": 5}})
     assert "never judged" not in out
 
 
@@ -903,18 +903,18 @@ def test_overshooting_the_target_is_explained():
     """Work already dispatched keeps landing after the target is met.
     Without the target beside the tally, one run asking for 15 and
     reporting 24 reads as the run ignoring what it was asked for."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 24}}
     )
     assert "24 relevant against a target of 15" in out
 
 
 def test_hitting_the_target_exactly_says_nothing():
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 15}}
     )
     assert "against a target" not in out
@@ -923,9 +923,9 @@ def test_hitting_the_target_exactly_says_nothing():
 def test_a_seed_says_how_much_of_it_was_read():
     """A seed crawled and empty and one the run never got to both said
     "nothing", and the same question came back three times over."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "MAX_RELEVANT",
@@ -939,9 +939,9 @@ def test_a_seed_says_how_much_of_it_was_read():
 def test_retired_sources_are_reported():
     """A run now ends by every source retiring, so without this it just
     reads as a drained frontier."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
@@ -956,9 +956,9 @@ def test_rejected_proposals_are_named_with_their_reason():
     """A proposal costs a fetch whether it survives or not, so the ones
     turned away are half of what that spend bought. One run named nine
     and kept none, and the report said only that none survived."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
@@ -972,9 +972,9 @@ def test_rejected_proposals_are_named_with_their_reason():
 
 
 def test_survivors_and_rejects_are_both_listed():
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
@@ -991,9 +991,9 @@ def test_survivors_and_rejects_are_both_listed():
 def test_tokens_split_by_stage():
     """A single total cannot be argued with. One run spent 500k and the
     report could not say which stage to turn down."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
@@ -1012,9 +1012,9 @@ def test_tokens_split_by_stage():
 def test_analyses_keep_a_fixed_order():
     """Sorted by count the line reshuffles between runs, so comparing two
     reports means finding each class again first."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",
@@ -1028,9 +1028,9 @@ def test_analyses_keep_a_fixed_order():
 def test_own_seeds_get_their_own_funnel():
     """Only proposed seeds carried a funnel, so a seed the user typed
     that found nothing could not be told from one never fetched."""
-    from crawlme.cli.run import _format_summary
+    from crawlme.cli.report import format_summary
 
-    out = _format_summary(
+    out = format_summary(
         {
             "state": "COMPLETED",
             "reason": "FRONTIER_DRAINED",

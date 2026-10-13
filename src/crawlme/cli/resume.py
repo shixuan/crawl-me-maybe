@@ -8,6 +8,7 @@ from pathlib import Path
 
 from crawlme.checkpoint import VERSION
 from crawlme.cli.replay import find_run_dir
+from crawlme.cli.report import finish
 from crawlme.config import Settings
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
@@ -38,6 +39,7 @@ async def cmd_resume(args: argparse.Namespace) -> None:
         if args.log_level:
             cfg.log_level = args.log_level
         setup_logging(cfg, force=True)
+        storage.attach_log_file()
         goal = CrawlGoal.model_validate(payload["goal"])
         task = CrawlTask.model_validate(payload["task"])
         if task.task_id != args.task_id or task.goal_id != goal.goal_id:
@@ -56,9 +58,6 @@ async def cmd_resume(args: argparse.Namespace) -> None:
         )
         print(f"resuming: {task.task_id} ({run_dir})")
         await scheduler.run(goal, task, checkpoint=payload, lock=lock)
-        print(f"{task.state.lower()}: {task.task_id}; {budget.used} recorded tokens")
-        if task.state == "FAILED":
-            raise SystemExit(1)
     except ValueError as exc:
         print(f"resume failed: {exc}")
         raise SystemExit(1) from exc
@@ -71,3 +70,5 @@ async def cmd_resume(args: argparse.Namespace) -> None:
             await close_litellm_clients()
         finally:
             lock.release()
+
+    finish(scheduler, task, budget, session=cfg.browser_storage_state)

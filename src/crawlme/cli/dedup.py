@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from crawlme.cli.replay import _goal_from_row, find_run_dir
-from crawlme.cli.run import _stage_lines
+from crawlme.cli.report import stage_lines
 from crawlme.config import Settings
 from crawlme.dedup.grouper import Grouper, group_results
 from crawlme.llm import TokenBudget, close_litellm_clients
@@ -63,7 +63,7 @@ async def cmd_dedup(args: argparse.Namespace) -> None:
         f"  tokens:     {budget.used} ({budget.input_tokens} in / {budget.output_tokens} out), {budget.calls} calls"
     )
     lines.extend(
-        _stage_lines(
+        stage_lines(
             {
                 "tokens_by_stage": {
                     name: {

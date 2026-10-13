@@ -189,7 +189,7 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
 
         release.set()
         resumed = subprocess.run(  # noqa: S603
-            [*command, "resume", task_id, "--result-dir", str(root)],
+            [*command, "resume", task_id, "--result-dir", str(root), "--log-level", "INFO"],
             cwd=tmp_path,
             env=env,
             capture_output=True,
@@ -197,6 +197,15 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             timeout=20,
         )
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+        header = "crawl finished: COMPLETED (FRONTIER_DRAINED)"
+        assert resumed.stdout.count(header) == 1
+        report = resumed.stdout[resumed.stdout.index(header) :].strip()
+        saved_log = (db_path.parent.parent / "log").read_text()
+        assert report in saved_log
+        assert saved_log.count(header) == 1
+        assert "finished after 2 pages and 60 tokens" in saved_log
+        assert "60 (40 in / 20 out), 4 calls" in report
+        assert "2 RELEVANT" in report
         assert requests.count("/first") == requests.count("/second") == 1
         assert calls.count("goal") == calls.count("ranking") == calls.count("/first") == 1
         assert calls.count("/second") == 2

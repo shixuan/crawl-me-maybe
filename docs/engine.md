@@ -421,3 +421,7 @@ A second Ctrl+C exits immediately with code 130.
 `Engine.summary()` combines the runtime report with the pipeline's dedup report.
 The reporting function reads RunState without changing it and receives token usage
 as a number from Engine, which reads the Monitor's shared budget.
+
+`crawl run` and `crawl resume` use `cli/report.py` to print and persist the same
+final report after cleanup. Resume reattaches the run log after restoring logging
+settings. CLI reporting and exit codes remain outside Engine and its pipelines.
