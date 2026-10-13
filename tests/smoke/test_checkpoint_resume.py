@@ -36,8 +36,9 @@ main()
 """
 
 
+@pytest.mark.parametrize("legacy", [False, True], ids=["current-db", "legacy-db"])
 @pytest.mark.parametrize("interrupt", [signal.SIGINT, signal.SIGKILL])
-def test_checkpoint_resume(tmp_path, interrupt):
+def test_checkpoint_resume(tmp_path, interrupt, legacy):
     entered, release = threading.Event(), threading.Event()
     requests, calls = [], []
 
@@ -159,7 +160,7 @@ def test_checkpoint_resume(tmp_path, interrupt):
         db_path = next(root.glob("*/db/crawl.db"))
         with sqlite3.connect(db_path) as db:
             task_id, goal_id = db.execute("SELECT task_id, goal_id FROM crawl_tasks").fetchone()
-            saved = json.loads(db.execute("SELECT snapshot_json FROM frontier_snapshots").fetchone()[0])
+            saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             first_analysis = db.execute("SELECT analysis_id, structured_data FROM analyses").fetchone()
         assert first_analysis is not None
         assert saved["state"]["progress"]["pages_fetched"] == 1
@@ -179,6 +180,12 @@ def test_checkpoint_resume(tmp_path, interrupt):
         if interrupt == signal.SIGINT:
             with sqlite3.connect(db_path) as db:
                 assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "INTERRUPTED"
+
+        if legacy:
+            with sqlite3.connect(db_path) as db:
+                db.execute("ALTER TABLE checkpoints RENAME TO frontier_snapshots")
+                db.execute("ALTER TABLE frontier_snapshots RENAME COLUMN checkpoint_id TO snapshot_id")
+                db.execute("ALTER TABLE frontier_snapshots RENAME COLUMN checkpoint_json TO snapshot_json")
 
         release.set()
         resumed = subprocess.run(  # noqa: S603
@@ -210,7 +217,13 @@ def test_checkpoint_resume(tmp_path, interrupt):
             )
             assert db.execute("SELECT COUNT(*) FROM rank_decisions WHERE ranker = 'llm'").fetchone()[0] == 1
             assert db.execute("SELECT COUNT(*) FROM events WHERE type = 'TASK_RESUMED'").fetchone()[0] == 1
-            recovered = json.loads(db.execute("SELECT snapshot_json FROM frontier_snapshots").fetchone()[0])
+            assert (
+                db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'frontier_snapshots'"
+                ).fetchone()
+                is None
+            )
+            recovered = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             assert recovered["budget"]["used"] == 60
             assert recovered["budget"]["by_stage"]["analysis"]["calls"] == 2
             assert recovered["state"]["stats"]["analyses_by_class"] == {"RELEVANT": 2}

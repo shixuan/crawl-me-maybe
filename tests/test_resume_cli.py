@@ -86,7 +86,7 @@ def test_cli_resume_process(tmp_path, interrupt):
         while True:
             with sqlite3.connect(db_path) as db:
                 task_id = db.execute("SELECT task_id FROM crawl_tasks").fetchone()[0]
-                payload = json.loads(db.execute("SELECT snapshot_json FROM frontier_snapshots").fetchone()[0])
+                payload = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             if payload["state"]["progress"]["pages_fetched"] == 1:
                 break
             assert time.monotonic() < deadline
@@ -147,7 +147,7 @@ async def test_reject_old_checkpoint(tmp_path, capsys, monkeypatch, payload):
     await storage.start()
     storage.save_task({"task_id": "test", "state": "INTERRUPTED"})
     if payload is not None:
-        storage.save_snapshot({"snapshot_id": "test-latest", "snapshot_json": payload})
+        storage.save_checkpoint({"checkpoint_id": "test-latest", "checkpoint_json": payload})
     await storage.close()
 
     def fail(*args, **kwargs):

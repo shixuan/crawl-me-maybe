@@ -69,11 +69,11 @@ class Checkpointer:
                 if "page" in entry:
                     entry["page"].pop("plain_text", None)
                     entry["page"].pop("markdown", None)
-            self.storage.save_snapshot(
+            self.storage.save_checkpoint(
                 {
-                    "snapshot_id": f"{self._task.task_id}-latest",
+                    "checkpoint_id": f"{self._task.task_id}-latest",
                     "task_id": self._task.task_id,
-                    "snapshot_json": payload,
+                    "checkpoint_json": payload,
                     "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
             )
