@@ -83,6 +83,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | Location | Responsibility |
 |---|---|
 | `cli/` | Parse commands, apply settings, build goals, report results |
+| `cli/report.py` | Shared run/resume reports, token breakdowns and exit policy |
 | `scheduler/factory.py` | Assemble and inject workers and their component dependencies |
 | `scheduler/engine.py` | Run lifecycle, stopping and admission policy, checkpoint timing |
 | `scheduler/pipelines/crawl.py` | Module calls, pumps, page tasks, retry execution and dedup |
