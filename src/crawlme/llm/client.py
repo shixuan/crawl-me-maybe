@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Total deadline for an LLM request, including generation.
 _LLM_TIMEOUT = 90.0
+_LLM_SLOW_WARNING = 30.0
 _DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 _litellm: Any | None = None
@@ -440,4 +441,26 @@ class Client:
         sending = effort or effort_for(self._model, self._reasoning_effort)
         if sending:
             kwargs["reasoning_effort"] = sending
-        return await litellm.acompletion(**kwargs)
+        stage = self._stage or "llm"
+        warning_after = min(_LLM_SLOW_WARNING, _LLM_TIMEOUT)
+        warning = asyncio.get_running_loop().call_later(
+            warning_after,
+            logger.warning,
+            "%s: still waiting for %s after %.0fs; request timeout is %.0fs",
+            stage,
+            self._model,
+            warning_after,
+            _LLM_TIMEOUT,
+        )
+        try:
+            # SDK read timeouts reset when more bytes arrive; bound the whole response.
+            return await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=_LLM_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            raise RemoteError(
+                f"request timed out before a complete response was received ({_LLM_TIMEOUT:g}s total limit)",
+                model=self._model,
+                stage=self._stage,
+                kind=Kind.TIMEOUT,
+            ) from exc
+        finally:
+            warning.cancel()

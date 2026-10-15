@@ -587,3 +587,82 @@ async def test_remote_exception_chain(monkeypatch, no_sleep):
     assert caught.value.message == "Quota exhausted"
     assert len(stub.kwargs) == 1 and not no_sleep
     assert stub.kwargs[0]["max_retries"] == stub.kwargs[0]["num_retries"] == 0
+
+
+async def test_deadline_cuts_off_drips(monkeypatch, caplog):
+    handlers = set()
+    received = asyncio.Event()
+
+    async def drip(reader, writer):
+        task = asyncio.current_task()
+        handlers.add(task)
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+            received.set()
+            for _ in range(100):
+                writer.write(b"1\r\n \r\n")
+                await writer.drain()
+                await asyncio.sleep(0.01)
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.discard(task)
+
+    server = await asyncio.start_server(drip, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+    async def complete(**kwargs):
+        async with httpx.AsyncClient(timeout=kwargs["timeout"], trust_env=False) as transport:
+            await transport.post(url, content=b"request")
+        return _resp("ok")
+
+    monkeypatch.setattr(llm_mod, "_litellm", SimpleNamespace(acompletion=complete))
+    monkeypatch.setattr(llm_mod, "_LLM_TIMEOUT", 0.15)
+    monkeypatch.setattr(llm_mod, "_LLM_SLOW_WARNING", 0.05)
+    budget = TokenBudget(limit=100)
+    try:
+        with caplog.at_level(logging.WARNING), pytest.raises(RemoteError) as caught:
+            await asyncio.wait_for(Client("test", stage="seeds", budget=budget).chat("hello"), 0.8)
+        assert received.is_set()
+        assert caught.value.kind == Kind.TIMEOUT
+        assert caught.value.stage == "seeds"
+        assert isinstance(caught.value.__cause__, asyncio.TimeoutError)
+        assert "complete response" in str(caught.value)
+        assert "still waiting" in caplog.text and "seeds" in caplog.text
+        assert budget.used == budget.calls == 0
+    finally:
+        server.close()
+        await server.wait_closed()
+        pending = list(handlers)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_wait_notice_is_cancelled(monkeypatch, caplog):
+    monkeypatch.setattr(llm_mod, "_LLM_TIMEOUT", 0.5)
+    monkeypatch.setattr(llm_mod, "_LLM_SLOW_WARNING", 0.03)
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def complete(**kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(llm_mod, "_litellm", SimpleNamespace(acompletion=complete))
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(Client("test", stage="goal").chat("hello"))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.06)
+    assert cancelled.is_set()
+    assert "still waiting" not in caplog.text

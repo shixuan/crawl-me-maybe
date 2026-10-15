@@ -69,7 +69,8 @@ async def test_gives_up():
         if len(client.calls) >= 3:
             break
         await asyncio.sleep(0.01)
-    await asyncio.sleep(0.02)  # give the giveup path a beat after the last call
+    with pytest.raises(RemoteError):
+        await analyzer.drain_pending()
 
     assert len(client.calls) == 3
     assert published == []
@@ -136,11 +137,12 @@ async def test_drain_giveup():
     analyzer._storage.save_analysis.side_effect = lambda row: published.append(AnalysisResult.model_validate(row))
 
     assert await analyzer.analyze(_page(), _goal()) is None
-    await analyzer.drain_pending()
+    with pytest.raises(RemoteError):
+        await analyzer.drain_pending()
 
-    assert len(client.calls) == 2  # one retry, then giveup
+    assert len(client.calls) == 2
     assert published == []
-    assert not analyzer.pending_keys
+    assert analyzer.pending_keys == {_page().url_key}
 
 
 @pytest.mark.asyncio

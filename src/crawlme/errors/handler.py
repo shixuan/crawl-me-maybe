@@ -55,15 +55,19 @@ class ErrorHandler:
         self.check()
         failure = self.describe(error, context.operation)
         decision = self.policy.decide(failure, context)
+        if decision.action == Action.RETRY:
+            outcome = f"retrying in {decision.delay:g}s"
+        elif decision.action == Action.SKIP:
+            outcome = "skipping this operation"
+        else:
+            outcome = "stopping the run"
         logger.log(
             logging.ERROR if decision.action == Action.ABORT else logging.WARNING,
-            "operation.failed operation=%s source=%s code=%s attempt=%d action=%s error=%s",
+            "%s failed (attempt %d): %s; %s",
             context.operation,
-            failure.source,
-            failure.code,
             context.attempt,
-            decision.action.value,
             failure,
+            outcome,
         )
         if decision.action == Action.ABORT:
             raise self.abort(failure, context.operation)

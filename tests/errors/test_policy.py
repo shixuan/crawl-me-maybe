@@ -85,3 +85,18 @@ def test_missing_session_is_shared(tmp_path):
         _load_storage_state(str(tmp_path / "missing.json"))
     assert caught.value.scope == Scope.DEPENDENCY
     assert ErrorPolicy().decide(caught.value, context()).action == Action.ABORT
+
+
+@pytest.mark.parametrize("kind", [Kind.TIMEOUT, Kind.UNAVAILABLE, Kind.RATE_LIMITED, Kind.CONFLICT])
+@pytest.mark.parametrize("scope", [Scope.OPERATION, Scope.DEPENDENCY])
+def test_service_retry_exhaustion(kind, scope):
+    failure = Error("unavailable", source="any_component", code="any_code", kind=kind, scope=scope)
+    policy = ErrorPolicy()
+    decisions = [policy.decide(failure, context(attempt=i)) for i in range(1, 4)]
+    final = Action.ABORT if scope == Scope.DEPENDENCY else Action.SKIP
+    assert [d.action for d in decisions] == [Action.RETRY, Action.RETRY, final]
+
+
+def test_bad_output_stays_local():
+    failure = Error("invalid reply", source="component", code="invalid", kind=Kind.INVALID_OUTPUT)
+    assert ErrorPolicy().decide(failure, context(attempt=3)).action == Action.SKIP

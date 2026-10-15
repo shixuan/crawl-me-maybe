@@ -342,11 +342,15 @@ retains original results. Account failures propagate and fail the run. Dedup is
 outside the 120-second settlement deadline. Cancellation bypasses final grouping.
 
 Request retries belong to ErrorHandler and AnalysisWorker, as directed by ErrorPolicy.
-Client and fetchers make one request attempt. Format-specific repairs remain in
-their components. Ranking and dedup disable retries for invalid output after local
-repair. Policy uses error kind and scope, not component names or error codes.
+Client and fetchers make one request attempt. Each LLM request has a 90-second
+total timeout, with a waiting notice after 30 seconds. Failures report the provider
+message and the retry, skip or abort decision at normal log levels. Format-specific
+repairs remain in their components. Ranking and dedup disable retries for invalid
+output after local repair. Policy uses error kind and scope, not component names or error codes.
 A missing shared dependency aborts; a missing page can be skipped.
-An HTTP page rejection skips that page; a provider account failure aborts the run.
+An HTTP page rejection skips that page. Provider account failures abort immediately;
+shared-service timeouts, rate limits and unavailability abort after retries are
+exhausted, even for optional operations. Invalid model output can still be skipped.
 Token-budget exhaustion is a normal stop, and unknown errors abort with their cause
 preserved. Dedup retries cover grouping, not database writes.
 

@@ -188,8 +188,9 @@ async def test_recovery_keeps_limits(tmp_path):
     )
 
 
+@pytest.mark.parametrize("status", [402, 503])
 @pytest.mark.parametrize("stage", ["analysis", "retry", "ranking", "dedup", "goal", "seeds"])
-async def test_remote_resume(tmp_path, monkeypatch, stage):
+async def test_remote_resume(tmp_path, monkeypatch, stage, status):
     from types import SimpleNamespace
 
     import httpx
@@ -201,6 +202,8 @@ async def test_remote_resume(tmp_path, monkeypatch, stage):
     from crawlme.pioneer.seed_expander import SeedExpander
 
     calls = []
+    message = "Insufficient credits" if status == 402 else "Service is too busy"
+    provider_code = "payment_required" if status == 402 else "service_unavailable"
     content = json.dumps(
         {
             "classification": "RELEVANT",
@@ -221,8 +224,8 @@ async def test_remote_resume(tmp_path, monkeypatch, stage):
             raise RemoteError("temporary failure", kind=Kind.UNAVAILABLE)
         if client._stage == stage or stage == "retry":
             response = httpx.Response(
-                402,
-                json={"error": {"message": "Insufficient credits", "code": "payment_required"}},
+                status,
+                json={"error": {"message": message, "code": provider_code}},
                 request=httpx.Request("POST", "https://provider.test"),
             )
             raise httpx.HTTPStatusError("Payment required", request=response.request, response=response)
@@ -254,8 +257,11 @@ async def test_remote_resume(tmp_path, monkeypatch, stage):
     await asyncio.wait_for(scheduler.run(goal, task), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"
     error = scheduler.run_state.progress.fatal_error
-    assert "402" in error and "Insufficient credits" in error
-    assert len(calls) == (3 if stage == "dedup" else 2 if stage == "retry" else 1)
+    assert str(status) in error and message in error
+    expected_calls = (
+        (3 if stage == "dedup" else 2 if stage == "retry" else 1) if status == 402 else (5 if stage == "dedup" else 3)
+    )
+    assert len(calls) == expected_calls
     saved = snapshot(scheduler)
     # Cleanup must not replace recoverable work with the emptied retry queue.
     assert not saved["state"]["progress"]["fatal_error"]
@@ -264,7 +270,10 @@ async def test_remote_resume(tmp_path, monkeypatch, stage):
     if stage == "dedup":
         assert task.state == "FAILED"
     if stage == "analysis":
-        assert len(saved["work"]) == 1 and not saved["work"][0].get("analysis_done")
+        if status == 402:
+            assert len(saved["work"]) == 1 and not saved["work"][0].get("analysis_done")
+        else:
+            assert len(saved["retries"]) == 1
 
     async def analyze(*args, **kwargs):
         return LLMResponse(content, 0, 0, "stub")

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.analysis import AnalysisResult
+from crawlme.analysis import AnalysisError, AnalysisResult
 from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
 from crawlme.config import Settings
 from crawlme.digest import Page
@@ -66,9 +66,10 @@ async def _write_run(
 class _StubAnalyzer:
     """Script single analysis attempts; the real worker owns retries and publishing."""
 
-    def __init__(self, *, park=False, raise_error=None, publish_on_drain=None):
+    def __init__(self, *, park=False, raise_error=None, publish_on_drain=None, park_error=None):
         self.calls = []
         self._park = park
+        self._park_error = park_error or RemoteError("temporary", kind=Kind.UNAVAILABLE)
         self._raise = raise_error
         self._results = {result.url_key: result for result in publish_on_drain or []}
 
@@ -80,7 +81,7 @@ class _StubAnalyzer:
         if self._park:
             if previous and page.url_key in self._results:
                 return self._results[page.url_key]
-            raise RemoteError("temporary", kind=Kind.UNAVAILABLE)
+            raise self._park_error
         return AnalysisResult(
             page_id=page.page_id,
             url_key=page.url_key,
@@ -307,7 +308,11 @@ async def test_replay_empty(tmp_path):
 async def test_replay_counts(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     # Both pages park; one settles on the drain, the other gives up.
-    analyzer = _StubAnalyzer(park=True, publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")])
+    analyzer = _StubAnalyzer(
+        park=True,
+        park_error=AnalysisError("invalid output"),
+        publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")],
+    )
 
     report = await run_replay(_cfg(tmp_path), "task1", analyzer=analyzer)
 
@@ -404,3 +409,12 @@ async def test_replay_no_creds(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a")])
     with pytest.raises(ReplayError, match="credentials"):
         await run_replay(_cfg(tmp_path), "task1")
+
+
+async def test_replay_outage_stops(tmp_path):
+    run_dir = await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
+    analyzer = _StubAnalyzer(park=True, publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")])
+    with pytest.raises(RemoteError, match="temporary"):
+        await run_replay(_cfg(tmp_path), "task1", analyzer=analyzer)
+    assert sum(key == "b" for key, _ in analyzer.calls) == 3
+    assert len(await _read_analyses(run_dir, "a")) == 1

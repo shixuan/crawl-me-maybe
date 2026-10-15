@@ -44,9 +44,10 @@ async def test_skip_keeps_cause():
     assert await error_handler.call("next", AsyncMock(return_value="ok")) == "ok"
 
 
-async def test_abort_closes_admission():
-    error = RemoteError("no credits", kind=Kind.RESOURCE_EXHAUSTED)
-    error_handler = ErrorHandler()
+@pytest.mark.parametrize("kind", [Kind.RESOURCE_EXHAUSTED, Kind.TIMEOUT, Kind.UNAVAILABLE, Kind.RATE_LIMITED])
+async def test_abort_closes_admission(kind):
+    error = RemoteError("service failed", kind=kind)
+    error_handler = ErrorHandler(ErrorPolicy(retry_delay=0))
     with pytest.raises(RemoteError) as caught:
         await error_handler.call("analysis", AsyncMock(side_effect=error), optional=True, repeatable=True)
     assert caught.value is error

@@ -44,7 +44,7 @@ class ErrorPolicy:
 
     def decide(self, error: Error, context: ErrorContext) -> Decision:
         if error.kind == Kind.LIMIT_REACHED:
-            return self._exhausted(context, "limit_reached")
+            return self._exhausted(error, context, "limit_reached")
         if error.kind in {Kind.RESOURCE_EXHAUSTED, Kind.UNKNOWN}:
             return Decision(Action.ABORT, error.kind.value)
         if error.scope == Scope.DEPENDENCY and error.kind in {
@@ -55,12 +55,12 @@ class ErrorPolicy:
         }:
             return Decision(Action.ABORT, "dependency_failed")
         if error.kind == Kind.INVALID_OUTPUT and not context.retry_invalid_output:
-            return self._exhausted(context, "invalid_output")
+            return self._exhausted(error, context, "invalid_output")
         if error.kind in {Kind.TIMEOUT, Kind.UNAVAILABLE, Kind.RATE_LIMITED, Kind.INVALID_OUTPUT, Kind.CONFLICT}:
             if not context.repeatable:
-                return self._exhausted(context, "not_repeatable")
+                return self._exhausted(error, context, "not_repeatable")
             if context.attempt >= (context.max_attempts if context.max_attempts is not None else self._max_attempts):
-                return self._exhausted(context, "attempts_exhausted")
+                return self._exhausted(error, context, "attempts_exhausted")
             delay = min(self._retry_delay * 2 ** (context.attempt - 1), self._max_delay)
             retry_after = error.details.get("retry_after")
             if (
@@ -70,8 +70,14 @@ class ErrorPolicy:
             ):
                 delay = max(delay, retry_after)
             return Decision(Action.RETRY, "recoverable_error", delay)
-        return self._exhausted(context, "operation_failed")
+        return self._exhausted(error, context, "operation_failed")
 
     @staticmethod
-    def _exhausted(context: ErrorContext, reason: str) -> Decision:
-        return Decision(Action.SKIP if context.optional else Action.ABORT, reason)
+    def _exhausted(error: Error, context: ErrorContext, reason: str) -> Decision:
+        dependency_unavailable = error.scope == Scope.DEPENDENCY and error.kind in {
+            Kind.TIMEOUT,
+            Kind.UNAVAILABLE,
+            Kind.RATE_LIMITED,
+            Kind.CONFLICT,
+        }
+        return Decision(Action.ABORT if dependency_unavailable or not context.optional else Action.SKIP, reason)
