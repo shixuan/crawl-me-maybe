@@ -17,12 +17,17 @@ from typing import Any
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
+from crawlme.errors import Error, Kind
 from crawlme.persist import read_results
 from crawlme.util.dates import LATER, OVER, UNDATED, group_of
 
 
-class InspectError(Exception):
+class InspectError(Error):
     """Inspect cannot proceed: unknown goal, etc."""
+
+    source = "inspect"
+    code = "goal_missing"
+    kind = Kind.NOT_FOUND
 
 
 @dataclass
@@ -50,7 +55,7 @@ async def inspect_task(settings: Settings, task_id: str, *, goal_id: str | None 
     if goal_id is None:
         goal_id = task_row.get("goal_id", "")
     if goal_id not in goal_ids:
-        raise InspectError(f"goal {goal_id} not found in the run database")
+        raise InspectError(f"goal {goal_id} not found in the run database", details={"goal_id": goal_id})
 
     goal_counts: dict[str, int] = {}
     for a in results.analyses:

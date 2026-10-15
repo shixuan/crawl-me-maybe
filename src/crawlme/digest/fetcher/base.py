@@ -1,26 +1,43 @@
-"""Fetcher contract, errors and shared retry policy."""
+"""Fetcher contract and error facts."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
-from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from crawlme.digest.models import FetchResult
+from crawlme.errors import Error, Kind
 from crawlme.pioneer import FrontierItem
-
-logger = logging.getLogger(__name__)
 
 # Default crawler identity shared by fetchers and robots policy.
 DEFAULT_UA = "crawl-me-maybe (research crawler; +https://github.com/crawl-me-maybe)"
 
-# Cap the delay between attempts.
-_MAX_BACKOFF_SECONDS = 60
 
+class FetchError(Error):
+    """Failure of one fetch attempt."""
 
-class FetchError(Exception):
-    """Fetch failure that the retry helper does not retry."""
+    source = "fetch"
+    code = "fetch_failed"
+
+    @classmethod
+    def from_http(cls, status: int, *, url: str) -> FetchError:
+        kind = (
+            Kind.UNAVAILABLE
+            if status >= 500
+            else {
+                401: Kind.UNAUTHENTICATED,
+                403: Kind.FORBIDDEN,
+                404: Kind.NOT_FOUND,
+                408: Kind.TIMEOUT,
+                410: Kind.NOT_FOUND,
+                429: Kind.RATE_LIMITED,
+            }.get(status, Kind.INVALID_INPUT)
+        )
+        return cls(
+            f"HTTP request failed: {status}",
+            code="http_rejected",
+            kind=kind,
+            details={"status_code": status, "url": url},
+        )
 
 
 class Fetcher(Protocol):
@@ -29,33 +46,3 @@ class Fetcher(Protocol):
     async def fetch(self, item: FrontierItem) -> FetchResult: ...
 
     async def aclose(self) -> None: ...
-
-
-async def with_retries(
-    attempt: Callable[[int], Awaitable[FetchResult]],
-    *,
-    max_retries: int,
-    is_transient: Callable[[BaseException], bool],
-    label: str = "",
-) -> FetchResult:
-    """Retry caller-classified transient exceptions with backoff; never retry FetchError.
-
-    max_retries counts total attempts, including the first. Pass the 1-based attempt
-    number to the callback; wrap exhausted retries in FetchError with the last cause.
-    """
-    last: BaseException | None = None
-    for n in range(1, max_retries + 1):
-        try:
-            return await attempt(n)
-        except FetchError:
-            raise
-        except BaseException as e:
-            if not is_transient(e):
-                raise
-            last = e
-            if n >= max_retries:
-                break
-            delay = min(2**n, _MAX_BACKOFF_SECONDS)
-            logger.warning("fetch.retry %s attempt=%d/%d delay=%.1fs error=%s", label, n, max_retries, delay, e)
-            await asyncio.sleep(delay)
-    raise FetchError(f"fetch failed after {max_retries} attempts") from last

@@ -9,8 +9,9 @@ import pytest
 
 from crawlme.analysis import AnalysisResult
 from crawlme.config import Settings
-from crawlme.dedup.grouper import Grouper, fingerprint
+from crawlme.dedup.grouper import DedupError, Grouper, fingerprint
 from crawlme.digest import Page
+from crawlme.errors import Error, ErrorHandler, Kind
 from crawlme.llm import LLMResponse, TokenBudget
 from crawlme.persist import Storage
 from crawlme.runtime import CrawlGoal
@@ -34,8 +35,14 @@ def client_response(groups, *, truncated=False):
 )
 async def test_invalid_partition_rejected(groups):
     grouper = Grouper(client_response(groups), max_chars=10000)
-    with pytest.raises(ValueError if not groups[0]["members"] else Exception):
+    with pytest.raises(DedupError) as caught:
         await grouper.group(CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}])
+    assert isinstance(caught.value, Error)
+    assert caught.value.source == "dedup" and caught.value.kind == Kind.INVALID_OUTPUT
+    if not groups[0]["members"]:
+        assert caught.value.code == "invalid_groups" and isinstance(caught.value.__cause__, ValueError)
+    else:
+        assert caught.value.code == "invalid_members"
 
 
 async def test_group_preserves_evidence_and_does_not_output_a_score():
@@ -52,7 +59,7 @@ async def test_group_preserves_evidence_and_does_not_output_a_score():
 
 async def test_no_truncation_or_call_for_oversized_input():
     client = client_response([])
-    with pytest.raises(Exception, match="exceeds"):
+    with pytest.raises(DedupError, match="exceeds"):
         await Grouper(client, max_chars=10).group(
             CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
         )
@@ -61,7 +68,7 @@ async def test_no_truncation_or_call_for_oversized_input():
 
 async def test_truncated_output_rejected():
     client = client_response([{"members": ["a", "b"], "overview": "offer"}], truncated=True)
-    with pytest.raises(Exception, match="truncated"):
+    with pytest.raises(DedupError, match="truncated"):
         await Grouper(client, max_chars=10000).group(
             CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
         )
@@ -202,13 +209,14 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
 
 
 async def test_grouping_failure_retains_results():
+    from crawlme.dedup import DedupError
     from crawlme.scheduler.workers.dedup import DedupWorker
 
-    grouper = MagicMock(group=AsyncMock(side_effect=ValueError("bad model reply")))
+    grouper = MagicMock(group=AsyncMock(side_effect=DedupError("bad model reply")))
     storage = MagicMock(dedup_inputs=AsyncMock(return_value=[{"analysis_id": "a"}]), save_groups=AsyncMock())
-    worker = DedupWorker(grouper, storage=storage, model="test")
+    worker = DedupWorker(grouper, storage=storage, model="test", error_handler=ErrorHandler())
     await worker.run(CrawlGoal(prompt="gifts"))
-    assert worker.report == {"status": "failed"}
+    assert worker.report == {"status": "failed", "error": "bad model reply"}
     storage.save_groups.assert_not_called()
 
 
@@ -253,7 +261,7 @@ async def test_invalid_reply_retried(bad, caplog):
 
 async def test_invalid_retry_stops(caplog):
     client = client_response([{"members": ["a", "a", "unknown"], "overview": "offer"}])
-    with pytest.raises(Exception, match=r"duplicate IDs.*a.*unknown IDs.*unknown"):
+    with pytest.raises(DedupError, match=r"duplicate IDs.*a.*unknown IDs.*unknown"):
         await Grouper(client, max_chars=10000).group(
             CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
         )
@@ -285,7 +293,7 @@ async def test_repair_respects_budget(monkeypatch):
 async def test_repair_input_limit():
     client = client_response([])
     client.chat.return_value = LLMResponse("x" * 10000, 1, 1, "test")
-    with pytest.raises(Exception, match="exceeds"):
+    with pytest.raises(DedupError, match="exceeds"):
         await Grouper(client, max_chars=10000).group(
             CrawlGoal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}]
         )
@@ -330,6 +338,20 @@ async def test_compact_input_boundary():
     await Grouper(client, max_chars=limit).group(goal, rows)
     assert client.chat.call_args.args[0] == compact
     client.chat.reset_mock()
-    with pytest.raises(Exception, match="exceeds"):
+    with pytest.raises(DedupError, match="exceeds"):
         await Grouper(client, max_chars=limit - 1).group(goal, rows)
     client.chat.assert_not_called()
+
+
+async def test_group_storage_failure_is_not_retried():
+    from crawlme.scheduler.workers.dedup import DedupWorker
+
+    failure = OSError("disk full")
+    grouper = MagicMock(group=AsyncMock(return_value=[]))
+    storage = MagicMock(dedup_inputs=AsyncMock(return_value=[]), save_groups=AsyncMock(side_effect=failure))
+    worker = DedupWorker(grouper, storage=storage, model="test", error_handler=ErrorHandler())
+    with pytest.raises(OSError) as caught:
+        await worker.run(CrawlGoal(prompt="gifts"))
+    assert caught.value is failure
+    grouper.group.assert_awaited_once()
+    storage.save_groups.assert_awaited_once()

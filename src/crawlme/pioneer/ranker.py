@@ -13,12 +13,20 @@ from pydantic import BaseModel, Field
 
 from crawlme import prompts
 from crawlme.config import Settings
-from crawlme.llm import Client, Error, Stage, TokenBudget, parse_json_response
+from crawlme.errors import Error, Kind
+from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.pioneer.models import Candidate
 from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
+
+
+class RankingError(Error):
+    source = "ranking"
+    code = "invalid_response"
+    kind = Kind.INVALID_OUTPUT
+
 
 # One LLM call covers at most this many candidates; larger survivor
 # batches are chunked into sequential calls.
@@ -184,7 +192,11 @@ class LLMRanker(Ranker):
                 )
             data = _parse_response(resp.content)
         if data is None:
-            raise Error(f"unparseable JSON for {len(chunk)} candidates after repair retry")
+            raise RankingError(
+                f"unparseable JSON for {len(chunk)} candidates after repair retry",
+                code="invalid_json",
+                details={"candidates": len(chunk)},
+            )
 
         tokens = resp.input_tokens + resp.output_tokens
         decisions = _to_decisions(chunk, data, tokens_used=tokens, now=_utcnow(), demote_dropped=self._demote_dropped)

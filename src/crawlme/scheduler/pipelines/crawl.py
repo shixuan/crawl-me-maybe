@@ -9,14 +9,16 @@ import time
 from typing import Any
 
 from crawlme.config import Settings
-from crawlme.llm import TokenBudget
+from crawlme.errors import ErrorHandler, Skipped
+from crawlme.logging.progress import activity
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
+from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import expand
-from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker
+from crawlme.pioneer.seed_expander import SeedExpander, how_many, verify
+from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker, spec_fields
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
 from crawlme.scheduler.workers import AnalysisWorker, DedupWorker, RankingWorker
@@ -36,6 +38,8 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         self,
         *,
         settings: Settings,
+        error_handler: ErrorHandler,
+        goal_enhancer: GoalEnhancer,
         storage: Storage,
         frontier: Frontier,
         ranking: RankingWorker,
@@ -46,7 +50,10 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         tracking: Tracker,
         dedup: DedupWorker,
         page: PagePipeline,
+        seed_expander: SeedExpander | None = None,
     ) -> None:
+        self.error_handler = error_handler
+        self._goal_enhancer = goal_enhancer
         self._cfg = settings
         self._storage = storage
         self._frontier = frontier
@@ -58,13 +65,67 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         self._tracking = tracking
         self._dedup = dedup
         self._page = page
+        self._seed_expander = seed_expander
         self._goal: CrawlGoal | None = None
         self._task_id = ""
         self._events: EventEmitter | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
         self._inflight: set[asyncio.Task[None]] = set()
-        self._failure: asyncio.Future[BaseException] | None = None
         self._context: PipelineContext
+
+    async def startup(
+        self,
+        goal: CrawlGoal,
+        candidates: list[Candidate],
+        *,
+        allowed_domains: set[str] | None = None,
+        preserve_since: bool = False,
+    ) -> None:
+        """Keep user seeds recoverable even if startup model calls fail."""
+        await self.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
+        try:
+            # Enhance the goal when configured; keep the original if enhancement fails.
+            logger.info("reading the goal with the model")
+            enhancer = self._goal_enhancer
+            enhanced = await self.error_handler.call(
+                "goal",
+                lambda: enhancer.enhance(goal),
+                optional=True,
+                repeatable=True,
+            )
+            if enhanced is not None and not isinstance(enhanced, Skipped):
+                goal.goal_statement = enhanced.statement
+                goal.keywords = enhanced.keywords
+                # The explicit publication cutoff overrides the inferred one.
+                if not preserve_since:
+                    goal.since = enhanced.since
+                goal.extraction_spec = enhanced.extraction_spec
+                goal.time_policy = enhanced.time_policy
+                logger.debug(
+                    "goal.enhanced statement_len=%d keywords=%d fields=%s",
+                    len(enhanced.statement),
+                    len(enhanced.keywords),
+                    ",".join(spec_fields(enhanced.extraction_spec)) or "none",
+                )
+                # Report the effective cutoff when it differs from the inferred one.
+                if preserve_since and enhanced.since and enhanced.since != goal.since:
+                    logger.info(
+                        "reading back to %s, as you asked; the prompt suggested %s",
+                        goal.since.date().isoformat() if goal.since else "no limit",
+                        enhanced.since.date().isoformat(),
+                    )
+                else:
+                    logger.info(
+                        "reading back to %s",
+                        goal.since.date().isoformat() if goal.since else "no limit",
+                    )
+
+            proposed = await self.expand_seeds(goal, candidates)
+            if proposed:
+                await self.ingest_seeds(goal, proposed, allowed_domains=allowed_domains)
+        except Exception as exc:
+            # run() saves the initial seeds before surfacing this startup failure.
+            self.error_handler.abort(exc, "startup")
 
     @property
     def run_state(self) -> RunState:
@@ -86,26 +147,12 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
     async def run(self, input: CrawlGoal, context: PipelineContext) -> None:
         self.prepare(input, context.task_id, context.events)
         self._context = context
-        try:
-            self._failure = asyncio.get_running_loop().create_future()
-            for work in list(self.run_state.work.values()):
-                self._dispatch_page(FrontierItem.model_validate(work["item"]))
-            self._analysis.start_retries()
-            self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
-            await self._supervise()
-        except BaseException:
-            await self.abort()
-            raise
-
-    async def _supervise(self) -> None:
-        assert self._failure is not None
-        pending: list[asyncio.Future[Any]] = [*self._pump_tasks, self._failure]
-        done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-        if self._failure in done:
-            raise self._failure.result()
-        for task in self._pump_tasks:
-            if task in done and not task.cancelled():
-                await task
+        self.error_handler.check()
+        for work in list(self.run_state.work.values()):
+            self._dispatch_page(FrontierItem.model_validate(work["item"]))
+        self._analysis.start_retries()
+        self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
+        await self.error_handler.watch(asyncio.gather(*self._pump_tasks))
 
     async def halt(self) -> None:
         """Stop producing new work; keep dispatched pages available for settling."""
@@ -120,8 +167,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
     def _page_done(self, task: asyncio.Task[None]) -> None:
         self._inflight.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
-            if self._failure is not None and not self._failure.done():
-                self._failure.set_result(error)
+            self.error_handler.abort(error, "page")
 
     async def settle(self, deadline: float) -> None:
         if self._inflight:
@@ -134,14 +180,10 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
             for task in done:
                 if not task.cancelled():
                     await task
-        if self._failure is not None and self._failure.done():
-            raise self._failure.result()
+        self.error_handler.check()
 
     async def drain(self) -> None:
         await self._analysis.drain_pending()
-
-    async def end_drain(self) -> None:
-        await self._analysis.aclose()
 
     async def abort(self) -> None:
         """Cancel consumers before awaiting cleanup; no retries or final processing."""
@@ -164,7 +206,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
 
     async def aclose(self) -> None:
         errors = []
-        for close in (self._analysis.aclose, self._ranking.aclose, self._page.aclose):
+        for close in (self.abort, self._ranking.aclose, self._page.aclose):
             try:
                 await close()
             except Exception as exc:
@@ -173,21 +215,33 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         if errors:
             raise errors[0]
 
-    async def expand_seeds(
-        self, goal: CrawlGoal, seeds: list[Candidate], budget: TokenBudget | None = None
-    ) -> list[Candidate]:
+    @activity("seed expander")
+    async def expand_seeds(self, goal: CrawlGoal, seeds: list[Candidate]) -> list[Candidate]:
         """Propose and verify additional seeds when enabled."""
-        if not self._cfg.expand_seeds or not seeds:
+        expander = self._seed_expander
+        if expander is None or not seeds:
             return []
-        proposed, n_proposed, rejected = await expand(
-            goal,
-            [c.url.raw for c in seeds],
-            settings=self._cfg,
-            budget=budget,
+        want = how_many(len(seeds), self._cfg.expand_seeds_min, self._cfg.expand_seeds_max)
+        proposals = await self.error_handler.call(
+            "seeds",
+            lambda: expander.propose(goal, [c.url.raw for c in seeds], want),
+            optional=True,
+            repeatable=True,
+        )
+        if isinstance(proposals, Skipped):
+            return []
+        if not proposals:
+            self.run_state.seeds_asked = 0
+            self.run_state.rejected_seeds = []
+            return []
+        logger.info("the model named %d more source%s to try", len(proposals), "" if len(proposals) == 1 else "s")
+        proposed, rejected = await verify(
+            proposals,
             probe=self._page.probe,
             canonicalizer=self._canonicalizer,
         )
-        self.run_state.seeds_asked = n_proposed
+        logger.info("%d of the %d it named answered", len(proposed), len(proposals))
+        self.run_state.seeds_asked = len(proposals)
         self.run_state.rejected_seeds = rejected
         for c in proposed:
             # url_key, the shape the page book counts under.

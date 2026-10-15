@@ -79,7 +79,8 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     except ImportError as e:  # pragma: no cover - depends on the install
         # A missing parser is a dependency failure, not an empty listing.
         raise FeedDependencyError(
-            "reading a feed requires the 'feedparser' package: pip install 'crawl-me-maybe[rss]'"
+            "reading a feed requires the 'feedparser' package: pip install 'crawl-me-maybe[rss]'",
+            details={"module": "feedparser"},
         ) from e
 
     feed = feedparser.parse(html)

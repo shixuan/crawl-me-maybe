@@ -51,6 +51,8 @@ class Engine:
         self._monitor = monitor
         self._closed = False
         self._checkpoint_task: asyncio.Task[None] | None = None
+        self._checkpointing = True
+        self._checkpoint_saves: set[asyncio.Task[None]] = set()
 
     def attach_log_file(self) -> None:
         """Start writing logs to the run dir's log file.
@@ -81,6 +83,7 @@ class Engine:
         logger.info(
             "crawling, at most %d pages or %d tokens or %ds", goal.max_pages, goal.max_tokens, goal.max_duration_sec
         )
+        recoverable = checkpoint is not None
         try:
             await self._storage.start()
             self._events = EventEmitter(self._storage, task.task_id)
@@ -96,6 +99,7 @@ class Engine:
             self._storage.save_goal(goal.model_dump(mode="json"))
             self._storage.save_task(task.model_dump(mode="json"))
             await self._checkpoint()
+            recoverable = True
             self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
             context = PipelineContext(
                 task_id=task.task_id,
@@ -108,17 +112,19 @@ class Engine:
             self._pipeline_task = asyncio.create_task(self.pipeline.run(goal, context))
             # Let restored work register before checking whether the pipeline is drained.
             await asyncio.sleep(0)
-            await self._supervise()
-            deadline = time.monotonic() + _SETTLE_TIMEOUT
-            await self.pipeline.halt()
-            await self._settle(deadline)
-            await self._drain(deadline)
-            if not self.run_state.progress.fatal_error:
-                await self.pipeline.finish()
+            try:
+                await self._supervise()
+                deadline = time.monotonic() + _SETTLE_TIMEOUT
+                await self.pipeline.halt()
+                await self._settle(deadline)
+                await self._drain(deadline)
+            finally:
+                await self._stop_checkpoints()
+                await self.pipeline.abort()
+            await self.pipeline.finish()
             self._finish_run()
         except asyncio.CancelledError:
             task.state = "INTERRUPTED"
-            await self.pipeline.abort()
             task.stopping_reason = "USER_REQUESTED"
             task.counters = {
                 "pages_fetched": self.run_state.progress.pages_fetched,
@@ -129,15 +135,13 @@ class Engine:
             raise
         except Exception as exc:
             self._fail("run", exc)
-            await self.pipeline.abort()
             self._finish_run()
+            if recoverable:
+                logger.error("resolve the error, then resume with: crawl resume %s", task.task_id)
         finally:
             if self._pipeline_task is not None:
                 self._pipeline_task.cancel()
                 await asyncio.gather(self._pipeline_task, return_exceptions=True)
-            if self._checkpoint_task is not None:
-                self._checkpoint_task.cancel()
-                await asyncio.gather(self._checkpoint_task, return_exceptions=True)
             try:
                 await self.aclose()
             finally:
@@ -165,11 +169,12 @@ class Engine:
         self._storage.save_task(task.model_dump(mode="json"))
 
     def _fail(self, stage: str, error: BaseException) -> None:
-        logger.error("%s.died error=%s", stage, error)
-        self.run_state.record_failure(error)
+        if not self.run_state.progress.fatal_error:
+            self.run_state.record_failure(error)
+            logger.error("%s.died error=%s", stage, error)
         if self._task is not None:
             self._task.stopping_reason = "FATAL"
-            self._task.state = "STOPPING"
+            self._task.state = "FAILED"
 
     def _allow_work(self) -> bool:
         if self._task is None or self._task.state != "RUNNING":
@@ -197,7 +202,12 @@ class Engine:
     ) -> list[StopReason]:
         stopped = asyncio.create_task(self._monitor.wait(phase=phase, deadline=deadline))
         try:
-            await asyncio.wait([task, stopped], return_when=asyncio.FIRST_COMPLETED)
+            tasks = [task, stopped]
+            if self._checkpoint_task is not None:
+                tasks.append(self._checkpoint_task)
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            if self._checkpoint_task is not None and self._checkpoint_task.done():
+                await self._checkpoint_task
             if task.done():
                 await task
                 return []
@@ -223,7 +233,6 @@ class Engine:
             if not settle.done():
                 if time.monotonic() >= deadline:
                     logger.warning("task.settle_timeout")
-                await self.pipeline.abort()
         finally:
             settle.cancel()
             await asyncio.gather(settle, return_exceptions=True)
@@ -242,12 +251,12 @@ class Engine:
             if drain is not None:
                 drain.cancel()
                 await asyncio.gather(drain, return_exceptions=True)
-            await self.pipeline.end_drain()
 
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
+        await self._stop_checkpoints()
         self._monitor.close()
         try:
             await self.pipeline.aclose()
@@ -298,18 +307,32 @@ class Engine:
         )
 
     async def _checkpoint(self) -> None:
-        if self._task is None:
+        if not self._checkpointing or self._closed or self._task is None:
             return
-        if self._task.state == "INTERRUPTED":
+        if self._task.state not in {"RUNNING", "STOPPING"} or self.run_state.progress.fatal_error:
             return
-        await self._checkpointer.save()
+        save = asyncio.create_task(self._checkpointer.save())
+        self._checkpoint_saves.add(save)
+        try:
+            await save
+        finally:
+            self._checkpoint_saves.discard(save)
         if self._events:
             self._events.emit(EventType.CHECKPOINT_SAVED, {"pages": self.run_state.progress.pages_fetched})
 
+    def _cancel_checkpoints(self) -> list[asyncio.Task[None]]:
+        tasks = list(self._checkpoint_saves)
+        if self._checkpoint_task is not None:
+            tasks.append(self._checkpoint_task)
+        for task in tasks:
+            task.cancel()
+        return tasks
+
+    async def _stop_checkpoints(self) -> None:
+        self._checkpointing = False
+        await asyncio.gather(*self._cancel_checkpoints(), return_exceptions=True)
+
     async def _checkpoint_loop(self) -> None:
-        try:
-            while True:
-                await asyncio.sleep(_CHECKPOINT_INTERVAL)
-                await self._checkpoint()
-        except Exception as exc:
-            self._fail("checkpoint", exc)
+        while True:
+            await asyncio.sleep(_CHECKPOINT_INTERVAL)
+            await self._checkpoint()

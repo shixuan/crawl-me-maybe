@@ -8,9 +8,11 @@ import pytest
 
 from crawlme.cli import main
 from crawlme.cli.run import _build_source
+from crawlme.errors import ErrorHandler
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.runtime import Limits, Progress, RunState, Stats
+from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +61,7 @@ def test_prints_prompt(caplog):
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
         with patch("crawlme.cli.run.create_scheduler") as mock_factory:
             mock_sched = MagicMock()
+            mock_sched.pipeline.startup = AsyncMock()
             mock_sched.pipeline.ingest_seeds = AsyncMock()
             mock_sched.pipeline.expand_seeds = AsyncMock(return_value=[])
             mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
@@ -88,6 +91,11 @@ def _capturing_factory(captured: dict):
         captured["goal"] = goal
         captured["overrides"] = overrides
         sched = MagicMock()
+        from crawlme.scheduler.factory import GoalEnhancer as Enhancer
+
+        sched.pipeline.error_handler = ErrorHandler()
+        sched.pipeline._goal_enhancer = Enhancer.from_settings(cfg)
+        sched.pipeline.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched.pipeline, *args, **kwargs)
         sched.pipeline.ingest_seeds = AsyncMock()
         sched.pipeline.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
@@ -189,7 +197,7 @@ def test_goal_enhanced(monkeypatch):
         async def enhance(self, goal):
             return EnhancedGoal(statement="Find ML papers", keywords=["ml", "papers"], since=None)
 
-    monkeypatch.setattr("crawlme.cli.run.GoalEnhancer", _StubEnhancer)
+    monkeypatch.setattr("crawlme.scheduler.factory.GoalEnhancer", _StubEnhancer)
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
         with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
             try:
@@ -285,6 +293,11 @@ def test_prints_summary(capsys):
 
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
+        from crawlme.scheduler.factory import GoalEnhancer as Enhancer
+
+        sched.pipeline.error_handler = ErrorHandler()
+        sched.pipeline._goal_enhancer = Enhancer.from_settings(cfg)
+        sched.pipeline.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched.pipeline, *args, **kwargs)
         sched.pipeline.ingest_seeds = AsyncMock()
         sched.pipeline.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())

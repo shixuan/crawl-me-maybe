@@ -1,4 +1,4 @@
-"""Fetch HTTP pages with redirect tracking, retries and a total deadline.
+"""Fetch HTTP pages with redirect tracking and a total deadline.
 
 Redirects are followed explicitly to retain every hop. The total deadline also
 bounds responses that continuously reset the per-read timeout."""
@@ -14,8 +14,9 @@ from urllib.parse import urljoin
 
 import httpx
 
-from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError, with_retries
+from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError
 from crawlme.digest.models import FetchResult
+from crawlme.errors import Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.urls import URL
 
@@ -36,13 +37,11 @@ class HttpFetcher(Fetcher):
         user_agents: list[str] | None = None,
         connect_timeout: float = 10.0,
         read_timeout: float = 30.0,
-        max_retries: int = 3,
         total_timeout: float | None = None,
     ) -> None:
         self._uas = user_agents if user_agents else [DEFAULT_UA]
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
-        self._max_retries = max_retries
         # Bound trickling responses that never trigger the per-read timeout.
         self._total_timeout = total_timeout if total_timeout is not None else connect_timeout + read_timeout + 10.0
         # Create the shared connection pool lazily on the running event loop.
@@ -63,18 +62,17 @@ class HttpFetcher(Fetcher):
             self._client = None
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
-        async def attempt(n: int) -> FetchResult:
-            return await asyncio.wait_for(
-                self._do_fetch(item, n, time.monotonic()),
-                timeout=self._total_timeout,
-            )
-
-        return await with_retries(
-            attempt,
-            max_retries=self._max_retries,
-            is_transient=_is_transient,
-            label=f"url={item.url.canonical}",
-        )
+        try:
+            return await asyncio.wait_for(self._do_fetch(item, 1, time.monotonic()), timeout=self._total_timeout)
+        except (asyncio.TimeoutError, httpx.RequestError) as exc:
+            raise FetchError(
+                str(exc) or "HTTP request timed out",
+                code="request_failed",
+                kind=Kind.TIMEOUT
+                if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException))
+                else Kind.UNAVAILABLE,
+                details={"url": item.url.canonical},
+            ) from exc
 
     async def _do_fetch(self, item: FrontierItem, attempt: int, started: float) -> FetchResult:
         client = self._get_client()
@@ -89,37 +87,39 @@ class HttpFetcher(Fetcher):
 
         while response.status_code in (301, 302, 303, 307, 308):
             if len(redirects) >= _MAX_REDIRECTS:
-                raise FetchError(f"too many redirects (>{_MAX_REDIRECTS})")
+                raise FetchError(
+                    f"too many redirects (>{_MAX_REDIRECTS})",
+                    code="redirect_limit",
+                    kind=Kind.INVALID_OUTPUT,
+                    details={"url": item.url.canonical},
+                )
             location = response.headers.get("Location", "")
             if not location:
                 break
             final_url_str = urljoin(final_url_str, location)
             if final_url_str in seen:
-                raise FetchError(f"redirect loop detected at {final_url_str}")
+                raise FetchError(
+                    f"redirect loop detected at {final_url_str}",
+                    code="redirect_loop",
+                    kind=Kind.INVALID_OUTPUT,
+                    details={"url": final_url_str},
+                )
             seen.add(final_url_str)
             final_url_obj = URL(raw=final_url_str, canonical=final_url_str, url_key=final_url_str)
             redirects.append(final_url_obj)
             response = await client.get(final_url_str, headers=headers)
 
-        # 429: rate-limited: wait Retry-After seconds, then retry.
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After", "5")
-            try:
-                delay = int(retry_after)
-            except ValueError:
-                delay = 5
-            await asyncio.sleep(delay)
-            raise _TransientError("429 Too Many Requests")
-
-        # 5xx: transient server error: retry.
-        if response.status_code >= 500:
-            logger.warning("fetch.5xx url=%s status=%d", item.url.canonical, response.status_code)
-            raise _TransientError(f"Server error {response.status_code}")
-
-        # 4xx (non-429): permanent: do not retry.
-        if 400 <= response.status_code < 500:
-            logger.warning("fetch.4xx url=%s status=%d", item.url.canonical, response.status_code)
-            raise FetchError(f"Permanent HTTP error: {response.status_code}")
+        if response.status_code >= 400:
+            error = FetchError.from_http(response.status_code, url=final_url_str)
+            if response.status_code == 429:
+                try:
+                    delay = float(response.headers.get("Retry-After", "5"))
+                except ValueError:
+                    delay = 5.0
+                error = FetchError(
+                    str(error), code=error.code, kind=error.kind, details={**error.details, "retry_after": delay}
+                )
+            raise error
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.debug(
@@ -144,12 +144,3 @@ class HttpFetcher(Fetcher):
             fetched_at=_utcnow(),
             fetch_attempt=attempt,
         )
-
-
-class _TransientError(Exception):
-    """Internal signal that a retryable error occurred."""
-
-
-def _is_transient(err: BaseException) -> bool:
-    """A total-deadline timeout and a 5xx/429 both deserve another try."""
-    return isinstance(err, asyncio.TimeoutError | _TransientError)

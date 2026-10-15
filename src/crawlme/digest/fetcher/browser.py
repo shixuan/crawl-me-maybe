@@ -13,8 +13,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError, with_retries
+from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError
 from crawlme.digest.models import FetchResult, Payload
+from crawlme.errors import Kind, Scope
 from crawlme.pioneer import FrontierItem
 from crawlme.urls import URL
 
@@ -51,7 +52,6 @@ class PlaywrightFetcher(Fetcher):
         storage_state: str | None = None,
         user_agents: list[str] | None = None,
         timeout: float = 30.0,
-        max_retries: int = 3,
         wait_until: WaitUntil = "networkidle",
         headless: bool = True,
         keep_payload: Callable[[str, str], bool] | None = None,
@@ -61,7 +61,6 @@ class PlaywrightFetcher(Fetcher):
         self._storage_state = storage_state
         self._uas = user_agents if user_agents else [DEFAULT_UA]
         self._timeout_ms = int(timeout * 1000)
-        self._max_retries = max_retries
         self._wait_until = wait_until
         self._headless = headless
         # Retain sub-responses only when the caller supplies a selection predicate.
@@ -89,7 +88,13 @@ class PlaywrightFetcher(Fetcher):
         try:
             from playwright.async_api import async_playwright
         except ImportError as e:  # pragma: no cover - depends on install
-            raise FetchError(_INSTALL_HINT) from e
+            raise FetchError(
+                _INSTALL_HINT,
+                code="dependency_missing",
+                scope=Scope.DEPENDENCY,
+                kind=Kind.NOT_FOUND,
+                details={"module": "playwright"},
+            ) from e
 
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=self._headless)
@@ -124,20 +129,25 @@ class PlaywrightFetcher(Fetcher):
     # fetch ------------------------------------------------------------
 
     async def fetch(self, item: FrontierItem) -> FetchResult:
-        return await with_retries(
-            lambda _n: self._attempt(item),
-            max_retries=self._max_retries,
-            is_transient=_is_transient,
-            label=f"url={item.url.canonical}",
-        )
+        try:
+            return await self._attempt(item)
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
+            raise FetchError(
+                str(exc),
+                code="navigation_failed",
+                kind=Kind.TIMEOUT if "Timeout" in type(exc).__name__ else Kind.UNAVAILABLE,
+                details={"url": item.url.canonical},
+            ) from exc
 
     async def _attempt(self, item: FrontierItem) -> FetchResult:
         started = time.monotonic()
         # Imported here, not at module scope: playwright is optional and
         # the rest of this module keeps it behind TYPE_CHECKING.
+        context = await self._ensure_context()
         from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-        context = await self._ensure_context()
         payloads: list[Payload] = []
         page = await context.new_page()
         try:
@@ -160,14 +170,16 @@ class PlaywrightFetcher(Fetcher):
         if response is None:
             # Retry only if the timed-out navigation produced no usable content.
             if not html.strip():
-                raise FetchError("navigation timed out with an empty document")
+                raise FetchError(
+                    "navigation timed out with an empty document", code="navigation_timeout", kind=Kind.TIMEOUT
+                )
             status = 200
         else:
             status = response.status
         if status >= 400:
             # Same split as HttpFetcher: the browser has already followed
             # redirects, so anything left in the 4xx range is permanent.
-            raise FetchError(f"Permanent HTTP error: {status}")
+            raise FetchError.from_http(status, url=item.url.canonical)
 
         final_url = item.url
         if final_url_str and final_url_str != item.url.canonical:
@@ -265,13 +277,31 @@ def _load_storage_state(path: str) -> dict[str, Any]:
     """Load saved session state; reject invalid input instead of silently browsing anonymously."""
     p = Path(path)
     if not p.is_file():
-        raise FetchError(f"storage state file not found: {path}")
+        raise FetchError(
+            f"storage state file not found: {path}",
+            code="session_missing",
+            scope=Scope.DEPENDENCY,
+            kind=Kind.NOT_FOUND,
+            details={"path": path},
+        )
     try:
         state = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise FetchError(f"storage state file is not readable JSON: {path}") from e
+        raise FetchError(
+            f"storage state file is not readable JSON: {path}",
+            code="session_invalid",
+            scope=Scope.DEPENDENCY,
+            kind=Kind.INVALID_INPUT,
+            details={"path": path},
+        ) from e
     if not isinstance(state, dict) or not (state.get("cookies") or state.get("origins")):
-        raise FetchError(f"storage state file has no cookies or origins: {path}")
+        raise FetchError(
+            f"storage state file has no cookies or origins: {path}",
+            code="session_invalid",
+            scope=Scope.DEPENDENCY,
+            kind=Kind.INVALID_INPUT,
+            details={"path": path},
+        )
     return state
 
 

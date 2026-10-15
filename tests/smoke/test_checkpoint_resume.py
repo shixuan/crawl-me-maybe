@@ -37,7 +37,7 @@ main()
 
 
 @pytest.mark.parametrize("legacy", [False, True], ids=["current-db", "legacy-db"])
-@pytest.mark.parametrize("interrupt", [signal.SIGINT, signal.SIGKILL])
+@pytest.mark.parametrize("interrupt", [signal.SIGINT, signal.SIGKILL, None], ids=["sigint", "sigkill", "remote-error"])
 def test_checkpoint_resume(tmp_path, interrupt, legacy):
     entered, release = threading.Event(), threading.Event()
     requests, calls = [], []
@@ -74,6 +74,13 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
                 calls.append(path)
                 if path == "/second":
                     entered.set()
+                    if interrupt is None and not release.is_set():
+                        self.send_body(
+                            b'{"error":{"code":"insufficient_quota","message":"Insufficient credits"}}',
+                            "application/json",
+                            status=429,
+                        )
+                        return
                     if not release.wait(20):
                         self.send_error(504)
                         return
@@ -93,8 +100,8 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
                 body = {"goal_statement": "compiler design", "keywords": ["compiler", "design"]}
             self.send_body(json.dumps(body).encode(), "application/json")
 
-        def send_body(self, body, content_type):
-            self.send_response(200)
+        def send_body(self, body, content_type, status=200):
+            self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -173,10 +180,19 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         assert saved["ranking"] and saved["analysis"]
         before = list(calls)
 
-        process.send_signal(interrupt)
+        if interrupt is not None:
+            process.send_signal(interrupt)
         output, _ = process.communicate(timeout=10)
-        assert process.returncode == (130 if interrupt == signal.SIGINT else -signal.SIGKILL), output
+        assert process.returncode == (
+            1 if interrupt is None else 130 if interrupt == signal.SIGINT else -signal.SIGKILL
+        ), output
         assert calls == before, "interruption must not start another LLM call"
+        if interrupt is None:
+            assert "Insufficient credits" in output
+            assert "429" in output
+            assert f"crawl resume {task_id}" in output
+            with sqlite3.connect(db_path) as db:
+                assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
         if interrupt == signal.SIGINT:
             with sqlite3.connect(db_path) as db:
                 assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "INTERRUPTED"

@@ -14,11 +14,10 @@ from crawlme.cli.report import finish
 from crawlme.config import Settings
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.pioneer.sources import FileSource, ManualSource, Source
 from crawlme.platforms import ADAPTERS
-from crawlme.runtime import CrawlGoal, CrawlTask, spec_fields
+from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
 
 logger = logging.getLogger(__name__)
@@ -103,36 +102,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
     # Goal Enhancer's early lines land in the file too.
     scheduler.attach_log_file()
 
-    # Enhance the goal when configured; keep the original if enhancement fails.
-    logger.info("reading the goal with the model")
-    enhanced = await GoalEnhancer.from_settings(cfg, budget=budget).enhance(goal)
-    if enhanced is not None:
-        goal.goal_statement = enhanced.statement
-        goal.keywords = enhanced.keywords
-        # The explicit publication cutoff overrides the inferred one.
-        if args.since is None:
-            goal.since = enhanced.since
-        goal.extraction_spec = enhanced.extraction_spec
-        goal.time_policy = enhanced.time_policy
-        logger.debug(
-            "goal.enhanced statement_len=%d keywords=%d fields=%s",
-            len(enhanced.statement),
-            len(enhanced.keywords),
-            ",".join(spec_fields(enhanced.extraction_spec)) or "none",
-        )
-        # Report the effective cutoff when it differs from the inferred one.
-        if args.since is not None and enhanced.since and enhanced.since != goal.since:
-            logger.info(
-                "reading back to %s, as you asked; the prompt suggested %s",
-                goal.since.date().isoformat() if goal.since else "no limit",
-                enhanced.since.date().isoformat(),
-            )
-        else:
-            logger.info(
-                "reading back to %s",
-                goal.since.date().isoformat() if goal.since else "no limit",
-            )
-
     candidates = await source.discover(goal)
     # The flag is the run stating its scope; a seeds file may also carry
     # one, and the flag outranks it for the same reason --since does.
@@ -140,10 +109,12 @@ async def cmd_run(args: argparse.Namespace) -> None:
     if allowed_domains is None and hasattr(source, "allowed_domains"):
         allowed_domains = source.allowed_domains
 
-    # After the user's own, so theirs are ingested whatever the model
-    # says.
-    candidates += await scheduler.pipeline.expand_seeds(goal, candidates, budget)
-    await scheduler.pipeline.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
+    await scheduler.pipeline.startup(
+        goal,
+        candidates,
+        allowed_domains=allowed_domains,
+        preserve_since=args.since is not None,
+    )
 
     logger.info(
         "looking for: %s",
@@ -177,8 +148,7 @@ def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
     wanted: list[tuple[str, str]] = []
     if any(_looks_like_a_feed(u) for u in _declared_seeds(args)):
         wanted.append(("feedparser", "a feed among the seeds"))
-    # Only when the whole run needs one. Under dispatch a missing install
-    # costs the platform pages alone, and the dispatcher says so.
+    # Explicit browser use can be checked before creating a run.
     if cfg.fetcher == "browser" or args.session:
         wanted.append(("playwright", "--session" if args.session else "--fetcher browser"))
     missing = [(m, flag) for m, flag in wanted if importlib.util.find_spec(m) is None]

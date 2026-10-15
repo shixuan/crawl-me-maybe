@@ -12,7 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from crawlme.llm import Error, LLMResponse, TokenBudgetError
+from crawlme.errors import Kind
+from crawlme.llm import LLMResponse, RemoteError, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.runtime import CrawlGoal
 
@@ -108,14 +109,16 @@ async def test_prose_json_ok():
     assert enhanced.keywords == ["machine learning", "papers"]
 
 
-async def test_llm_error_none():
-    enhancer = GoalEnhancer(_StubClient([Error("provider down")]))
-    assert await enhancer.enhance(_goal()) is None
+async def test_llm_error_propagates():
+    enhancer = GoalEnhancer(_StubClient([RemoteError("provider down", kind=Kind.UNAVAILABLE)]))
+    with pytest.raises(RemoteError):
+        await enhancer.enhance(_goal())
 
 
-async def test_budget_none():
+async def test_budget_propagates():
     enhancer = GoalEnhancer(_StubClient([TokenBudgetError("token budget exhausted")]))
-    assert await enhancer.enhance(_goal()) is None
+    with pytest.raises(TokenBudgetError):
+        await enhancer.enhance(_goal())
 
 
 async def test_garbage_none():

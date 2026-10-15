@@ -5,11 +5,17 @@ from __future__ import annotations
 from typing import Protocol
 
 from crawlme.digest import FetchResult, Page, Payload
+from crawlme.errors import Error, Kind, Scope
 from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
 
-class FeedDependencyError(RuntimeError):
+class FeedDependencyError(Error):
     """A missing adapter dependency that prevents further processing of this format."""
+
+    scope = Scope.DEPENDENCY
+    source = "platform"
+    code = "dependency_missing"
+    kind = Kind.NOT_FOUND
 
 
 class FeedAdapter(Protocol):

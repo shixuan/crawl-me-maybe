@@ -12,21 +12,26 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from crawlme.errors import Error, Kind
 from crawlme.platforms import FEEDS
 
 # How often to ask whether the login window is still there.
 _CLOSE_POLL_SECONDS = 0.5
 
 
-class SessionError(Exception):
+class SessionError(Error):
     """The session could not be captured."""
+
+    source = "session"
+    code = "session_failed"
+    kind = Kind.INVALID_INPUT
 
 
 def _login_url(feed: str) -> str:
     """Return the platform homepage used for manual login."""
     adapter = FEEDS.get(feed)
     if adapter is None or not adapter.NEEDS_SESSION:
-        raise SessionError(f"{feed} needs no session, so there is nothing to log in to")
+        raise SessionError(f"{feed} needs no session, so there is nothing to log in to", code="session_not_required")
     return f"https://www.{adapter.DOMAIN}/"
 
 
@@ -80,7 +85,11 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
     try:
         from playwright.async_api import async_playwright
     except ImportError as e:  # pragma: no cover - depends on the install
-        raise SessionError("playwright is not installed: pip install playwright && playwright install chromium") from e
+        raise SessionError(
+            "playwright is not installed: pip install playwright && playwright install chromium",
+            code="dependency_missing",
+            kind=Kind.NOT_FOUND,
+        ) from e
 
     url = _login_url(feed)
     async with async_playwright() as pw:
@@ -89,7 +98,9 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
         except Exception as e:  # pragma: no cover - depends on the desktop
             raise SessionError(
                 f"could not open a browser window ({e}).\n"
-                "A visible browser needs a desktop: on WSL that means WSLg, over SSH an X display."
+                "A visible browser needs a desktop: on WSL that means WSLg, over SSH an X display.",
+                code="browser_unavailable",
+                kind=Kind.UNAVAILABLE,
             ) from e
         context = await browser.new_context()
         page = await context.new_page()
@@ -107,13 +118,19 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
             came = True
         try:
             if not came:
-                raise SessionError(f"nobody finished logging in within {timeout_sec}s, so nothing was saved")
+                raise SessionError(
+                    f"nobody finished logging in within {timeout_sec}s, so nothing was saved",
+                    code="login_timeout",
+                    kind=Kind.TIMEOUT,
+                )
             state = await _read_state(context)
             if state is None:
                 raise SessionError(
                     "the browser was closed before its session could be read.\n"
                     "  Close the tab, or press Enter here, rather than quitting the browser:\n"
-                    "  a session lives in the browser and goes with it."
+                    "  a session lives in the browser and goes with it.",
+                    code="session_unreadable",
+                    kind=Kind.UNAVAILABLE,
                 )
         finally:
             with contextlib.suppress(Exception):
@@ -128,7 +145,9 @@ async def capture(feed: str, out: Path, *, timeout_sec: int = 600) -> dict[str, 
     state = await _browser_state(feed, timeout_sec)
     # Cookie presence alone does not verify authentication.
     if not state.get("cookies"):
-        raise SessionError("that browser was never logged in: the session it produced holds no cookies")
+        raise SessionError(
+            "that browser was never logged in: the session it produced holds no cookies", code="session_empty"
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     return state

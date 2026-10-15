@@ -7,7 +7,8 @@ import pytest
 
 from crawlme.analysis import AnalysisResult, Analyzer
 from crawlme.digest import Page
-from crawlme.llm import Error, LLMResponse
+from crawlme.errors import ErrorHandler, Kind
+from crawlme.llm import LLMResponse, RemoteError
 from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.workers import AnalysisWorker
 from crawlme.urls import URL
@@ -39,6 +40,7 @@ async def test_admission_after_wait():
         concurrency=1,
         storage=storage,
         tracking=Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats())),
+        error_handler=ErrorHandler(),
     )
     goal = CrawlGoal(prompt="test")
     first = asyncio.create_task(worker.analyze(_page(), goal, allowed=lambda: allowed))
@@ -58,7 +60,7 @@ async def test_retry_reaches_sink():
     client = MagicMock(
         chat=AsyncMock(
             side_effect=[
-                Error("temporary"),
+                RemoteError("temporary", kind=Kind.UNAVAILABLE),
                 LLMResponse(
                     content='{"classification":"RELEVANT","relevance_score":0.9}',
                     input_tokens=10,
@@ -68,19 +70,20 @@ async def test_retry_reaches_sink():
             ]
         )
     )
-    analyzer = Analyzer(client, retry_delay=0)
+    analyzer = Analyzer(client)
     storage = MagicMock()
     worker = AnalysisWorker(
         analyzer,
         concurrency=1,
         storage=storage,
         tracking=Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats())),
+        error_handler=ErrorHandler(),
     )
     results = []
     worker.bind_completion(results.append)
     try:
         assert await worker.analyze(_page(), CrawlGoal(prompt="test"), allowed=lambda: True) is None
-        await asyncio.wait_for(analyzer.drain_pending(), timeout=2)
+        await asyncio.wait_for(worker.drain_pending(), timeout=3)
         assert len(results) == 1
         saved = storage.save_analysis.call_args.args[0]
         assert saved["url_key"] == "p"

@@ -12,13 +12,16 @@ from crawlme.dedup import Grouper
 from crawlme.digest import TrafExtractor
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.discovery import Harvester
+from crawlme.errors import ErrorHandler
 from crawlme.llm import TokenBudget
 from crawlme.persist import Storage
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.frontier import Frontier
+from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import Ranker
 from crawlme.pioneer.robots import RobotsPolicy
+from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.platforms import ADAPTERS, FeedAdapter
 from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.engine import Engine
@@ -61,20 +64,36 @@ def create_scheduler(
     harvester = overrides.pop("harvester") if "harvester" in overrides else _build_harvester(settings, canonicalizer)
     ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
     budget = budget if budget is not None else TokenBudget(limit=goal.max_tokens if goal else 0)
+    if "seed_expander" in overrides:
+        seed_expander = overrides.pop("seed_expander")
+    elif settings.expand_seeds:
+        seed_expander = SeedExpander.from_settings(settings, budget=budget)
+    else:
+        seed_expander = None
     if analyzer is None and settings.analysis_enabled:
         analyzer = Analyzer.from_settings(settings, budget=budget)
     grouper = None
     if dedup_enabled and settings.analysis_enabled and (settings.llm_api_key or settings.llm_base_url):
         grouper = Grouper.from_settings(settings, budget=budget)
 
+    error_handler = overrides.pop("error_handler", None) or ErrorHandler()
     fetch = overrides.pop("fetch", None) or FetchWorker(
-        fetcher, robots, storage, concurrency=settings.fetch_concurrency
+        fetcher,
+        robots,
+        storage,
+        concurrency=settings.fetch_concurrency,
+        error_handler=error_handler,
+        max_attempts=settings.fetch_max_retries,
     )
     persist = overrides.pop("persist", None) or PersistWorker(storage)
-    discovery = overrides.pop("discovery", None) or DiscoveryWorker(harvester, timeout=settings.extract_timeout)
+    discovery = overrides.pop("discovery", None) or DiscoveryWorker(
+        harvester, timeout=settings.extract_timeout, error_handler=error_handler
+    )
 
     kwargs: dict[str, Any] = {
         "settings": settings,
+        "error_handler": error_handler,
+        "goal_enhancer": GoalEnhancer.from_settings(settings, budget=budget),
         "storage": storage,
         "frontier": Frontier(
             domain_budget=goal.domain_budget if goal else 50,
@@ -89,16 +108,25 @@ def create_scheduler(
         "canonicalizer": canonicalizer,
         "tracking": Tracker(state),
         "grouper": grouper,
+        "seed_expander": seed_expander,
     }
     kwargs.update(overrides)
     if "analysis" not in kwargs:
         kwargs["analysis"] = AnalysisWorker(
-            analyzer, concurrency=settings.llm_concurrency, storage=storage, tracking=kwargs["tracking"]
+            analyzer,
+            concurrency=settings.llm_concurrency,
+            storage=storage,
+            tracking=kwargs["tracking"],
+            error_handler=error_handler,
         )
     state = kwargs["tracking"].state
     analysis = kwargs["analysis"]
-    kwargs["dedup"] = DedupWorker(kwargs.pop("grouper"), storage=storage, model=settings.llm_model)
-    kwargs["ranking"] = RankingWorker(ranker, storage=storage, frontier=kwargs["frontier"], tracking=kwargs["tracking"])
+    kwargs["dedup"] = DedupWorker(
+        kwargs.pop("grouper"), storage=storage, model=settings.llm_model, error_handler=error_handler
+    )
+    kwargs["ranking"] = RankingWorker(
+        ranker, storage=storage, frontier=kwargs["frontier"], tracking=kwargs["tracking"], error_handler=error_handler
+    )
     kwargs["page"] = PagePipeline(
         settings=settings,
         storage=storage,
@@ -118,7 +146,7 @@ def create_scheduler(
         settings=settings,
         frontier=kwargs["frontier"],
         runtime=kwargs["tracking"].state,
-        analysis=kwargs["analysis"].analyzer,
+        analysis=kwargs["analysis"],
         budget=budget,
         robots=kwargs["robots"],
     )
@@ -175,7 +203,6 @@ def _build_http_fetcher(settings: Settings) -> Fetcher:
         user_agents=list(settings.user_agents),
         connect_timeout=settings.fetch_timeout_connect,
         read_timeout=settings.fetch_timeout_read,
-        max_retries=settings.fetch_max_retries,
     )
 
 

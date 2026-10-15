@@ -7,7 +7,8 @@ import pytest
 
 from crawlme.analysis import Analyzer
 from crawlme.discovery import Harvest
-from crawlme.llm import Error, LLMResponse
+from crawlme.errors import Kind
+from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer.frontier import Frontier
 from tests.scheduler.test_control import build, candidate, wait_until
 
@@ -121,14 +122,12 @@ async def test_deadline_without_changes(tmp_path, stage):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise Error("retry")
+            raise RemoteError("retry", kind=Kind.UNAVAILABLE)
         entered.set()
         await release.wait()
         return LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 1, 1, "stub")
 
-    scheduler, goal, task, _ = build(
-        tmp_path, analyzer=Analyzer(MagicMock(chat=chat), retry_delay=0) if stage == "retry" else None
-    )
+    scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(MagicMock(chat=chat)) if stage == "retry" else None)
     goal.max_duration_sec = 1
     original_fetch = scheduler.pipeline._page._fetch.fetcher.fetch
 

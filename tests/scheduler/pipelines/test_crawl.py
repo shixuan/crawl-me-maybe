@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from crawlme.config import Settings
+from crawlme.discovery import Harvest
 from crawlme.pioneer import Candidate
 from crawlme.urls import URL
 from tests.scheduler.helpers import (
@@ -169,11 +170,23 @@ async def test_expanded_seeds_are_marked():
     """The buffer reads this to give them the smaller share."""
 
     url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
-    proposed = Candidate(url=url, seed_ext=True)
-    sched = _make_sched(settings=Settings(expand_seeds=True))
-    with patch("crawlme.scheduler.pipelines.crawl.expand", AsyncMock(return_value=([proposed], 1, []))):
-        got = await sched.pipeline.expand_seeds(_goal(), [MagicMock(url=url)])
+    expander = MagicMock(propose=AsyncMock(return_value=[(url.raw, "source")]))
+    canonicalizer = MagicMock(canonicalize=MagicMock(return_value=url))
+    sched = _make_sched(settings=Settings(expand_seeds=True), seed_expander=expander, canonicalizer=canonicalizer)
+    sched.pipeline._page.probe = AsyncMock(return_value=Harvest([Candidate(url=url)]))
+    goal = _goal()
+    got = await sched.pipeline.expand_seeds(goal, [Candidate(url=url)])
+    expander.propose.assert_awaited_once_with(goal, [url.raw], 4)
+    sched.pipeline._page.probe.assert_awaited_once()
     assert [c.seed_ext for c in got] == [True]
+    assert got[0].signals["why"] == "source"
+    assert sched.run_state.seeds_asked == 1 and sched.run_state.rejected_seeds == []
+    assert sched.run_state.proposed_seeds[url.url_key] == (url.canonical, "source")
+
+    expander.propose.return_value = []
+    assert await sched.pipeline.expand_seeds(goal, [Candidate(url=url)]) == []
+    assert sched.run_state.seeds_asked == 0 and sched.run_state.rejected_seeds == []
+    assert sched.pipeline._page.probe.await_count == 1
 
 
 @pytest.mark.asyncio

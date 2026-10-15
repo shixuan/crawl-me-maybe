@@ -36,6 +36,7 @@ async def test_cancel_composed_pipeline(tmp_path):
         running.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(running, 2)
+        await pipeline.aclose()
         assert not scheduler.pipeline._pump_tasks
         assert not scheduler.pipeline._inflight
         assert scheduler.run_state.progress.in_flight == 0

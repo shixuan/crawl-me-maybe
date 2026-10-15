@@ -7,7 +7,7 @@ from crawlme.pioneer.models import Candidate, CandidateStatus, FrontierItem, Fro
 
 if TYPE_CHECKING:
     from crawlme.pioneer.frontier import Frontier, FrontierSnapshot
-    from crawlme.pioneer.ranker import RankDecision, RankHistorySummary
+    from crawlme.pioneer.ranker import RankDecision, RankHistorySummary, RankingError
 
 __all__ = [
     "Candidate",
@@ -18,6 +18,7 @@ __all__ = [
     "FrontierSnapshot",
     "RankDecision",
     "RankHistorySummary",
+    "RankingError",
 ]
 
 
@@ -28,6 +29,7 @@ def __getattr__(name: str) -> Any:
         "FrontierSnapshot": "crawlme.pioneer.frontier",
         "RankDecision": "crawlme.pioneer.ranker",
         "RankHistorySummary": "crawlme.pioneer.ranker",
+        "RankingError": "crawlme.pioneer.ranker",
     }
     if name not in modules:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
