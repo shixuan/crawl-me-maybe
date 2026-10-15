@@ -99,7 +99,7 @@ async def test_verdict_to_rank():
             )
         )
 
-    seen = [p["url"] for p in sched.run_state.relevant_pages]
+    seen = [p["url"] for p in sched.pipeline.run_state.relevant_pages]
     assert seen == ["https://example.com/0", "https://example.com/2"]
 
     captured: dict = {}
@@ -111,7 +111,7 @@ async def test_verdict_to_rank():
     sched.pipeline._ranking.ranker = MagicMock(rank_batch=AsyncMock(side_effect=_rank))
     sched.pipeline._frontier.push_batch = AsyncMock()
     url = URL(raw="https://x.com/c", canonical="https://x.com/c", url_key="ck")
-    await sched.pipeline._ranking.run([Candidate(url=url)], sched.pipeline._goal, sched._events)
+    await sched.pipeline._ranking.run([Candidate(url=url)], sched.pipeline._goal, sched.pipeline._events)
 
     assert [p["title"] for p in captured["history"].relevant_pages] == ["Post 0", "Post 2"]
     # The summary rides along, or the ranker sees only the head tag.

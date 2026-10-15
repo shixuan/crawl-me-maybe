@@ -15,7 +15,8 @@ from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.logging.config import write_report
 from crawlme.persist import Storage
-from crawlme.scheduler.workers import DedupWorker
+from crawlme.scheduler import Engine
+from crawlme.scheduler.pipelines.dedup import DedupPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,8 @@ async def cmd_dedup(args: argparse.Namespace) -> None:
         grouper = Grouper.from_settings(settings, budget=budget)
         if grouper is None:
             raise ValueError("dedup needs LLM_API_KEY or LLM_BASE_URL")
-        worker = DedupWorker(grouper, storage=storage, model=settings.llm_model, error_handler=ErrorHandler())
-        await worker.run(_goal_from_row(goal_row))
-        result = worker.report
+        pipeline = DedupPipeline(grouper, storage=storage, model=settings.llm_model, error_handler=ErrorHandler())
+        result = await Engine(pipeline).run(_goal_from_row(goal_row))
         if result["status"] != "complete":
             raise ValueError(result.get("error", "dedup failed"))
         lines += [

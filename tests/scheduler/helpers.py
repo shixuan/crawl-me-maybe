@@ -17,7 +17,6 @@ from crawlme.runtime import CrawlGoal, CrawlTask, Limits, Progress, RunState, St
 from crawlme.scheduler.engine import Engine
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.monitor import StopMonitor
-from crawlme.scheduler.pipelines import PipelineContext
 from crawlme.urls import URL
 
 
@@ -32,7 +31,7 @@ def _goal(**kw) -> CrawlGoal:
 
 
 def _task() -> CrawlTask:
-    return CrawlTask(task_id="t1", state="CREATED")  # type: ignore[arg-type]
+    return CrawlTask(task_id="t1", state="RUNNING")  # type: ignore[arg-type]
 
 
 def _item() -> FrontierItem:
@@ -63,7 +62,8 @@ def _set_context(sched, **kw):
     state = _ctx(**kw)
     budget = TokenBudget(limit=state.limits.max_tokens)
     budget.record(kw.get("tokens_used", 0), 0)
-    sched._checkpointer.budget = budget
+    sched.pipeline._checkpointer.budget = budget
+    sched.pipeline._budget = budget
     sched.pipeline._tracking.state = state
     sched._monitor.close()
     sched._monitor = StopMonitor(state, sched.pipeline._frontier, budget)
@@ -107,15 +107,9 @@ def _make_sched(**overrides) -> Engine:
         settings.analysis_enabled = False
     kwargs.setdefault("harvester", Harvester(kwargs["canonicalizer"]))
     scheduler = create_scheduler(settings, **kwargs)
-    scheduler._task = _task()
-    scheduler.pipeline._context = PipelineContext(
-        task_id="t1",
-        events=None,
-        checkpoint=AsyncMock(),
-        can_run=scheduler._allow_work,
-        can_dispatch=scheduler._allow_dispatch,
-        can_analyze=scheduler._allow_analysis,
-    )
+    scheduler._save = AsyncMock()
+    scheduler.pipeline._task = _task()
+    scheduler.pipeline._context = scheduler.context
     scheduler.pipeline._task_id = "t1"
     return scheduler
 
@@ -187,7 +181,7 @@ def _judge(sched, url_key, score):
 
 
 def _vote(sched, seed, url_key, relevant):
-    sched.run_state.pages.open(url_key, f"https://x.test/{url_key}", seed)
-    sched.run_state.pages.of(url_key).relevant = relevant
-    sched.run_state.pages.of(url_key).listing = False
+    sched.pipeline.run_state.pages.open(url_key, f"https://x.test/{url_key}", seed)
+    sched.pipeline.run_state.pages.of(url_key).relevant = relevant
+    sched.pipeline.run_state.pages.of(url_key).listing = False
     sched.pipeline._page.vote(url_key)

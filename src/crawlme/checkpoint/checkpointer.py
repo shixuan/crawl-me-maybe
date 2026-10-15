@@ -27,6 +27,7 @@ class Checkpointer:
         analysis: Checkpointable | None,
         budget: Checkpointable | None,
         robots: Checkpointable,
+        features: dict[str, bool],
     ) -> None:
         self.storage = storage
         self.settings = settings
@@ -38,11 +39,10 @@ class Checkpointer:
         self._lock = asyncio.Lock()
         self._goal: CrawlGoal | None = None
         self._task: CrawlTask | None = None
-        self._features: dict[str, bool] = {}
+        self._features = dict(features)
 
-    def bind(self, goal: CrawlGoal, task: CrawlTask, *, dedup: bool, ranking: bool, analysis: bool) -> None:
+    def bind(self, goal: CrawlGoal, task: CrawlTask) -> None:
         self._goal, self._task = goal, task
-        self._features = {"dedup": dedup, "ranking": ranking, "analysis": analysis}
 
     async def save(self) -> None:
         async with self._lock:

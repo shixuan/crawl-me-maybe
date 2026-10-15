@@ -14,6 +14,7 @@ from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer.sources import ManualSource
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.scheduler.workers import AnalysisWorker
 
 
@@ -76,14 +77,14 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
     )
     seeds = await ManualSource(["https://example.com/article"]).discover(goal)
     await scheduler.pipeline.ingest_seeds(goal, seeds)
-    run = asyncio.create_task(scheduler.run(goal, task))
+    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
     try:
         if stop is not None:
             await asyncio.wait_for(settling.wait(), timeout=3)
             if stop == "tokens":
-                scheduler._checkpointer.budget.record(goal.max_tokens, 0)
+                scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
             elif stop == "time":
-                scheduler.run_state.progress.started_at -= 61
+                scheduler.pipeline.run_state.progress.started_at -= 61
                 scheduler._monitor._notify()
             elif stop == "user":
                 run.cancel()

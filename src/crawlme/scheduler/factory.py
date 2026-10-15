@@ -27,10 +27,10 @@ from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracke
 from crawlme.scheduler.engine import Engine
 from crawlme.scheduler.monitor import StopMonitor
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
+from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PagePipeline
 from crawlme.scheduler.workers import (
     AnalysisWorker,
-    DedupWorker,
     DiscoveryWorker,
     FetchWorker,
     PersistWorker,
@@ -47,7 +47,7 @@ def create_scheduler(
     budget: TokenBudget | None = None,
     dedup_enabled: bool = True,
     **overrides: Any,
-) -> Engine:
+) -> Engine[CrawlPipeline]:
     """Assemble scheduler components with optional test overrides.
 
     A missing analyzer is built from settings when enabled and configured.
@@ -121,7 +121,7 @@ def create_scheduler(
         )
     state = kwargs["tracking"].state
     analysis = kwargs["analysis"]
-    kwargs["dedup"] = DedupWorker(
+    kwargs["dedup"] = DedupPipeline(
         kwargs.pop("grouper"), storage=storage, model=settings.llm_model, error_handler=error_handler
     )
     kwargs["ranking"] = RankingWorker(
@@ -149,12 +149,16 @@ def create_scheduler(
         analysis=kwargs["analysis"],
         budget=budget,
         robots=kwargs["robots"],
+        features={
+            "dedup": kwargs["dedup"].grouper is not None,
+            "ranking": kwargs["ranking"].ranker is not None,
+            "analysis": analysis.analyzer is not None,
+        },
     )
+    pipeline = CrawlPipeline(**kwargs, budget=budget, checkpointer=checkpointer)
     return Engine(
-        settings=settings,
-        storage=storage,
-        pipeline=CrawlPipeline(**kwargs),
-        checkpointer=checkpointer,
+        pipeline=pipeline,
+        checkpoint=pipeline.save_checkpoint,
         monitor=StopMonitor(state, kwargs["frontier"], budget),
     )
 

@@ -47,8 +47,8 @@ async def test_pump_quiet(caplog):
     """
     sched = _make_sched()
     sched.pipeline._goal = _goal()
-    sched._task = _task()
-    sched._task.state = "RUNNING"
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
     _set_context(
         sched,
     )
@@ -93,8 +93,8 @@ async def test_cooldown_lives(caplog):
     """
     sched = _make_sched()
     sched.pipeline._goal = _goal()
-    sched._task = _task()
-    sched._task.state = "RUNNING"
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
     _set_context(
         sched,
     )
@@ -109,7 +109,7 @@ async def test_cooldown_lives(caplog):
             await asyncio.wait_for(sched.pipeline._fetch_pump(), timeout=0.3)
 
     assert "fetch_pump.exhausted" not in caplog.text
-    assert sched._task.stopping_reason is None
+    assert sched.pipeline._task.stopping_reason is None
 
 
 @pytest.mark.asyncio
@@ -123,12 +123,13 @@ async def test_inflight_waits():
         await released.wait()
         order.append("fetch")
 
-    sched._storage.close = AsyncMock(side_effect=lambda: order.append("close"))
+    sched.pipeline._storage.close = AsyncMock(side_effect=lambda: order.append("close"))
     task = asyncio.create_task(_slow_fetch())
     sched.pipeline._inflight.add(task)
     task.add_done_callback(sched.pipeline._inflight.discard)
 
-    settling = asyncio.create_task(sched.pipeline.settle(time.monotonic() + 0.05))
+    sched._deadline = time.monotonic() + 0.05
+    settling = asyncio.create_task(sched.pipeline.settle())
     await asyncio.sleep(0)
     assert not settling.done(), "it must wait, not walk past"
     released.set()
@@ -138,16 +139,20 @@ async def test_inflight_waits():
 
 
 @pytest.mark.asyncio
-async def test_inflight_gone(caplog, monkeypatch):
+async def test_settle_defers_abort(caplog):
     """A backstop, not a promise: the process must still be able to exit."""
     sched = _make_sched()
     stuck = asyncio.create_task(asyncio.sleep(3600))
     sched.pipeline._inflight.add(stuck)
 
+    sched._deadline = time.monotonic() + 0.05
     with caplog.at_level(logging.WARNING):
-        await sched.pipeline.settle(time.monotonic() + 0.05)
+        await sched.pipeline.settle()
 
-    assert stuck.cancelled() or stuck.done()
+    assert not stuck.done()
+    await sched._stop_checkpoints()
+    await sched.pipeline.abort()
+    assert stuck.cancelled()
     assert "settle_timeout" in caplog.text
 
 
@@ -180,12 +185,12 @@ async def test_expanded_seeds_are_marked():
     sched.pipeline._page.probe.assert_awaited_once()
     assert [c.seed_ext for c in got] == [True]
     assert got[0].signals["why"] == "source"
-    assert sched.run_state.seeds_asked == 1 and sched.run_state.rejected_seeds == []
-    assert sched.run_state.proposed_seeds[url.url_key] == (url.canonical, "source")
+    assert sched.pipeline.run_state.seeds_asked == 1 and sched.pipeline.run_state.rejected_seeds == []
+    assert sched.pipeline.run_state.proposed_seeds[url.url_key] == (url.canonical, "source")
 
     expander.propose.return_value = []
     assert await sched.pipeline.expand_seeds(goal, [Candidate(url=url)]) == []
-    assert sched.run_state.seeds_asked == 0 and sched.run_state.rejected_seeds == []
+    assert sched.pipeline.run_state.seeds_asked == 0 and sched.pipeline.run_state.rejected_seeds == []
     assert sched.pipeline._page.probe.await_count == 1
 
 
@@ -195,14 +200,14 @@ async def test_backpressure_caps_inflight():
     for an LLM slot hold nothing back. One run reached forty-six parked
     on two analysis slots and abandoned thirty-three when it stopped."""
     sched = _make_sched(settings=Settings(fetch_concurrency=6, llm_concurrency=2))
-    sched._task = _task()
-    sched._task.state = "RUNNING"
-    sched.run_state.progress.in_flight = 6 + 2 * 2
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
+    sched.pipeline.run_state.progress.in_flight = 6 + 2 * 2
     sched.pipeline._frontier.pop_next = AsyncMock(return_value=_item())
 
     task = asyncio.create_task(sched.pipeline._fetch_pump())
     await asyncio.sleep(0.05)
-    sched._task.state = "STOPPING"
+    sched.pipeline._task.state = "STOPPING"
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
 
@@ -215,4 +220,4 @@ async def test_a_cancelled_pump_is_not_a_failure():
     task = asyncio.create_task(asyncio.sleep(10))
     sched.pipeline._pump_tasks.append(task)
     await sched.pipeline.halt()
-    assert not sched.run_state.progress.fatal_error
+    assert not sched.pipeline.run_state.progress.fatal_error

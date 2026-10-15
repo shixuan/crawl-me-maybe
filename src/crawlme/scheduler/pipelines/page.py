@@ -45,6 +45,8 @@ class FetchedPage:
 class PageInput:
     item: FrontierItem
     goal: CrawlGoal
+    task_id: str = ""
+    events: EventEmitter | None = None
 
 
 class PagePipeline(Pipeline[PageInput, None]):
@@ -201,7 +203,7 @@ class PagePipeline(Pipeline[PageInput, None]):
 
     async def run(self, input: PageInput, context: PipelineContext) -> None:
         item, goal = input.item, input.goal
-        task_id, events = context.task_id, context.events
+        task_id, events = input.task_id, input.events
         work = self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
         keys = self.retain_page(item)
         if events:
@@ -230,7 +232,7 @@ class PagePipeline(Pipeline[PageInput, None]):
                 if is_stale(page.published_at, goal.since):
                     logger.debug("analysis.skipped url_key=%s reason=stale", page.url_key)
                 else:
-                    await self._analysis.analyze(page, goal, allowed=context.can_analyze)
+                    await self._analysis.analyze(page, goal, allowed=lambda: context.can_finish("analysis"))
                 work["analysis_done"] = True
                 await context.checkpoint()
             if events:

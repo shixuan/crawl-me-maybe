@@ -10,6 +10,7 @@ from crawlme.discovery import Harvest
 from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer.frontier import Frontier
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 from tests.scheduler.test_control import build, candidate, wait_until
 
 
@@ -33,19 +34,19 @@ async def test_idle_then_token_wakeup(tmp_path):
 
     scheduler._wait_for_stop = counted
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    running = asyncio.create_task(scheduler.run(goal, task))
+    running = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         await asyncio.sleep(0.05)
         before = len(waits)
         for _ in range(5):
-            scheduler._checkpointer.budget.record(1, 0)
+            scheduler.pipeline._checkpointer.budget.record(1, 0)
             await asyncio.sleep(0.01)
             assert task.state == "RUNNING"
             assert len(waits) == before
         await asyncio.sleep(0.4)
         assert len(waits) == before
-        scheduler._checkpointer.budget.record(goal.max_tokens, 0)
+        scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
         await wait_until(lambda: task.state == "STOPPING")
         assert task.stopping_reason == "BUDGET_TOKENS"
         release.set()
@@ -65,12 +66,12 @@ async def test_notice_before_wait(tmp_path):
         nonlocal injected
         if not injected:
             injected = True
-            scheduler._checkpointer.budget.record(goal.max_tokens, 0)
+            scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
         await wait(revision)
 
     scheduler._monitor._wait_for_update = notify_then_wait
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    await asyncio.wait_for(scheduler.run(goal, task), 2)
+    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
     assert injected
     assert task.stopping_reason == "BUDGET_TOKENS"
 
@@ -82,7 +83,7 @@ async def test_last_candidate_refused(tmp_path):
         harvester=MagicMock(harvest=lambda page, depth: Harvest([candidate("next")])),
     )
     await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
-    await asyncio.wait_for(scheduler.run(goal, task), 3)
+    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 3)
     assert len(fetched) == 1
     assert "DOMAIN_BUDGET" in task.stopping_reason
     assert "FRONTIER_DRAINED" in task.stopping_reason
@@ -100,11 +101,11 @@ async def test_target_before_page_end(tmp_path):
 
     scheduler.pipeline._page._discovery.discover = discover
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    running = asyncio.create_task(scheduler.run(goal, task))
+    running = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
     try:
         await wait_until(lambda: task.state == "STOPPING")
         assert task.stopping_reason == "MAX_RELEVANT"
-        assert scheduler.run_state.progress.in_flight == 1
+        assert scheduler.pipeline.run_state.progress.in_flight == 1
         release.set()
         await asyncio.wait_for(running, 2)
     finally:
@@ -139,7 +140,7 @@ async def test_deadline_without_changes(tmp_path, stage):
     if stage == "fetch":
         scheduler.pipeline._page._fetch.fetcher.fetch = fetch
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    running = asyncio.create_task(scheduler.run(goal, task))
+    running = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         if stage == "fetch":
@@ -147,10 +148,10 @@ async def test_deadline_without_changes(tmp_path, stage):
             release.set()
         await asyncio.wait_for(running, 2)
         assert task.state == "COMPLETED"
-        assert scheduler.summary()["tokens_used"] == 0
+        assert scheduler.pipeline.summary()["tokens_used"] == 0
         if stage == "retry":
             assert calls == 2
-            assert not scheduler.run_state.stats.analyses_by_class
+            assert not scheduler.pipeline.run_state.stats.analyses_by_class
     finally:
         release.set()
         running.cancel()
@@ -170,16 +171,16 @@ async def test_hard_limit_during_settle(tmp_path):
     goal.max_relevant = 1
     scheduler.pipeline._page._discovery.discover = discover
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    running = asyncio.create_task(scheduler.run(goal, task))
+    running = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         await wait_until(lambda: task.state == "STOPPING")
         assert task.stopping_reason == "MAX_RELEVANT"
-        assert scheduler.run_state.progress.in_flight == 1
-        scheduler._checkpointer.budget.record(goal.max_tokens, 0)
+        assert scheduler.pipeline.run_state.progress.in_flight == 1
+        scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
         await asyncio.wait_for(running, 2)
         assert task.state == "COMPLETED"
-        assert scheduler.run_state.progress.in_flight == 0
+        assert scheduler.pipeline.run_state.progress.in_flight == 0
         assert not scheduler.pipeline._inflight
     finally:
         running.cancel()
@@ -188,23 +189,23 @@ async def test_hard_limit_during_settle(tmp_path):
 
 async def test_observed_owners(tmp_path):
     scheduler, goal, _, _ = build(tmp_path)
-    state = scheduler.run_state
+    state = scheduler.pipeline.run_state
     state.reset(goal=goal)
     revision = scheduler._monitor._revision
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
     await asyncio.wait_for(scheduler._monitor._wait_for_update(revision), 1)
     assert not scheduler._monitor.reasons()
     revision = scheduler._monitor._revision
-    scheduler._checkpointer.budget.record(goal.max_tokens, 0)
+    scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
     await asyncio.wait_for(scheduler._monitor._wait_for_update(revision), 1)
     assert [reason.code for reason in scheduler._monitor.reasons()] == ["BUDGET_TOKENS"]
-    assert scheduler.summary()["tokens_used"] == goal.max_tokens
+    assert scheduler.pipeline.summary()["tokens_used"] == goal.max_tokens
     assert "tokens_used" not in state.dump()["progress"]
 
 
 async def test_unchanged_data_is_quiet(tmp_path):
     scheduler, _, _, _ = build(tmp_path)
-    state = scheduler.run_state
+    state = scheduler.pipeline.run_state
     frontier = scheduler.pipeline._frontier
     revision = scheduler._monitor._revision
     await frontier.pop_next()
@@ -212,14 +213,14 @@ async def test_unchanged_data_is_quiet(tmp_path):
     frontier.finish_ranking([])
     state.analysis_completed(False)
     state.stats.fetch_errors += 1
-    scheduler._checkpointer.budget.record(0, 0)
+    scheduler.pipeline._checkpointer.budget.record(0, 0)
     assert scheduler._monitor._revision == revision
 
 
 async def test_monitor_after_state_restore(tmp_path):
     scheduler, goal, _, _ = build(tmp_path)
-    state = scheduler.run_state
-    budget = scheduler._checkpointer.budget
+    state = scheduler.pipeline.run_state
+    budget = scheduler.pipeline._checkpointer.budget
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
     budget.record(4, 2)
     state.reset(goal=goal)
@@ -229,5 +230,5 @@ async def test_monitor_after_state_restore(tmp_path):
     budget.record(goal.max_tokens, 0)
     await asyncio.wait_for(scheduler._monitor._wait_for_update(revision), 1)
     assert [reason.code for reason in scheduler._monitor.reasons()] == ["BUDGET_TOKENS"]
-    assert scheduler.summary()["tokens_used"] == goal.max_tokens + 6
+    assert scheduler.pipeline.summary()["tokens_used"] == goal.max_tokens + 6
     assert "tokens_used" not in saved["progress"]

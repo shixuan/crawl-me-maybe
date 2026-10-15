@@ -12,6 +12,7 @@ from crawlme.logging import setup_logging
 from crawlme.pioneer import FrontierItem
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
 
 pytestmark = pytest.mark.e2e
@@ -59,7 +60,7 @@ async def test_wiki_basic(e2e_settings):
     t0 = time.monotonic()
     timed_out = False
     try:
-        await asyncio.wait_for(sched.run(goal, task), timeout=180)
+        await asyncio.wait_for(sched.run(CrawlInput(goal, task)), timeout=180)
     except asyncio.TimeoutError:
         timed_out = True
         print("\nTimed out after 180s — checking partial results.")
@@ -67,7 +68,7 @@ async def test_wiki_basic(e2e_settings):
 
     # ── assertions ──────────────────────────────────────────────────
 
-    counters = sched.run_state.progress
+    counters = sched.pipeline.run_state.progress
     pages_fetched = counters.pages_fetched
 
     print(f"\nElapsed: {elapsed:.1f}s")
@@ -92,7 +93,7 @@ async def test_wiki_basic(e2e_settings):
         )
 
     # 5. Verify storage contents via direct DB queries.
-    db_path = sched._storage.db_path
+    db_path = sched.pipeline._storage.db_path
     async with aiosqlite.connect(db_path) as db:
         # Pages saved.
         row = await db.execute("SELECT COUNT(*) FROM pages")
@@ -153,11 +154,11 @@ async def test_wiki_budget(e2e_settings):
 
     print("\nSmall-budget test: max_pages=2")
     try:
-        await asyncio.wait_for(sched.run(goal, task), timeout=120)
+        await asyncio.wait_for(sched.run(CrawlInput(goal, task)), timeout=120)
     except asyncio.TimeoutError:
         pass
 
-    pages_fetched = sched.run_state.progress.pages_fetched
+    pages_fetched = sched.pipeline.run_state.progress.pages_fetched
     print(f"Pages fetched: {pages_fetched}, Stop: {task.stopping_reason}")
 
     # Budget stop may fire while a fetch is in-flight; that page still completes.
@@ -228,13 +229,13 @@ async def test_wiki_draining(e2e_settings):
     t0 = time.monotonic()
     timed_out = False
     try:
-        await asyncio.wait_for(sched.run(goal, task), timeout=_DRAINING_TIMEOUT)
+        await asyncio.wait_for(sched.run(CrawlInput(goal, task)), timeout=_DRAINING_TIMEOUT)
     except asyncio.TimeoutError:
         timed_out = True
         print(f"\nTimed out after {_DRAINING_TIMEOUT}s — checking partial results.")
 
     elapsed = time.monotonic() - t0
-    counters = sched.run_state.progress
+    counters = sched.pipeline.run_state.progress
     pages_fetched = counters.pages_fetched
 
     print(f"\nElapsed: {elapsed:.1f}s")
@@ -255,7 +256,7 @@ async def test_wiki_draining(e2e_settings):
         )
 
     # 3. Verify DB contents.
-    db_path = sched._storage.db_path
+    db_path = sched.pipeline._storage.db_path
     async with aiosqlite.connect(db_path) as db:
         row = await db.execute("SELECT COUNT(*) FROM pages")
         (page_count,) = await row.fetchone()

@@ -19,6 +19,7 @@ from crawlme.pioneer.sources import FileSource, ManualSource, Source
 from crawlme.platforms import ADAPTERS
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ async def cmd_run(args: argparse.Namespace) -> None:
     )
     # The run dir exists now: log to its file from here on, so the
     # Goal Enhancer's early lines land in the file too.
-    scheduler.attach_log_file()
+    scheduler.pipeline.attach_log_file()
 
     candidates = await source.discover(goal)
     # The flag is the run stating its scope; a seeds file may also carry
@@ -122,18 +123,18 @@ async def cmd_run(args: argparse.Namespace) -> None:
     )
 
     try:
-        await scheduler.run(goal, task)
+        await scheduler.run(CrawlInput(goal, task))
     finally:
         logger.info(
             "%s after %d pages and %d tokens: %s",
             task.state.lower(),
-            scheduler.run_state.progress.pages_fetched,
+            scheduler.pipeline.summary()["pages_fetched"],
             budget.used,
             task.stopping_reason or "no reason recorded",
         )
         await close_litellm_clients()
 
-    finish(scheduler, task, budget, session=args.session or "", platform=_walled_platform(args))
+    finish(scheduler.pipeline.summary(), task, budget, session=args.session or "", platform=_walled_platform(args))
 
 
 # Map missing dependencies to install instructions.

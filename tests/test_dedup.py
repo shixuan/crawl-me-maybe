@@ -15,6 +15,7 @@ from crawlme.errors import Error, ErrorHandler, Kind
 from crawlme.llm import LLMResponse, TokenBudget
 from crawlme.persist import Storage
 from crawlme.runtime import CrawlGoal
+from crawlme.scheduler import Engine
 from crawlme.scheduler.factory import create_scheduler
 from crawlme.urls import URL
 
@@ -210,12 +211,12 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
 
 async def test_grouping_failure_retains_results():
     from crawlme.dedup import DedupError
-    from crawlme.scheduler.workers.dedup import DedupWorker
+    from crawlme.scheduler.pipelines.dedup import DedupPipeline
 
     grouper = MagicMock(group=AsyncMock(side_effect=DedupError("bad model reply")))
     storage = MagicMock(dedup_inputs=AsyncMock(return_value=[{"analysis_id": "a"}]), save_groups=AsyncMock())
-    worker = DedupWorker(grouper, storage=storage, model="test", error_handler=ErrorHandler())
-    await worker.run(CrawlGoal(prompt="gifts"))
+    worker = DedupPipeline(grouper, storage=storage, model="test", error_handler=ErrorHandler())
+    await Engine(worker).run(CrawlGoal(prompt="gifts"))
     assert worker.report == {"status": "failed", "error": "bad model reply"}
     storage.save_groups.assert_not_called()
 
@@ -344,14 +345,14 @@ async def test_compact_input_boundary():
 
 
 async def test_group_storage_failure_is_not_retried():
-    from crawlme.scheduler.workers.dedup import DedupWorker
+    from crawlme.scheduler.pipelines.dedup import DedupPipeline
 
     failure = OSError("disk full")
     grouper = MagicMock(group=AsyncMock(return_value=[]))
     storage = MagicMock(dedup_inputs=AsyncMock(return_value=[]), save_groups=AsyncMock(side_effect=failure))
-    worker = DedupWorker(grouper, storage=storage, model="test", error_handler=ErrorHandler())
+    worker = DedupPipeline(grouper, storage=storage, model="test", error_handler=ErrorHandler())
     with pytest.raises(OSError) as caught:
-        await worker.run(CrawlGoal(prompt="gifts"))
+        await Engine(worker).run(CrawlGoal(prompt="gifts"))
     assert caught.value is failure
     grouper.group.assert_awaited_once()
     storage.save_groups.assert_awaited_once()

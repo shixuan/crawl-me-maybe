@@ -20,8 +20,8 @@ from tests.scheduler.helpers import (
 def test_tokens_counted():
     """Reporting reads the same budget that the monitor checks."""
     sched = _make_sched()
-    sched._checkpointer.budget.record(1234, 0)
-    assert sched.summary()["tokens_used"] == 1234
+    sched.pipeline._checkpointer.budget.record(1234, 0)
+    assert sched.pipeline.summary()["tokens_used"] == 1234
 
 
 @pytest.mark.asyncio
@@ -30,8 +30,8 @@ async def test_stop_drained():
     sched = _make_sched()
 
     sched.pipeline._goal = _goal(max_pages=5)
-    sched._task = _task()
-    sched._task.state = "RUNNING"
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
     _set_context(
         sched,
         max_pages=5,
@@ -43,14 +43,10 @@ async def test_stop_drained():
     # Mock frontier.pop_next to return None immediately.
     sched.pipeline._frontier.pop_next = AsyncMock(return_value=None)
 
-    sched._pipeline_task = asyncio.create_task(asyncio.sleep(10))
-    try:
-        await sched._supervise()
-    finally:
-        sched._pipeline_task.cancel()
-        await asyncio.gather(sched._pipeline_task, return_exceptions=True)
+    reason = await sched._supervise(asyncio.sleep(10))
 
-    assert sched._task.state == "STOPPING"
+    assert sched._stopping
+    assert reason != "COMPLETED"
 
 
 @pytest.mark.asyncio
@@ -59,8 +55,8 @@ async def test_stop_pages():
     sched = _make_sched()
 
     sched.pipeline._goal = _goal(max_pages=10)
-    sched._task = _task()
-    sched._task.state = "RUNNING"
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
     _set_context(
         sched,
         max_pages=10,
@@ -70,15 +66,11 @@ async def test_stop_pages():
         relevance_threshold=0.7,
     )
 
-    sched._pipeline_task = asyncio.create_task(asyncio.sleep(10))
-    try:
-        await sched._supervise()
-    finally:
-        sched._pipeline_task.cancel()
-        await asyncio.gather(sched._pipeline_task, return_exceptions=True)
+    reason = await sched._supervise(asyncio.sleep(10))
 
     # BUDGET_PAGES fires immediately, so it never reaches pop_next.
-    assert sched._task.state == "STOPPING"
+    assert sched._stopping
+    assert reason != "COMPLETED"
 
 
 @pytest.mark.asyncio
@@ -90,8 +82,8 @@ async def test_gate_blocks():
     """
     sched = _make_sched()
     sched.pipeline._goal = _goal(max_pages=10)
-    sched._task = _task()
-    sched._task.state = "RUNNING"
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
     _set_context(
         sched,
         max_pages=10,
@@ -113,8 +105,8 @@ async def test_gate_allows():
     """Below budget, pops still happen (gate is a cap, not a stall)."""
     sched = _make_sched()
     sched.pipeline._goal = _goal(max_pages=10)
-    sched._task = _task()
-    sched._task.state = "RUNNING"
+    sched.pipeline._task = _task()
+    sched.pipeline._task.state = "RUNNING"
     _set_context(
         sched,
         max_pages=10,
@@ -155,19 +147,19 @@ async def test_aclose():
 def test_context_needs_key():
     sched = _make_sched()
     sched.pipeline._tracking.record_page_context("", {"title": "T"})
-    assert "" not in sched.run_state.page_contexts
+    assert "" not in sched.pipeline.run_state.page_contexts
 
 
 def test_summary_stats():
     """summary() reads counters and stats straight from the context."""
     sched = _make_sched()
     _set_context(sched, pages_fetched=12, tokens_used=5000, started_at=100.0)
-    sched.run_state.stats.links_discovered = 123
-    sched.run_state.stats.candidates_ranked = 45
-    sched.run_state.stats.fetch_errors = 2
-    sched.run_state.stats.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
+    sched.pipeline.run_state.stats.links_discovered = 123
+    sched.pipeline.run_state.stats.candidates_ranked = 45
+    sched.pipeline.run_state.stats.fetch_errors = 2
+    sched.pipeline.run_state.stats.analyses_by_class = {"RELEVANT": 3, "IRRELEVANT": 1}
 
-    summary = sched.summary()
+    summary = sched.pipeline.summary()
 
     assert summary["pages_fetched"] == 12
     assert summary["tokens_used"] == 5000
@@ -194,7 +186,7 @@ def test_unfinished_log(caplog):
     sched.pipeline._frontier.waiting_size = 4
 
     with caplog.at_level(logging.DEBUG):
-        sched._reconcile()
+        sched.pipeline._reconcile()
 
     assert "task.reconcile" in caplog.text
     assert "task.unfinished" in caplog.text
@@ -208,7 +200,7 @@ def test_complete_quiet(caplog):
     sched.pipeline._frontier.waiting_size = 0
 
     with caplog.at_level(logging.DEBUG):
-        sched._reconcile()
+        sched.pipeline._reconcile()
 
     assert "task.reconcile" in caplog.text
     assert "task.unfinished" not in caplog.text
@@ -225,20 +217,20 @@ async def test_refusal_stops():
     from crawlme.platforms import PageProblem
 
     sched = _make_sched()
-    sched.run_state.stats.reset()
+    sched.pipeline.run_state.stats.reset()
 
     sched.pipeline._tracking.problem(PageProblem.UNAVAILABLE)
-    assert sched.run_state.progress.refused_by == "", "a gone account is not a reason to stop"
+    assert sched.pipeline.run_state.progress.refused_by == "", "a gone account is not a reason to stop"
 
     sched.pipeline._tracking.problem(PageProblem.BLOCKED)
-    assert sched.run_state.progress.refused_by == "blocked"
+    assert sched.pipeline.run_state.progress.refused_by == "blocked"
 
     # Later refusals do not overwrite: the first one is what ended it.
     sched.pipeline._tracking.problem(PageProblem.LOGIN_REQUIRED)
-    assert sched.run_state.progress.refused_by == "blocked"
+    assert sched.pipeline.run_state.progress.refused_by == "blocked"
 
-    assert sched.run_state.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
-    assert sched.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}
+    assert sched.pipeline.run_state.stats.not_content == {"unavailable": 1, "blocked": 1, "login_required": 1}
+    assert sched.pipeline.summary()["not_content"] == {"unavailable": 1, "blocked": 1, "login_required": 1}
 
 
 # shutdown ordering -------------------------------------------------------
@@ -247,8 +239,8 @@ async def test_refusal_stops():
 @pytest.mark.asyncio
 async def test_a_proposed_seed_that_found_nothing_says_so():
     sched = _make_sched()
-    sched.run_state.proposed_seeds = {"k": ("https://ig.test/acct/", "why")}
-    why, tally = sched.summary()["proposed_seeds"]["https://ig.test/acct/"]
+    sched.pipeline.run_state.proposed_seeds = {"k": ("https://ig.test/acct/", "why")}
+    why, tally = sched.pipeline.summary()["proposed_seeds"]["https://ig.test/acct/"]
     assert (why, tally[0]) == ("why", 0)
 
 
@@ -256,29 +248,29 @@ def test_failure_reason():
     from crawlme.errors import Error
 
     sched = _make_sched()
-    sched._fail("pipeline", Error("provider rejected the request", source="pipeline", code="upstream_failed"))
-    assert sched.run_state.progress.fatal_error == "provider rejected the request"
+    sched.pipeline._fail("pipeline", Error("provider rejected the request", source="pipeline", code="upstream_failed"))
+    assert sched.pipeline.run_state.progress.fatal_error == "provider rejected the request"
 
 
 def test_the_first_failure_is_the_one_reported():
     sched = _make_sched()
-    sched._fail("pipeline", RuntimeError("first"))
-    sched._fail("pipeline", RuntimeError("second"))
-    assert sched.run_state.progress.fatal_error == "first"
+    sched.pipeline._fail("pipeline", RuntimeError("first"))
+    sched.pipeline._fail("pipeline", RuntimeError("second"))
+    assert sched.pipeline.run_state.progress.fatal_error == "first"
 
 
 def test_enough_found_reads_the_target():
     sched = _make_sched()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, max_relevant=15)
-    sched.run_state.progress.relevant_found = 14
-    assert sched._allow_analysis() is True
-    sched.run_state.progress.relevant_found = 15
-    assert sched._allow_analysis() is False
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=15)
+    sched.pipeline.run_state.progress.relevant_found = 14
+    assert sched._allow_finish("analysis") is True
+    sched.pipeline.run_state.progress.relevant_found = 15
+    assert sched._allow_finish("analysis") is False
 
 
 def test_no_target_never_enough():
     """Zero means the run was given no target, not a target of zero."""
     sched = _make_sched()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, max_relevant=0)
-    sched.run_state.progress.relevant_found = 99
-    assert sched._allow_analysis() is True
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=0)
+    sched.pipeline.run_state.progress.relevant_found = 99
+    assert sched._allow_finish("analysis") is True

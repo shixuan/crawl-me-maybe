@@ -90,7 +90,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `scheduler/pipelines/page.py` | Process pages, resume stages, admit candidates and paginate |
 | `scheduler/workers/ranking.py` | Rank batches, save decisions and enqueue retained items |
 | `scheduler/pipelines/pipeline.py` | Shared execution protocol and callbacks from engine |
-| `scheduler/workers/dedup.py` | Execute final grouping and retain originals on failure |
+| `scheduler/pipelines/dedup.py` | Execute final grouping and retain originals on failure |
 | `scheduler/workers/` | Execute stages, persist their results and update stage statistics |
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Evaluate run stopping conditions |
@@ -117,8 +117,10 @@ Workers are concrete classes with different input and output types, not intercha
 pipeline steps. They do not receive the engine. Analysis and ranking workers update
 state through Tracker. CrawlPipeline owns module calls and task handles. PagePipeline
 owns page ordering, candidate admission and cross-stage tracking; RankingWorker applies batches.
-Both pipelines explicitly implement `Pipeline[Input, Output]`, with `run(input, context)`
-and `aclose()`. PipelineContext carries task metadata, events, admission and checkpoint callbacks. Workers use the existing
+CrawlPipeline, PagePipeline and DedupPipeline explicitly implement `Pipeline[Input, Output]`,
+with `run(input, context)` and `aclose()`. PipelineContext carries supervision,
+settlement, admission and checkpoint callbacks. Task metadata and events travel in
+the pipeline input. Workers use the existing
 Fetcher, Extractor and Ranker protocols, and the concrete Analyzer and Harvester stages.
 
 The factory assembles the pipeline and workers. CrawlPipeline runs seed expansion;
@@ -137,8 +139,9 @@ and payloads, and discovers candidates without publishing an unextracted Page ro
 3. Optional seed expansion proposes URLs and verifies that fetched pages yield
    candidates. Accepted proposals receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
-5. CrawlPipeline runs `fetch_pump` and `rank_pump` concurrently. Engine decides admission
-   and stopping from pending-work snapshots, limits and progress.
+5. CrawlPipeline runs `fetch_pump` and `rank_pump` concurrently. Engine enforces admission
+   and stopping decisions supplied by StopMonitor. The monitor reads queues, limits,
+   progress and token usage from their owners.
 6. On normal completion, the scheduler settles page tasks and analysis retries, then
    optionally groups results and closes resources. Ctrl+C cancels active work without
    draining or grouping. Stage boundaries and a periodic timer save recovery checkpoints.
@@ -190,7 +193,8 @@ its platform in `metadata.text_source`. Analysis still applies its character lim
 enhanced goal, requested fields, candidate text and previous analysis results.
 It splits calls by candidate count and text size. Truncated batches are subdivided.
 Omitted candidates receive neutral priority. Unrecoverable errors propagate to
-CrawlPipeline and then Engine. Engine cancels the pipeline on failure.
+CrawlPipeline through supervised work. Engine freezes checkpoint writes before
+canceling active work; CrawlPipeline cancels remaining tasks and records failure.
 Unexpected page-task exceptions also stop the run and produce a FAILED task.
 Checkpoint recovery creates a new run owner from saved state; see the
 [Engine execution](engine.md). `--recall` retains rejected candidates at low priority.
@@ -287,16 +291,18 @@ flowchart LR
     ranker -->|decisions via RankingWorker| storage["persist/storage.py · Storage"]
     sink -->|analyses| storage
     scheduler["PagePipeline"] -->|links and page events| storage
-    engine["Engine"] -->|checkpoint timing| cp["Checkpointer"] -->|snapshots| storage
-    engine -->|normal settlement| pipeline["CrawlPipeline"] --> dedup["DedupWorker"]
+    engine["Engine"] -->|checkpoint callback| pipeline["CrawlPipeline"]
+    pipeline -->|save / restore| cp["Checkpointer"] -->|snapshots| storage
+    engine -->|execution controls| pipeline
+    pipeline --> dedup["DedupPipeline"]
     scheduler --> persistence[PersistWorker]
     persistence -->|pages| storage
     persistence -->|HTML and payload bytes| raw["raw/ files"]
     state -->|read only| report["reporting.summary"]
-    budget -->|token count via Engine| report
+    budget -->|token count via CrawlPipeline| report
 ```
 
-The engine exposes `run_state`. `RunState` owns run-wide data:
+CrawlPipeline exposes `run_state`. `RunState` owns run-wide data:
 
 - `Limits` holds immutable run budgets and goal constraints.
 - `Progress` holds runtime-owned counters used by stopping policies. TokenBudget owns token usage.
@@ -376,7 +382,7 @@ Admission checks guard newly dispatched work and newly acquired analysis slots.
 Fetch dispatch retains its scheduling poll. Checkpoint intervals, domain cooldowns and
 ranking batch timers remain separate scheduling concerns.
 
-Task lifecycle has one owner, Engine, and one value, `CrawlTask.state`.
+Task lifecycle has one owner, CrawlPipeline, and one value, `CrawlTask.state`.
 `task.stopping_reason` records the stop decision for reporting; policy does not read it.
 Ctrl+C cancels the run directly and records `INTERRUPTED` with `USER_REQUESTED`.
 There is no separate programmatic stop interface.
@@ -423,9 +429,9 @@ inherits `Checkpointable` and implements `dump()` and `restore()`. The analyzer'
 goal is bound before startup and recovery. `RunState` saves in-flight page stages
 and PageBook, while Frontier saves its queue and buffer.
 
-Engine owns checkpoint timing, recovery and the pipeline lifecycle. Checkpointer
+Engine owns checkpoint timing and execution controls. CrawlPipeline owns recovery and crawl task records. Checkpointer
 captures component state before awaiting, removes page text from snapshots, restores
-it from stored page rows and serializes writes. Engine emits the saved event only
+it from stored page rows and serializes writes. CrawlPipeline emits the saved event only
 after persistence succeeds.
 
 ```mermaid
@@ -433,7 +439,8 @@ flowchart LR
   subgraph Process["Running process"]
     Factory["Factory"] --> Engine
     Factory --> CP["Checkpointer"]
-    Engine["Engine · lifecycle and checkpoint timing"] -->|save / restore| CP
+    Engine["Engine · execution and checkpoint timing"] -->|save callback| Pipeline["CrawlPipeline"]
+    Pipeline -->|save / restore| CP
     CP -->|dump / restore| States["frontier · runtime · analysis<br/>budget · robots"]
     CP -->|save_checkpoint / flush| Writer["SQLite writer"]
   end
@@ -450,7 +457,7 @@ flowchart LR
 At run completion, the scheduler settles pending Analyzer retries independently
 of dedup. Page limits and frontier exhaustion allow already-fetched pages to finish
 analysis. Token/time limits, the result target, user stop and run failures cancel
-remaining retries. Pump, page and analysis settlement share one 120-second
+remaining retries. Page and analysis settlement share one 120-second
 shutdown deadline. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
 When dedup is enabled, the scheduler passes relevant items and source evidence to `dedup/grouper.py`.
@@ -477,8 +484,8 @@ the shared-identity rules. The correction attempt validates JSON and member IDs;
 it does not validate semantic equivalence. Evaluate explicit identity evidence and
 per-member support before treating a successful grouping as semantically verified.
 
-Both automatic and standalone dedup use `dedup/grouper.py:group_results` for reading inputs
-and publishing groups, and `Grouper.from_settings` for client configuration.
+Both automatic and standalone dedup use DedupPipeline for reading inputs, grouping
+and publishing results, and `Grouper.from_settings` for client configuration.
 Storage and the dashboard share the input query and row mapping in `persist/queries.py`,
 so snapshot validation uses the same evidence as grouping. Analyses join their exact
 page version by `page_id`.

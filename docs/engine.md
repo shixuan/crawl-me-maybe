@@ -1,156 +1,126 @@
 # Engine execution
 
-This document describes the current implementation, checked on 2026-10-13.
-Engine controls a crawl's lifecycle, admission rules, stopping and checkpoint timing.
-CrawlPipeline owns the concurrent crawl tasks. PagePipeline coordinates the stages
-for one page. The factory wires these objects together.
+Checked against the implementation on 2026-10-15.
 
-## Ownership and calls
+Engine executes a Pipeline and owns stop supervision, settlement deadlines and
+checkpoint timing. CrawlPipeline owns crawl preparation, stage composition, task
+records and resource cleanup. All pipelines implement the same Protocol with
+`run(input, context)` and `aclose()`.
+
+## Ownership and composition
 
 ```mermaid
 flowchart TB
-    CLI["CLI run / resume"] --> Factory["scheduler/factory.py<br/>create_scheduler"]
-    Factory --> Engine["scheduler/engine.py<br/>Engine"]
-    Factory --> Crawl["scheduler/pipelines/crawl.py<br/>CrawlPipeline"]
-    Factory --> Page["scheduler/pipelines/page.py<br/>PagePipeline"]
-    Factory --> Monitor
-    Factory --> CP["checkpoint/checkpointer.py<br/>Checkpointer"]
-
-    subgraph Control["Engine control"]
-        Engine -->|run, halt, settle, drain, finish, abort, aclose| Crawl
-        Engine -->|save / restore| CP
-        Engine --> Monitor["scheduler/monitor.py<br/>StopMonitor"]
-        Monitor --> Checks["scheduler/stop_conds.py<br/>check_stop and phase rules"]
-        Engine --> Context["PipelineContext<br/>task, events, checkpoint and admission callbacks"]
-    end
-    Context -.-> Crawl
-    Context -.-> Page
-
-    subgraph PipelineWork["Pipeline execution"]
-        Crawl -->|one task per dispatched item| Page
-        Crawl --> Ranking["RankingWorker<br/>rank, persist decisions, enqueue items"]
-        Crawl --> Dedup["DedupWorker<br/>group final results"]
-        Page --> Fetch[FetchWorker]
-        Page --> Persist[PersistWorker]
-        Page --> Extract["Extractor<br/>direct stage call"]
-        Page --> Analysis[AnalysisWorker]
-        Page --> Discovery[DiscoveryWorker]
-        Analysis --> Analyzer["Analyzer<br/>one analysis attempt"]
-        Analysis --> Errors["ErrorHandler<br/>policy decisions and first abort cause"]
-        Fetch --> Errors
-        Ranking --> Errors
-        Dedup --> Errors
-        Discovery --> Errors
-        Errors --> Policy["errors/ErrorPolicy<br/>Retry, Skip or Abort"]
-    end
-
-    subgraph Shared["Shared data and persistence"]
-        Frontier["Frontier<br/>ranked queue, unranked buffer, domain gates"]
-        Tracker["Tracker<br/>statistics, page joins and source history"]
-        State["RunState<br/>limits, progress, work, PageBook, SeedState"]
-        Budget["TokenBudget<br/>token usage"]
-        Storage["persist.Storage<br/>SQLite writer and fetched files"]
-    end
-    Crawl --> Frontier
-    Page --> Frontier
-    Ranking --> Frontier
-    Analysis --> Tracker
-    Page --> Tracker
-    Ranking --> Tracker
-    Tracker --> State
-    Monitor -->|subscribe to selected values| Notices["util/observer.py<br/>instance subscriptions"]
-    Frontier -. decorated mutations .-> Notices
-    Budget -. decorated mutations .-> Notices
-    State -. decorated mutations .-> Notices
-    Notices -->|synchronous notification| Monitor
-    Frontier -->|queue counts| Monitor
-    Budget -->|recorded usage| Monitor
-    State -->|progress and limits| Monitor
-    CP --> Storage
-    Persist --> Storage
-    Ranking --> Storage
-    Analysis --> Storage
-    Dedup --> Storage
+    CLI[CLI run / resume] --> Factory[Factory]
+    Factory --> Engine
+    Factory --> Crawl[CrawlPipeline]
+    Factory --> Monitor[StopMonitor]
+    Factory --> CP[Checkpointer]
+    Engine -->|Pipeline.run / aclose| Crawl
+    Engine -->|wait / allowed / close| Monitor
+    Engine --> Context[PipelineContext]
+    Context -->|control callbacks| Crawl
+    Crawl -->|PageInput + same context| Page[PagePipeline]
+    Crawl -->|CrawlGoal + same context| Dedup[DedupPipeline]
+    CLI2[CLI dedup] --> Engine2[Engine]
+    Engine2 -->|same Pipeline contract| Dedup
+    Crawl --> Ranking[RankingWorker]
+    Page --> Fetch[FetchWorker]
+    Page --> Persist[PersistWorker]
+    Page --> Extract[Extractor]
+    Page --> Analysis[AnalysisWorker]
+    Page --> Discovery[DiscoveryWorker]
+    Crawl -->|save / restore| CP
+    Engine -->|injected save callback| Crawl
+    CP --> Storage[Storage]
+    Crawl -->|task records and events| Storage
+    Dedup -->|read inputs / publish groups| Storage
+    Monitor -->|read and subscribe| Runtime[RunState / Frontier / TokenBudget]
+    Crawl -->|summary| Runtime
 ```
 
-Engine receives a concrete CrawlPipeline and a StopMonitor assembled by the factory.
-Monitor reads RunState, Frontier and TokenBudget directly. `Pipeline` defines only `run(input,
-context)` and `aclose()`; CrawlPipeline also exposes the lifecycle methods that
-Engine calls. Workers perform their stage's work. Pipelines order stages and own
-task handles. An Extractor is called directly by PagePipeline, without a separate
-extraction worker.
+There is no separate root-pipeline interface. A pipeline can call another pipeline
+with the same context. Workers perform stage operations; pipelines compose those
+operations and own their task handles. DedupPipeline reads stored inputs, invokes
+the grouper and publishes groups for both automatic and standalone dedup.
 
-`CrawlTask.state` is the task lifecycle state. `RunState` contains execution data.
-It has no second copy of the task lifecycle. `SeedState` records one starting
-source's counts, relevance window, age streak, pagination and retirement reason.
+Engine depends on Pipeline and Monitor, not CrawlPipeline, CrawlGoal, CrawlTask,
+Storage or Checkpointer. The factory injects `CrawlPipeline.save_checkpoint` as a
+callback. CrawlPipeline owns its storage and child resources. DedupPipeline borrows
+storage from its parent or CLI, so its close method does not close that storage.
 
-## Startup and Engine.run
+PipelineContext supplies execution controls:
 
-For a fresh run, the CLI creates the shared token budget and components, reads
-the supplied seeds and calls `CrawlPipeline.startup()`. The pipeline ingests those
-seeds, enhances the goal and optionally expands seeds. Startup model calls share
-the ErrorHandler injected by the factory. Workers require this shared instance. A startup abort
-is retained until Engine saves the initial seeds and starts the pipeline. Seed verification uses `PagePipeline.probe()` to fetch
-and save raw inputs, then harvest them without analysis. These steps precede
-Engine.run. Accepted seeds enter the ranked frontier directly at priority 1.0.
+| Callback | Responsibility |
+|---|---|
+| `supervise(work)` | Run active work until completion, a stop decision or an error |
+| `can_start(phase)` | Reject new work after supervision stops or the monitor disallows it |
+| `can_finish(phase)` | Check whether the monitor permits finishing this phase |
+| `settle(work, phase)` | Await a finishing step under live stop checks and one shared deadline |
+| `checkpoint()` | Request an injected save while writes are enabled |
+| `stop_checkpoints()` | Disable requests, cancel and await outstanding writes and timer |
+
+The pipeline chooses which work needs supervision and where settlement belongs.
+Engine implements those controls. Phase names are passed to Monitor without being
+interpreted by Engine. A short standalone pipeline can simply return its result;
+it need not create a supervision phase or configure a monitor.
+
+## Startup and crawl lifecycle
+
+Before Engine.run, the CLI calls CrawlPipeline.startup to ingest supplied seeds,
+enhance the goal and optionally expand seeds. These calls share the run's
+ErrorHandler and token budget. A startup abort is retained until the initial
+checkpoint has saved the supplied seeds. Resume skips enhancement and expansion.
 
 ```mermaid
 flowchart TD
-    Entry["Engine.run(goal, task, checkpoint?, lock?)"] --> Guard["Reject an already started or closed Engine"]
-    Guard --> Lock["Acquire run lock unless the caller supplies it"]
-    Lock --> Running["Set CrawlTask.state = RUNNING<br/>start storage and create EventEmitter"]
-    Running --> Reset["RunState.reset(goal)<br/>preserve prepared seed URLs and expansion metadata"]
-    Reset --> Prepare["pipeline.prepare(goal, task_id, events)<br/>start page tracking and prepare AnalysisWorker"]
-    Prepare --> Bind["Checkpointer.bind(goal, task, pipeline.features)"]
-    Bind --> Restore{"Checkpoint supplied?"}
-    Restore -->|yes| Load["Checkpointer.restore<br/>load saved component and page-stage state"]
-    Restore -->|no| SaveRows
-    Load --> SaveRows["Queue goal and RUNNING task records"]
-    SaveRows --> Initial["Await initial checkpoint save and flush"]
-    Initial --> Timer["Start checkpoint task<br/>save every 2 seconds"]
-    Timer --> Context["Create PipelineContext<br/>callbacks belong to Engine"]
-    Context --> Launch["Start pipeline.run as an asyncio task<br/>yield once so restored work can register"]
-    Launch --> Failure{"Startup aborted?"}
-    Failure -->|yes| StartupFail["Pipeline raises the retained error<br/>keep initial checkpoint"]
-    Failure -->|no| Supervise["_supervise<br/>wait for pipeline, StopMonitor or checkpoint task failure"]
-    Supervise --> Stop["Record returned stop reasons<br/>set task.state = STOPPING"]
-    Stop --> Deadline["Create shared settlement deadline<br/>now + 120 seconds"]
-    Deadline --> Halt["pipeline.halt<br/>cancel fetch and rank pumps"]
-    Halt --> Settle["_settle<br/>wait for dispatched pages under page-phase rules"]
-    Settle --> Drain["_drain<br/>wait for retries if analysis-phase rules allow"]
-    Drain --> Freeze["finally<br/>disable checkpoint requests<br/>cancel and await saves and timer"]
-    Freeze --> Abort["pipeline.abort<br/>cancel remaining work and release retries"]
-    Abort --> Finish["pipeline.finish<br/>DedupWorker.run, then prune page context"]
-    Finish --> Record["_finish_run<br/>COMPLETED or FAILED, end time, reason, counters, STOPPED event"]
-    Record --> Cleanup["finally<br/>cancel pipeline/checkpoint tasks<br/>close pipeline, close storage, release owned lock"]
+    Entry[Engine.run input] --> Guard[Reject an already started or closed Engine]
+    Guard --> Root[Start and shield pipeline.run input, context]
+    Root --> Crawl[CrawlPipeline receives CrawlInput]
+    Crawl --> Lock[Acquire run lock unless supplied]
+    Lock --> Prepare[Set task RUNNING, start storage, reset RunState<br/>prepare analysis, page tracking and events]
+    Prepare --> Bind[Bind Checkpointer to goal and task]
+    Bind --> Restore{Checkpoint supplied?}
+    Restore -->|yes| Load[Restore component state and saved page stages]
+    Restore -->|no| Save
+    Load --> Save[Save goal and task, await initial context.checkpoint]
+    Save --> Active[context.supervise _crawl]
+    Active --> Supervise[Engine starts periodic saves and waits for<br/>active work, monitor stop or checkpoint failure]
+    Supervise --> Stop[Engine closes new-work admission<br/>starts shared 120-second settlement deadline]
+    Stop --> Halt[CrawlPipeline records stop reason and STOPPING<br/>halts fetch and rank pumps]
+    Halt --> Settle[context.settle pipeline settlement]
+    Settle --> Pages[context.settle wait for dispatched pages]
+    Pages --> Retries[context.settle drain analysis retries]
+    Retries --> Freeze[finally: context.stop_checkpoints]
+    Freeze --> Abort[CrawlPipeline.abort remaining tasks and retries]
+    Abort --> Dedup[DedupPipeline.run goal, context]
+    Dedup --> Finish[Prune page context, record final task and STOPPED event]
+    Finish --> Close[Engine finally stops saves and closes monitor and pipeline]
+    Close --> Resources[CrawlPipeline closes children and storage<br/>releases its owned lock]
 ```
 
-The initial checkpoint completes before crawling starts. The shared TokenBudget
-retains usage from goal and seed preparation. Reset replaces run-owned counters.
-It does not reset Frontier or TokenBudget, and RunState holds no references to
-either. During recovery, restore loads each owner's saved data after reset.
-
-The diagram shows the normal path. Exceptions and cancellation enter the paths
-below instead of continuing through settlement and dedup. An Engine instance
-cannot be reused after cleanup.
+CrawlInput contains the goal, task, optional checkpoint and optional caller-owned
+lock. CrawlPipeline owns changes to `CrawlTask.state`. RunState holds runtime data
+and has no duplicate task lifecycle state. Reset preserves seed preparation and
+pre-run token usage; restore then loads checkpointed execution data.
 
 ## Concurrent crawl execution
 
 CrawlPipeline prepares its stages, dispatches saved `RunState.work` entries,
 starts restored analysis retries and launches two pumps. ErrorHandler watches the
 pump group and its abort event. Page-task exceptions and fatal retry failures
-reach the same event. Engine supervises the pipeline task, StopMonitor and the
-checkpoint timer. Pipeline.run propagates failures without clearing recovery data.
+reach the same event. Engine supervises the active crawl task, StopMonitor and the checkpoint timer.
+CrawlPipeline records propagated failures without overwriting the last checkpoint.
 
 ```mermaid
 flowchart LR
-    Start["CrawlPipeline.run"] --> Restore["Dispatch saved page work<br/>start AnalysisWorker retries"]
+    Start["CrawlPipeline._crawl"] --> Restore["Dispatch saved page work<br/>start AnalysisWorker retries"]
     Restore --> Fetch["fetch_pump"]
     Restore --> Rank["rank_pump"]
     Restore --> Watch["ErrorHandler.watch<br/>pump group or shared abort event"]
 
     subgraph FetchLoop["Fetch pump"]
-        Fetch --> Gate{"Engine can_dispatch<br/>and in-flight task cap allows?"}
+        Fetch --> Gate{"context.can_start(dispatch)<br/>and in-flight task cap allows?"}
         Gate -->|no| Sleep["sleep 0.2 seconds"] --> Fetch
         Gate -->|yes| Pop["Frontier.pop_next<br/>priority, domain budget, robots cooldown, global budget"]
         Pop --> Item{"Item available?"}
@@ -164,7 +134,7 @@ flowchart LR
 
     subgraph RankLoop["Rank pump"]
         Rank --> Wait["Frontier.wait_for_ranking<br/>wait for buffer readiness or explicit wake"]
-        Wait --> Allowed{"Engine can_run?"}
+        Wait --> Allowed{"context.can_start(run)?"}
         Allowed -->|no| RankSleep["sleep 0.2 seconds"] --> Rank
         Allowed -->|yes| Batch["Take up to 20 candidates<br/>mark batch as being scored"]
         Batch --> Nonempty{"Batch nonempty?"}
@@ -192,7 +162,7 @@ one pump, and LLMRanker splits a drained batch into sequential calls as needed.
 
 ```mermaid
 flowchart TD
-    Input["PageInput(item, goal)"] --> Work["Retain page context<br/>find or create RunState.work[item_id]"]
+    Input["PageInput(item, goal, task_id, events)"] --> Work["Retain page context<br/>find or create RunState.work[item_id]"]
     Work --> Saved{"Saved page in work entry?"}
     Saved -->|yes| Page["Load Page from restored work"]
     Saved -->|no| Fetch["FetchWorker.fetch<br/>robots checks, request slots and cooldown"]
@@ -207,7 +177,7 @@ flowchart TD
     Mark --> CP1["Await checkpoint"] --> Page
     Page --> Open["Open PageBook association<br/>page URL to source seed"]
     Open --> Analyzed{"analysis_done?"}
-    Analyzed -->|no| Analyze["AnalysisWorker.analyze<br/>wait for slot, then recheck can_analyze"]
+    Analyzed -->|no| Analyze["AnalysisWorker.analyze<br/>wait for slot, then recheck context.can_finish(analysis)"]
     Analyze --> MarkAnalysis["Mark initial attempt done<br/>await checkpoint"] --> Discover
     Analyzed -->|yes| Discover["DiscoveryWorker.discover<br/>harvest saved HTML and payloads in a thread"]
     Discover --> Tracked{"discovered flag set?"}
@@ -235,7 +205,7 @@ its tracking flag is set, because candidate admission may have been interrupted.
 The flag prevents repeated discovery statistics. Frontier deduplication handles
 repeated candidate admission. Each page task releases retained context in `finally`.
 Unexpected stage exceptions record a failed frontier outcome and propagate to
-CrawlPipeline, then Engine. A missing adapter dependency follows this fatal path.
+CrawlPipeline, which records the failed task. A missing adapter dependency follows this fatal path.
 
 Source retirement is separate from stopping the whole run. `why_retire()` in
 `runtime/tracking.py` checks the source's relevance window and age streak.
@@ -243,74 +213,47 @@ PagePipeline records the reason and retires that source's queued work through
 Frontier. In-flight pages continue. `recall` disables source retirement. Listing
 continuations bypass ranking and allow up to five additional pages per seed.
 
-## Stop supervision and settlement rules
+## Stop supervision and settlement
 
 ```mermaid
 sequenceDiagram
     participant Owners as RunState / Frontier / TokenBudget
     participant Notify as util.observer
     participant Monitor as StopMonitor
-    participant Checks as stop_conds
     participant Engine
     participant Crawl as CrawlPipeline
-    Monitor->>Notify: subscribe each owner with selected values and callback
-    Engine->>Crawl: start pipeline task
-    Engine->>Monitor: start wait(phase="run")
-    Monitor->>Monitor: read own revision
-    Monitor->>Owners: read Progress, Limits, queue counts and token usage
-    Monitor->>Checks: check_stop with current values
-    Checks-->>Monitor: all applicable StopReasons
-    loop No condition forbids the current phase
-        Monitor->>Monitor: await own Event for this revision, with deadline timeout
-        Owners->>Notify: decorated method finishes or raises
-        Notify->>Notify: compare watched values before and after
-        Notify->>Monitor: if values differ, advance revision and set Event
-        Monitor->>Owners: read current values
-        Monitor->>Checks: reevaluate stop conditions
+    Monitor->>Notify: subscribe to selected values
+    Crawl->>Engine: context.supervise(_crawl())
+    Engine->>Monitor: wait(run)
+    loop Current phase remains allowed
+        Monitor->>Owners: read progress, limits, queues and usage
+        Monitor->>Monitor: evaluate stop_conds
+        Monitor->>Monitor: await notification or time deadline
+        Owners->>Notify: decorated mutation returns or raises
+        Notify->>Monitor: watched values changed, advance revision and set Event
     end
-    Monitor-->>Engine: stop reasons, or settlement deadline reached
-    Engine->>Crawl: halt pumps
-    Engine->>Crawl: settle dispatched pages
-    Engine->>Monitor: wait(phase="pages", shared deadline)
-    Engine->>Crawl: drain retries if allowed
-    Engine->>Monitor: wait(phase="analysis", shared deadline)
-    Engine->>Engine: disable checkpoint requests, cancel and await saves
-    Engine->>Crawl: abort remaining work, then finish() on the normal path
+    Monitor-->>Engine: stop reasons
+    Engine->>Engine: stop active work, establish settlement deadline
+    Engine-->>Crawl: stop reason
+    Crawl->>Crawl: halt pumps
+    Crawl->>Engine: context.settle(settle, settle)
+    Crawl->>Engine: context.settle(wait for pages, pages)
+    Engine->>Monitor: allowed / wait for phase and shared deadline
+    Engine-->>Crawl: pages finished or wait stopped
+    Crawl->>Engine: context.settle(drain retries, analysis)
+    Engine->>Monitor: allowed / wait for phase and shared deadline
+    Engine-->>Crawl: retries finished or stopped
+    Crawl->>Engine: context.stop_checkpoints()
+    Engine-->>Crawl: timer and saves stopped
+    Crawl->>Crawl: abort remaining work, run dedup
 ```
 
-StopMonitor owns the revision and asyncio Event. It subscribes to each object's
-selected values through `util.subscribe()`. Readers capture queue counts, token
-usage, or run limits and progress as immutable values. Monitor reads current values
-directly from their owners and passes them to `check_stop()`. Progress contains
-only run-owned counters, with no owner bindings or count proxies.
-
-The monitored classes only mark mutation methods with `notify`. They do not
-store callbacks, choose watched fields, bind listeners, or maintain notification
-state. The decorator gets subscriptions from the notification tool by instance.
-
-```python
-@notify
-def page_completed(self):
-    self.progress.pages_fetched += 1
-```
-
-The decorator compares watched values in `finally`, including after partial
-mutations followed by an exception or cancellation. It invokes registered callbacks
-synchronously before the method returns or propagates its error. Unchanged values
-do not emit a notice. No polling or background notification task is added.
-
-Subscriptions use object identity, including for unhashable RunState instances.
-The tool keeps weak references to owners and bound callback receivers. Engine
-closes Monitor's subscriptions during cleanup, so later updates do not wake a
-finished monitor. A second crawl has separate subscriptions and notification state.
-
-StopMonitor waits for a revision or the next time deadline and reevaluates the
-rules internally. Ordinary updates can wake the monitor without completing
-Engine's wait. Engine's `_wait_for_stop()` returns when its supervised task finishes,
-a condition forbids the current phase or the settlement deadline expires. If the
-supervised task and monitor finish together, the task result takes precedence.
-There is no fixed-interval Engine stop loop. Fetch-pump backoff and policy retry
-delays use timed sleeps. Analysis draining awaits queue completion or a failure.
+Monitor owns its revision and Event. Notifications are synchronous comparisons of
+selected values before and after decorated mutations, including exceptions and
+cancellation. Monitored classes only use `@notify`; they do not bind listeners.
+Subscriptions are per instance and use weak references. Engine closes them with
+Monitor. Ordinary changes wake Monitor, while Engine wakes for a stop decision,
+work completion, deadline or checkpoint failure. There is no polling stop loop.
 
 | Condition | Trigger | Dispatched pages may settle | Retries may drain |
 |---|---|---|---|
@@ -324,135 +267,100 @@ delays use timed sleeps. Analysis draining awaits queue completion or a failure.
 | `LOGIN_REQUIRED` / `RATE_LIMITED` | A recorded run-wide platform refusal | No | No |
 | `FATAL` | A recorded run failure | No | No |
 
-`check_stop()` returns every applicable reason. A phase is allowed only if every
-reason permits it. Page settlement and retry draining share a single 120-second
-deadline. A token/time limit reached during page settlement cancels remaining
-pages even if the initial reason was `MAX_RELEVANT`. After draining, Engine freezes
-checkpoint writes before aborting remaining work and clearing retry entries.
 
-The recorded reason is set when supervision stops and is preserved during normal
-finalization. It need not include a later limit reached during settlement.
-`pages_fetched` counts completed page processing and extraction timeouts, not every
-HTTP request. A failed fetch does not increment it.
+All applicable reasons must permit a phase. Page settlement and retry draining
+share one 120-second deadline, including time spent in earlier settlement steps.
+A later token/time limit can end settlement after a result-target stop. Ending the
+page wait leaves page tasks alive until checkpoint writes are frozen; CrawlPipeline
+then cancels remaining work. The recorded stop reason remains the one returned
+when active supervision ended.
 
-After settlement and draining, Engine stops checkpoint writes and aborts remaining
-work before calling `pipeline.finish()`. DedupWorker can run after a normal budget
-stop, but the shared token budget may skip its model call. Invalid grouping output
-retains original results. Account failures propagate and fail the run. Dedup is
-outside the 120-second settlement deadline. Cancellation bypasses final grouping.
+Dedup runs after normal settlement, outside that deadline. The shared token budget
+can prevent its model call. Invalid output retains existing results; an account
+failure fails the run. Cancellation bypasses dedup.
 
-Request retries belong to ErrorHandler and AnalysisWorker, as directed by ErrorPolicy.
-Client and fetchers make one request attempt. Each LLM request has a 90-second
-total timeout, with a waiting notice after 30 seconds. Failures report the provider
-message and the retry, skip or abort decision at normal log levels. Format-specific
-repairs remain in their components. Ranking and dedup disable retries for invalid
-output after local repair. Policy uses error kind and scope, not component names or error codes.
-A missing shared dependency aborts; a missing page can be skipped.
-An HTTP page rejection skips that page. Provider account failures abort immediately;
-shared-service timeouts, rate limits and unavailability abort after retries are
-exhausted, even for optional operations. Invalid model output can still be skipped.
-Token-budget exhaustion is a normal stop, and unknown errors abort with their cause
-preserved. Dedup retries cover grouping, not database writes.
-
-## Checkpoint execution and recovery
-
-```mermaid
-flowchart LR
-    subgraph Triggers["Checkpoint callers"]
-        Initial["Engine startup<br/>before dispatch"]
-        Timer["Engine checkpoint task<br/>every 2 seconds"]
-        Page["PagePipeline<br/>after saved page, initial analysis stage, page completion"]
-        Rank["CrawlPipeline rank pump<br/>after batch ownership released"]
-    end
-    Initial --> Callback["Engine._checkpoint"]
-    Timer --> Callback
-    Page -->|PipelineContext.checkpoint| Callback
-    Rank -->|PipelineContext.checkpoint| Callback
-    Callback --> Guard{"Checkpoint requests enabled, Engine open,<br/>task RUNNING or STOPPING, no fatal error?"}
-    Guard -->|yes| SaveTask["Engine creates and tracks save task"]
-    SaveTask --> Lock["Checkpointer.save<br/>acquire serialization lock"]
-    Guard -->|no| Return["Return without saving"]
-    Lock --> Snapshot["Synchronously dump frontier, RunState, AnalysisWorker retries,<br/>TokenBudget and RobotsPolicy<br/>include goal, task, settings and feature flags"]
-    Snapshot --> Trim["Detach snapshot through JSON<br/>remove plain_text and markdown from saved Page entries"]
-    Trim --> Queue["Storage.save_snapshot<br/>replace task's latest snapshot"]
-    Queue --> Flush["Await Storage.flush<br/>earlier queued writes precede snapshot"]
-    Flush --> Event["Engine emits CHECKPOINT_SAVED"]
-
-    DB[("Original run database")] --> Resume["CLI resume<br/>lock run, validate task and checkpoint version<br/>restore goal/settings, rebuild components"]
-    Resume --> Run["Engine.run(checkpoint, supplied lock)"]
-    Run --> Hydrate["Checkpointer.restore<br/>load saved Page text from page rows"]
-    Hydrate --> Owners["Restore RunState, Frontier, RobotsPolicy,<br/>AnalysisWorker retries and TokenBudget"]
-    Owners --> Dispatch["CrawlPipeline.run<br/>dispatch saved work and start retries/pumps"]
-```
-
-Page and rank tasks await Engine's checkpoint callback. Engine creates and tracks
-an asynchronous save task for every request; the periodic timer uses the same
-callback. Neither requires the supervisor to return from its wait. Before cleanup,
-Engine disables new requests, then cancels and awaits the timer and all save
-tasks, including those waiting for the serialization lock. Checkpointer only captures and writes snapshots; it
-does not decide whether task states permit saving. Once its lock is acquired, it
-captures state without yielding.
-
-Snapshots include unfinished page stages, ranked and unranked queues, batches being
-ranked, AnalysisWorker retries, source history and recorded token usage. Page text comes
-from existing database rows. Recovery restores elapsed active time, excluding the
-time spent stopped. Goal enhancement and seed expansion do not run again.
-
-Recovery uses the last committed checkpoint. Work after that snapshot can repeat,
-including a partially completed request or ranking batch. Stable analysis and item
-IDs replace repeated outputs for the same task and URL. Provider calls and billing
-are not exactly-once. Engine does not depend on saving a final checkpoint on exit.
-
-The resume CLI accepts persisted tasks in `RUNNING`, `INTERRUPTED` or `FAILED`
-state, validates task/goal identity and checkpoint version, and uses the original
-run database and raw-file directory. Saved settings restore execution behavior;
-LLM credentials and endpoint come from the current environment. The CLI releases
-the supplied lock after Engine returns.
-
-## Cancellation, failure and cleanup
+## Checkpoints and recovery
 
 ```mermaid
 flowchart TD
-    Component["Component raises an error with its cause"] --> Policy["ErrorHandler asks ErrorPolicy"]
-    Policy -->|Retry| Retry["Bounded retry or checkpointed analysis queue"]
-    Policy -->|Skip| Skip["Worker records the skipped operation"]
-    Policy -->|Abort| Failure["ErrorHandler retains first error<br/>closes admission and wakes pipeline watch"]
-    Failure --> Propagate["Pipeline raises to Engine"]
-    Timer["Checkpoint task fails"] --> Propagate
-    Cancel["CLI Ctrl+C cancels Engine.run"] --> Freeze
-    Propagate --> Freeze["Pipeline lifetime finally<br/>disable checkpoint requests<br/>cancel and await timer and saves"]
-    Freeze --> Abort["pipeline.abort<br/>cancel pumps, pages and retries<br/>then release retry data"]
-    Abort --> Outcome{"Outcome"}
-    Outcome -->|cancelled| Interrupted["Record INTERRUPTED and USER_REQUESTED<br/>log resume command, re-raise cancellation"]
-    Outcome -->|error| Failed["Record FAILED and FATAL<br/>log cause and resume command if recoverable"]
-    Outcome -->|normal stop| Finish["pipeline.finish<br/>dedup and final task record"]
-    Interrupted --> Close
-    Failed --> Close
-    Finish --> Close["Engine.aclose<br/>idempotent checkpoint stop, unsubscribe Monitor<br/>close pipeline resources and storage"]
-    Close --> Unlock["Release owned run lock"]
+    Initial[CrawlPipeline initial save] --> Callback[context.checkpoint]
+    Page[PagePipeline stage completion] --> Callback
+    Rank[CrawlPipeline completed rank batch] --> Callback
+    Timer[Engine timer every two seconds<br/>started by supervise] --> Callback
+    Callback --> Guard{Writes enabled, Engine open,<br/>save callback configured?}
+    Guard -->|yes| Track[Engine creates and tracks save task]
+    Guard -->|no| Return[Return]
+    Track --> Save[CrawlPipeline.save_checkpoint]
+    Save --> State{Task RUNNING or STOPPING<br/>and no fatal error?}
+    State -->|no| Return
+    State -->|yes| CP[Checkpointer.save serialization lock]
+    CP --> Dump[Synchronously dump component state<br/>goal, task, settings and feature flags]
+    Dump --> Trim[Detach JSON snapshot, omit saved page text]
+    Trim --> Write[Storage.save_checkpoint and flush]
+    Write --> Event[CrawlPipeline emits CHECKPOINT_SAVED]
+    DB[(Run database)] --> Resume[CLI resume validates checkpoint and holds lock]
+    Resume --> Engine[Engine.run CrawlInput with checkpoint and lock]
+    Engine --> Restore[CrawlPipeline calls Checkpointer.restore]
+    Restore --> Hydrate[Load page text and restore owners]
+    Hydrate --> Active[CrawlPipeline dispatches saved work and retries]
 ```
 
-Components have no Engine callbacks. ErrorHandler holds the first abort cause for
-one run, shared by its workers and startup calls. Pipeline propagates the failure;
-Engine records the task outcome. A normal stop, exception or cancellation crosses
-the same checkpoint-before-cleanup boundary. Engine.aclose also stops saves when
-startup failed before that boundary was entered.
+Page and rank tasks await the same checkpoint callback as the timer. Engine tracks
+all requests, including saves waiting for Checkpointer's serialization lock. Before
+canceling work, Engine disables new requests, cancels the timer and saves, and
+awaits them. Checkpointer owns snapshot format and serialization; CrawlPipeline
+owns task-state eligibility and restore. Engine owns write timing and shutdown.
 
-Provider messages retain the model, stage, HTTP status and provider code when
-available. Temporary failures receive bounded policy retries. SDK retries are
-disabled so they cannot multiply the pipeline's attempts.
+Snapshots contain unfinished page stages, ranked and unranked queues, unfinished
+ranking batches, analysis retries, source history and recorded token usage. Page
+text is restored from stored page rows. Earlier queued results precede their
+checkpoint. Recovery uses only committed snapshots and excludes stopped time from
+elapsed execution time.
 
-Ctrl+C cancels asynchronous work without waiting for model responses or initiating
-final grouping. Cleanup still closes local resources and writes the task record.
-Cancelling an await does not stop a parser thread already running through
-`asyncio.to_thread`. A hard-killed process may leave the persisted task as `RUNNING`;
-the OS releases its lock, and resume can still use its last committed checkpoint.
-A second Ctrl+C exits immediately with code 130.
+Work newer than the last snapshot may repeat. Stable analysis and item IDs replace
+repeated outputs, but provider calls and billing are not exactly-once. Recovery
+does not require a final checkpoint on exit. Credentials come from the current
+environment. Resume accepts RUNNING, INTERRUPTED and FAILED tasks and releases its
+caller-owned lock after Engine returns.
 
-`Engine.summary()` combines the runtime report with the pipeline's dedup report.
-The reporting function reads RunState without changing it and receives token usage
-as a number from Engine, which reads the Monitor's shared budget.
+## Cancellation, errors and reports
 
-`crawl run` and `crawl resume` use `cli/report.py` to print and persist the same
-final report after cleanup. Resume reattaches the run log after restoring logging
-settings. CLI reporting and exit codes remain outside Engine and its pipelines.
+```mermaid
+flowchart TD
+    Component[Component error] --> Handler[Shared ErrorHandler and ErrorPolicy]
+    Handler -->|Retry| Retry[Bounded retry or checkpointed analysis queue]
+    Handler -->|Skip| Skip[Record skipped operation]
+    Handler -->|Abort| Failure[Retain first cause and wake active crawl]
+    Failure --> Supervise[Engine supervision freezes saves before canceling active work]
+    Timer[Checkpoint failure] --> Supervise
+    Supervise --> Crawl[CrawlPipeline finally stops saves and aborts remaining work]
+    Cancel[Ctrl+C cancels Engine.run] --> Freeze[Engine freezes saves before canceling shielded root task]
+    Freeze --> Crawl
+    Crawl --> Outcome{Outcome}
+    Outcome -->|error| Failed[CrawlPipeline records FAILED / FATAL<br/>logs resume command if recoverable]
+    Outcome -->|cancelled| Interrupted[CrawlPipeline records INTERRUPTED / USER_REQUESTED<br/>logs resume command and re-raises]
+    Failed --> Close[Engine closes monitor and pipeline]
+    Interrupted --> Close
+    Close --> Resources[CrawlPipeline closes resources, storage and owned lock]
+    Resources --> Report[CLI prints and persists CrawlPipeline.summary]
+```
+
+Components have no Engine callbacks. ErrorHandler is shared across startup, workers
+and dedup. Engine propagates execution errors; CrawlPipeline translates them into
+crawl task records and resume guidance. Cleanup failures also mark the crawl as
+failed. The generic Engine neither formats crawl reports nor records crawl errors.
+
+Each LLM request has a 90-second total timeout and a waiting notice after 30 seconds.
+ErrorPolicy owns retry, skip and abort decisions. Provider messages retain model,
+stage, HTTP status and provider code when available. Account failures abort at once;
+shared-service temporary failures abort after bounded retries. Invalid output can
+be skipped. Dedup retries cover grouping, not database writes.
+
+Ctrl+C cancels asynchronous work without waiting for model responses or starting
+final grouping. Local cleanup still writes the task record and closes resources.
+Cancellation does not stop parser threads already running. A hard kill can leave
+a RUNNING task but releases its OS lock. A second Ctrl+C exits with code 130.
+
+CrawlPipeline.summary combines runtime statistics, shared token usage and the dedup
+report. CLI run and resume pass that dictionary to the same report writer after
+cleanup. Reporting and exit codes remain outside Engine.

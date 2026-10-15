@@ -24,7 +24,7 @@ from tests.scheduler.helpers import (
 def test_backfills_context():
     """2.9: the ranker reads the source page's verdict from here."""
     sched = _make_sched()
-    sched.run_state.page_contexts["k1"] = {"title": "Existing", "link_count": 7}
+    sched.pipeline.run_state.page_contexts["k1"] = {"title": "Existing", "link_count": 7}
     result = AnalysisResult(
         page_id="p1",
         url_key="k1",
@@ -35,7 +35,7 @@ def test_backfills_context():
 
     sched.pipeline._analysis.apply(result)
 
-    ctx = sched.run_state.page_contexts["k1"]
+    ctx = sched.pipeline.run_state.page_contexts["k1"]
     assert ctx["classification"] == "RELEVANT"
     assert ctx["relevance"] == 0.87
     assert ctx["summary"] == "Borrow checker deep dive."
@@ -52,7 +52,7 @@ def test_context_keeps_older():
 
     sched.pipeline._tracking.record_page_context("k1", {"title": "T", "link_count": 3})
 
-    ctx = sched.run_state.page_contexts["k1"]
+    ctx = sched.pipeline.run_state.page_contexts["k1"]
     assert ctx["classification"] == "IRRELEVANT"
     assert ctx["title"] == "T"
 
@@ -72,35 +72,35 @@ def test_stale_streak(since, published, expected):
     """Per seed, because a feed is time-ordered per account and never as
     a whole. Counted globally it could only ever arm for one seed."""
     sched = _make_sched()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, since=since)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, since=since)
     for at in published:
         sched.pipeline._page.published(_page_published(at), "seedA")
-    assert sched.run_state.seeds["seedA"].stale == expected
+    assert sched.pipeline.run_state.seeds["seedA"].stale == expected
 
 
 def test_window_fed():
     """A judged content page is what a source's window counts."""
     sched = _make_sched()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, relevance_threshold=0.7)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, relevance_threshold=0.7)
 
     for key, score in (("k1", 0.9), ("k2", 0.2)):
         sched.pipeline._analysis.apply(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
-        sched.run_state.pages.of(key).listing = False
+        sched.pipeline.run_state.pages.of(key).listing = False
         sched.pipeline._page.vote(key)
 
-    assert list(sched.run_state.seeds[""].window) == [True, False]
+    assert list(sched.pipeline.run_state.seeds[""].window) == [True, False]
 
 
 def test_window_threshold():
     """relevance_threshold stops being dead config here."""
     sched = _make_sched()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, relevance_threshold=0.95)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, relevance_threshold=0.95)
 
     sched.pipeline._analysis.apply(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
-    sched.run_state.pages.of("k1").listing = False
+    sched.pipeline.run_state.pages.of("k1").listing = False
     sched.pipeline._page.vote("k1")
 
-    assert list(sched.run_state.seeds[""].window) == [False]
+    assert list(sched.pipeline.run_state.seeds[""].window) == [False]
 
 
 def test_relevant_count():
@@ -110,10 +110,10 @@ def test_relevant_count():
     _set_context(sched, relevance_threshold=0.7)
     for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
         sched.pipeline._analysis.apply(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
-        sched.run_state.pages.of(key).listing = False
+        sched.pipeline.run_state.pages.of(key).listing = False
         sched.pipeline._page.vote(key)
-    assert sched.run_state.progress.relevant_found == 2
-    assert list(sched.run_state.seeds[""].window) == [True, False, True]
+    assert sched.pipeline.run_state.progress.relevant_found == 2
+    assert list(sched.pipeline.run_state.seeds[""].window) == [True, False, True]
 
 
 def test_seen_bounded():
@@ -133,8 +133,8 @@ def test_seen_bounded():
             )
         )
 
-    assert len(sched.run_state.relevant_pages) == _SEEN_SO_FAR
-    assert sched.run_state.relevant_pages[-1]["url"] == f"https://x/{_SEEN_SO_FAR + 3}"
+    assert len(sched.pipeline.run_state.relevant_pages) == _SEEN_SO_FAR
+    assert sched.pipeline.run_state.relevant_pages[-1]["url"] == f"https://x/{_SEEN_SO_FAR + 3}"
 
 
 @pytest.mark.asyncio
@@ -151,14 +151,14 @@ async def test_a_proposed_seed_is_credited_for_what_it_found():
     post_key = canon.canonicalize(post, post).url_key
 
     sched = _make_sched(canonicalizer=canon)
-    sched.run_state.pages.open(post_key, post, seed_key)
-    sched.run_state.proposed_seeds = {seed_key: (seed, "why")}
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, relevance_threshold=0.7)
+    sched.pipeline.run_state.pages.open(post_key, post, seed_key)
+    sched.pipeline.run_state.proposed_seeds = {seed_key: (seed, "why")}
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, relevance_threshold=0.7)
 
     sched.pipeline._analysis.apply(
         AnalysisResult(classification="RELEVANT", relevance_score=0.9, feedback=AnalyzerFeedback(url=post, title="t"))
     )
-    why, tally = sched.summary()["proposed_seeds"][seed]
+    why, tally = sched.pipeline.summary()["proposed_seeds"][seed]
     assert (why, tally[0]) == ("why", 1)
 
 
@@ -169,37 +169,37 @@ def test_a_listing_does_not_vote():
     seeds put seven certain misses into a window of twenty."""
     sched = _make_sched()
     _judge(sched, "k1", 0.0)
-    sched.run_state.pages.of("k1").listing = True
+    sched.pipeline.run_state.pages.of("k1").listing = True
     sched.pipeline._page.vote("k1")
-    assert list(sched.run_state.seeds[""].window) == []
+    assert list(sched.pipeline.run_state.seeds[""].window) == []
 
 
 def test_a_page_votes_once_judged():
     sched = _make_sched()
     _judge(sched, "k1", 0.9)
-    sched.run_state.pages.of("k1").listing = False
+    sched.pipeline.run_state.pages.of("k1").listing = False
     sched.pipeline._page.vote("k1")
-    assert list(sched.run_state.seeds[""].window) == [True]
+    assert list(sched.pipeline.run_state.seeds[""].window) == [True]
 
 
 def test_a_late_verdict_still_votes():
     """A retried analysis lands long after link extraction, so the
     harvester's half is already in when the verdict arrives."""
     sched = _make_sched()
-    sched.run_state.pages.of("k1").listing = False
+    sched.pipeline.run_state.pages.of("k1").listing = False
     sched.pipeline._page.vote("k1")
-    assert list(sched.run_state.seeds[""].window) == []
+    assert list(sched.pipeline.run_state.seeds[""].window) == []
     _judge(sched, "k1", 0.9)
-    assert list(sched.run_state.seeds[""].window) == [True]
+    assert list(sched.pipeline.run_state.seeds[""].window) == [True]
 
 
 def test_a_vote_is_cast_once():
     sched = _make_sched()
     _judge(sched, "k1", 0.9)
-    sched.run_state.pages.of("k1").listing = False
+    sched.pipeline.run_state.pages.of("k1").listing = False
     sched.pipeline._page.vote("k1")
     sched.pipeline._page.vote("k1")
-    assert list(sched.run_state.seeds[""].window) == [True]
+    assert list(sched.pipeline.run_state.seeds[""].window) == [True]
 
 
 def test_the_tally_counts_listings():
@@ -207,9 +207,9 @@ def test_the_tally_counts_listings():
     listing that somehow answers the goal is still an answer found."""
     sched = _make_sched()
     _judge(sched, "k1", 0.9)
-    sched.run_state.pages.of("k1").listing = True
+    sched.pipeline.run_state.pages.of("k1").listing = True
     sched.pipeline._page.vote("k1")
-    assert sched.run_state.progress.relevant_found == 1
+    assert sched.pipeline.run_state.progress.relevant_found == 1
 
 
 def test_a_cold_source_retires():
@@ -218,7 +218,7 @@ def test_a_cold_source_retires():
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "seedA", f"k{i}", False)
     sched.pipeline._frontier.retire.assert_called_once_with("seedA")
-    assert sched.run_state.seeds["seedA"].retired
+    assert sched.pipeline.run_state.seeds["seedA"].retired
 
 
 def test_one_cold_source_leaves_the_others():
@@ -228,8 +228,8 @@ def test_one_cold_source_leaves_the_others():
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "cold", f"c{i}", False)
         _vote(sched, "hot", f"h{i}", i % 3 == 0)
-    assert sched.run_state.seeds["cold"].retired
-    assert not sched.run_state.seeds["hot"].retired
+    assert sched.pipeline.run_state.seeds["cold"].retired
+    assert not sched.pipeline.run_state.seeds["hot"].retired
 
 
 def test_a_source_past_the_window_retires():
@@ -237,34 +237,34 @@ def test_a_source_past_the_window_retires():
     that account is walked out. It says nothing about the others."""
     sched = _make_sched()
     since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, since=since)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, since=since)
     old = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
     for i in range(MAX_STALE_STREAK):
         sched.pipeline._page.published(_page_published(old), "seedA")
-    assert sched.run_state.seeds["seedA"].retired
+    assert sched.pipeline.run_state.seeds["seedA"].retired
     sched.pipeline._frontier.retire.assert_called_once_with("seedA")
 
 
 def test_one_hit_resets_the_stale_streak():
     sched = _make_sched()
     since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, since=since)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, since=since)
     for at in (datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),) * 4:
         sched.pipeline._page.published(_page_published(at), "seedA")
     sched.pipeline._page.published(
         _page_published(datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)), "seedA"
     )
-    assert sched.run_state.seeds["seedA"].stale == 0
+    assert sched.pipeline.run_state.seeds["seedA"].stale == 0
 
 
 def test_recall_retires_nothing():
     """Reading the tail is the point of the mode, not evidence a source
     is done."""
     sched = _make_sched()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, recall=True)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, recall=True)
     for i in range(RELEVANCE_WINDOW):
         _vote(sched, "seedA", f"k{i}", False)
-    assert not sched.run_state.seeds["seedA"].retired
+    assert not sched.pipeline.run_state.seeds["seedA"].retired
     sched.pipeline._frontier.retire.assert_not_called()
 
 
@@ -283,9 +283,9 @@ def test_an_unfiled_page_cannot_retire_anything():
     posts."""
     sched = _make_sched()
     since = datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc)
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, since=since)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, since=since)
     old = _page_published(datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc))
     for _ in range(MAX_STALE_STREAK * 2):
         sched.pipeline._page.published(old, "")
-    assert not sched.run_state.seeds[""].retired
+    assert not sched.pipeline.run_state.seeds[""].retired
     sched.pipeline._frontier.retire.assert_not_called()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
-from typing import Literal
+from typing import Protocol
 
 from crawlme.llm import TokenBudget
 from crawlme.pioneer import Frontier
@@ -14,7 +14,19 @@ from crawlme.scheduler.stop_conds import StopReason, can_drain_analysis, can_set
 from crawlme.util import subscribe
 
 
-class StopMonitor:
+class Monitor(Protocol):
+    """Stopping decisions consumed by the engine, independent of work topology."""
+
+    def allowed(self, phase: str) -> bool: ...
+
+    def reasons(self) -> list[StopReason]: ...
+
+    async def wait(self, *, phase: str = "run", deadline: float | None = None) -> list[StopReason]: ...
+
+    def close(self) -> None: ...
+
+
+class StopMonitor(Monitor):
     def __init__(self, runtime: RunState, frontier: Frontier, budget: TokenBudget) -> None:
         self.runtime = runtime
         self.frontier = frontier
@@ -56,27 +68,30 @@ class StopMonitor:
             domain_refused=self.frontier.blocked_by_domain_budget,
         )
 
-    @property
-    def can_run(self) -> bool:
-        return not self.reasons()
+    def allowed(self, phase: str) -> bool:
+        reasons = self.reasons()
+        return self._allowed(phase, reasons)
 
-    @property
-    def can_analyze(self) -> bool:
-        return can_drain_analysis(self.reasons())
+    def _allowed(self, phase: str, reasons: list[StopReason]) -> bool:
+        if phase in {"pages", "settle"}:
+            return can_settle_pages(reasons)
+        if phase == "analysis":
+            return can_drain_analysis(reasons)
+        if phase == "dispatch":
+            limits, progress = self.runtime.limits, self.runtime.progress
+            # Reserve slots for pages already dispatched; failed fetches release them.
+            return not reasons and (
+                limits.max_pages <= 0 or progress.pages_fetched + progress.in_flight < limits.max_pages
+            )
+        if phase == "run":
+            return not reasons
+        raise ValueError(f"unknown crawl phase: {phase}")
 
-    async def wait(
-        self, *, phase: Literal["run", "pages", "analysis"] = "run", deadline: float | None = None
-    ) -> list[StopReason]:
+    async def wait(self, *, phase: str = "run", deadline: float | None = None) -> list[StopReason]:
         while True:
             revision = self._revision
             reasons = self.reasons()
-            if phase == "pages":
-                allowed = can_settle_pages(reasons)
-            elif phase == "analysis":
-                allowed = can_drain_analysis(reasons)
-            else:
-                allowed = not reasons
-            if not allowed:
+            if not self._allowed(phase, reasons):
                 return reasons
             now = time.monotonic()
             if deadline is not None and now >= deadline:

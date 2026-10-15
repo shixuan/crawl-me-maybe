@@ -64,7 +64,7 @@ def test_prints_prompt(caplog):
             mock_sched.pipeline.startup = AsyncMock()
             mock_sched.pipeline.ingest_seeds = AsyncMock()
             mock_sched.pipeline.expand_seeds = AsyncMock(return_value=[])
-            mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+            mock_sched.pipeline.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
 
@@ -98,7 +98,7 @@ def _capturing_factory(captured: dict):
         sched.pipeline.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched.pipeline, *args, **kwargs)
         sched.pipeline.ingest_seeds = AsyncMock()
         sched.pipeline.expand_seeds = AsyncMock(return_value=[])
-        sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+        sched.pipeline.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
         sched.run = AsyncMock()
         return sched
 
@@ -300,9 +300,9 @@ def test_prints_summary(capsys):
         sched.pipeline.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched.pipeline, *args, **kwargs)
         sched.pipeline.ingest_seeds = AsyncMock()
         sched.pipeline.expand_seeds = AsyncMock(return_value=[])
-        sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())
+        sched.pipeline.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())
         sched.run = AsyncMock()
-        sched.summary = lambda: {
+        sched.pipeline.summary = lambda: {
             "pages_fetched": 5,
             "tokens_used": 1234,
             "candidates_discovered": 100,
@@ -340,7 +340,7 @@ def test_summary_in_log(tmp_path, capsys, log_format, log_level):
     from crawlme.runtime import CrawlTask
 
     scheduler = MagicMock()
-    scheduler.summary.return_value = {
+    scheduler.pipeline.summary.return_value = {
         "pages_fetched": 2,
         "seeds": {"seed": {"url": "https://example.com/", "funnel": (3, 2, 2, 2, 2, 1)}},
     }
@@ -352,7 +352,7 @@ def test_summary_in_log(tmp_path, capsys, log_format, log_level):
         try:
             budget = TokenBudget(limit=100)
             budget.record(12, 8, stage="dedup")
-            print_summary(scheduler, CrawlTask(goal_id="goal", state="COMPLETED"), budget)
+            print_summary(scheduler.pipeline.summary(), CrawlTask(goal_id="goal", state="COMPLETED"), budget)
             captured = capsys.readouterr()
             saved = path.read_text()
             assert captured.out.strip() in saved

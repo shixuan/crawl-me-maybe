@@ -177,8 +177,8 @@ async def test_harvest_timeout(monkeypatch):
 
     sched = _make_sched()
     sched.pipeline._goal = _goal(max_pages=5)
-    sched._task = _task()
-    sched._checkpoint = AsyncMock()
+    sched.pipeline._task = _task()
+    sched._save = AsyncMock()
     _set_context(sched, max_pages=5, max_tokens=100000, max_duration_sec=3600)
     sched.pipeline._page._discovery._timeout = 0.2
     sched.pipeline._page._fetch.fetcher.fetch = AsyncMock(
@@ -201,7 +201,7 @@ async def test_harvest_timeout(monkeypatch):
     finally:
         done.set()
 
-    assert sched.run_state.progress.pages_fetched == 1
+    assert sched.pipeline.run_state.progress.pages_fetched == 1
     args = sched.pipeline._frontier.record_outcome.call_args[0]
     assert args[1] == "COMPLETED"
 
@@ -216,7 +216,7 @@ async def test_analysis_free(monkeypatch):
     sched = _make_sched(settings=Settings(fetch_concurrency=1))
     sched.pipeline._page._discovery.harvester = MagicMock(harvest=lambda page, depth: Harvest([]))
     sched.pipeline._goal = _goal()
-    sched._task = _task()
+    sched.pipeline._task = _task()
 
     url = URL(raw="https://x.com/a", canonical="https://x.com/a", url_key="k1")
     page = Page(url_key="k1", url=url)
@@ -231,7 +231,7 @@ async def test_analysis_free(monkeypatch):
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._checkpoint = AsyncMock()
+    sched._save = AsyncMock()
 
     await sched.pipeline._run_page(_item())
 
@@ -268,7 +268,7 @@ async def test_missing_extra():
     )
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._checkpoint = AsyncMock()
+    sched._save = AsyncMock()
 
     with pytest.raises(FeedDependencyError, match="crawl-me-maybe"):
         await sched.pipeline._run_page(_item())
@@ -344,7 +344,7 @@ async def test_page_drop_uncap():
         "https://www.reddit.com/r/x/?after=t3_a", item, MagicMock(), "seed", goal=sched.pipeline._goal
     )
     frontier.push_batch.assert_not_awaited()
-    assert sched.run_state.seeds["seed"].listing_pages == 0
+    assert sched.pipeline.run_state.seeds["seed"].listing_pages == 0
 
 
 @pytest.mark.asyncio
@@ -356,7 +356,7 @@ async def test_robots_blocks():
     assert await sched.pipeline._page.fetch_and_extract(item) is None
     # The only fetch was robots.txt itself.
     assert [c.args[0].url.canonical for c in fetcher.fetch.await_args_list] == ["https://x.com/robots.txt"]
-    assert sched.run_state.stats.robots_blocked == 1
+    assert sched.pipeline.run_state.stats.robots_blocked == 1
 
 
 @pytest.mark.asyncio
@@ -405,8 +405,8 @@ async def test_seed_credited_mid_judge():
     finding nothing however much it found."""
     sched = _make_sched()
     sched.pipeline._goal = _goal()
-    sched.run_state.proposed_seeds = {"seed-k": ("https://ext.test/", "why")}
-    sched.run_state.pages.open("k1", "https://ext.test/k1", "seed-k")
+    sched.pipeline.run_state.proposed_seeds = {"seed-k": ("https://ext.test/", "why")}
+    sched.pipeline.run_state.pages.open("k1", "https://ext.test/k1", "seed-k")
 
     url = URL(raw="https://ext.test/p/1", canonical="https://ext.test/p/1", url_key="pk", reg_domain="ext.test")
     page = Page(url_key="pk", url=url)
@@ -425,11 +425,11 @@ async def test_seed_credited_mid_judge():
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._checkpoint = AsyncMock()
+    sched._save = AsyncMock()
 
     await sched.pipeline._run_page(_item())
 
-    why, tally = sched.summary()["proposed_seeds"]["https://ext.test/"]
+    why, tally = sched.pipeline.summary()["proposed_seeds"]["https://ext.test/"]
     assert (why, tally[0]) == ("why", 1)
 
 
@@ -440,8 +440,8 @@ async def test_a_met_target_stops_analysis():
     fifteen and reported twenty-four."""
     sched = _make_sched()
     sched.pipeline._goal = _goal()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, max_relevant=15)
-    sched.run_state.progress.relevant_found = 15
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=15)
+    sched.pipeline.run_state.progress.relevant_found = 15
     sched.pipeline._analysis.analyzer = MagicMock(analyze=AsyncMock())
     url = URL(raw="https://x.test/p", canonical="https://x.test/p", url_key="pk", reg_domain="x.test")
     page = Page(url_key="pk", url=url)
@@ -449,7 +449,7 @@ async def test_a_met_target_stops_analysis():
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._checkpoint = AsyncMock()
+    sched._save = AsyncMock()
 
     await sched.pipeline._run_page(_item())
 
@@ -465,10 +465,10 @@ async def test_the_target_holds_under_a_queue():
     only what is already calling can overshoot."""
     sched = _make_sched(settings=Settings(llm_concurrency=2))
     sched.pipeline._goal = _goal()
-    sched.run_state.limits = dataclasses.replace(sched.run_state.limits, max_relevant=3)
+    sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=3)
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._checkpoint = AsyncMock()
+    sched._save = AsyncMock()
 
     calls = 0
 
@@ -476,7 +476,7 @@ async def test_the_target_holds_under_a_queue():
         nonlocal calls
         calls += 1
         await asyncio.sleep(0)
-        sched.run_state.progress.relevant_found += 1  # worst case: every page counts
+        sched.pipeline.run_state.progress.relevant_found += 1  # worst case: every page counts
 
     sched.pipeline._analysis.analyzer = MagicMock(analyze=_analyze)
 
@@ -488,7 +488,7 @@ async def test_the_target_holds_under_a_queue():
     sched.pipeline._page.fetch_and_extract = AsyncMock(side_effect=pages)
     await asyncio.gather(*[sched.pipeline._run_page(_item()) for _ in range(20)])
 
-    assert sched.run_state.limits.max_relevant <= calls <= sched.run_state.limits.max_relevant + 2
+    assert sched.pipeline.run_state.limits.max_relevant <= calls <= sched.pipeline.run_state.limits.max_relevant + 2
 
 
 @pytest.mark.parametrize(
@@ -522,12 +522,12 @@ async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed
     worker._discovery.discover = AsyncMock(return_value=Harvest([]))
     goal = CrawlGoal(prompt="offers", since=datetime.datetime.fromisoformat(cutoff) if cutoff else None)
     context = PipelineContext(
-        task_id="test",
-        events=None,
         checkpoint=AsyncMock(),
-        can_run=lambda: True,
-        can_dispatch=lambda: True,
-        can_analyze=lambda: True,
+        stop_checkpoints=AsyncMock(),
+        supervise=AsyncMock(),
+        can_start=lambda phase: True,
+        can_finish=lambda phase: True,
+        settle=AsyncMock(),
     )
     # The candidate has no date; the real extraction path supplies it.
     await worker.run(PageInput(item, goal), context)

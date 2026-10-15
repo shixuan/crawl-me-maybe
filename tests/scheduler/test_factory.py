@@ -8,6 +8,7 @@ import pytest
 from crawlme.config import Settings
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.scheduler.factory import _build_ranker, create_scheduler
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 
 
 def test_ranker_is_llm(tmp_path: Path):
@@ -33,7 +34,7 @@ def test_sched_analyzer(tmp_path: Path):
     analyzer = MagicMock()
     sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
     assert sched.pipeline._analysis.analyzer is analyzer
-    assert sched._checkpointer.analysis is sched.pipeline._analysis
+    assert sched.pipeline._checkpointer.analysis is sched.pipeline._analysis
 
 
 def test_scheduler_no_analyzer(tmp_path: Path):
@@ -49,7 +50,7 @@ def test_sched_run_state(tmp_path: Path):
 
     state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
     sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
-    assert sched.run_state is state
+    assert sched.pipeline.run_state is state
     assert sched.pipeline._tracking.state is state
 
 
@@ -124,7 +125,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
         assert (url in calls) == (ignore or not disallow)
         assert ("https://example.com/robots.txt" in calls) == (not ignore)
         if disallow and not ignore:
-            assert scheduler.run_state.rejected_seeds == [(url, "blocked by robots")]
+            assert scheduler.pipeline.run_state.rejected_seeds == [(url, "blocked by robots")]
         else:
             assert len(list(tmp_path.glob("*/raw/*/*.payload.0"))) == 1
     finally:
@@ -176,11 +177,11 @@ async def test_seed_failure(tmp_path, monkeypatch):
     with pytest.raises(RemoteError):
         await scheduler.pipeline.expand_seeds(goal, seeds)
     await scheduler.pipeline.ingest_seeds(goal, seeds)
-    await asyncio.wait_for(scheduler.run(goal, task), 2)
+    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"
-    assert calls == ["seeds"] and scheduler.run_state.progress.pages_fetched == 0
-    assert "Insufficient credits" in scheduler.run_state.progress.fatal_error
+    assert calls == ["seeds"] and scheduler.pipeline.run_state.progress.pages_fetched == 0
+    assert "Insufficient credits" in scheduler.pipeline.run_state.progress.fatal_error
     fetcher.fetch.assert_not_awaited()
-    with sqlite3.connect(scheduler._storage.db_path) as db:
+    with sqlite3.connect(scheduler.pipeline._storage.db_path) as db:
         saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
     assert not saved["state"]["progress"]["fatal_error"]

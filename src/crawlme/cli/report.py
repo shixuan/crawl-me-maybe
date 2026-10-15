@@ -10,11 +10,10 @@ from crawlme.analysis import CLASSIFICATIONS
 from crawlme.llm import Stage, TokenBudget
 from crawlme.platforms import PageProblem
 from crawlme.runtime import CrawlTask
-from crawlme.scheduler import Engine
 
 
 def finish(
-    scheduler: Engine,
+    summary: dict[str, Any],
     task: CrawlTask,
     budget: TokenBudget,
     *,
@@ -22,7 +21,7 @@ def finish(
     platform: str = "",
 ) -> None:
     """Print and persist the report after cleanup, then apply the shared exit policy."""
-    print_summary(scheduler, task, budget, session=session, platform=platform)
+    print_summary(summary, task, budget, session=session, platform=platform)
     code = exit_code(task.stopping_reason)
     logging.getLogger().setLevel(logging.CRITICAL)
     if code:
@@ -39,7 +38,7 @@ def exit_code(stopping_reason: str | None) -> int:
 
 
 def print_summary(
-    scheduler: Engine,
+    summary: dict[str, Any],
     task: CrawlTask,
     budget: TokenBudget,
     *,
@@ -47,7 +46,6 @@ def print_summary(
     platform: str = "",
 ) -> None:
     """Print results, stopping reasons, per-source counts and LLM usage."""
-    summary = scheduler.summary()
     if not isinstance(summary, dict):
         return
     summary["state"] = task.state

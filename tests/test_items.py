@@ -17,7 +17,8 @@ from crawlme.errors import Error, ErrorHandler, Kind
 from crawlme.llm import LLMResponse
 from crawlme.persist import Storage, read_results
 from crawlme.runtime import CrawlGoal
-from crawlme.scheduler.workers import DedupWorker
+from crawlme.scheduler import Engine
+from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.urls import URL
 
 
@@ -124,8 +125,8 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         assert len({row["url"] for row in rows}) == 1
         client = MagicMock()
         client.chat = AsyncMock(return_value=LLMResponse('{"groups": []}', 20, 10, "test"))
-        report = await DedupWorker(
-            Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler()
+        report = await Engine(
+            DedupPipeline(Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler())
         ).run(goal)
         assert report["groups"] == 2
         stored = read_results(Path(storage.db_path))
@@ -144,8 +145,8 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         client.chat.return_value = LLMResponse(
             json.dumps({"groups": [{"members": pair, "overview": "Aster camera"}]}), 20, 10, "test"
         )
-        report = await DedupWorker(
-            Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler()
+        report = await Engine(
+            DedupPipeline(Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler())
         ).run(goal)
         assert report == {"status": "complete", "sources": 2, "items": 3, "groups": 2}
         shown = serve._results(tmp_path, Path(storage.db_path).parent.parent.name, goal.goal_id)

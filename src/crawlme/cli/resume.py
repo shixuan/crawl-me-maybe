@@ -16,6 +16,7 @@ from crawlme.persist import Lock, Storage
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 
 
 async def cmd_resume(args: argparse.Namespace) -> None:
@@ -57,7 +58,7 @@ async def cmd_resume(args: argparse.Namespace) -> None:
             cfg, goal=goal, llm_ranker=ranker, budget=budget, storage=storage, dedup_enabled=payload["dedup"]
         )
         print(f"resuming: {task.task_id} ({run_dir})")
-        await scheduler.run(goal, task, checkpoint=payload, lock=lock)
+        await scheduler.run(CrawlInput(goal, task, checkpoint=payload, lock=lock))
     except ValueError as exc:
         print(f"resume failed: {exc}")
         raise SystemExit(1) from exc
@@ -71,4 +72,4 @@ async def cmd_resume(args: argparse.Namespace) -> None:
         finally:
             lock.release()
 
-    finish(scheduler, task, budget, session=cfg.browser_storage_state)
+    finish(scheduler.pipeline.summary(), task, budget, session=cfg.browser_storage_state)
