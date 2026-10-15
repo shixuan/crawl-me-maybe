@@ -13,10 +13,11 @@ from crawlme.analysis.models import (
 )
 
 if TYPE_CHECKING:
-    from crawlme.analysis.analyzer import Analyzer
+    from crawlme.analysis.analyzer import AnalysisError, Analyzer
 
 __all__ = [
     "CLASSIFICATIONS",
+    "AnalysisError",
     "AnalysisResult",
     "Analyzer",
     "AnalyzerFeedback",
@@ -30,6 +31,7 @@ def __getattr__(name: str) -> Any:
     # Keep importing data types independent of loading their consumers.
     modules = {
         "Analyzer": "crawlme.analysis.analyzer",
+        "AnalysisError": "crawlme.analysis.analyzer",
     }
     if name not in modules:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

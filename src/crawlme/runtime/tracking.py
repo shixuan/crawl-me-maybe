@@ -75,6 +75,9 @@ class Tracker:
 
     def analysis(self, result: AnalysisResult) -> str | None:
         """Tally an analysis and return the source whose retirement policy needs checking."""
+        for work in self.state.work.values():
+            if work.get("page", {}).get("url_key") == result.url_key:
+                work["analysis_done"] = True
         by_class = self.state.stats.analyses_by_class
         by_class[result.classification] = by_class.get(result.classification, 0) + 1
         fb = result.feedback

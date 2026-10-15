@@ -13,7 +13,8 @@ from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.digest import FetchResult, Page
 from crawlme.discovery import Harvest
-from crawlme.llm import Error, LLMResponse
+from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
+from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
@@ -40,6 +41,7 @@ def build(tmp_path, **overrides):
     )
     goal = CrawlGoal(prompt="compiler correctness", max_pages=0, max_duration_sec=0, domain_budget=0)
     kwargs = dict(
+        error_handler=ErrorHandler(ErrorPolicy(retry_delay=0)),
         fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()),
         extractor=MagicMock(extract=extract),
         harvester=MagicMock(harvest=lambda page, depth: Harvest([])),
@@ -158,7 +160,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise Error("retry")
+            raise RemoteError("retry", kind=Kind.UNAVAILABLE)
         retry_entered.set()
         await retry_release.wait()
         return LLMResponse(
@@ -173,7 +175,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
     def harvest(page, depth):
         return Harvest([candidate("child", source_url_key=page.url_key)] if rank_child else [])
 
-    analyzer = Analyzer(MagicMock(chat=chat), retry_delay=0)
+    analyzer = Analyzer(MagicMock(chat=chat))
     scheduler, goal, task, _ = build(
         tmp_path,
         analyzer=analyzer,
@@ -187,12 +189,12 @@ async def test_retry_retains_source(tmp_path, rank_child):
     try:
         await asyncio.wait_for(retry_entered.wait(), 2)
         await wait_until(lambda: not scheduler.pipeline._inflight)
-        assert key in analyzer.pending_keys
+        assert key in scheduler.pipeline._analysis.pending_keys
         assert scheduler.run_state.pages.by_url(seed.url.canonical).seed == key
         if rank_child:
             await asyncio.wait_for(rank_entered.wait(), 2)
         retry_release.set()
-        await wait_until(lambda: not analyzer.pending_keys)
+        await wait_until(lambda: not scheduler.pipeline._analysis.pending_keys)
         if rank_child:
             assert scheduler.run_state.page_contexts[key]["summary"] == "Compiler safety"
             assert scheduler.run_state.pages.by_url(seed.url.canonical).counted

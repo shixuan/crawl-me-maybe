@@ -6,7 +6,6 @@ interface, so the client is faked with a scripted responder.
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 
 import pytest
@@ -15,7 +14,8 @@ from crawlme.analysis import Analyzer
 from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
 from crawlme.config import Settings
 from crawlme.digest import Page
-from crawlme.llm import Error, LLMResponse, TokenBudget, TokenBudgetError
+from crawlme.errors import Kind
+from crawlme.llm import LLMResponse, RemoteError, TokenBudget, TokenBudgetError
 from crawlme.prompts import analysis_input
 from crawlme.runtime import CrawlGoal
 from crawlme.urls import URL
@@ -67,8 +67,8 @@ def _valid_json() -> str:
     )
 
 
-def _analyzer(client: _StubClient, *, retry_delay: float = 0.0) -> Analyzer:
-    return Analyzer(client, retry_delay=retry_delay)
+def _analyzer(client: _StubClient) -> Analyzer:
+    return Analyzer(client)
 
 
 # -- happy path ---------------------------------------------------------
@@ -127,7 +127,7 @@ async def test_char_cap():
     """The settings knob dials the page-text cap (the benchmark's C arm)."""
     long_text = "word " * 4000
     client = _StubClient([_resp(_valid_json())])
-    analyzer = Analyzer(client, retry_delay=0.0, max_page_chars=200)
+    analyzer = Analyzer(client, max_page_chars=200)
     await analyzer.analyze(_page(long_text), _goal())
     prompt = client.calls[0]["prompt"]
     assert len(prompt) < 400  # 200-char cap plus headers
@@ -198,122 +198,6 @@ async def test_lists_capped():
 
 
 # -- failure and retry policy --------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_parked_retry():
-    client = _StubClient([Error("provider down"), _resp(_valid_json())])
-    analyzer = _analyzer(client)
-    published: list = []
-    analyzer.bind_sink(published.append)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    for _ in range(100):
-        if published:
-            break
-        await asyncio.sleep(0.01)
-
-    assert len(client.calls) == 2
-    assert len(published) == 1
-    assert published[0].classification == "RELEVANT"
-
-
-@pytest.mark.asyncio
-async def test_gives_up():
-    client = _StubClient([Error("down"), Error("down"), Error("down")])
-    analyzer = _analyzer(client)
-    published: list = []
-    analyzer.bind_sink(published.append)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    for _ in range(100):
-        if len(client.calls) >= 3:
-            break
-        await asyncio.sleep(0.01)
-    await asyncio.sleep(0.02)  # give the giveup path a beat after the last call
-
-    assert len(client.calls) == 3
-    assert published == []
-
-
-@pytest.mark.asyncio
-async def test_budget_no_retry():
-    client = _StubClient([TokenBudgetError("budget exhausted")])
-    analyzer = _analyzer(client)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    await asyncio.sleep(0.05)
-
-    assert len(client.calls) == 1  # no background retry behind a dead budget
-
-
-@pytest.mark.asyncio
-async def test_bad_json_fails():
-    client = _StubClient([_resp("not json"), _resp(_valid_json())])
-    analyzer = _analyzer(client)
-    published: list = []
-    analyzer.bind_sink(published.append)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    for _ in range(100):
-        if published:
-            break
-        await asyncio.sleep(0.01)
-
-    assert published  # retry succeeded
-
-
-@pytest.mark.asyncio
-async def test_aclose_cancels():
-    client = _StubClient([Error("down"), _resp(_valid_json())])
-    analyzer = _analyzer(client, retry_delay=60.0)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    await analyzer.aclose()
-    await asyncio.sleep(0.05)
-
-    assert len(client.calls) == 1  # parked page dropped, never retried
-
-
-@pytest.mark.asyncio
-async def test_drain_waits():
-    client = _StubClient([Error("provider down"), _resp(_valid_json())])
-    analyzer = _analyzer(client)
-    published: list = []
-    analyzer.bind_sink(published.append)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    await analyzer.drain_pending()
-
-    assert len(published) == 1
-    assert analyzer._parked_count == 0
-
-
-@pytest.mark.asyncio
-async def test_drain_giveup():
-    client = _StubClient([Error("down"), Error("down")])
-    analyzer = Analyzer(client, retry_delay=0.0, max_attempts=2)
-    published: list = []
-    analyzer.bind_sink(published.append)
-
-    assert await analyzer.analyze(_page(), _goal()) is None
-    await analyzer.drain_pending()
-
-    assert len(client.calls) == 2  # one retry, then giveup
-    assert published == []
-    assert analyzer._parked_count == 0
-
-
-@pytest.mark.asyncio
-async def test_sink_first_try():
-    client = _StubClient([_resp(_valid_json())])
-    analyzer = _analyzer(client)
-    published: list = []
-    analyzer.bind_sink(published.append)
-
-    result = await analyzer.analyze(_page(), _goal())
-    assert result is not None
-    assert published == [result]
 
 
 # -- construction -------------------------------------------------------
@@ -729,12 +613,19 @@ async def test_time_correction():
     [
         _resp(_time_reply(["Invented quote", "May 12, 2027"])),
         _resp("not json"),
-        Error("unavailable"),
+        RemoteError("unavailable", kind=Kind.UNAVAILABLE),
         TokenBudgetError("exhausted"),
     ],
 )
 async def test_time_correction_fails(failure, caplog):
     client = _StubClient([_resp(_time_reply("One day only.")), failure])
+    if isinstance(failure, Exception):
+        with pytest.raises(type(failure)):
+            await _analyzer(client).analyze(
+                _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+            )
+        assert len(client.calls) == 2
+        return
     result = await _analyzer(client).analyze(
         _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
     )
@@ -772,52 +663,3 @@ async def test_correction_keeps_analysis():
     assert result.summary == "A one-day event."
     assert result.starts_on is None and result.ends_on is None
     assert result.tokens_used == 720
-
-
-async def test_checkpoint_retains_retry():
-    entered = asyncio.Event()
-    calls = 0
-
-    class Client:
-        async def chat(self, *args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise Error("retry")
-            if calls == 2:
-                entered.set()
-                await asyncio.Event().wait()
-            return _resp(_valid_json())
-
-    analyzer = Analyzer(Client(), retry_delay=0)
-    results = []
-    analyzer.bind_sink(results.append)
-    try:
-        await analyzer.analyze(_page(), _goal())
-        await asyncio.wait_for(entered.wait(), 2)
-        saved = analyzer.dump()
-        await analyzer.aclose()
-        assert saved["entries"][0]["attempts"] == 1
-        await asyncio.sleep(0)
-        assert calls == 2 and not results
-        analyzer = Analyzer(Client(), retry_delay=0)
-        analyzer.bind_sink(results.append)
-        analyzer.bind_goal(_goal())
-        analyzer.restore(saved)
-        analyzer.start_retries()
-        await asyncio.wait_for(analyzer.drain_pending(), 2)
-        assert len(results) == 1 and calls == 3
-    finally:
-        await analyzer.aclose()
-    assert analyzer._pending.empty()
-
-
-async def test_retry_failure_surfaces():
-    analyzer = _analyzer(_StubClient([Error("retry"), RuntimeError("broken retry")]))
-    try:
-        await analyzer.analyze(_page(), _goal())
-        with pytest.raises(RuntimeError, match="broken retry"):
-            await asyncio.wait_for(analyzer.drain_pending(), 2)
-    finally:
-        with pytest.raises(RuntimeError, match="broken retry"):
-            await analyzer.aclose()

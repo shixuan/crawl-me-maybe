@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.analysis import Analyzer
-from crawlme.llm import Error, LLMResponse, TokenBudget
+from crawlme.errors import Kind
+from crawlme.llm import LLMResponse, RemoteError, TokenBudget
 from crawlme.persist import Lock, Storage
 from crawlme.pioneer import RankDecision
 from crawlme.pioneer.robots import RobotsPolicy
@@ -38,14 +39,14 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     async def chat(*args, **kwargs):
         calls.append("analysis")
         if stage == "retry" and calls.count("analysis") == 1:
-            raise Error("retry")
+            raise RemoteError("retry", kind=Kind.UNAVAILABLE)
         if stage in {"analysis", "retry"}:
             entered.set()
             await asyncio.Event().wait()
         budget.record(2, 1, stage="analysis")
         return LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 2, 1, "stub")
 
-    analyzer = Analyzer(MagicMock(chat=chat), retry_delay=0)
+    analyzer = Analyzer(MagicMock(chat=chat))
     scheduler, goal, task, fetched = build(tmp_path, analyzer=analyzer, budget=budget)
 
     async def blocked(*args, **kwargs):
@@ -88,7 +89,7 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     fresh, _, _, fetched = build(
         tmp_path,
         storage=reopen(scheduler),
-        analyzer=Analyzer(MagicMock(chat=complete), retry_delay=0),
+        analyzer=Analyzer(MagicMock(chat=complete)),
         ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()),
         budget=TokenBudget(100),
     )
@@ -185,3 +186,227 @@ async def test_recovery_keeps_limits(tmp_path):
     assert fresh.pipeline._robots.next_allowed_at("example.com") == datetime.datetime.fromisoformat(
         saved["robots"]["next_allowed"]["example.com"]
     )
+
+
+@pytest.mark.parametrize("status", [402, 503])
+@pytest.mark.parametrize("stage", ["analysis", "retry", "ranking", "dedup", "goal", "seeds"])
+async def test_remote_resume(tmp_path, monkeypatch, stage, status):
+    from types import SimpleNamespace
+
+    import httpx
+
+    from crawlme.dedup import Grouper
+    from crawlme.llm import Client
+    from crawlme.pioneer.goal_enhancer import GoalEnhancer
+    from crawlme.pioneer.ranker import LLMRanker
+    from crawlme.pioneer.seed_expander import SeedExpander
+
+    calls = []
+    message = "Insufficient credits" if status == 402 else "Service is too busy"
+    provider_code = "payment_required" if status == 402 else "service_unavailable"
+    content = json.dumps(
+        {
+            "classification": "RELEVANT",
+            "relevance_score": 0.9,
+            "items": [
+                {
+                    "summary": "Compiler correctness",
+                    "relevance_score": 0.9,
+                    "evidence": ["An article about compiler correctness."],
+                }
+            ],
+        }
+    )
+
+    async def complete(client, *args, **kwargs):
+        calls.append(client._stage)
+        if stage == "retry" and len(calls) == 1:
+            raise RemoteError("temporary failure", kind=Kind.UNAVAILABLE)
+        if client._stage == stage or stage == "retry":
+            response = httpx.Response(
+                status,
+                json={"error": {"message": message, "code": provider_code}},
+                request=httpx.Request("POST", "https://provider.test"),
+            )
+            raise httpx.HTTPStatusError("Payment required", request=response.request, response=response)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0),
+        )
+
+    monkeypatch.setattr(Client, "_complete", complete)
+    scheduler, goal, task, _ = build(
+        tmp_path,
+        analyzer=Analyzer(Client("provider/model", stage="analysis", reasoning_effort="off")),
+        grouper=Grouper(Client("provider/model", stage="dedup", reasoning_effort="off"), max_chars=100000)
+        if stage == "dedup"
+        else None,
+        ranker=LLMRanker(Client("provider/model", stage="ranking")) if stage == "ranking" else None,
+    )
+    if stage == "ranking":
+        await scheduler.pipeline._frontier.push_candidates([candidate()])
+    else:
+        await scheduler.pipeline.ingest_seeds(goal, [candidate()])
+        if stage == "dedup":
+            await scheduler.pipeline.ingest_seeds(goal, [candidate("second")])
+    client = Client("provider/model", stage=stage)
+    if stage in {"goal", "seeds"}:
+        scheduler.pipeline._goal_enhancer = GoalEnhancer(client) if stage == "goal" else GoalEnhancer(None)
+        scheduler.pipeline._seed_expander = SeedExpander(client) if stage == "seeds" else None
+        await scheduler.pipeline.startup(goal, [candidate()])
+    await asyncio.wait_for(scheduler.run(goal, task), 2)
+    assert task.state == "FAILED" and task.stopping_reason == "FATAL"
+    error = scheduler.run_state.progress.fatal_error
+    assert str(status) in error and message in error
+    expected_calls = (
+        (3 if stage == "dedup" else 2 if stage == "retry" else 1) if status == 402 else (5 if stage == "dedup" else 3)
+    )
+    assert len(calls) == expected_calls
+    saved = snapshot(scheduler)
+    # Cleanup must not replace recoverable work with the emptied retry queue.
+    assert not saved["state"]["progress"]["fatal_error"]
+    if stage == "retry":
+        assert len(saved["retries"]) == 1
+    if stage == "dedup":
+        assert task.state == "FAILED"
+    if stage == "analysis":
+        if status == 402:
+            assert len(saved["work"]) == 1 and not saved["work"][0].get("analysis_done")
+        else:
+            assert len(saved["retries"]) == 1
+
+    async def analyze(*args, **kwargs):
+        return LLMResponse(content, 0, 0, "stub")
+
+    async def rank(goal, batch, history, **kwargs):
+        return [RankDecision(candidate_id=c.candidate_id, url_key=c.url.url_key, priority=1) for c in batch]
+
+    fresh, _, _, _ = build(
+        tmp_path,
+        storage=reopen(scheduler),
+        analyzer=Analyzer(MagicMock(chat=analyze)),
+        ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()),
+    )
+    restored_task = CrawlTask.model_validate(saved["task"])
+    await asyncio.wait_for(fresh.run(goal, restored_task, checkpoint=saved), 2)
+    assert restored_task.state == "COMPLETED"
+    assert fresh.run_state.stats.analyses_by_class == {"RELEVANT": 2 if stage == "dedup" else 1}
+
+
+async def test_remote_cancels_calls(tmp_path, monkeypatch):
+    import httpx
+
+    from crawlme.llm import Client
+
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+    requests = 0
+
+    async def complete(self, *args, **kwargs):
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        await entered.wait()
+        response = httpx.Response(402, request=httpx.Request("POST", "https://provider.test"))
+        raise httpx.HTTPStatusError("Payment required", request=response.request, response=response)
+
+    monkeypatch.setattr(Client, "_complete", complete)
+    scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(Client("provider/model", concurrency=2)))
+    scheduler.pipeline._analysis._slots = asyncio.Semaphore(3)
+    await scheduler.pipeline.ingest_seeds(goal, [candidate("first"), candidate("second"), candidate("third")])
+    await asyncio.wait_for(scheduler.run(goal, task), 2)
+    assert task.state == "FAILED" and task.stopping_reason == "FATAL"
+    assert cancelled.is_set() and requests == 2
+    assert not scheduler.pipeline._inflight and not scheduler.pipeline._pump_tasks
+
+
+async def test_failed_initial_checkpoint(tmp_path, caplog):
+    scheduler, goal, task, _ = build(tmp_path)
+    scheduler._checkpointer.save = AsyncMock(side_effect=OSError("Disk full"))
+    await scheduler.run(goal, task)
+    assert task.state == "FAILED" and task.stopping_reason == "FATAL"
+    assert "Disk full" in caplog.text and "crawl resume" not in caplog.text
+    with sqlite3.connect(scheduler._storage.db_path) as db:
+        assert db.execute("SELECT checkpoint_json FROM checkpoints").fetchone() is None
+
+
+@pytest.mark.parametrize("stop", ["remote", "user", "failure", "ranking"])
+@pytest.mark.parametrize("source", ["stage", "periodic"])
+async def test_stop_queued_checkpoint(tmp_path, monkeypatch, stop, source):
+    import httpx
+
+    from crawlme.llm import Client
+    from tests.scheduler.test_control import wait_until
+
+    entered, reject, closing, release = (asyncio.Event() for _ in range(4))
+
+    async def complete(self, *args, **kwargs):
+        entered.set()
+        if stop == "ranking":
+            await asyncio.Event().wait()
+        await reject.wait()
+        response = httpx.Response(402, request=httpx.Request("POST", "https://provider.test"))
+        raise httpx.HTTPStatusError("Payment required", request=response.request, response=response)
+
+    monkeypatch.setattr(Client, "_complete", complete)
+    if source == "periodic":
+        monkeypatch.setattr("crawlme.scheduler.engine._CHECKPOINT_INTERVAL", 0.005)
+    scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(Client("provider/model")))
+    if stop == "ranking":
+
+        async def rank(*args, **kwargs):
+            await reject.wait()
+            raise RuntimeError("Ranking unavailable")
+
+        scheduler.pipeline._ranking.ranker = MagicMock(rank_batch=rank, aclose=AsyncMock())
+        await scheduler.pipeline._frontier.push_candidates([candidate("rank")])
+    await scheduler.pipeline.ingest_seeds(goal, [candidate()])
+    abort = scheduler.pipeline.abort
+
+    async def held_abort():
+        closing.set()
+        await release.wait()
+        await abort()
+
+    scheduler.pipeline.abort = held_abort
+    run = asyncio.create_task(scheduler.run(goal, task))
+    queued = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        async with scheduler._checkpointer._lock:
+            saved = snapshot(scheduler)
+            queued = (
+                scheduler._checkpoint_task if source == "periodic" else asyncio.create_task(scheduler._checkpoint())
+            )
+            await wait_until(lambda: scheduler._checkpointer._lock._waiters)
+            if stop in {"remote", "ranking"}:
+                reject.set()
+            elif stop == "failure":
+                scheduler.pipeline.error_handler.abort(RuntimeError("Storage unavailable"), "persist")
+            else:
+                run.cancel()
+            await asyncio.wait_for(closing.wait(), 2)
+            # Cleanup starts only after even a lock-blocked save has stopped.
+            assert queued.done()
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+        assert snapshot(scheduler) == saved
+        release.set()
+        if stop == "user":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(run, 2)
+        else:
+            await asyncio.wait_for(run, 2)
+        assert task.state == ("INTERRUPTED" if stop == "user" else "FAILED")
+        if stop == "failure":
+            assert scheduler.run_state.progress.fatal_error == "Storage unavailable"
+    finally:
+        release.set()
+        run.cancel()
+        if queued is not None:
+            queued.cancel()
+        await asyncio.gather(run, *([queued] if queued is not None else []), return_exceptions=True)

@@ -23,6 +23,7 @@ import pytest
 from crawlme.config import Settings
 from crawlme.digest import DispatchingFetcher, FetchError, PlaywrightFetcher
 from crawlme.digest.fetcher.browser import _load_storage_state
+from crawlme.errors import Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.scheduler.factory import _build_fetcher
 from crawlme.urls import URL
@@ -186,7 +187,7 @@ async def test_nav_retried(monkeypatch):
     """
     real_sleep = asyncio.sleep
     monkeypatch.setattr(asyncio, "sleep", lambda _d: real_sleep(0))
-    fetcher = PlaywrightFetcher(max_retries=3)
+    fetcher = PlaywrightFetcher()
     calls = []
 
     class _NavigationTimeoutError(Exception):
@@ -199,13 +200,15 @@ async def test_nav_retried(monkeypatch):
         return "ok"
 
     monkeypatch.setattr(fetcher, "_attempt", flaky)
-    assert await fetcher.fetch(_item("https://x.com/a")) == "ok"
-    assert calls == [1, 2, 3]
+    with pytest.raises(FetchError) as caught:
+        await fetcher.fetch(_item("https://x.com/a"))
+    assert caught.value.kind == Kind.TIMEOUT
+    assert calls == [1]
 
 
 @pytest.mark.asyncio
 async def test_permanent_nav_error(monkeypatch):
-    fetcher = PlaywrightFetcher(max_retries=3)
+    fetcher = PlaywrightFetcher()
     calls = []
 
     async def gone(item):

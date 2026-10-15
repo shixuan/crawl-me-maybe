@@ -19,7 +19,8 @@ import pytest
 import crawlme.llm.client as llm_mod
 from crawlme.analysis import Analyzer
 from crawlme.config import Settings
-from crawlme.llm import Client, Error, TokenBudget, TokenBudgetError
+from crawlme.errors import Error, Kind
+from crawlme.llm import Client, DependencyError, RemoteError, TokenBudget, TokenBudgetError
 from crawlme.util import subscribe
 
 
@@ -80,7 +81,7 @@ def no_sleep(monkeypatch):
     async def fake_sleep(seconds: float) -> None:
         calls.append(seconds)
 
-    monkeypatch.setattr(llm_mod, "_sleep", fake_sleep)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     return calls
 
 
@@ -140,37 +141,12 @@ async def test_creds_optional(monkeypatch):
     assert stub.kwargs[1]["api_base"] == "http://localhost:11434/v1"
 
 
-async def test_retry_succeeds(monkeypatch, no_sleep):
-    stub = _StubLitellm([_StubLitellm.RateLimitError(), _resp("ok")])
-    monkeypatch.setattr(llm_mod, "_litellm", stub)
-    r = await Client("openai/gpt-4o-mini").chat("hi")
-    assert r.content == "ok"
-    assert len(stub.kwargs) == 2
-    assert no_sleep == [1.0]
-
-
-async def test_retry_exhausted(monkeypatch, no_sleep):
-    stub = _StubLitellm([_StubLitellm.RateLimitError(), _StubLitellm.Timeout(), _StubLitellm.ServiceUnavailableError()])
-    monkeypatch.setattr(llm_mod, "_litellm", stub)
-    with pytest.raises(Error, match="3 attempts"):
-        await Client("openai/gpt-4o-mini").chat("hi")
-    assert len(stub.kwargs) == 3
-    assert no_sleep == [1.0, 2.0]
-
-
-async def test_connect_retried(monkeypatch, no_sleep):
-    stub = _StubLitellm([httpx.ConnectError("provider down"), _resp("ok")])
-    monkeypatch.setattr(llm_mod, "_litellm", stub)
-    r = await Client("openai/gpt-4o-mini").chat("hi")
-    assert r.content == "ok"
-    assert no_sleep == [1.0]
-
-
 async def test_permanent_raises(monkeypatch, no_sleep):
     stub = _StubLitellm([ValueError("bad request body")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    with pytest.raises(Error, match="rejected"):
+    with pytest.raises(RemoteError, match="remote error") as caught:
         await Client("openai/gpt-4o-mini").chat("hi")
+    assert caught.value.kind == Kind.UNKNOWN
     assert len(stub.kwargs) == 1
     assert no_sleep == []
 
@@ -180,8 +156,9 @@ async def test_no_creds_raises(monkeypatch, no_sleep):
     # normally transient.  The message check must win.
     stub = _StubLitellm([_StubLitellm.InternalServerError("Missing credentials. Please pass an `api_key`.")])
     monkeypatch.setattr(llm_mod, "_litellm", stub)
-    with pytest.raises(Error, match="rejected"):
+    with pytest.raises(RemoteError, match="remote error") as caught:
         await Client("openai/gpt-4o-mini").chat("hi")
+    assert caught.value.kind == Kind.UNAUTHENTICATED
     assert len(stub.kwargs) == 1
     assert no_sleep == []
 
@@ -205,8 +182,12 @@ async def test_no_litellm(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(Error, match="litellm"):
+    with pytest.raises(DependencyError, match="litellm") as caught:
         await Client("openai/gpt-4o-mini").chat("hi")
+    assert isinstance(caught.value, Error)
+    assert caught.value.source == "llm" and caught.value.code == "dependency_missing"
+    assert caught.value.details["module"] == "litellm"
+    assert isinstance(caught.value.__cause__, ImportError)
 
 
 def test_wires_knobs():
@@ -538,3 +519,150 @@ def test_partial_restore_notifies(request):
     assert notices == [10]
     with pytest.raises(TokenBudgetError):
         budget.check()
+
+
+@pytest.mark.parametrize(
+    "status,body,account_failed",
+    [
+        (402, {"error": {"message": "Account balance exhausted", "code": "payment_required"}}, True),
+        (401, {"error": {"message": "Authentication failed", "type": "authentication_error"}}, True),
+        (403, {"error": {"message": "Access denied"}}, True),
+        (429, {"error": {"message": "Limit reached", "code": "insufficient_quota"}}, True),
+        (429, {"error": {"message": "Insufficient credits"}}, True),
+        (429, {"error": {"message": "Rate limit reached", "code": "rate_limit_exceeded"}}, False),
+        (503, {"error": {"message": "Temporarily unavailable"}}, False),
+        (400, {"error": {"message": "Context too long", "code": "context_length_exceeded"}}, False),
+    ],
+)
+async def test_remote_details(monkeypatch, no_sleep, status, body, account_failed):
+    response = httpx.Response(status, json=body, request=httpx.Request("POST", "https://provider.test"))
+    error = httpx.HTTPStatusError("HTTP rejection", request=response.request, response=response)
+    stub = _StubLitellm([error, _resp("recovered")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    client = Client("provider/model", stage="analysis")
+    with pytest.raises(RemoteError) as caught:
+        await client.chat("analyze")
+    failure = caught.value
+    assert failure.source == "llm" and failure.code == "remote_rejected"
+    assert failure.status_code == status
+    assert failure.provider_code == body["error"].get("code", "")
+    assert failure.provider_type == body["error"].get("type", "")
+    assert failure.message == body["error"]["message"]
+    assert failure.model == "provider/model" and failure.stage == "analysis"
+    expected = {
+        401: Kind.UNAUTHENTICATED,
+        402: Kind.RESOURCE_EXHAUSTED,
+        403: Kind.FORBIDDEN,
+        429: Kind.RESOURCE_EXHAUSTED if account_failed else Kind.RATE_LIMITED,
+        503: Kind.UNAVAILABLE,
+        400: Kind.INVALID_INPUT,
+    }
+    assert failure.kind == expected[status]
+    assert failure.details["status_code"] == status
+    assert failure.__cause__ is error
+    assert len(stub.kwargs) == 1 and not no_sleep
+
+
+async def test_remote_redacts_key(monkeypatch):
+    stub = _StubLitellm([ValueError("Invalid api key: secret-key")])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    with pytest.raises(RemoteError) as caught:
+        await Client("provider/model", api_key="secret-key").chat("hi")
+    assert caught.value.kind == Kind.UNAUTHENTICATED
+    assert "secret-key" not in str(caught.value)
+
+
+async def test_remote_exception_chain(monkeypatch, no_sleep):
+    body = {"error": {"message": "Quota exhausted", "code": "insufficient_quota"}}
+    response = httpx.Response(429, json=body, request=httpx.Request("POST", "https://provider.test"))
+    original = httpx.HTTPStatusError("Original error", request=response.request, response=response)
+    wrapped = _StubLitellm.RateLimitError("Quota exhausted")
+    wrapped.status_code = 429
+    wrapped.__context__ = original
+    stub = _StubLitellm([wrapped])
+    monkeypatch.setattr(llm_mod, "_litellm", stub)
+    with pytest.raises(RemoteError) as caught:
+        await Client("provider/model").chat("hi")
+    assert caught.value.kind == Kind.RESOURCE_EXHAUSTED and caught.value.provider_code == "insufficient_quota"
+    assert caught.value.message == "Quota exhausted"
+    assert len(stub.kwargs) == 1 and not no_sleep
+    assert stub.kwargs[0]["max_retries"] == stub.kwargs[0]["num_retries"] == 0
+
+
+async def test_deadline_cuts_off_drips(monkeypatch, caplog):
+    handlers = set()
+    received = asyncio.Event()
+
+    async def drip(reader, writer):
+        task = asyncio.current_task()
+        handlers.add(task)
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+            received.set()
+            for _ in range(100):
+                writer.write(b"1\r\n \r\n")
+                await writer.drain()
+                await asyncio.sleep(0.01)
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.discard(task)
+
+    server = await asyncio.start_server(drip, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+    async def complete(**kwargs):
+        async with httpx.AsyncClient(timeout=kwargs["timeout"], trust_env=False) as transport:
+            await transport.post(url, content=b"request")
+        return _resp("ok")
+
+    monkeypatch.setattr(llm_mod, "_litellm", SimpleNamespace(acompletion=complete))
+    monkeypatch.setattr(llm_mod, "_LLM_TIMEOUT", 0.15)
+    monkeypatch.setattr(llm_mod, "_LLM_SLOW_WARNING", 0.05)
+    budget = TokenBudget(limit=100)
+    try:
+        with caplog.at_level(logging.WARNING), pytest.raises(RemoteError) as caught:
+            await asyncio.wait_for(Client("test", stage="seeds", budget=budget).chat("hello"), 0.8)
+        assert received.is_set()
+        assert caught.value.kind == Kind.TIMEOUT
+        assert caught.value.stage == "seeds"
+        assert isinstance(caught.value.__cause__, asyncio.TimeoutError)
+        assert "complete response" in str(caught.value)
+        assert "still waiting" in caplog.text and "seeds" in caplog.text
+        assert budget.used == budget.calls == 0
+    finally:
+        server.close()
+        await server.wait_closed()
+        pending = list(handlers)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_wait_notice_is_cancelled(monkeypatch, caplog):
+    monkeypatch.setattr(llm_mod, "_LLM_TIMEOUT", 0.5)
+    monkeypatch.setattr(llm_mod, "_LLM_SLOW_WARNING", 0.03)
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def complete(**kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(llm_mod, "_litellm", SimpleNamespace(acompletion=complete))
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(Client("test", stage="goal").chat("hello"))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.06)
+    assert cancelled.is_set()
+    assert "still waiting" not in caplog.text

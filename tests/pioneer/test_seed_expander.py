@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.discovery import Harvest
-from crawlme.llm import Error, LLMResponse
+from crawlme.errors import Kind
+from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
 from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
 from crawlme.runtime import CrawlGoal
@@ -109,10 +110,11 @@ async def test_no_client_proposes_nothing():
     assert await SeedExpander(None).propose(_goal(), ["https://s.com/"], 4) == []
 
 
-async def test_an_llm_error_proposes_nothing():
+async def test_llm_error_propagates():
     client = MagicMock()
-    client.chat = AsyncMock(side_effect=Error("down"))
-    assert await SeedExpander(client).propose(_goal(), ["https://s.com/"], 4) == []
+    client.chat = AsyncMock(side_effect=RemoteError("down", kind=Kind.UNAVAILABLE))
+    with pytest.raises(RemoteError):
+        await SeedExpander(client).propose(_goal(), ["https://s.com/"], 4)
 
 
 def test_unparseable_replies_are_dropped():
@@ -144,7 +146,9 @@ def _url(u: str) -> URL:
 def _rig(*, yields: int, problem=None, fetch_raises=False):
     """The scheduler's probe supplies discovered candidates or a fetch error."""
     if fetch_raises:
-        probe = AsyncMock(side_effect=OSError("gone"))
+        from crawlme.digest import FetchError
+
+        probe = AsyncMock(side_effect=FetchError("gone"))
     else:
         probe = AsyncMock(
             return_value=Harvest([Candidate(url=_url(f"https://x.com/{i}")) for i in range(yields)], problem)
@@ -207,7 +211,18 @@ async def test_a_rejection_says_which_kind_it_was():
     assert gone == [("https://a.com/", "does not exist")]
 
     _, _, unreachable = await _verify([("https://b.com/", "w")], yields=5, fetch_raises=True)
-    assert unreachable == [("https://b.com/", "could not be fetched")]
+    assert unreachable == [("https://b.com/", "gone")]
 
     _, _, kept_none = await _verify([("https://c.com/", "w")], yields=4)
     assert kept_none == []
+
+
+async def test_verification_preserves_unexpected_failures():
+    from crawlme.pioneer.seed_expander import verify
+
+    probe, canonicalizer = _rig(yields=0)
+    failure = OSError("storage unavailable")
+    probe.side_effect = failure
+    with pytest.raises(OSError) as caught:
+        await verify([("https://a.com/", "why")], probe=probe, canonicalizer=canonicalizer)
+    assert caught.value is failure

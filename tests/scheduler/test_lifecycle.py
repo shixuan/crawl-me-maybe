@@ -9,10 +9,12 @@ import pytest
 from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.digest import FetchResult
-from crawlme.llm import Error, LLMResponse
+from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
+from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer.sources import ManualSource
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.workers import AnalysisWorker
 
 
 @pytest.mark.parametrize("dedup", [False, True])
@@ -27,18 +29,19 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise Error("temporary failure")
+            raise RemoteError("temporary failure", kind=Kind.UNAVAILABLE)
         await release.wait()
         return LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 1, 1, "stub")
 
-    class RetryAnalyzer(Analyzer):
+    class RetryWorker(AnalysisWorker):
         async def drain_pending(self):
             settling.set()
             if stop is None:
                 release.set()
             await super().drain_pending()
 
-    analyzer = RetryAnalyzer(MagicMock(chat=chat), retry_delay=0)
+    analyzer = Analyzer(MagicMock(chat=chat))
+    monkeypatch.setattr("crawlme.scheduler.factory.AnalysisWorker", RetryWorker)
     cfg = Settings(_env_file=None, result_dir=tmp_path, llm_api_key="", llm_base_url="", ignore_robots=True)
     goal = CrawlGoal(prompt="compiler safety", max_pages=1)
     if stop == "time":
@@ -59,12 +62,13 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
     grouped = []
 
     async def group(goal, rows):
-        assert analyzer._drain_task is None
+        assert scheduler.pipeline._analysis._drain_task is None
         grouped.extend(rows)
         return []
 
     scheduler = create_scheduler(
         cfg,
+        error_handler=ErrorHandler(ErrorPolicy(retry_delay=0)),
         goal=goal,
         analyzer=analyzer,
         fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()),
@@ -97,4 +101,4 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == int(stop is None)
     assert calls == 2
     assert len(grouped) == int(dedup and stop is None)
-    assert analyzer._drain_task is None
+    assert scheduler.pipeline._analysis._drain_task is None

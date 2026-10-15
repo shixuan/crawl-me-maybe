@@ -12,8 +12,7 @@ from typing import TYPE_CHECKING
 
 from crawlme import prompts
 from crawlme.digest.fetcher.base import FetchError
-from crawlme.llm import Client, Error, Stage
-from crawlme.logging.progress import activity
+from crawlme.llm import Client, Stage
 
 if TYPE_CHECKING:
     from crawlme.config import Settings
@@ -67,11 +66,7 @@ class SeedExpander:
         prompt = prompts.seeds_input(goal, seeds, want)
         # Log before awaiting the proposal so startup progress is visible.
         logger.info("asking the model for up to %d more sources to try", want)
-        try:
-            resp = await self._client.chat(prompt, system=prompts.SEEDS_SYSTEM, json_mode=True)
-        except Error as e:
-            logger.warning("seeds.propose_failed error=%s", e)
-            return []
+        resp = await self._client.chat(prompt, system=prompts.SEEDS_SYSTEM, json_mode=True)
         got = _parse(resp.content, known=set(seeds), want=want)
         if not got and resp.truncated:
             # Kept apart from a parser problem. This is a budget to
@@ -142,8 +137,8 @@ async def verify(
             dropped.append((url, str(exc)))
             logger.info("dropping %s: %s", url, exc)
             continue
-        except Exception:
-            logger.info("dropping %s: could not be fetched", url)
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.info("dropping %s: verification timed out", url)
             dropped.append((url, "could not be fetched"))
             continue
         if harvest.problem is not None or not harvest.candidates:
@@ -155,28 +150,3 @@ async def verify(
         kept.append(candidate)
         logger.info("keeping %s: %s", url, why)
     return kept, dropped
-
-
-@activity("seed expander")
-async def expand(
-    goal: CrawlGoal,
-    seeds: list[str],
-    *,
-    settings: Settings,
-    budget: TokenBudget | None,
-    probe: SeedProbe,
-    canonicalizer: Canonicalizer,
-) -> tuple[list[Candidate], int, list[tuple[str, str]]]:
-    """Return accepted seeds, proposal count and rejected (URL, reason) pairs."""
-    want = how_many(len(seeds), settings.expand_seeds_min, settings.expand_seeds_max)
-    proposals = await SeedExpander.from_settings(settings, budget=budget).propose(goal, seeds, want)
-    if not proposals:
-        return [], 0, []
-    logger.info("the model named %d more source%s to try", len(proposals), "" if len(proposals) == 1 else "s")
-    kept, dropped = await verify(
-        proposals,
-        probe=probe,
-        canonicalizer=canonicalizer,
-    )
-    logger.info("%d of the %d it named answered", len(kept), len(proposals))
-    return kept, len(proposals), dropped

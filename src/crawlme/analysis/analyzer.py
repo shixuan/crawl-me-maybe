@@ -1,23 +1,20 @@
 """Classify pages and extract fields with source evidence.
 
-Successful analyses are published through a sink. Failed calls enter a bounded
-retry queue; relevant-page summaries feed subsequent ranking."""
+Return supported results or raise an error for the caller to handle."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import unicodedata
-from collections.abc import Callable
 from typing import Any, cast
 
 from crawlme import prompts
 from crawlme.analysis.models import AnalysisResult, AnalyzerFeedback, Classification, ExtractedField, ResultItem
-from crawlme.checkpoint import Checkpointable
 from crawlme.config import Settings
 from crawlme.digest import Page
-from crawlme.llm import Client, Error, Stage, TokenBudget, TokenBudgetError, parse_json_response
+from crawlme.errors import Error, Kind
+from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.logging.progress import activity
 from crawlme.runtime import CrawlGoal, spec_fields, spec_time_field, spec_version
@@ -25,61 +22,26 @@ from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
 
+
+class AnalysisError(Error):
+    source = "analysis"
+    code = "invalid_response"
+    kind = Kind.INVALID_OUTPUT
+
+
 # Default analyzer text limit; Settings can override it.
 _MAX_PAGE_CHARS = 3000
-# A page gets at most this many attempts, spaced by a fixed delay.
-_MAX_ATTEMPTS = 3
-_RETRY_DELAY_SEC = 30.0
 _MAX_TAGS = 8
 
 _VALID_CLASSIFICATIONS = frozenset(Classification.__args__)  # type: ignore[attr-defined]
 
 
-class Analyzer(Checkpointable):
-    """Analyze pages with bounded retries and publish results through the bound sink."""
+class Analyzer:
+    """Extract supported results from a page."""
 
-    def __init__(
-        self,
-        client: Client,
-        *,
-        max_attempts: int = _MAX_ATTEMPTS,
-        retry_delay: float = _RETRY_DELAY_SEC,
-        max_page_chars: int = _MAX_PAGE_CHARS,
-    ) -> None:
-        self._goal: CrawlGoal | None = None
+    def __init__(self, client: Client, *, max_page_chars: int = _MAX_PAGE_CHARS) -> None:
         self._client = client
-        self._max_attempts = max_attempts
-        self._retry_delay = retry_delay
         self._max_page_chars = max_page_chars
-        self._sink: Callable[[AnalysisResult], None] | None = None
-        self._pending: asyncio.Queue[tuple[Page, CrawlGoal, int]] = asyncio.Queue()
-        self._drain_task: asyncio.Task[None] | None = None
-        # Count queued and active retries so drain_pending() waits for both.
-        self._parked_count = 0
-        self._pending_keys: set[str] = set()
-        self._retry_entries: dict[str, tuple[Page, CrawlGoal, int]] = {}
-
-    def bind_goal(self, goal: CrawlGoal) -> None:
-        self._goal = goal
-
-    def dump(self) -> dict[str, Any]:
-        return {
-            "entries": [
-                {"page": page.model_dump(mode="json"), "attempts": attempts}
-                for page, _, attempts in self._retry_entries.values()
-            ]
-        }
-
-    def restore(self, state: dict[str, Any]) -> None:
-        if self._goal is None:
-            raise ValueError("bind the crawl goal before restoring analysis retries")
-        for raw in state["entries"]:
-            page = Page.model_validate(raw["page"])
-            entry = (page, self._goal, int(raw["attempts"]))
-            self._retry_entries[page.url_key] = entry
-            self._pending.put_nowait(entry)
-            self._pending_keys.add(page.url_key)
-            self._parked_count += 1
 
     @classmethod
     def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> Analyzer | None:
@@ -94,90 +56,24 @@ class Analyzer(Checkpointable):
             return None
         return cls(client, max_page_chars=settings.analyzer_max_chars)
 
-    def bind_sink(self, sink: Callable[[AnalysisResult], None]) -> None:
-        """Attach the persistence callback.  Every successful analysis
-        is handed to it, whether it succeeded on the first try or on a
-        background retry."""
-        self._sink = sink
-
-    async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None:
-        """Analyze a page; publish success or queue a failed call for bounded retries."""
-        if not _page_text(page):
-            logger.debug("analysis.skip_empty url_key=%s", page.url_key)
-            return None
-        try:
-            result = await self._analyze_once(page, goal)
-        except Error as e:
-            self._requeue_or_giveup(page, goal, attempts=1, error=e)
-            return None
-        self._publish(result)
-        return result
-
-    @property
-    def pending_keys(self) -> set[str]:
-        return self._pending_keys.copy()
-
-    def start_retries(self) -> None:
-        if self._parked_count and self._drain_task is None:
-            self._drain_task = asyncio.create_task(self._drain())
-
-    async def aclose(self) -> None:
-        """Cancel retries and release queued page bodies."""
-        try:
-            if self._drain_task is not None:
-                task = self._drain_task
-                self._drain_task = None
-                task.cancel()
-                results = await asyncio.gather(task, return_exceptions=True)
-                if isinstance(results[0], Exception):
-                    raise results[0]
-        finally:
-            while not self._pending.empty():
-                self._pending.get_nowait()
-            self._pending_keys.clear()
-            self._retry_entries.clear()
-            self._parked_count = 0
-
-    async def drain_pending(self) -> None:
-        """Wait for retries and surface a failed retry worker."""
-        while self._parked_count > 0:
-            if self._drain_task is None:
-                return
-            if self._drain_task.done():
-                await self._drain_task
-                return
-            await asyncio.sleep(0.5)
-
-    async def _drain(self) -> None:
-        while True:
-            entry = await self._pending.get()
-            page, goal, attempts = entry
-            try:
-                await asyncio.sleep(self._retry_delay)
-                try:
-                    result = await self._analyze_once(page, goal)
-                except Error as e:
-                    self._requeue_or_giveup(page, goal, attempts=attempts + 1, error=e, parked=True)
-                    continue
-                self._pending_keys.discard(page.url_key)
-                self._retry_entries.pop(page.url_key, None)
-                self._publish(result)
-                self._parked_count -= 1
-                logger.debug("analysis.retry_ok url_key=%s attempts=%d", page.url_key, attempts + 1)
-            except asyncio.CancelledError:
-                self._pending.put_nowait(entry)
-                raise
-
     @activity("analyze")
-    async def _analyze_once(self, page: Page, goal: CrawlGoal) -> AnalysisResult:
+    async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None:
         text = _page_text(page)
+        if not text:
+            return None
         prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)
         resp = await self._client.chat(prompt, system=prompts.analysis_system(goal), json_mode=True)
         if resp.truncated:
-            raise Error(f"analysis response truncated for {page.url_key}; incomplete items rejected")
+            raise AnalysisError(
+                f"analysis response truncated for {page.url_key}; incomplete items rejected",
+                code="response_truncated",
+                details={"url_key": page.url_key},
+            )
         data = parse_json_response(resp.content)
         if data is None:
-            raise Error(f"unparseable JSON for {page.url_key}")
+            raise AnalysisError(
+                f"unparseable JSON for {page.url_key}", code="invalid_json", details={"url_key": page.url_key}
+            )
         tokens = resp.input_tokens + resp.output_tokens
         entries = _item_entries(data)
         if goal.time_policy and data.get("classification") == "RELEVANT":
@@ -234,43 +130,17 @@ class Analyzer(Checkpointable):
                     tokens += fixed.input_tokens + fixed.output_tokens
                     corrected = parse_json_response(fixed.content)
                     if corrected is None or not isinstance(corrected.get("time"), dict):
-                        raise Error("time correction must return a time object")
+                        raise AnalysisError("time correction must return a time object", code="invalid_dates")
                     remaining: list[str] = []
                     _policy_dates(corrected, page, issues=remaining)
                     if remaining:
-                        raise Error("; ".join(remaining))
+                        raise AnalysisError(
+                            "; ".join(remaining), code="invalid_dates", details={"url_key": page.url_key}
+                        )
                     data = {**data, "time": corrected["time"]}
-                except Error as exc:
+                except AnalysisError as exc:
                     logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
         return data, tokens
-
-    def _publish(self, result: AnalysisResult) -> None:
-        if self._sink is not None:
-            self._sink(result)
-
-    def _requeue_or_giveup(
-        self, page: Page, goal: CrawlGoal, *, attempts: int, error: Error, parked: bool = False
-    ) -> None:
-        # An exhausted token budget never recovers within this task, so
-        # don't park pages behind it.
-        if isinstance(error, TokenBudgetError) or attempts >= self._max_attempts:
-            if parked:
-                # The drain held this page between retries; it is now
-                # settled, so release the count drain_pending() waits on.
-                self._parked_count -= 1
-                self._pending_keys.discard(page.url_key)
-                self._retry_entries.pop(page.url_key, None)
-            logger.warning("analysis.giveup url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
-            return
-        logger.warning("analysis.requeue url_key=%s attempts=%d error=%s", page.url_key, attempts, error)
-        self._pending.put_nowait((page, goal, attempts))
-        self._retry_entries[page.url_key] = (page, goal, attempts)
-        self._pending_keys.add(page.url_key)
-        # A fresh parking counts once; a re-parking from the drain was
-        # already counted (the drain holds the count while it retries).
-        if not parked:
-            self._parked_count += 1
-        self.start_retries()
 
 
 def _page_text(page: Page) -> str:
@@ -346,11 +216,11 @@ def _item_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
         return [data]  # Accept historical single-result responses.
     entries = data["items"]
     if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
-        raise Error("items must be an array of objects")
+        raise AnalysisError("items must be an array of objects", code="invalid_items")
     if data.get("classification") == "RELEVANT" and not entries:
-        raise Error("a relevant page must contain at least one supported item")
+        raise AnalysisError("a relevant page must contain at least one supported item", code="invalid_items")
     if data.get("classification") == "IRRELEVANT" and entries:
-        raise Error("an irrelevant page cannot contain result items")
+        raise AnalysisError("an irrelevant page cannot contain result items", code="invalid_items")
     return entries
 
 
@@ -358,7 +228,7 @@ def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem
     summary = data.get("summary")
     evidence = data.get("evidence")
     if not isinstance(summary, str) or not summary.strip():
-        raise Error("each item requires a summary")
+        raise AnalysisError("each item requires a summary", code="missing_summary", details={"url_key": page.url_key})
     if (
         not isinstance(evidence, list)
         or not evidence
@@ -367,7 +237,11 @@ def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem
             for quote in evidence
         )
     ):
-        raise Error("each item requires nonempty verbatim source evidence")
+        raise AnalysisError(
+            "each item requires nonempty verbatim source evidence",
+            code="unsupported_evidence",
+            details={"url_key": page.url_key},
+        )
     extracted = _parse_extracted(data, page, goal)
     dates = _policy_dates(data, page) if goal.time_policy else _dates_from(extracted, page, goal)
     return ResultItem(

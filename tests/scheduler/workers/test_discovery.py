@@ -6,6 +6,7 @@ import pytest
 
 from crawlme.digest import Page
 from crawlme.discovery import Harvest
+from crawlme.errors import ErrorHandler
 from crawlme.platforms.base import FeedDependencyError
 from crawlme.scheduler.workers import DiscoveryWorker
 from crawlme.urls import URL
@@ -15,7 +16,7 @@ from crawlme.urls import URL
 async def test_listing_metadata_survives():
     harvested = Harvest([], next_url="https://example.com/next", listing=True, degraded=True)
     harvester = MagicMock(harvest=MagicMock(return_value=harvested))
-    worker = DiscoveryWorker(harvester, timeout=1)
+    worker = DiscoveryWorker(harvester, timeout=1, error_handler=ErrorHandler())
     page = Page(
         url_key="p",
         url=URL(raw="https://example.com/", canonical="https://example.com/", url_key="p"),
@@ -28,7 +29,11 @@ async def test_listing_metadata_survives():
 
 @pytest.mark.asyncio
 async def test_missing_dependency_propagates():
-    worker = DiscoveryWorker(MagicMock(harvest=MagicMock(side_effect=FeedDependencyError("missing parser"))), timeout=1)
+    worker = DiscoveryWorker(
+        MagicMock(harvest=MagicMock(side_effect=FeedDependencyError("missing parser"))),
+        timeout=1,
+        error_handler=ErrorHandler(),
+    )
     with pytest.raises(FeedDependencyError, match="missing parser"):
         await worker.discover(
             Page(url_key="p", url=URL(raw="https://example.com/", canonical="https://example.com/", url_key="p")), 0

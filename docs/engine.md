@@ -1,6 +1,6 @@
 # Engine execution
 
-This document describes the current implementation, checked on 2026-10-12.
+This document describes the current implementation, checked on 2026-10-13.
 Engine controls a crawl's lifecycle, admission rules, stopping and checkpoint timing.
 CrawlPipeline owns the concurrent crawl tasks. PagePipeline coordinates the stages
 for one page. The factory wires these objects together.
@@ -26,7 +26,7 @@ flowchart TB
     Context -.-> Crawl
     Context -.-> Page
 
-    subgraph Execution["Pipeline execution"]
+    subgraph PipelineWork["Pipeline execution"]
         Crawl -->|one task per dispatched item| Page
         Crawl --> Ranking["RankingWorker<br/>rank, persist decisions, enqueue items"]
         Crawl --> Dedup["DedupWorker<br/>group final results"]
@@ -35,7 +35,13 @@ flowchart TB
         Page --> Extract["Extractor<br/>direct stage call"]
         Page --> Analysis[AnalysisWorker]
         Page --> Discovery[DiscoveryWorker]
-        Analysis --> Analyzer["Analyzer<br/>initial calls and retry task"]
+        Analysis --> Analyzer["Analyzer<br/>one analysis attempt"]
+        Analysis --> Errors["ErrorHandler<br/>policy decisions and first abort cause"]
+        Fetch --> Errors
+        Ranking --> Errors
+        Dedup --> Errors
+        Discovery --> Errors
+        Errors --> Policy["errors/ErrorPolicy<br/>Retry, Skip or Abort"]
     end
 
     subgraph Shared["Shared data and persistence"]
@@ -80,9 +86,11 @@ source's counts, relevance window, age streak, pagination and retirement reason.
 
 ## Startup and Engine.run
 
-For a fresh run, the CLI creates the shared token budget and components, enhances
-the goal, reads the seed source, optionally expands seeds and calls
-`pipeline.ingest_seeds()`. Seed verification uses `PagePipeline.probe()` to fetch
+For a fresh run, the CLI creates the shared token budget and components, reads
+the supplied seeds and calls `CrawlPipeline.startup()`. The pipeline ingests those
+seeds, enhances the goal and optionally expands seeds. Startup model calls share
+the ErrorHandler injected by the factory. Workers require this shared instance. A startup abort
+is retained until Engine saves the initial seeds and starts the pipeline. Seed verification uses `PagePipeline.probe()` to fetch
 and save raw inputs, then harvest them without analysis. These steps precede
 Engine.run. Accepted seeds enter the ranked frontier directly at priority 1.0.
 
@@ -92,7 +100,7 @@ flowchart TD
     Guard --> Lock["Acquire run lock unless the caller supplies it"]
     Lock --> Running["Set CrawlTask.state = RUNNING<br/>start storage and create EventEmitter"]
     Running --> Reset["RunState.reset(goal)<br/>preserve prepared seed URLs and expansion metadata"]
-    Reset --> Prepare["pipeline.prepare(goal, task_id, events)<br/>start page tracking and bind analyzer goal"]
+    Reset --> Prepare["pipeline.prepare(goal, task_id, events)<br/>start page tracking and prepare AnalysisWorker"]
     Prepare --> Bind["Checkpointer.bind(goal, task, pipeline.features)"]
     Bind --> Restore{"Checkpoint supplied?"}
     Restore -->|yes| Load["Checkpointer.restore<br/>load saved component and page-stage state"]
@@ -102,15 +110,17 @@ flowchart TD
     Initial --> Timer["Start checkpoint task<br/>save every 2 seconds"]
     Timer --> Context["Create PipelineContext<br/>callbacks belong to Engine"]
     Context --> Launch["Start pipeline.run as an asyncio task<br/>yield once so restored work can register"]
-    Launch --> Supervise["_supervise<br/>wait for pipeline completion/error OR StopMonitor"]
+    Launch --> Failure{"Startup aborted?"}
+    Failure -->|yes| StartupFail["Pipeline raises the retained error<br/>keep initial checkpoint"]
+    Failure -->|no| Supervise["_supervise<br/>wait for pipeline, StopMonitor or checkpoint task failure"]
     Supervise --> Stop["Record returned stop reasons<br/>set task.state = STOPPING"]
     Stop --> Deadline["Create shared settlement deadline<br/>now + 120 seconds"]
     Deadline --> Halt["pipeline.halt<br/>cancel fetch and rank pumps"]
     Halt --> Settle["_settle<br/>wait for dispatched pages under page-phase rules"]
-    Settle --> Drain["_drain<br/>wait for retries if analysis-phase rules allow<br/>always call pipeline.end_drain"]
-    Drain --> Fatal{"RunState.progress.fatal_error?"}
-    Fatal -->|no| Finish["pipeline.finish<br/>DedupWorker.run, then prune page context"]
-    Fatal -->|yes| Record
+    Settle --> Drain["_drain<br/>wait for retries if analysis-phase rules allow"]
+    Drain --> Freeze["finally<br/>disable checkpoint requests<br/>cancel and await saves and timer"]
+    Freeze --> Abort["pipeline.abort<br/>cancel remaining work and release retries"]
+    Abort --> Finish["pipeline.finish<br/>DedupWorker.run, then prune page context"]
     Finish --> Record["_finish_run<br/>COMPLETED or FAILED, end time, reason, counters, STOPPED event"]
     Record --> Cleanup["finally<br/>cancel pipeline/checkpoint tasks<br/>close pipeline, close storage, release owned lock"]
 ```
@@ -127,16 +137,17 @@ cannot be reused after cleanup.
 ## Concurrent crawl execution
 
 CrawlPipeline prepares its stages, dispatches saved `RunState.work` entries,
-starts restored analysis retries and launches two pumps. Its own supervisor waits
-for either pump to finish or for a dispatched page task to report an exception.
-Engine separately supervises that whole pipeline task and the stop monitor.
+starts restored analysis retries and launches two pumps. ErrorHandler watches the
+pump group and its abort event. Page-task exceptions and fatal retry failures
+reach the same event. Engine supervises the pipeline task, StopMonitor and the
+checkpoint timer. Pipeline.run propagates failures without clearing recovery data.
 
 ```mermaid
 flowchart LR
-    Start["CrawlPipeline.run"] --> Restore["Dispatch saved page work<br/>start analyzer retries"]
+    Start["CrawlPipeline.run"] --> Restore["Dispatch saved page work<br/>start AnalysisWorker retries"]
     Restore --> Fetch["fetch_pump"]
     Restore --> Rank["rank_pump"]
-    Restore --> Watch["Pipeline supervisor<br/>FIRST_COMPLETED: either pump or page failure future"]
+    Restore --> Watch["ErrorHandler.watch<br/>pump group or shared abort event"]
 
     subgraph FetchLoop["Fetch pump"]
         Fetch --> Gate{"Engine can_dispatch<br/>and in-flight task cap allows?"}
@@ -173,8 +184,8 @@ be waiting for a stage semaphore, rather than making network requests.
 
 PagePipeline limits the combined fetch, extraction and page persistence section
 to `fetch_concurrency`. FetchWorker also limits its own requests. AnalysisWorker
-limits initial analysis calls to `llm_concurrency`. Analyzer's retry loop is a
-separate serial task and does not acquire AnalysisWorker's semaphore. Ranking has
+limits initial and retried analysis calls to `llm_concurrency`. Its retry queue
+is checkpointable and uses the same semaphore as first attempts. Ranking has
 one pump, and LLMRanker splits a drained batch into sequential calls as needed.
 
 ## One page, including resumed stages
@@ -209,8 +220,8 @@ flowchart TD
     Next -->|yes| Pagination["Filter continuation, enforce source pagination cap<br/>enqueue at same depth, priority 0.5<br/>mark next_page handled"] --> Complete
     Next -->|no| Complete["record_outcome COMPLETED<br/>increment pages_fetched<br/>remove work, release/prune context<br/>await checkpoint"]
 
-    Analyze -. successful initial result .-> Apply["AnalysisWorker.apply<br/>stable result IDs, save_analysis, Tracker.analysis"]
-    Analyze -. recoverable failure .-> Retry["Analyzer retry queue<br/>page flow continues"]
+    Analyze -. successful initial result .-> Apply["AnalysisWorker.apply<br/>stable result IDs, save_analysis, Tracker.analysis<br/>Tracker marks work analysis_done"]
+    Analyze -. recoverable failure .-> Retry["AnalysisWorker retry queue<br/>page flow continues"]
     Retry -. successful later result .-> Apply
     Apply --> Feedback["Mark matching work.analysis_done<br/>notify PagePipeline to retire source and prune"]
 ```
@@ -263,7 +274,8 @@ sequenceDiagram
     Engine->>Monitor: wait(phase="pages", shared deadline)
     Engine->>Crawl: drain retries if allowed
     Engine->>Monitor: wait(phase="analysis", shared deadline)
-    Engine->>Crawl: end_drain(), then finish() unless fatal
+    Engine->>Engine: disable checkpoint requests, cancel and await saves
+    Engine->>Crawl: abort remaining work, then finish() on the normal path
 ```
 
 StopMonitor owns the revision and asyncio Event. It subscribes to each object's
@@ -297,8 +309,8 @@ rules internally. Ordinary updates can wake the monitor without completing
 Engine's wait. Engine's `_wait_for_stop()` returns when its supervised task finishes,
 a condition forbids the current phase or the settlement deadline expires. If the
 supervised task and monitor finish together, the task result takes precedence.
-There is no fixed-interval Engine stop loop. Fetch-pump backoff and Analyzer's
-retry-drain wait still use timed sleeps.
+There is no fixed-interval Engine stop loop. Fetch-pump backoff and policy retry
+delays use timed sleeps. Analysis draining awaits queue completion or a failure.
 
 | Condition | Trigger | Dispatched pages may settle | Retries may drain |
 |---|---|---|---|
@@ -315,19 +327,32 @@ retry-drain wait still use timed sleeps.
 `check_stop()` returns every applicable reason. A phase is allowed only if every
 reason permits it. Page settlement and retry draining share a single 120-second
 deadline. A token/time limit reached during page settlement cancels remaining
-pages even if the initial reason was `MAX_RELEVANT`. End-of-drain always closes
-Analyzer and cancels any remaining retries.
+pages even if the initial reason was `MAX_RELEVANT`. After draining, Engine freezes
+checkpoint writes before aborting remaining work and clearing retry entries.
 
 The recorded reason is set when supervision stops and is preserved during normal
 finalization. It need not include a later limit reached during settlement.
 `pages_fetched` counts completed page processing and extraction timeouts, not every
 HTTP request. A failed fetch does not increment it.
 
-After settlement and end-of-drain, Engine calls `pipeline.finish()` unless the run
-is fatal. This invokes DedupWorker even after an automatic token/time stop, but the
-Grouper's shared budget can reject its request. DedupWorker retains original
-results and reports failure without failing the crawl. Dedup is outside the
-120-second settlement deadline. User cancellation bypasses this path entirely.
+After settlement and draining, Engine stops checkpoint writes and aborts remaining
+work before calling `pipeline.finish()`. DedupWorker can run after a normal budget
+stop, but the shared token budget may skip its model call. Invalid grouping output
+retains original results. Account failures propagate and fail the run. Dedup is
+outside the 120-second settlement deadline. Cancellation bypasses final grouping.
+
+Request retries belong to ErrorHandler and AnalysisWorker, as directed by ErrorPolicy.
+Client and fetchers make one request attempt. Each LLM request has a 90-second
+total timeout, with a waiting notice after 30 seconds. Failures report the provider
+message and the retry, skip or abort decision at normal log levels. Format-specific
+repairs remain in their components. Ranking and dedup disable retries for invalid
+output after local repair. Policy uses error kind and scope, not component names or error codes.
+A missing shared dependency aborts; a missing page can be skipped.
+An HTTP page rejection skips that page. Provider account failures abort immediately;
+shared-service timeouts, rate limits and unavailability abort after retries are
+exhausted, even for optional operations. Invalid model output can still be skipped.
+Token-budget exhaustion is a normal stop, and unknown errors abort with their cause
+preserved. Dedup retries cover grouping, not database writes.
 
 ## Checkpoint execution and recovery
 
@@ -343,10 +368,11 @@ flowchart LR
     Timer --> Callback
     Page -->|PipelineContext.checkpoint| Callback
     Rank -->|PipelineContext.checkpoint| Callback
-    Callback --> Guard{"Task exists and is not INTERRUPTED?"}
-    Guard -->|yes| Lock["Checkpointer.save<br/>acquire serialization lock"]
+    Callback --> Guard{"Checkpoint requests enabled, Engine open,<br/>task RUNNING or STOPPING, no fatal error?"}
+    Guard -->|yes| SaveTask["Engine creates and tracks save task"]
+    SaveTask --> Lock["Checkpointer.save<br/>acquire serialization lock"]
     Guard -->|no| Return["Return without saving"]
-    Lock --> Snapshot["Synchronously dump frontier, RunState, analyzer retries,<br/>TokenBudget and RobotsPolicy<br/>include goal, task, settings and feature flags"]
+    Lock --> Snapshot["Synchronously dump frontier, RunState, AnalysisWorker retries,<br/>TokenBudget and RobotsPolicy<br/>include goal, task, settings and feature flags"]
     Snapshot --> Trim["Detach snapshot through JSON<br/>remove plain_text and markdown from saved Page entries"]
     Trim --> Queue["Storage.save_snapshot<br/>replace task's latest snapshot"]
     Queue --> Flush["Await Storage.flush<br/>earlier queued writes precede snapshot"]
@@ -355,17 +381,20 @@ flowchart LR
     DB[("Original run database")] --> Resume["CLI resume<br/>lock run, validate task and checkpoint version<br/>restore goal/settings, rebuild components"]
     Resume --> Run["Engine.run(checkpoint, supplied lock)"]
     Run --> Hydrate["Checkpointer.restore<br/>load saved Page text from page rows"]
-    Hydrate --> Owners["Restore RunState, Frontier, RobotsPolicy,<br/>analyzer retries and TokenBudget"]
+    Hydrate --> Owners["Restore RunState, Frontier, RobotsPolicy,<br/>AnalysisWorker retries and TokenBudget"]
     Owners --> Dispatch["CrawlPipeline.run<br/>dispatch saved work and start retries/pumps"]
 ```
 
-A pipeline checkpoint runs in the calling page or rank task and awaits Engine's
-callback. Periodic checkpoints run in a separate task created by Engine. Neither
-requires the supervisor to return from its wait. Checkpointer serializes concurrent
-saves and captures state without yielding once its lock is acquired.
+Page and rank tasks await Engine's checkpoint callback. Engine creates and tracks
+an asynchronous save task for every request; the periodic timer uses the same
+callback. Neither requires the supervisor to return from its wait. Before cleanup,
+Engine disables new requests, then cancels and awaits the timer and all save
+tasks, including those waiting for the serialization lock. Checkpointer only captures and writes snapshots; it
+does not decide whether task states permit saving. Once its lock is acquired, it
+captures state without yielding.
 
 Snapshots include unfinished page stages, ranked and unranked queues, batches being
-ranked, analyzer retries, source history and recorded token usage. Page text comes
+ranked, AnalysisWorker retries, source history and recorded token usage. Page text comes
 from existing database rows. Recovery restores elapsed active time, excluding the
 time spent stopped. Goal enhancement and seed expansion do not run again.
 
@@ -384,32 +413,34 @@ the supplied lock after Engine returns.
 
 ```mermaid
 flowchart TD
-    Await["Work inside Engine.run"] --> Cancel["CancelledError<br/>CLI Ctrl+C cancels the command task"]
-    Await --> Error["Other exception<br/>pipeline, checkpoint callback or storage failure"]
-    Timer["Periodic checkpoint exception"] --> Mark["Engine._fail(checkpoint)<br/>record fatal error and set STOPPING"]
-    Mark --> Monitor["StopMonitor detects FATAL"] --> Stop["Normal stop/settlement path<br/>skip pipeline.finish"]
-
-    Cancel --> Interrupted["Set task.state = INTERRUPTED"]
-    Interrupted --> Abort["pipeline.abort<br/>cancel pumps, page tasks and analyzer retries"]
-    Abort --> Save["Queue INTERRUPTED task<br/>reason USER_REQUESTED, current counters"]
-    Save --> Rethrow["Re-raise cancellation<br/>no settlement, retry drain or dedup"]
-
-    Error --> Fail["Engine._fail(run)<br/>record fatal error and FATAL reason"]
-    Fail --> AbortFail["pipeline.abort"]
-    AbortFail --> FinishFail["_finish_run<br/>FAILED, end time, counters and STOPPED event"]
-
-    Rethrow --> Finally["Engine finally"]
-    FinishFail --> Finally
-    Stop --> Finally
-    Normal["Normal finalization"] --> Finally
-    Finally --> Tasks["Cancel and await pipeline task<br/>cancel and await checkpoint task"]
-    Tasks --> Unsubscribe["StopMonitor.close<br/>unsubscribe from all observed objects"]
-    Unsubscribe --> Close["pipeline.aclose<br/>close analyzer, ranker and fetcher<br/>prune retained context"]
-    Close --> CloseError{"Pipeline cleanup failed?"}
-    CloseError -->|yes| Failed["Record cleanup fatal error<br/>persist task as FAILED"] --> Storage
-    CloseError -->|no| Storage["Storage.close<br/>flush queued writes and close database"]
-    Storage --> Release["Clear runner handle<br/>release lock if Engine acquired it"]
+    Component["Component raises an error with its cause"] --> Policy["ErrorHandler asks ErrorPolicy"]
+    Policy -->|Retry| Retry["Bounded retry or checkpointed analysis queue"]
+    Policy -->|Skip| Skip["Worker records the skipped operation"]
+    Policy -->|Abort| Failure["ErrorHandler retains first error<br/>closes admission and wakes pipeline watch"]
+    Failure --> Propagate["Pipeline raises to Engine"]
+    Timer["Checkpoint task fails"] --> Propagate
+    Cancel["CLI Ctrl+C cancels Engine.run"] --> Freeze
+    Propagate --> Freeze["Pipeline lifetime finally<br/>disable checkpoint requests<br/>cancel and await timer and saves"]
+    Freeze --> Abort["pipeline.abort<br/>cancel pumps, pages and retries<br/>then release retry data"]
+    Abort --> Outcome{"Outcome"}
+    Outcome -->|cancelled| Interrupted["Record INTERRUPTED and USER_REQUESTED<br/>log resume command, re-raise cancellation"]
+    Outcome -->|error| Failed["Record FAILED and FATAL<br/>log cause and resume command if recoverable"]
+    Outcome -->|normal stop| Finish["pipeline.finish<br/>dedup and final task record"]
+    Interrupted --> Close
+    Failed --> Close
+    Finish --> Close["Engine.aclose<br/>idempotent checkpoint stop, unsubscribe Monitor<br/>close pipeline resources and storage"]
+    Close --> Unlock["Release owned run lock"]
 ```
+
+Components have no Engine callbacks. ErrorHandler holds the first abort cause for
+one run, shared by its workers and startup calls. Pipeline propagates the failure;
+Engine records the task outcome. A normal stop, exception or cancellation crosses
+the same checkpoint-before-cleanup boundary. Engine.aclose also stops saves when
+startup failed before that boundary was entered.
+
+Provider messages retain the model, stage, HTTP status and provider code when
+available. Temporary failures receive bounded policy retries. SDK retries are
+disabled so they cannot multiply the pipeline's attempts.
 
 Ctrl+C cancels asynchronous work without waiting for model responses or initiating
 final grouping. Cleanup still closes local resources and writes the task record.

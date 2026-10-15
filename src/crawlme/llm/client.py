@@ -1,8 +1,9 @@
-"""Lazy LiteLLM access with concurrency limits, retries and token accounting."""
+"""Lazy LiteLLM access with concurrency limits and token accounting."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -11,16 +12,16 @@ from typing import Any
 import httpx
 
 from crawlme.config import Settings
+from crawlme.errors import Error, Kind
 from crawlme.llm.budget import TokenBudget
-from crawlme.llm.errors import Error
+from crawlme.llm.errors import DependencyError, RemoteError
 from crawlme.llm.reasoning import effort_for, step_down
 
 logger = logging.getLogger(__name__)
 
 # Total deadline for an LLM request, including generation.
 _LLM_TIMEOUT = 90.0
-_LLM_MAX_RETRIES = 2
-_LLM_RETRY_BASE = 1.0
+_LLM_SLOW_WARNING = 30.0
 _DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 _litellm: Any | None = None
@@ -101,9 +102,10 @@ def _litellm_module() -> Any:
         try:
             import litellm
         except ImportError as e:
-            raise Error(
+            raise DependencyError(
                 "LLM features require the 'litellm' package, which ships as a core "
-                "dependency: reinstall with `pip install -e .`"
+                "dependency: reinstall with `pip install -e .`",
+                details={"module": "litellm"},
             ) from e
         _litellm = litellm
     return _litellm
@@ -114,6 +116,11 @@ def _is_transient(exc: BaseException) -> bool:
     if "credential" in str(exc).lower():
         return False
     if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in {408, 429} or (isinstance(status, int) and status >= 500):
         return True
     litellm = _litellm
     if litellm is None:
@@ -131,7 +138,7 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 class Client:
-    """Async chat client: concurrency cap, retries, token accounting.
+    """Async chat client with concurrency limits and token accounting.
 
     *model* is a litellm model id ("openai/gpt-4o-mini", ...).
     *base_url* points at another OpenAI-compatible endpoint when set;
@@ -201,7 +208,12 @@ class Client:
         if not settings.llm_api_key and not settings.llm_base_url:
             logger.info("no LLM key configured, running without the LLM stages")
             return None
-        return cls.from_settings(settings, budget=budget, reasoning_effort=reasoning_effort, stage=stage)
+        return cls.from_settings(
+            settings,
+            budget=budget,
+            reasoning_effort=reasoning_effort,
+            stage=stage,
+        )
 
     @property
     def configured(self) -> bool:
@@ -227,16 +239,33 @@ class Client:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        if self._budget is not None:
-            self._budget.check()
-
-        last_err: BaseException | None = None
         async with self._sem:
-            for attempt in range(_LLM_MAX_RETRIES + 1):
-                try:
-                    started = time.monotonic()
-                    resp = await self._complete(messages, ceiling, json_mode)
-                    elapsed = time.monotonic() - started
+            if self._budget is not None:
+                self._budget.check()
+            try:
+                started = time.monotonic()
+                resp = await self._complete(messages, ceiling, json_mode)
+                elapsed = time.monotonic() - started
+                content = (resp.choices[0].message.content or "").strip()
+                usage = resp.usage
+                input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                output_tokens = getattr(usage, "completion_tokens", 0) or 0
+                cached_tokens = _cached_input(usage)
+                thinking_tokens = _reasoning_output(resp, usage)
+                if self._budget is not None:
+                    self._budget.record(input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage)
+                # Retry an empty reasoning-only response once at lower effort.
+                lower = self._quieter()
+                if not content and thinking_tokens > 0 and lower:
+                    logger.warning(
+                        "llm.chat.thinking_only out=%d ceiling=%d; asking again at reasoning=%s",
+                        output_tokens,
+                        ceiling,
+                        lower,
+                    )
+                    if self._budget is not None:
+                        self._budget.check()
+                    resp = await self._complete(messages, ceiling, json_mode, effort=lower)
                     content = (resp.choices[0].message.content or "").strip()
                     usage = resp.usage
                     input_tokens = getattr(usage, "prompt_tokens", 0) or 0
@@ -247,73 +276,136 @@ class Client:
                         self._budget.record(
                             input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
                         )
-                    # Retry an empty reasoning-only response once at lower effort.
-                    lower = self._quieter()
-                    if not content and thinking_tokens > 0 and lower:
-                        logger.warning(
-                            "llm.chat.thinking_only out=%d ceiling=%d; asking again at reasoning=%s",
-                            output_tokens,
-                            ceiling,
-                            lower,
-                        )
-                        if self._budget is not None:
-                            self._budget.check()
-                        resp = await self._complete(messages, ceiling, json_mode, effort=lower)
-                        content = (resp.choices[0].message.content or "").strip()
-                        usage = resp.usage
-                        input_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                        output_tokens = getattr(usage, "completion_tokens", 0) or 0
-                        cached_tokens = _cached_input(usage)
-                        thinking_tokens = _reasoning_output(resp, usage)
-                        if self._budget is not None:
-                            self._budget.record(
-                                input_tokens, output_tokens, cached_tokens, thinking_tokens, stage=self._stage
-                            )
-                    # An empty response with output usage is treated as truncated.
-                    truncated = output_tokens >= ceiling or (not content and output_tokens > 0)
-                    if truncated:
-                        # Thinking down is no longer advice to give: the
-                        # step-down above has already tried it, or the
-                        # model has nowhere lower to go.
-                        logger.warning(
-                            "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; %s (raise LLM_MAX_OUTPUT_TOKENS)",
-                            output_tokens,
-                            thinking_tokens,
-                            ceiling,
-                            "nothing left for the answer" if not content else "the reply is cut short",
-                        )
-                    # Elapsed wall time also includes event-loop scheduling delays.
-                    logger.debug(
-                        "llm.chat.wall %.1fs out=%d thinking=%d of %d",
-                        elapsed,
+                # An empty response with output usage is treated as truncated.
+                truncated = output_tokens >= ceiling or (not content and output_tokens > 0)
+                if truncated:
+                    # Thinking down is no longer advice to give: the
+                    # step-down above has already tried it, or the
+                    # model has nowhere lower to go.
+                    logger.warning(
+                        "llm.chat.output_ceiling out=%d (thinking %d) ceiling=%d; %s (raise LLM_MAX_OUTPUT_TOKENS)",
                         output_tokens,
                         thinking_tokens,
                         ceiling,
+                        "nothing left for the answer" if not content else "the reply is cut short",
                     )
-                    return LLMResponse(
-                        content=content,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        # Use the configured model for replay identity; provider aliases may differ.
-                        model=str(self._model or getattr(resp, "model", "")),
-                        truncated=truncated,
-                    )
-                except Error:
-                    raise
-                except Exception as exc:
-                    if not _is_transient(exc):
-                        raise Error(f"LLM call rejected by provider: {exc}") from exc
-                    last_err = exc
-                    if attempt < _LLM_MAX_RETRIES:
-                        delay = _LLM_RETRY_BASE * (2**attempt)
-                        logger.warning(
-                            "llm.chat.retry attempt=%d delay=%.0fs error=%s",
-                            attempt + 1,
-                            delay,
-                            exc,
-                        )
-                        await _sleep(delay)
-        raise Error(f"LLM call failed after {_LLM_MAX_RETRIES + 1} attempts: {last_err}") from last_err
+                # Elapsed wall time also includes event-loop scheduling delays.
+                logger.debug(
+                    "llm.chat.wall %.1fs out=%d thinking=%d of %d",
+                    elapsed,
+                    output_tokens,
+                    thinking_tokens,
+                    ceiling,
+                )
+                return LLMResponse(
+                    content=content,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    # Use the configured model for replay identity; provider aliases may differ.
+                    model=str(self._model or getattr(resp, "model", "")),
+                    truncated=truncated,
+                )
+            except Error:
+                raise
+            except Exception as exc:
+                raise self._remote_error(exc) from exc
+
+    def _remote_error(self, exc: Exception) -> RemoteError:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
+        data: dict[str, Any] = {}
+        source: BaseException | None = exc
+        seen: set[int] = set()
+        # LiteLLM may replace the response with a synthetic one. The original
+        # SDK error is usually still reachable through the exception chain.
+        while source is not None and id(source) not in seen:
+            seen.add(id(source))
+            response = getattr(source, "response", None)
+            body = getattr(source, "body", None)
+            if not body and isinstance(response, httpx.Response):
+                try:
+                    body = response.json()
+                except (ValueError, httpx.ResponseNotRead):
+                    pass
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except ValueError:
+                    pass
+            candidate = body.get("error", body) if isinstance(body, dict) else None
+            if isinstance(candidate, dict) and candidate:
+                data = candidate
+                status = getattr(response, "status_code", None) or getattr(source, "status_code", None) or status
+            source = source.__cause__ or source.__context__
+        code = str(data.get("code", getattr(exc, "code", None)) or "")
+        kind = str(data.get("type", getattr(exc, "type", None)) or "")
+        message = str(data.get("message") or getattr(exc, "message", None) or exc)
+        if self._api_key:
+            message = message.replace(self._api_key, "[redacted]")
+        account_codes = {
+            "insufficient_quota",
+            "insufficient_balance",
+            "insufficient_credits",
+            "billing_hard_limit_reached",
+            "billing_not_active",
+            "credit_balance_exhausted",
+            "invalid_api_key",
+            "authentication_error",
+            "permission_denied",
+        }
+        # Some compatible endpoints omit structured codes. Avoid treating generic
+        # rate-limit or quota wording as proof that the account needs intervention.
+        account_messages = (
+            "insufficient balance",
+            "insufficient credits",
+            "insufficient quota",
+            "credit balance is too low",
+            "exceeded your current quota",
+            "billing hard limit",
+            "missing credentials",
+            "invalid api key",
+        )
+        account_failed = (
+            status in {401, 402, 403}
+            or type(exc).__name__ in {"AuthenticationError", "PermissionDeniedError"}
+            or code.lower() in account_codes
+            or kind.lower() in account_codes
+            or any(term in message.lower() for term in account_messages)
+        )
+        identifiers = {code.lower(), kind.lower()}
+        if (
+            status == 401
+            or type(exc).__name__ == "AuthenticationError"
+            or identifiers & {"invalid_api_key", "authentication_error"}
+            or "missing credentials" in message.lower()
+            or "invalid api key" in message.lower()
+        ):
+            category = Kind.UNAUTHENTICATED
+        elif status == 403 or type(exc).__name__ == "PermissionDeniedError" or "permission_denied" in identifiers:
+            category = Kind.FORBIDDEN
+        elif account_failed:
+            category = Kind.RESOURCE_EXHAUSTED
+        elif status == 429 or type(exc).__name__ == "RateLimitError":
+            category = Kind.RATE_LIMITED
+        elif status == 408 or isinstance(exc, httpx.TimeoutException) or type(exc).__name__ == "Timeout":
+            category = Kind.TIMEOUT
+        elif _is_transient(exc):
+            category = Kind.UNAVAILABLE
+        elif status == 404:
+            category = Kind.NOT_FOUND
+        elif status in {400, 422}:
+            category = Kind.INVALID_INPUT
+        else:
+            category = Kind.UNKNOWN
+        return RemoteError(
+            message,
+            model=self._model,
+            stage=self._stage,
+            status_code=status,
+            provider_code=code,
+            provider_type=kind,
+            kind=category,
+        )
 
     def _quieter(self) -> str:
         """The effort to retry at, or empty when retrying cannot help.
@@ -336,6 +428,9 @@ class Client:
             "messages": messages,
             "max_tokens": max_tokens,
             "timeout": _LLM_TIMEOUT,
+            # Pipeline policy owns retries.
+            "num_retries": 0,
+            "max_retries": 0,
         }
         if self._api_key:
             kwargs["api_key"] = self._api_key
@@ -346,4 +441,26 @@ class Client:
         sending = effort or effort_for(self._model, self._reasoning_effort)
         if sending:
             kwargs["reasoning_effort"] = sending
-        return await litellm.acompletion(**kwargs)
+        stage = self._stage or "llm"
+        warning_after = min(_LLM_SLOW_WARNING, _LLM_TIMEOUT)
+        warning = asyncio.get_running_loop().call_later(
+            warning_after,
+            logger.warning,
+            "%s: still waiting for %s after %.0fs; request timeout is %.0fs",
+            stage,
+            self._model,
+            warning_after,
+            _LLM_TIMEOUT,
+        )
+        try:
+            # SDK read timeouts reset when more bytes arrive; bound the whole response.
+            return await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=_LLM_TIMEOUT)
+        except asyncio.TimeoutError as exc:
+            raise RemoteError(
+                f"request timed out before a complete response was received ({_LLM_TIMEOUT:g}s total limit)",
+                model=self._model,
+                stage=self._stage,
+                kind=Kind.TIMEOUT,
+            ) from exc
+        finally:
+            warning.cancel()

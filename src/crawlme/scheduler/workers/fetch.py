@@ -10,6 +10,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from crawlme.digest import Fetcher, FetchResult
+from crawlme.errors import Error, ErrorHandler, Skipped
 from crawlme.logging import where
 from crawlme.logging.progress import activity
 from crawlme.persist import Storage
@@ -26,7 +27,11 @@ _ROBOTS_TIMEOUT = 15.0
 @dataclass(frozen=True)
 class FetchFailure:
     reason: Literal["robots", "fetch"]
-    error_type: str = ""
+    error: Error | None = None
+
+    @property
+    def error_type(self) -> str:
+        return type(self.error).__name__ if self.error is not None else ""
 
 
 class FetchWorker:
@@ -37,7 +42,11 @@ class FetchWorker:
         storage: Storage,
         *,
         concurrency: int,
+        error_handler: ErrorHandler,
+        max_attempts: int = 3,
     ) -> None:
+        self.error_handler = error_handler
+        self._max_attempts = max_attempts
         self.fetcher = fetcher
         self.robots = robots
         self._storage = storage
@@ -57,12 +66,26 @@ class FetchWorker:
             if delay > 0:
                 await asyncio.sleep(delay)
             logger.info("fetching %s", where(item.url.canonical))
-            try:
+            attempts = 0
+
+            async def attempt() -> FetchResult:
+                nonlocal attempts
+                attempts += 1
                 result = await self.fetcher.fetch(item)
-                self.robots.record_response(domain, result.status_code, self.robots.crawl_delay(host))
-            except Exception as e:
-                logger.warning("fetch.failed url_key=%s domain=%s depth=%d", item.url_key, domain, item.depth)
-                return FetchFailure("fetch", type(e).__name__)
+                result.fetch_attempt = attempts
+                return result
+
+            result = await self.error_handler.call(
+                "fetch",
+                attempt,
+                optional=True,
+                repeatable=True,
+                max_attempts=self._max_attempts,
+            )
+            if isinstance(result, Skipped):
+                logger.warning("fetch.failed url_key=%s error=%s", item.url_key, result.error)
+                return FetchFailure("fetch", result.error)
+            self.robots.record_response(domain, result.status_code, self.robots.crawl_delay(host))
             return result
 
     async def ensure_robots(self, host: str) -> None:
@@ -88,10 +111,14 @@ class FetchWorker:
         """Unavailable policies become empty rules, preserving fail-open behavior."""
         url = f"https://{host}/robots.txt"
         item = FrontierItem(url=URL(raw=url, canonical=url, url_key=url, reg_domain=host), url_key=url, reg_domain=host)
-        try:
-            result = await asyncio.wait_for(self.fetcher.fetch(item), timeout=_ROBOTS_TIMEOUT)
-        except Exception as e:
-            logger.debug("robots.unreadable domain=%s error=%s", host, e)
+        result = await self.error_handler.call(
+            "robots",
+            lambda: asyncio.wait_for(self.fetcher.fetch(item), timeout=_ROBOTS_TIMEOUT),
+            optional=True,
+            repeatable=True,
+            max_attempts=self._max_attempts,
+        )
+        if isinstance(result, Skipped):
             return ""
         if result.status_code >= 400:
             return ""

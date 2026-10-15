@@ -7,6 +7,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from crawlme.digest import FetchError, FetchResult, HttpFetcher
+from crawlme.errors import Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.urls import URL
 
@@ -20,7 +21,7 @@ def _item(url_str: str = "https://example.com/page") -> FrontierItem:
 
 @pytest.fixture
 def fetcher() -> HttpFetcher:
-    return HttpFetcher(max_retries=2)
+    return HttpFetcher()
 
 
 @pytest.mark.asyncio
@@ -48,12 +49,12 @@ async def test_redirect_chain(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_retry_on_5xx(fetcher, httpx_mock: HTTPXMock):
-    httpx_mock.add_response(url="https://example.com/page", status_code=503, is_reusable=True)
-    httpx_mock.add_response(url="https://example.com/page", content=b"recovered")
-    result = await fetcher.fetch(_item())
-    assert result.status_code == 200
-    assert result.fetch_attempt == 2
+async def test_5xx_reports_failure(fetcher, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(url="https://example.com/page", status_code=503)
+    with pytest.raises(FetchError) as caught:
+        await fetcher.fetch(_item())
+    assert caught.value.kind == Kind.UNAVAILABLE
+    assert len(httpx_mock.get_requests()) == 1
 
 
 @pytest.mark.asyncio
@@ -73,16 +74,13 @@ async def test_4xx_no_retry(fetcher, httpx_mock: HTTPXMock):
 
 
 @pytest.mark.asyncio
-async def test_429_delay(fetcher, httpx_mock: HTTPXMock):
-    httpx_mock.add_response(
-        url="https://example.com/page",
-        status_code=429,
-        headers={"Retry-After": "0"},
-        is_reusable=True,
-    )
-    httpx_mock.add_response(url="https://example.com/page", content=b"ok")
-    result = await fetcher.fetch(_item())
-    assert result.status_code == 200
+async def test_429_reports_delay(fetcher, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(url="https://example.com/page", status_code=429, headers={"Retry-After": "7"})
+    with pytest.raises(FetchError) as caught:
+        await fetcher.fetch(_item())
+    assert caught.value.kind == Kind.RATE_LIMITED
+    assert caught.value.details["retry_after"] == 7
+    assert len(httpx_mock.get_requests()) == 1
 
 
 # -- total deadline ----------------------------------------------------
@@ -95,7 +93,7 @@ async def test_hung_capped():
     Per-phase timeouts can't catch this: bytes arriving every few
     seconds reset the read timer forever.
     """
-    fetcher = HttpFetcher(max_retries=1, total_timeout=0.2)
+    fetcher = HttpFetcher(total_timeout=0.2)
     t0 = time.monotonic()
 
     with pytest.raises(FetchError):
@@ -122,11 +120,12 @@ async def test_timeout_retry(monkeypatch):
         )
 
     monkeypatch.setattr(HttpFetcher, "_do_fetch", _flaky)
-    fetcher = HttpFetcher(max_retries=2, total_timeout=0.1)
+    fetcher = HttpFetcher(total_timeout=0.1)
 
-    result = await fetcher.fetch(_item())
-    assert result.status_code == 200
-    assert calls == [1, 2]
+    with pytest.raises(FetchError) as caught:
+        await fetcher.fetch(_item())
+    assert caught.value.kind == Kind.TIMEOUT
+    assert calls == [1]
 
 
 # -- redirect caps -----------------------------------------------------
@@ -227,7 +226,7 @@ async def test_client_rebuilt(fetcher, httpx_mock: HTTPXMock):
 @pytest.mark.asyncio
 async def test_ua_rotates(httpx_mock: HTTPXMock):
     """UA moved onto the request when the client started outliving fetches."""
-    f = HttpFetcher(user_agents=["UA-one"], max_retries=1)
+    f = HttpFetcher(user_agents=["UA-one"])
     httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
     await f.fetch(_item())
     await f.fetch(_item())

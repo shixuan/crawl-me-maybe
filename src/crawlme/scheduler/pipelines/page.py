@@ -12,6 +12,7 @@ from crawlme.config import Settings
 from crawlme.digest import Extractor, FetchResult, Page
 from crawlme.digest.fetcher.base import FetchError
 from crawlme.discovery import Harvest
+from crawlme.errors import Kind
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
@@ -95,7 +96,14 @@ class PagePipeline(Pipeline[PageInput, None]):
         await self._storage.start()
         result = await self._fetch.fetch(item)
         if isinstance(result, FetchFailure):
-            raise FetchError("blocked by robots" if result.reason == "robots" else "could not be fetched")
+            if result.error is not None:
+                raise result.error
+            raise FetchError(
+                "blocked by robots" if result.reason == "robots" else "could not be fetched",
+                code="robots_disallowed" if result.reason == "robots" else "fetch_failed",
+                kind=Kind.FORBIDDEN if result.reason == "robots" else Kind.UNAVAILABLE,
+                details={"url_key": item.url_key},
+            )
         page = Page(
             url_key=item.url_key,
             url=item.url,

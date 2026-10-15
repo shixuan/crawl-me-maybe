@@ -74,7 +74,9 @@ class TokenBudget(Checkpointable):
 
     def check(self) -> None:
         if self.limit > 0 and self.used >= self.limit:
-            raise TokenBudgetError(f"token budget exhausted: {self.used}/{self.limit}")
+            raise TokenBudgetError(
+                f"token budget exhausted: {self.used}/{self.limit}", details={"used": self.used, "limit": self.limit}
+            )
 
     @notify
     def record(

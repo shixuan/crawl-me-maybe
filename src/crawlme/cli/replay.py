@@ -18,22 +18,28 @@ from typing import Any
 
 import aiosqlite
 
-from crawlme.analysis import AnalysisResult, Analyzer
+from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.digest import Page
+from crawlme.errors import Error, ErrorHandler, Kind, Skipped
 from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.persist import Storage
 from crawlme.persist.read import readonly_uri
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.runtime import CrawlGoal, spec_version
+from crawlme.scheduler.workers import AnalysisWorker
 from crawlme.urls import URL
 
 logger = logging.getLogger(__name__)
 
 
-class ReplayError(Exception):
+class ReplayError(Error):
     """Replay cannot proceed: task not found, no credentials, etc."""
+
+    source = "replay"
+    code = "replay_failed"
+    kind = Kind.INVALID_INPUT
 
 
 async def cmd_replay(args: argparse.Namespace) -> None:
@@ -55,11 +61,11 @@ async def cmd_replay(args: argparse.Namespace) -> None:
             max_tokens=args.max_tokens,
             force=args.force,
         )
-    except ReplayError as e:
+    except Error as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    # Close cached clients before the event loop and final report.
-    await close_litellm_clients()
+    finally:
+        await close_litellm_clients()
     print_replay_summary(report)
     logging.getLogger().setLevel(logging.CRITICAL)
 
@@ -105,14 +111,26 @@ async def run_replay(
     if analyzer is None:
         analyzer = Analyzer.from_settings(settings, budget=budget)
         if analyzer is None:
-            raise ReplayError("replay needs LLM credentials to analyze pages: configure LLM_API_KEY / LLM_BASE_URL")
+            raise ReplayError(
+                "replay needs LLM credentials to analyze pages: configure LLM_API_KEY / LLM_BASE_URL",
+                code="llm_unconfigured",
+            )
 
     storage = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
+    error_handler = ErrorHandler()
+    worker = AnalysisWorker(
+        analyzer, concurrency=settings.llm_concurrency, storage=storage, error_handler=error_handler
+    )
     await storage.start()
     try:
         goal_row = await storage.get_goal(task_row["goal_id"])
         if goal_row is None:
-            raise ReplayError(f"goal {task_row['goal_id']} missing from the run database")
+            raise ReplayError(
+                f"goal {task_row['goal_id']} missing from the run database",
+                code="goal_missing",
+                kind=Kind.NOT_FOUND,
+                details={"goal_id": task_row["goal_id"]},
+            )
         goal = _goal_from_row(goal_row)
         new_goal = False
         if prompt:
@@ -121,8 +139,11 @@ async def run_replay(
             existing = await storage.get_goal(goal.goal_id)
             if existing is None:
                 new_goal = True
-                enhanced = await GoalEnhancer.from_settings(settings, budget=budget).enhance(goal)
-                if enhanced is not None:
+                enhancer = GoalEnhancer.from_settings(settings, budget=budget)
+                enhanced = await error_handler.call(
+                    "goal", lambda: enhancer.enhance(goal), optional=True, repeatable=True
+                )
+                if enhanced is not None and not isinstance(enhanced, Skipped):
                     goal.goal_statement = enhanced.statement
                     goal.keywords = enhanced.keywords
                     goal.since = enhanced.since
@@ -132,20 +153,23 @@ async def run_replay(
             else:
                 if existing.get("prompt") != prompt:
                     # Reject goal-ID collisions before save_goal can replace a different prompt.
-                    raise ReplayError(f"goal id {goal.goal_id} already exists with a different prompt")
+                    raise ReplayError(
+                        f"goal id {goal.goal_id} already exists with a different prompt",
+                        code="goal_conflict",
+                        kind=Kind.CONFLICT,
+                        details={"goal_id": goal.goal_id},
+                    )
                 # Same prompt replayed before: reuse the stored goal
                 # (already enhanced), never pay the enhancer again.
                 goal = _goal_from_row(existing)
 
         published = 0
 
-        def _sink(result: AnalysisResult) -> None:
-            # First tries and background retries land here alike.
+        def completed(seed: str | None) -> None:
             nonlocal published
             published += 1
-            storage.save_analysis(result.model_dump(mode="json"))
 
-        analyzer.bind_sink(_sink)
+        worker.bind_completion(completed)
 
         rows = await storage.list_pages()
         pages_total = len(rows)
@@ -178,28 +202,33 @@ async def run_replay(
                     return
                 try:
                     budget.check()
-                    result = await analyzer.analyze(page, goal)
+                    result = await worker.analyze(page, goal)
                 except TokenBudgetError:
                     if not exhausted:
                         logger.warning("replay.budget_exhausted used=%d/%d", budget.used, budget.limit)
                     exhausted = True
                     return
-                if result is not None:
+                if isinstance(result, Skipped):
+                    if result.reason == "limit_reached":
+                        exhausted = True
+                        return
+                    parked += 1
+                elif result is not None:
                     analyzed += 1
                 else:
                     parked += 1
 
         workers = [asyncio.create_task(work()) for _ in range(min(max(1, settings.llm_concurrency), len(rows)))]
         try:
-            await asyncio.gather(*workers)
+            await error_handler.watch(asyncio.gather(*workers))
         finally:
-            for worker in workers:
-                worker.cancel()
+            for task in workers:
+                task.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
         # Parked pages retry in the background; wait them out so every
         # one settles before the analyzer (and this run) closes.
-        await analyzer.drain_pending()
+        await worker.drain_pending()
         retried_ok = published - analyzed
         failed = parked - retried_ok
 
@@ -222,7 +251,7 @@ async def run_replay(
             llm_calls=budget.calls,
         )
     finally:
-        await analyzer.aclose()
+        await worker.aclose()
         await storage.close()
 
 
@@ -245,8 +274,18 @@ async def find_run_dir(result_dir: Path, task_id: str) -> tuple[Path, dict[str, 
             continue
     if seen:
         detail = ", ".join(f"{tid} ({ts})" for tid, ts in sorted(seen.items()))
-        raise ReplayError(f"task {task_id} not found; runs under {result_dir} hold: {detail}")
-    raise ReplayError(f"task {task_id} not found: no run databases under {result_dir}")
+        raise ReplayError(
+            f"task {task_id} not found; runs under {result_dir} hold: {detail}",
+            code="task_missing",
+            kind=Kind.NOT_FOUND,
+            details={"task_id": task_id},
+        )
+    raise ReplayError(
+        f"task {task_id} not found: no run databases under {result_dir}",
+        code="task_missing",
+        kind=Kind.NOT_FOUND,
+        details={"task_id": task_id},
+    )
 
 
 def print_replay_summary(r: ReplayReport) -> None:

@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from crawlme.errors import ErrorHandler, Skipped
 from crawlme.logging.progress import activity
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
@@ -32,7 +33,9 @@ class RankingWorker:
         storage: Storage,
         frontier: Frontier,
         tracking: Tracker,
+        error_handler: ErrorHandler,
     ) -> None:
+        self.error_handler = error_handler
         self._storage = storage
         self._frontier = frontier
         self._tracking = tracking
@@ -46,7 +49,8 @@ class RankingWorker:
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]],
     ) -> RankedBatch:
-        if self.ranker is None:
+        ranker = self.ranker
+        if ranker is None:
             decisions = [
                 RankDecision(
                     candidate_id=c.candidate_id,
@@ -60,7 +64,14 @@ class RankingWorker:
                 for c in batch
             ]
         else:
-            decisions = await self.ranker.rank_batch(goal, batch, history, page_contexts=page_contexts)
+            result = await self.error_handler.call(
+                "ranking",
+                lambda: ranker.rank_batch(goal, batch, history, page_contexts=page_contexts),
+                optional=True,
+                repeatable=True,
+                retry_invalid_output=False,
+            )
+            decisions = [] if isinstance(result, Skipped) else result
         items: list[FrontierItem] = []
         for d in decisions:
             if d.dropped:

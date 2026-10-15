@@ -11,8 +11,9 @@ import pytest
 
 from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.config import Settings
-from crawlme.digest import FetchResult, Page, Payload
+from crawlme.digest import FetchError, FetchResult, Page, Payload
 from crawlme.discovery import Harvest
+from crawlme.errors import Error, Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.factory import create_scheduler
@@ -126,7 +127,7 @@ async def test_page_slot_covers_persistence(tmp_path):
 @pytest.mark.asyncio
 async def test_fetch_failure_result(tmp_path):
     worker, item, storage = _worker(tmp_path)
-    worker._fetch.fetcher.fetch.side_effect = OSError("offline")
+    worker._fetch.fetcher.fetch.side_effect = FetchError("offline", kind=Kind.NOT_FOUND)
     assert await worker.fetch_and_extract(item) is None
     assert worker.run_state.stats.fetch_errors == 1
     storage.save_page.assert_not_called()
@@ -244,7 +245,8 @@ async def test_slot_released():
     sched.pipeline._page._fetch.fetcher.fetch = AsyncMock(side_effect=RuntimeError("boom"))
     sched.pipeline._frontier.record_outcome = AsyncMock()
 
-    assert await sched.pipeline._page.fetch_and_extract(_item()) is None
+    with pytest.raises(Error, match="boom"):
+        await sched.pipeline._page.fetch_and_extract(_item())
     assert not sched.pipeline._page._fetch._slots.locked()
 
 
@@ -388,7 +390,7 @@ async def test_robots_absent():
     storage.get_robots = AsyncMock(return_value=None)
     storage.flush = AsyncMock()
     fetcher = MagicMock(aclose=AsyncMock())
-    fetcher.fetch = AsyncMock(side_effect=OSError("connection refused"))
+    fetcher.fetch = AsyncMock(side_effect=FetchError("connection refused", kind=Kind.NOT_FOUND))
     sched = _make_sched(storage=storage, fetcher=fetcher, robots=RobotsPolicy(agent="a"))
     sched.pipeline._goal = _goal(max_pages=5)
     await sched.pipeline._page._fetch.ensure_robots("x.com")

@@ -33,7 +33,7 @@ def test_sched_analyzer(tmp_path: Path):
     analyzer = MagicMock()
     sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
     assert sched.pipeline._analysis.analyzer is analyzer
-    analyzer.bind_sink.assert_called_once()
+    assert sched._checkpointer.analysis is sched.pipeline._analysis
 
 
 def test_scheduler_no_analyzer(tmp_path: Path):
@@ -51,6 +51,35 @@ def test_sched_run_state(tmp_path: Path):
     sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
     assert sched.run_state is state
     assert sched.pipeline._tracking.state is state
+
+
+@pytest.mark.parametrize("injected", [True, False])
+async def test_expander_created_once(tmp_path, monkeypatch, injected):
+    from crawlme.pioneer import Candidate
+    from crawlme.pioneer.seed_expander import SeedExpander
+    from crawlme.runtime import CrawlGoal
+    from crawlme.urls import URL
+
+    expander = SeedExpander(None)
+    expander.propose = AsyncMock(return_value=[])
+    builder = MagicMock(return_value=expander)
+    monkeypatch.setattr(SeedExpander, "from_settings", builder)
+    cfg = Settings(
+        _env_file=None, result_dir=tmp_path, analysis_enabled=False, expand_seeds=True, llm_api_key="", llm_base_url=""
+    )
+    scheduler = create_scheduler(cfg, **({"seed_expander": expander} if injected else {}))
+    goal = CrawlGoal(prompt="compiler articles")
+    url = URL(raw="https://example.test", canonical="https://example.test", url_key="seed")
+    try:
+        for _ in range(2):
+            assert await scheduler.pipeline.expand_seeds(goal, [Candidate(url=url)]) == []
+        assert expander.propose.await_count == 2
+        if injected:
+            builder.assert_not_called()
+        else:
+            builder.assert_called_once_with(cfg, budget=scheduler._monitor.budget)
+    finally:
+        await scheduler.aclose()
 
 
 @pytest.mark.parametrize(("disallow", "ignore"), [(True, False), (True, True), (False, False)])
@@ -102,3 +131,56 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
         await scheduler.aclose()
     with sqlite3.connect(next(tmp_path.glob("*/db/crawl.db"))) as con:
         assert con.execute("SELECT count(*) FROM pages").fetchone()[0] == 0
+
+
+async def test_seed_failure(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import sqlite3
+
+    import httpx
+
+    from crawlme.llm import Client
+    from crawlme.pioneer.sources import ManualSource
+    from crawlme.runtime import CrawlGoal, CrawlTask
+
+    calls = []
+
+    async def complete(self, *args, **kwargs):
+        calls.append(self._stage)
+        response = httpx.Response(
+            402,
+            json={"error": {"message": "Insufficient credits"}},
+            request=httpx.Request("POST", "https://provider.test"),
+        )
+        raise httpx.HTTPStatusError("Payment required", request=response.request, response=response)
+
+    monkeypatch.setattr(Client, "_complete", complete)
+    cfg = Settings(
+        _env_file=None,
+        result_dir=tmp_path,
+        llm_api_key="stub-key",
+        llm_base_url="",
+        llm_model="provider/model",
+        analysis_enabled=False,
+        expand_seeds=True,
+        ignore_robots=True,
+    )
+    goal = CrawlGoal(prompt="compiler safety")
+    task = CrawlTask(goal_id=goal.goal_id)
+    fetcher = MagicMock(fetch=AsyncMock(side_effect=RuntimeError("Unexpected fetch")), aclose=AsyncMock())
+    scheduler = create_scheduler(cfg, goal=goal, fetcher=fetcher)
+    seeds = await ManualSource(["https://example.com/start"]).discover(goal)
+    from crawlme.llm import RemoteError
+
+    with pytest.raises(RemoteError):
+        await scheduler.pipeline.expand_seeds(goal, seeds)
+    await scheduler.pipeline.ingest_seeds(goal, seeds)
+    await asyncio.wait_for(scheduler.run(goal, task), 2)
+    assert task.state == "FAILED" and task.stopping_reason == "FATAL"
+    assert calls == ["seeds"] and scheduler.run_state.progress.pages_fetched == 0
+    assert "Insufficient credits" in scheduler.run_state.progress.fatal_error
+    fetcher.fetch.assert_not_awaited()
+    with sqlite3.connect(scheduler._storage.db_path) as db:
+        saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
+    assert not saved["state"]["progress"]["fatal_error"]

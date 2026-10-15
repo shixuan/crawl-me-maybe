@@ -172,3 +172,44 @@ def test_console_modes(monkeypatch, tty, fmt, level, term, enabled):
     assert any(isinstance(h, ProgressHandler) for h in root.handlers) == enabled
     for handler in root.handlers:
         handler.close()
+
+
+@pytest.mark.parametrize("fatal", [False, True])
+async def test_provider_failure_visible(console, fatal):
+    from unittest.mock import AsyncMock
+
+    from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
+    from crawlme.llm import RemoteError
+
+    handler, stream = console
+    failure = RemoteError(
+        "Service is too busy" if not fatal else "Account balance exhausted",
+        stage="seeds",
+        model="provider/model",
+        status_code=503 if not fatal else 402,
+        kind=Kind.UNAVAILABLE if not fatal else Kind.RESOURCE_EXHAUSTED,
+    )
+    call = AsyncMock(side_effect=failure)
+
+    @activity("seed expander")
+    async def work():
+        return await ErrorHandler(ErrorPolicy(max_attempts=2, retry_delay=0)).call(
+            "seeds",
+            call,
+            optional=True,
+            repeatable=True,
+        )
+
+    with pytest.raises(RemoteError):
+        await work()
+    assert "stopping the run" in stream.getvalue()
+    if fatal:
+        assert call.await_count == 1
+    else:
+        assert "retrying in 0s" in stream.getvalue()
+        assert "attempt 2" in stream.getvalue()
+        assert "skipping this operation" not in stream.getvalue()
+        assert call.await_count == 2
+    assert failure.message in stream.getvalue()
+    assert str(failure.status_code) in stream.getvalue()
+    assert not handler.active and not handler.live.is_started

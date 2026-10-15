@@ -1,6 +1,6 @@
 """Derive a goal statement, keywords, publication cutoff and extraction specification.
 
-Return None when unavailable or unsuccessful so the original goal remains usable."""
+Return None when unconfigured or the reply is invalid; propagate request failures."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 
 from crawlme import prompts
 from crawlme.config import Settings
-from crawlme.llm import Client, Error, Stage, TokenBudget, parse_json_response
+from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging.progress import activity
 from crawlme.runtime import CrawlGoal
 
@@ -47,13 +47,18 @@ class EnhancedGoal:
 
 
 class GoalEnhancer:
-    """Enhances a CrawlGoal with one LLM call; None on any failure."""
+    """Enhance a CrawlGoal, keeping the original when the reply cannot be used."""
 
     def __init__(self, client: Client | None) -> None:
         self._client = client
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, budget: TokenBudget | None = None) -> GoalEnhancer:
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        budget: TokenBudget | None = None,
+    ) -> GoalEnhancer:
         """Wire the client with the default-on auto-off semantics: no
         credentials means the enhancer stays inert.  *budget* is shared
         across all LLM consumers of the task."""
@@ -71,11 +76,7 @@ class GoalEnhancer:
         """One chat call, then validation.  None means apply nothing."""
         if self._client is None:
             return None
-        try:
-            resp = await self._client.chat(goal.prompt, system=prompts.goal_system(), json_mode=True)
-        except Error as e:
-            logger.warning("goal.enhance llm error, using raw prompt: %s", e)
-            return None
+        resp = await self._client.chat(goal.prompt, system=prompts.goal_system(), json_mode=True)
         if not resp.content.strip():
             # Report an empty completion separately from malformed JSON.
             logger.warning("goal.enhance empty content (out=%d), using raw prompt", resp.output_tokens)

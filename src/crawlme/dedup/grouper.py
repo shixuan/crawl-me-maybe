@@ -8,18 +8,25 @@ import logging
 from collections import Counter
 from typing import Any
 
+from pydantic import ValidationError
+
 from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.dedup.models import Group, Grouping
+from crawlme.errors import Error, Kind
 from crawlme.llm import Stage, TokenBudget
 from crawlme.llm.client import Client
-from crawlme.llm.errors import Error
 from crawlme.llm.parsing import parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.persist import Storage
 from crawlme.runtime import CrawlGoal
 
 logger = logging.getLogger(__name__)
+
+
+class DedupError(Error):
+    source = "dedup"
+    code = "invalid_response"
+    kind = Kind.INVALID_OUTPUT
 
 
 def _identity(row: dict[str, Any]) -> str:
@@ -54,23 +61,33 @@ class Grouper:
         for attempt in range(2):
             size = len(request) + len(prompts.DEDUP_SYSTEM)
             if size > self.max_chars:
-                raise Error(
-                    f"dedup input exceeds LLM_DEDUP_MAX_CHARS ({size} > {self.max_chars}); original results retained"
+                raise DedupError(
+                    f"dedup input exceeds LLM_DEDUP_MAX_CHARS ({size} > {self.max_chars}); original results retained",
+                    code="input_too_large",
+                    kind=Kind.INVALID_INPUT,
+                    details={"chars": size, "max_chars": self.max_chars},
                 )
             response = await self.client.chat(request, system=prompts.DEDUP_SYSTEM, json_mode=True)
             try:
                 if response.truncated:
-                    raise Error("dedup response truncated; original results retained")
+                    raise DedupError("dedup response truncated; original results retained", code="response_truncated")
                 data = parse_json_response(response.content)
                 if data is None:
-                    raise Error("dedup response is not a JSON object")
-                groups = Grouping.model_validate(data).groups
+                    raise DedupError("dedup response is not a JSON object", code="invalid_json")
+                try:
+                    groups = Grouping.model_validate(data).groups
+                except ValidationError as exc:
+                    raise DedupError(str(exc), code="invalid_groups") from exc
                 members = [member for group in groups for member in group.members]
                 duplicates = sorted(key for key, count in Counter(members).items() if count > 1)
                 unknown = sorted(set(members) - expected)
                 if duplicates or unknown:
-                    raise Error(f"dedup returned duplicate IDs {duplicates}; unknown IDs {unknown}")
-            except (Error, ValueError) as exc:
+                    raise DedupError(
+                        f"dedup returned duplicate IDs {duplicates}; unknown IDs {unknown}",
+                        code="invalid_members",
+                        details={"duplicates": duplicates, "unknown": unknown},
+                    )
+            except DedupError as exc:
                 logger.warning("dedup.invalid attempt=%d error=%s", attempt + 1, exc)
                 logger.warning(
                     "dedup.response attempt=%d content=%s",
@@ -101,18 +118,3 @@ class Grouper:
             for r in rows
             if _identity(r) not in assigned
         ]
-
-
-async def group_results(storage: Storage, goal: CrawlGoal, grouper: Grouper, *, model: str) -> dict[str, Any]:
-    rows = await storage.dedup_inputs(goal.goal_id)
-    logger.info("grouping %d relevant items", len(rows))
-    groups = await grouper.group(goal, rows)
-    await storage.save_groups(
-        goal.goal_id,
-        fingerprint(rows),
-        [g.model_dump() for g in groups],
-        model=model or "openai/gpt-4o-mini",
-    )
-    sources = len({r.get("url", _identity(r)) for r in rows})
-    logger.info("dedup: %d items from %d pages grouped into %d results", len(rows), sources, len(groups))
-    return {"status": "complete", "sources": sources, "items": len(rows), "groups": len(groups)}

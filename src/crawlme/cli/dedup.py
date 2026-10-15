@@ -9,11 +9,13 @@ from pathlib import Path
 from crawlme.cli.replay import _goal_from_row, find_run_dir
 from crawlme.cli.report import stage_lines
 from crawlme.config import Settings
-from crawlme.dedup.grouper import Grouper, group_results
+from crawlme.dedup.grouper import Grouper
+from crawlme.errors import ErrorHandler
 from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.logging.config import write_report
 from crawlme.persist import Storage
+from crawlme.scheduler.workers import DedupWorker
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,11 @@ async def cmd_dedup(args: argparse.Namespace) -> None:
         grouper = Grouper.from_settings(settings, budget=budget)
         if grouper is None:
             raise ValueError("dedup needs LLM_API_KEY or LLM_BASE_URL")
-        result = await group_results(storage, _goal_from_row(goal_row), grouper, model=settings.llm_model)
+        worker = DedupWorker(grouper, storage=storage, model=settings.llm_model, error_handler=ErrorHandler())
+        await worker.run(_goal_from_row(goal_row))
+        result = worker.report
+        if result["status"] != "complete":
+            raise ValueError(result.get("error", "dedup failed"))
         lines += [
             f"  run:        {run_dir}",
             f"  goal:       {goal_id}",

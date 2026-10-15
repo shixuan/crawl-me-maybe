@@ -9,13 +9,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.analysis import AnalysisResult, Analyzer
+from crawlme.analysis import AnalysisError, AnalysisResult, Analyzer
 from crawlme.analysis.analyzer import _parse_analysis
-from crawlme.dedup.grouper import Grouper, group_results
+from crawlme.dedup.grouper import Grouper
 from crawlme.digest import Page
-from crawlme.llm import Error, LLMResponse
+from crawlme.errors import Error, ErrorHandler, Kind
+from crawlme.llm import LLMResponse
 from crawlme.persist import Storage, read_results
 from crawlme.runtime import CrawlGoal
+from crawlme.scheduler.workers import DedupWorker
 from crawlme.urls import URL
 
 
@@ -65,7 +67,7 @@ def test_general_item_protocol(goal_text, entries):
 
 @pytest.mark.parametrize("items", [None, {}, ["bad"], [], [{"summary": "invented", "evidence": ["missing"]}]])
 def test_invalid_items_rejected(items):
-    with pytest.raises(Error):
+    with pytest.raises(AnalysisError) as caught:
         _parse_analysis(
             {"classification": "RELEVANT", "items": items},
             page("source"),
@@ -73,6 +75,8 @@ def test_invalid_items_rejected(items):
             model="test",
             tokens_used=0,
         )
+    assert isinstance(caught.value, Error)
+    assert caught.value.source == "analysis" and caught.value.kind == Kind.INVALID_OUTPUT
 
 
 async def test_item_time_correction():
@@ -120,7 +124,9 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         assert len({row["url"] for row in rows}) == 1
         client = MagicMock()
         client.chat = AsyncMock(return_value=LLMResponse('{"groups": []}', 20, 10, "test"))
-        report = await group_results(storage, goal, Grouper(client, max_chars=10000), model="test")
+        report = await DedupWorker(
+            Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler()
+        ).run(goal)
         assert report["groups"] == 2
         stored = read_results(Path(storage.db_path))
         assert len(stored.analyses) == 1 and len(stored.items) == 2
@@ -138,7 +144,9 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         client.chat.return_value = LLMResponse(
             json.dumps({"groups": [{"members": pair, "overview": "Aster camera"}]}), 20, 10, "test"
         )
-        report = await group_results(storage, goal, Grouper(client, max_chars=10000), model="test")
+        report = await DedupWorker(
+            Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler()
+        ).run(goal)
         assert report == {"status": "complete", "sources": 2, "items": 3, "groups": 2}
         shown = serve._results(tmp_path, Path(storage.db_path).parent.parent.name, goal.goal_id)
         assert len(shown["rows"]) == 3 and len(shown["groups"]) == 2

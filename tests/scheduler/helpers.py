@@ -9,6 +9,7 @@ from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.config import Settings
 from crawlme.digest import FetchResult, Page
 from crawlme.discovery import Harvester
+from crawlme.errors import ErrorHandler, ErrorPolicy
 from crawlme.llm import TokenBudget
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.frontier import Frontier
@@ -89,6 +90,7 @@ def _make_sched(**overrides) -> Engine:
     storage.flush = AsyncMock()
 
     kwargs: dict = {
+        "error_handler": ErrorHandler(ErrorPolicy(retry_delay=0)),
         "settings": Settings(),
         "storage": storage,
         "frontier": frontier_mock,

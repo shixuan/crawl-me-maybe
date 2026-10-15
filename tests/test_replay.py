@@ -11,11 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.analysis import AnalysisResult
+from crawlme.analysis import AnalysisError, AnalysisResult
 from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
 from crawlme.config import Settings
 from crawlme.digest import Page
-from crawlme.llm import TokenBudgetError
+from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind
+from crawlme.llm import RemoteError, TokenBudgetError
 from crawlme.persist import Storage
 from crawlme.runtime import CrawlGoal, CrawlTask
 from crawlme.urls import URL
@@ -63,39 +64,25 @@ async def _write_run(
 
 
 class _StubAnalyzer:
-    """Analyzer-protocol fake: scripted results, call recording.
+    """Script single analysis attempts; the real worker owns retries and publishing."""
 
-    Mirrors the real contract: every success is published through the
-    bound sink.  park=True simulates transient failures instead (the
-    page returns None and settles on the drain).
-    """
-
-    def __init__(
-        self,
-        *,
-        park: bool = False,
-        raise_error: Exception | None = None,
-        publish_on_drain: list[AnalysisResult] | None = None,
-    ) -> None:
-        self.sink = None
-        self.calls: list[tuple[str, str]] = []
-        self.drained = False
-        self.closed = False
+    def __init__(self, *, park=False, raise_error=None, publish_on_drain=None, park_error=None):
+        self.calls = []
         self._park = park
+        self._park_error = park_error or RemoteError("temporary", kind=Kind.UNAVAILABLE)
         self._raise = raise_error
-        self._drain_publish = list(publish_on_drain or [])
-
-    def bind_sink(self, sink) -> None:
-        self.sink = sink
+        self._results = {result.url_key: result for result in publish_on_drain or []}
 
     async def analyze(self, page, goal):
-        if self._raise is not None:
-            self.calls.append((page.url_key, goal.goal_id))
-            raise self._raise
+        previous = sum(key == page.url_key for key, _ in self.calls)
         self.calls.append((page.url_key, goal.goal_id))
+        if self._raise is not None:
+            raise self._raise
         if self._park:
-            return None
-        result = AnalysisResult(
+            if previous and page.url_key in self._results:
+                return self._results[page.url_key]
+            raise self._park_error
+        return AnalysisResult(
             page_id=page.page_id,
             url_key=page.url_key,
             goal_id=goal.goal_id,
@@ -105,17 +92,11 @@ class _StubAnalyzer:
             model="stub-model",
             tokens_used=100,
         )
-        if self.sink is not None:
-            self.sink(result)
-        return result
 
-    async def drain_pending(self) -> None:
-        self.drained = True
-        for result in self._drain_publish:
-            self.sink(result)
 
-    async def aclose(self) -> None:
-        self.closed = True
+@pytest.fixture(autouse=True)
+def immediate_retries(monkeypatch):
+    monkeypatch.setattr("crawlme.cli.replay.ErrorHandler", lambda: ErrorHandler(ErrorPolicy(retry_delay=0)))
 
 
 def _cfg(tmp_path: Path) -> Settings:
@@ -191,7 +172,6 @@ async def test_replay_persists(tmp_path):
     assert report.skipped == 0
     assert report.failed == 0
     assert report.new_goal is False
-    assert analyzer.closed and analyzer.drained
     # Every analysis landed in the run's db under the original goal.
     rows = await _read_analyses(run_dir, "a")
     assert len(rows) == 1
@@ -328,7 +308,11 @@ async def test_replay_empty(tmp_path):
 async def test_replay_counts(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
     # Both pages park; one settles on the drain, the other gives up.
-    analyzer = _StubAnalyzer(park=True, publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")])
+    analyzer = _StubAnalyzer(
+        park=True,
+        park_error=AnalysisError("invalid output"),
+        publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")],
+    )
 
     report = await run_replay(_cfg(tmp_path), "task1", analyzer=analyzer)
 
@@ -403,11 +387,10 @@ async def test_replay_inflight_cleanup(tmp_path, budget_error):
         assert report.analyzed == report.published == 1
         assert report.failed == 0
     else:
-        with pytest.raises(RuntimeError, match="broken"):
+        with pytest.raises(Error, match="broken"):
             await asyncio.wait_for(run_replay(cfg, "task1", analyzer=analyzer), timeout=3)
     assert analyzer.entered == 2
     assert analyzer.active == 0
-    assert analyzer.closed
 
 
 @pytest.mark.asyncio
@@ -426,3 +409,12 @@ async def test_replay_no_creds(tmp_path):
     await _write_run(tmp_path, "20260101_000001", pages=[_page("a")])
     with pytest.raises(ReplayError, match="credentials"):
         await run_replay(_cfg(tmp_path), "task1")
+
+
+async def test_replay_outage_stops(tmp_path):
+    run_dir = await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
+    analyzer = _StubAnalyzer(park=True, publish_on_drain=[AnalysisResult(page_id="p-a", url_key="a")])
+    with pytest.raises(RemoteError, match="temporary"):
+        await run_replay(_cfg(tmp_path), "task1", analyzer=analyzer)
+    assert sum(key == "b" for key, _ in analyzer.calls) == 3
+    assert len(await _read_analyses(run_dir, "a")) == 1

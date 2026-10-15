@@ -149,7 +149,7 @@ async def test_aclose():
     await sched.aclose()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
-    analyzer.aclose.assert_awaited_once()
+    assert sched.pipeline._analysis._drain_task is None
 
 
 def test_context_needs_key():
@@ -253,10 +253,10 @@ async def test_a_proposed_seed_that_found_nothing_says_so():
 
 
 def test_failure_reason():
-    from crawlme.llm import Error
+    from crawlme.errors import Error
 
     sched = _make_sched()
-    sched._fail("pipeline", Error("provider rejected the request"))
+    sched._fail("pipeline", Error("provider rejected the request", source="pipeline", code="upstream_failed"))
     assert sched.run_state.progress.fatal_error == "provider rejected the request"
 
 

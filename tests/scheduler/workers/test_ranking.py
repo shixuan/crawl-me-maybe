@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.analysis import AnalysisResult, AnalyzerFeedback
+from crawlme.errors import ErrorHandler
 from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
 from crawlme.runtime import CrawlGoal
 from crawlme.scheduler.workers.ranking import RankingWorker
@@ -48,6 +49,7 @@ async def test_keep_and_drop():
         storage=MagicMock(),
         frontier=MagicMock(),
         tracking=MagicMock(),
+        error_handler=ErrorHandler(),
     )
     result = await worker.rank(batch, CrawlGoal(prompt="test"), RankHistorySummary(goal="test"), {})
     assert result.decisions == decisions
@@ -63,9 +65,9 @@ async def test_no_ranker_keeps_order():
         Candidate(url=URL(raw=f"https://example.com/{i}", canonical=f"https://example.com/{i}", url_key=f"k{i}"))
         for i in range(3)
     ]
-    result = await RankingWorker(None, storage=MagicMock(), frontier=MagicMock(), tracking=MagicMock()).rank(
-        batch, CrawlGoal(prompt="test"), RankHistorySummary(goal="test"), {}
-    )
+    result = await RankingWorker(
+        None, storage=MagicMock(), frontier=MagicMock(), tracking=MagicMock(), error_handler=ErrorHandler()
+    ).rank(batch, CrawlGoal(prompt="test"), RankHistorySummary(goal="test"), {})
     assert [i.url_key for i in result.items] == ["k0", "k1", "k2"]
     assert all(i.priority == 0.5 and i.score_source == "none" for i in result.items)
 

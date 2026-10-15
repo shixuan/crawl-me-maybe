@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from crawlme.digest import Page
 from crawlme.discovery import Harvest, Harvester
-
-logger = logging.getLogger(__name__)
+from crawlme.errors import ErrorHandler, Skipped
 
 
 class DiscoveryWorker:
-    def __init__(self, harvester: Harvester, *, timeout: float) -> None:
+    def __init__(self, harvester: Harvester, *, timeout: float, error_handler: ErrorHandler) -> None:
+        self.error_handler = error_handler
         self.harvester = harvester
         self._timeout = timeout
 
     async def discover(self, page: Page, depth: int) -> Harvest:
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(self.harvester.harvest, page, depth), timeout=self._timeout)
-        except asyncio.TimeoutError:
-            # The await is bounded; Python cannot stop an already-running parser thread.
-            logger.warning("fetch.link_timeout url_key=%s", page.url_key)
-            return Harvest([])
+        result = await self.error_handler.call(
+            "discovery",
+            lambda: asyncio.wait_for(asyncio.to_thread(self.harvester.harvest, page, depth), timeout=self._timeout),
+            optional=True,
+        )
+        return Harvest([]) if isinstance(result, Skipped) else result
