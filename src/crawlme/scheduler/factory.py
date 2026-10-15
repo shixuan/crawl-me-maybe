@@ -120,7 +120,7 @@ def create_scheduler(
             error_handler=error_handler,
         )
     state = kwargs["tracking"].state
-    analysis = kwargs["analysis"]
+    analysis = kwargs.pop("analysis")
     kwargs["dedup"] = DedupPipeline(
         kwargs.pop("grouper"), storage=storage, model=settings.llm_model, error_handler=error_handler
     )
@@ -146,7 +146,7 @@ def create_scheduler(
         settings=settings,
         frontier=kwargs["frontier"],
         runtime=kwargs["tracking"].state,
-        analysis=kwargs["analysis"],
+        analysis=analysis,
         budget=budget,
         robots=kwargs["robots"],
         features={

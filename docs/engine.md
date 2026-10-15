@@ -65,6 +65,19 @@ Engine implements those controls. Phase names are passed to Monitor without bein
 interpreted by Engine. A short standalone pipeline can simply return its result;
 it need not create a supervision phase or configure a monitor.
 
+PagePipeline owns AnalysisWorker preparation, retry startup, draining and closure.
+CrawlPipeline coordinates those lifecycle boundaries through PagePipeline and does
+not hold AnalysisWorker. Preparation binds the goal and task before checkpoint
+restore; retry startup follows the initial committed checkpoint. Calling PagePipeline.run
+directly also prepares analysis on its first page. Closing it cancels pending retries.
+
+PagePipeline prunes its own page context after page work and analysis completion.
+It subscribes to Frontier's context keys through the existing observer so ranking
+completion and source retirement also release context. Pending dispatched work,
+active pages, retries and unranked/scoring candidates retain their context. Closing
+PagePipeline removes the subscription. CrawlPipeline registers dispatched work
+before creating page tasks, preserving recovery if a task is canceled before it starts.
+
 ## Startup and crawl lifecycle
 
 Before Engine.run, the CLI calls CrawlPipeline.startup to ingest supplied seeds,
@@ -78,7 +91,7 @@ flowchart TD
     Guard --> Root[Start and shield pipeline.run input, context]
     Root --> Crawl[CrawlPipeline receives CrawlInput]
     Crawl --> Lock[Acquire run lock unless supplied]
-    Lock --> Prepare[Set task RUNNING, start storage, reset RunState<br/>prepare analysis, page tracking and events]
+    Lock --> Prepare[Set task RUNNING, start storage, reset RunState<br/>prepare PagePipeline and task events]
     Prepare --> Bind[Bind Checkpointer to goal and task]
     Bind --> Restore{Checkpoint supplied?}
     Restore -->|yes| Load[Restore component state and saved page stages]
@@ -106,15 +119,15 @@ pre-run token usage; restore then loads checkpointed execution data.
 
 ## Concurrent crawl execution
 
-CrawlPipeline prepares its stages, dispatches saved `RunState.work` entries,
-starts restored analysis retries and launches two pumps. ErrorHandler watches the
+CrawlPipeline prepares PagePipeline, dispatches saved `RunState.work` entries,
+asks PagePipeline to start restored retries and launches two pumps. ErrorHandler watches the
 pump group and its abort event. Page-task exceptions and fatal retry failures
 reach the same event. Engine supervises the active crawl task, StopMonitor and the checkpoint timer.
 CrawlPipeline records propagated failures without overwriting the last checkpoint.
 
 ```mermaid
 flowchart LR
-    Start["CrawlPipeline._crawl"] --> Restore["Dispatch saved page work<br/>start AnalysisWorker retries"]
+    Start["CrawlPipeline._crawl"] --> Restore["Dispatch saved page work<br/>PagePipeline starts restored retries"]
     Restore --> Fetch["fetch_pump"]
     Restore --> Rank["rank_pump"]
     Restore --> Watch["ErrorHandler.watch<br/>pump group or shared abort event"]
@@ -125,7 +138,7 @@ flowchart LR
         Gate -->|yes| Pop["Frontier.pop_next<br/>priority, domain budget, robots cooldown, global budget"]
         Pop --> Item{"Item available?"}
         Item -->|no| Wake["Wake ranker when needed<br/>sleep 0.2 seconds"] --> Fetch
-        Item -->|yes| Dispatch["PagePipeline.prepare<br/>increment in_flight<br/>create page task"] --> Fetch
+        Item -->|yes| Dispatch["Register checkpoint work<br/>increment in_flight<br/>create page task"] --> Fetch
     end
     Dispatch --> Page["PagePipeline.run"]
     Page --> Done["finally decrement in_flight<br/>done callback removes task handle"]
@@ -140,7 +153,7 @@ flowchart LR
         Batch --> Nonempty{"Batch nonempty?"}
         Nonempty -->|no| Rank
         Nonempty -->|yes| Worker["RankingWorker.run<br/>read feedback snapshot, rank, save, enqueue"]
-        Worker --> Release["finish_ranking and prune page context"]
+        Worker --> Release["finish_ranking<br/>PagePipeline observes released context"]
         Release --> CP["Await Engine checkpoint callback"] --> Rank
         Worker -->|error or cancellation| Return["Return batch to unranked buffer<br/>finish_ranking, then re-raise"] --> Watch
     end
@@ -222,6 +235,7 @@ sequenceDiagram
     participant Monitor as StopMonitor
     participant Engine
     participant Crawl as CrawlPipeline
+    participant Page as PagePipeline
     Monitor->>Notify: subscribe to selected values
     Crawl->>Engine: context.supervise(_crawl())
     Engine->>Monitor: wait(run)
@@ -240,9 +254,11 @@ sequenceDiagram
     Crawl->>Engine: context.settle(wait for pages, pages)
     Engine->>Monitor: allowed / wait for phase and shared deadline
     Engine-->>Crawl: pages finished or wait stopped
-    Crawl->>Engine: context.settle(drain retries, analysis)
+    Crawl->>Page: settle(context)
+    Page->>Engine: context.settle(drain retries, analysis)
     Engine->>Monitor: allowed / wait for phase and shared deadline
-    Engine-->>Crawl: retries finished or stopped
+    Engine-->>Page: retries finished or stopped
+    Page-->>Crawl: settlement complete
     Crawl->>Engine: context.stop_checkpoints()
     Engine-->>Crawl: timer and saves stopped
     Crawl->>Crawl: abort remaining work, run dedup

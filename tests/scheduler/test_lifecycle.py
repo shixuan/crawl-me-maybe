@@ -63,7 +63,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
     grouped = []
 
     async def group(goal, rows):
-        assert scheduler.pipeline._analysis._drain_task is None
+        assert scheduler.pipeline._page._analysis._drain_task is None
         grouped.extend(rows)
         return []
 
@@ -102,4 +102,4 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == int(stop is None)
     assert calls == 2
     assert len(grouped) == int(dedup and stop is None)
-    assert scheduler.pipeline._analysis._drain_task is None
+    assert scheduler.pipeline._page._analysis._drain_task is None

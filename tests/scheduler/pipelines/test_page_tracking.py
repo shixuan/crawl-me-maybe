@@ -33,7 +33,7 @@ def test_backfills_context():
         summary="Borrow checker deep dive.",
     )
 
-    sched.pipeline._analysis.apply(result)
+    sched.pipeline._page._analysis.apply(result)
 
     ctx = sched.pipeline.run_state.page_contexts["k1"]
     assert ctx["classification"] == "RELEVANT"
@@ -46,7 +46,7 @@ def test_backfills_context():
 def test_context_keeps_older():
     """analyze runs before link extraction, so the later write must merge."""
     sched = _make_sched()
-    sched.pipeline._analysis.apply(
+    sched.pipeline._page._analysis.apply(
         AnalysisResult(page_id="p1", url_key="k1", classification="IRRELEVANT", relevance_score=0.4)
     )
 
@@ -84,7 +84,7 @@ def test_window_fed():
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, relevance_threshold=0.7)
 
     for key, score in (("k1", 0.9), ("k2", 0.2)):
-        sched.pipeline._analysis.apply(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
+        sched.pipeline._page._analysis.apply(AnalysisResult(page_id="p", url_key=key, relevance_score=score))
         sched.pipeline.run_state.pages.of(key).listing = False
         sched.pipeline._page.vote(key)
 
@@ -96,7 +96,7 @@ def test_window_threshold():
     sched = _make_sched()
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, relevance_threshold=0.95)
 
-    sched.pipeline._analysis.apply(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
+    sched.pipeline._page._analysis.apply(AnalysisResult(page_id="p1", url_key="k1", relevance_score=0.9))
     sched.pipeline.run_state.pages.of("k1").listing = False
     sched.pipeline._page.vote("k1")
 
@@ -109,7 +109,7 @@ def test_relevant_count():
     sched = _make_sched()
     _set_context(sched, relevance_threshold=0.7)
     for key, score, cls in (("a", 0.9, "RELEVANT"), ("b", 0.2, "IRRELEVANT"), ("c", 0.75, "RELEVANT")):
-        sched.pipeline._analysis.apply(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
+        sched.pipeline._page._analysis.apply(AnalysisResult(url_key=key, relevance_score=score, classification=cls))
         sched.pipeline.run_state.pages.of(key).listing = False
         sched.pipeline._page.vote(key)
     assert sched.pipeline.run_state.progress.relevant_found == 2
@@ -123,7 +123,7 @@ def test_seen_bounded():
 
     sched = _make_sched()
     for i in range(_SEEN_SO_FAR + 4):
-        sched.pipeline._analysis.apply(
+        sched.pipeline._page._analysis.apply(
             AnalysisResult(
                 page_id=f"p{i}",
                 url_key=f"k{i}",
@@ -155,7 +155,7 @@ async def test_a_proposed_seed_is_credited_for_what_it_found():
     sched.pipeline.run_state.proposed_seeds = {seed_key: (seed, "why")}
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, relevance_threshold=0.7)
 
-    sched.pipeline._analysis.apply(
+    sched.pipeline._page._analysis.apply(
         AnalysisResult(classification="RELEVANT", relevance_score=0.9, feedback=AnalyzerFeedback(url=post, title="t"))
     )
     why, tally = sched.pipeline.summary()["proposed_seeds"][seed]

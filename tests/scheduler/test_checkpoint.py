@@ -317,7 +317,7 @@ async def test_remote_cancels_calls(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Client, "_complete", complete)
     scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(Client("provider/model", concurrency=2)))
-    scheduler.pipeline._analysis._slots = asyncio.Semaphore(3)
+    scheduler.pipeline._page._analysis._slots = asyncio.Semaphore(3)
     await scheduler.pipeline.ingest_seeds(goal, [candidate("first"), candidate("second"), candidate("third")])
     await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"

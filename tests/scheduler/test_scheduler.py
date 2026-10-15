@@ -141,7 +141,7 @@ async def test_aclose():
     await sched.aclose()
     ranker.aclose.assert_awaited_once()
     storage.close.assert_awaited_once()
-    assert sched.pipeline._analysis._drain_task is None
+    assert sched.pipeline._page._analysis._drain_task is None
 
 
 def test_context_needs_key():

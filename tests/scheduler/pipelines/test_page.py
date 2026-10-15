@@ -227,7 +227,7 @@ async def test_analysis_free(monkeypatch):
     async def _analyze(_page, _goal_arg):
         held["locked"] = sched.pipeline._page._fetch._slots.locked()
 
-    sched.pipeline._analysis.analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
+    sched.pipeline._page._analysis.analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
@@ -413,7 +413,7 @@ async def test_seed_credited_mid_judge():
     result = MagicMock(item_id="i1", status_code=200, raw=b"x")
 
     async def _analyze(p, _g):
-        sched.pipeline._analysis.apply(
+        sched.pipeline._page._analysis.apply(
             AnalysisResult(
                 classification="RELEVANT",
                 relevance_score=0.9,
@@ -421,7 +421,7 @@ async def test_seed_credited_mid_judge():
             )
         )
 
-    sched.pipeline._analysis.analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
+    sched.pipeline._page._analysis.analyzer = MagicMock(analyze=AsyncMock(side_effect=_analyze))
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
@@ -442,7 +442,7 @@ async def test_a_met_target_stops_analysis():
     sched.pipeline._goal = _goal()
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=15)
     sched.pipeline.run_state.progress.relevant_found = 15
-    sched.pipeline._analysis.analyzer = MagicMock(analyze=AsyncMock())
+    sched.pipeline._page._analysis.analyzer = MagicMock(analyze=AsyncMock())
     url = URL(raw="https://x.test/p", canonical="https://x.test/p", url_key="pk", reg_domain="x.test")
     page = Page(url_key="pk", url=url)
     result = MagicMock(item_id="i", status_code=200, raw=b"x")
@@ -453,7 +453,7 @@ async def test_a_met_target_stops_analysis():
 
     await sched.pipeline._run_page(_item())
 
-    sched.pipeline._analysis.analyzer.analyze.assert_not_awaited()
+    sched.pipeline._page._analysis.analyzer.analyze.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -478,7 +478,7 @@ async def test_the_target_holds_under_a_queue():
         await asyncio.sleep(0)
         sched.pipeline.run_state.progress.relevant_found += 1  # worst case: every page counts
 
-    sched.pipeline._analysis.analyzer = MagicMock(analyze=_analyze)
+    sched.pipeline._page._analysis.analyzer = MagicMock(analyze=_analyze)
 
     def _fetched(i):
         url = URL(raw=f"https://x.test/{i}", canonical=f"https://x.test/{i}", url_key=f"k{i}", reg_domain="x.test")
@@ -538,3 +538,85 @@ async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed
     worker._frontier.record_outcome.assert_awaited_once_with(item, "COMPLETED")
     assert worker.run_state.progress.pages_fetched == 1
     assert not worker.run_state.work
+
+
+@pytest.mark.parametrize("finish_retry", [True, False])
+async def test_page_owns_analysis_lifecycle(finish_retry):
+    """A page can bind, retry and close analysis without CrawlPipeline setup."""
+    from crawlme.analysis import Analyzer
+    from crawlme.llm import LLMResponse, RemoteError
+    from crawlme.scheduler.engine import Engine
+    from crawlme.scheduler.pipelines.page import PageInput
+    from crawlme.util.ids import _content_id
+
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def chat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RemoteError("temporarily unavailable", kind=Kind.UNAVAILABLE)
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return LLMResponse('{"classification":"RELEVANT","relevance_score":0.9}', 1, 1, "stub")
+
+    sched = _make_sched(analyzer=Analyzer(MagicMock(chat=chat)))
+    pipeline = sched.pipeline._page
+    item, goal = _item(), _goal()
+    page = Page(url=item.url, url_key=item.url_key, plain_text="An article")
+    fetched = FetchResult(item_id=item.item_id, url=item.url, url_key=item.url_key, status_code=200)
+    pipeline.fetch_and_extract = AsyncMock(return_value=FetchedPage(fetched, page))
+    pipeline._discovery.discover = AsyncMock(return_value=Harvest([]))
+    pipeline._frontier.record_outcome = AsyncMock()
+    pipeline._frontier.context_keys.return_value = set()
+    engine = Engine(pipeline)
+    try:
+        await pipeline.run(PageInput(item, goal, "standalone"), engine.context)
+        await asyncio.wait_for(entered.wait(), 2)
+        assert pipeline._analysis.pending_keys == {item.url_key}
+        if finish_retry:
+            release.set()
+            await engine.context.supervise(asyncio.sleep(0))
+            await asyncio.wait_for(pipeline.settle(engine.context), 2)
+            saved = pipeline._storage.save_analysis.call_args.args[0]
+            assert saved["analysis_id"] == _content_id(f"standalone:{goal.goal_id}:{item.url_key}")
+        await engine.aclose()
+        assert pipeline._analysis._drain_task is None
+        assert not pipeline._analysis.pending_keys
+        assert pipeline._unsubscribe is None
+        assert cancelled.is_set() is not finish_retry
+        pipeline._fetch.fetcher.aclose.assert_awaited_once()
+    finally:
+        release.set()
+        await engine.aclose()
+        sched._monitor.close()
+
+
+async def test_page_releases_ranked_context():
+    """Frontier changes release old context but preserve pages awaiting dispatch."""
+    from crawlme.pioneer import Candidate, Frontier
+
+    frontier = Frontier(domain_budget=0)
+    sched = _make_sched(frontier=frontier)
+    pipeline = sched.pipeline._page
+    pipeline.prepare(_goal(), "task")
+    item = _item()
+    candidate = Candidate(url=item.url, source_url_key="ranked-source")
+    try:
+        await frontier.push_candidates([candidate])
+        batch = await frontier.take_for_ranking(20)
+        state = pipeline.run_state
+        state.page_contexts = {"ranked-source": {"summary": "old"}, item.url_key: {"summary": "pending"}}
+        state.work[item.item_id] = {"item": item.model_dump(mode="json")}
+        frontier.finish_ranking(batch)
+        assert state.page_contexts == {item.url_key: {"summary": "pending"}}
+        await pipeline.aclose()
+        assert pipeline._unsubscribe is None
+    finally:
+        await pipeline.aclose()
+        sched._monitor.close()

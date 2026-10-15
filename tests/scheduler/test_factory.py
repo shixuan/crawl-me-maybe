@@ -33,15 +33,15 @@ def test_sched_analyzer(tmp_path: Path):
     """The factory binds the supplied analyzer to the shared result sink."""
     analyzer = MagicMock()
     sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
-    assert sched.pipeline._analysis.analyzer is analyzer
-    assert sched.pipeline._checkpointer.analysis is sched.pipeline._analysis
+    assert sched.pipeline._page._analysis.analyzer is analyzer
+    assert sched.pipeline._checkpointer.analysis is sched.pipeline._page._analysis
 
 
 def test_scheduler_no_analyzer(tmp_path: Path):
     """analysis_enabled off: the engine runs with the subsystem absent."""
     cfg = Settings(result_dir=tmp_path, analysis_enabled=False)
     sched = create_scheduler(cfg)
-    assert sched.pipeline._analysis.analyzer is None
+    assert sched.pipeline._page._analysis.analyzer is None
 
 
 def test_sched_run_state(tmp_path: Path):

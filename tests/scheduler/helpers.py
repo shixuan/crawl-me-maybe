@@ -170,7 +170,7 @@ def _robots_sched(raw: str, *, cached=None):
 
 
 def _judge(sched, url_key, score):
-    sched.pipeline._analysis.apply(
+    sched.pipeline._page._analysis.apply(
         AnalysisResult(
             url_key=url_key,
             classification="RELEVANT" if score >= 0.7 else "IRRELEVANT",

@@ -84,7 +84,7 @@ async def test_verdict_to_rank():
     sched.pipeline._goal = _goal(max_pages=5)
 
     for i, cls in enumerate(("RELEVANT", "IRRELEVANT", "RELEVANT")):
-        sched.pipeline._analysis.apply(
+        sched.pipeline._page._analysis.apply(
             AnalysisResult(
                 page_id=f"p{i}",
                 url_key=f"k{i}",

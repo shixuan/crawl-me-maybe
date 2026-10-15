@@ -26,7 +26,7 @@ from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
 from crawlme.scheduler.reporting import summary
-from crawlme.scheduler.workers import AnalysisWorker, RankingWorker
+from crawlme.scheduler.workers import RankingWorker
 from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,6 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         storage: Storage,
         frontier: Frontier,
         ranking: RankingWorker,
-        analysis: AnalysisWorker,
         robots: RobotsPolicy,
         prefilter: PreFilter,
         canonicalizer: Canonicalizer,
@@ -79,7 +78,6 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         self._storage = storage
         self._frontier = frontier
         self._ranking = ranking
-        self._analysis = analysis
         self._robots = robots
         self._prefilter = prefilter
         self._canonicalizer = canonicalizer
@@ -168,8 +166,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         self._goal, self._task_id = goal, task.task_id
         self._events = EventEmitter(self._storage, task.task_id)
         self._context = context
-        self._page.start()
-        self._analysis.prepare(goal, task.task_id)
+        self._page.prepare(goal, task.task_id)
         logger.info(
             "crawling, at most %d pages or %d tokens or %ds", goal.max_pages, goal.max_tokens, goal.max_duration_sec
         )
@@ -213,7 +210,6 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
                 await context.stop_checkpoints()
                 await self.abort()
             await self._dedup.run(goal, context)
-            self._page.prune()
             self._finish_run()
         except asyncio.CancelledError:
             task.state = "INTERRUPTED"
@@ -259,7 +255,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         self.error_handler.check()
         for work in list(self.run_state.work.values()):
             self._dispatch_page(FrontierItem.model_validate(work["item"]))
-        self._analysis.start_retries()
+        self._page.start()
         self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
         await self.error_handler.watch(asyncio.gather(*self._pump_tasks))
 
@@ -280,7 +276,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
 
     async def settle(self) -> None:
         await self._context.settle(self._settle_pages, "pages")
-        await self._context.settle(self._analysis.drain_pending, "analysis")
+        await self._page.settle(self._context)
 
     async def _settle_pages(self) -> None:
         if self._inflight:
@@ -297,7 +293,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         for task in tasks:
             task.cancel()
         try:
-            await self._analysis.aclose()
+            await self._page.abort()
         finally:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._pump_tasks.clear()
@@ -316,7 +312,6 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
                     await close()
                 except Exception as exc:
                     self._fail("cleanup", exc)
-            self._page.prune()
             if self._task is not None and self.failure:
                 self._task.state = "FAILED"
                 self._storage.save_task(self._task.model_dump(mode="json"))
@@ -459,7 +454,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
             self._dispatch_page(item)
 
     def _dispatch_page(self, item: FrontierItem) -> None:
-        self._page.prepare(item)
+        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
         self.run_state.work_started()
         task = asyncio.create_task(self._run_page(item))
         self._inflight.add(task)
@@ -499,5 +494,4 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
                 raise
             finally:
                 self._frontier.finish_ranking(batch)
-                self._page.prune()
             await self._context.checkpoint()

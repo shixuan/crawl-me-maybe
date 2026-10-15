@@ -217,7 +217,8 @@ results. Legacy analyses remain single rows until replayed. Relevant-page limits
 and source-retirement votes remain page-based; reports count items separately.
 
 `AnalysisWorker` limits initial calls and checks the result target after acquiring
-its slot. `Analyzer` continues to own background retries and their shutdown.
+its slot. AnalysisWorker owns the retry queue; PagePipeline owns its preparation, retry
+startup, draining and shutdown. CrawlPipeline coordinates PagePipeline lifecycle.
 
 Analysis feeds relevant-page summaries back to ranking. It does not nominate links
 or bypass the harvester. Platform posts are leaves in the current traversal.
@@ -331,7 +332,10 @@ analysis results join run-wide records by page identity.
 arrive in different orders because analysis can retry. A completed non-listing
 record contributes one relevance vote to its seed. PagePipeline retains page records and
 contexts while page tasks, analysis retries or waiting/active ranking batches need
-them, then releases them. Bounded relevant-page summaries remain separate.
+them, then releases them. PagePipeline observes Frontier context-key changes to
+release completed ranking inputs without a cleanup call from CrawlPipeline. Dispatched
+work entries protect pages that have not started yet. Bounded relevant-page summaries
+remain separate.
 
 The frontier owns both the scored queue and unranked buffer. CrawlPipeline waits for ranking
 through `wait_for_ranking` and signals changes through `wake_ranker`. Queue counts

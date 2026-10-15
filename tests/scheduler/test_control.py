@@ -190,12 +190,12 @@ async def test_retry_retains_source(tmp_path, rank_child):
     try:
         await asyncio.wait_for(retry_entered.wait(), 2)
         await wait_until(lambda: not scheduler.pipeline._inflight)
-        assert key in scheduler.pipeline._analysis.pending_keys
+        assert key in scheduler.pipeline._page._analysis.pending_keys
         assert scheduler.pipeline.run_state.pages.by_url(seed.url.canonical).seed == key
         if rank_child:
             await asyncio.wait_for(rank_entered.wait(), 2)
         retry_release.set()
-        await wait_until(lambda: not scheduler.pipeline._analysis.pending_keys)
+        await wait_until(lambda: not scheduler.pipeline._page._analysis.pending_keys)
         if rank_child:
             assert scheduler.pipeline.run_state.page_contexts[key]["summary"] == "Compiler safety"
             assert scheduler.pipeline.run_state.pages.by_url(seed.url.canonical).counted
@@ -227,7 +227,7 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop):
 
     scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(MagicMock(chat=chat)))
     # One request occupies the only analysis slot; the other page must wait.
-    scheduler.pipeline._analysis._slots = asyncio.Semaphore(1)
+    scheduler.pipeline._page._analysis._slots = asyncio.Semaphore(1)
     goal.max_duration_sec = 60
     await scheduler.pipeline.ingest_seeds(goal, [candidate("first"), candidate("second")])
     run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
