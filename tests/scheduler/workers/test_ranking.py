@@ -9,7 +9,7 @@ import pytest
 from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.errors import ErrorHandler
 from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.scheduler.workers.ranking import RankingWorker
 from crawlme.urls import URL
 from tests.scheduler.helpers import (
@@ -51,7 +51,7 @@ async def test_keep_and_drop():
         tracking=MagicMock(),
         error_handler=ErrorHandler(),
     )
-    result = await worker.rank(batch, CrawlGoal(prompt="test"), RankHistorySummary(goal="test"), {})
+    result = await worker.rank(batch, Goal(prompt="test"), RankHistorySummary(goal="test"), {})
     assert result.decisions == decisions
     assert len(result.items) == 1
     item = result.items[0]
@@ -67,7 +67,7 @@ async def test_no_ranker_keeps_order():
     ]
     result = await RankingWorker(
         None, storage=MagicMock(), frontier=MagicMock(), tracking=MagicMock(), error_handler=ErrorHandler()
-    ).rank(batch, CrawlGoal(prompt="test"), RankHistorySummary(goal="test"), {})
+    ).rank(batch, Goal(prompt="test"), RankHistorySummary(goal="test"), {})
     assert [i.url_key for i in result.items] == ["k0", "k1", "k2"]
     assert all(i.priority == 0.5 and i.score_source == "none" for i in result.items)
 
@@ -84,7 +84,7 @@ async def test_verdict_to_rank():
     sched.pipeline._goal = _goal(max_pages=5)
 
     for i, cls in enumerate(("RELEVANT", "IRRELEVANT", "RELEVANT")):
-        sched.pipeline._analysis.apply(
+        sched.pipeline._page._analysis.apply(
             AnalysisResult(
                 page_id=f"p{i}",
                 url_key=f"k{i}",
@@ -99,7 +99,7 @@ async def test_verdict_to_rank():
             )
         )
 
-    seen = [p["url"] for p in sched.run_state.relevant_pages]
+    seen = [p["url"] for p in sched.pipeline.run_state.relevant_pages]
     assert seen == ["https://example.com/0", "https://example.com/2"]
 
     captured: dict = {}
@@ -111,7 +111,7 @@ async def test_verdict_to_rank():
     sched.pipeline._ranking.ranker = MagicMock(rank_batch=AsyncMock(side_effect=_rank))
     sched.pipeline._frontier.push_batch = AsyncMock()
     url = URL(raw="https://x.com/c", canonical="https://x.com/c", url_key="ck")
-    await sched.pipeline._ranking.run([Candidate(url=url)], sched.pipeline._goal, sched._events)
+    await sched.pipeline._ranking.run([Candidate(url=url)], sched.pipeline._goal, sched.pipeline._events)
 
     assert [p["title"] for p in captured["history"].relevant_pages] == ["Post 0", "Post 2"]
     # The summary rides along, or the ranker sees only the head tag.

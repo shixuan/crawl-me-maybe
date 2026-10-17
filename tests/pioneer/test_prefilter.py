@@ -6,7 +6,7 @@ import pytest
 
 from crawlme.pioneer import Candidate
 from crawlme.pioneer.prefilter import Decision, PreFilter, PreFilterContext
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 
@@ -34,13 +34,13 @@ def pf() -> PreFilter:
 
 
 def _drop(pf, c, ctx) -> str:
-    decision, reason = pf.check(c, CrawlGoal(prompt="test"), ctx)
+    decision, reason = pf.check(c, Goal(prompt="test"), ctx)
     assert decision == Decision.DROP
     return reason
 
 
 def _allow(pf, c, ctx) -> None:
-    decision, _ = pf.check(c, CrawlGoal(prompt="test"), ctx)
+    decision, _ = pf.check(c, Goal(prompt="test"), ctx)
     assert decision == Decision.ALLOW
 
 
@@ -133,7 +133,7 @@ def test_drop_cart(pf):
 def test_drop_too_deep(pf):
     c = _candidate(depth=6)
     ctx = _ctx()
-    goal = CrawlGoal(prompt="test", depth_limit=5)
+    goal = Goal(prompt="test", depth_limit=5)
     decision, reason = pf.check(c, goal, ctx)
     assert decision == Decision.DROP
     assert "depth" in reason
@@ -144,7 +144,7 @@ def test_drop_too_deep(pf):
 
 def test_drop_exhausted(pf):
     ctx = _ctx(domain_counters={"example.com": 50})
-    goal = CrawlGoal(prompt="test", domain_budget=50)
+    goal = Goal(prompt="test", domain_budget=50)
     decision, reason = pf.check(_candidate(), goal, ctx)
     assert decision == Decision.DROP
     assert "domain_budget" in reason
@@ -168,7 +168,7 @@ def _dated(posted_at: datetime.datetime | None) -> Candidate:
 
 def test_stale_dropped():
     """The saving that makes a funnel worth having on a feed."""
-    goal = CrawlGoal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
+    goal = Goal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
     stale = datetime.datetime(2026, 7, 20, tzinfo=datetime.timezone.utc)
     decision, rule = PreFilter().check(_dated(stale), goal, PreFilterContext())
     assert (decision, rule) == (Decision.DROP, "stale")
@@ -176,13 +176,13 @@ def test_stale_dropped():
 
 def test_undated_kept():
     """Unknown is not old. Platforms omit the date often enough to matter."""
-    goal = CrawlGoal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
+    goal = Goal(prompt="test", since=datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc))
     assert PreFilter().check(_dated(None), goal, PreFilterContext())[0] is Decision.ALLOW
 
 
 def test_window_off():
     assert (
-        PreFilter().check(_dated("2020-01-01T00:00:00+00:00"), CrawlGoal(prompt="test"), PreFilterContext())[0]
+        PreFilter().check(_dated("2020-01-01T00:00:00+00:00"), Goal(prompt="test"), PreFilterContext())[0]
         is Decision.ALLOW
     )
 
@@ -190,7 +190,7 @@ def test_window_off():
 def test_zero_no_cap():
     """Every post on a platform shares its domain, so a per-domain cap
     becomes a total one wearing the wrong name."""
-    goal = CrawlGoal(prompt="test", domain_budget=0)
+    goal = Goal(prompt="test", domain_budget=0)
     ctx = PreFilterContext(domain_counters={"instagram.com": 500})
     c = Candidate(
         url=URL(

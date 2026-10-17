@@ -1,4 +1,4 @@
-"""Crawl goals and extraction specifications."""
+"""Goals and extraction specifications."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from crawlme.util.dates import _utcnow
 from crawlme.util.ids import _content_id
 
 
-class CrawlGoal(BaseModel):
+class Goal(BaseModel):
     goal_id: str = ""
     prompt: str
     goal_statement: str = ""
@@ -38,7 +38,7 @@ class CrawlGoal(BaseModel):
     created_at: datetime.datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="after")
-    def _derive_goal_id(self) -> CrawlGoal:
+    def _derive_goal_id(self) -> Goal:
         """Derive identity from the prompt unless an explicit goal ID was supplied."""
         if not self.goal_id:
             self.goal_id = _content_id(self.prompt)

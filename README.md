@@ -155,13 +155,14 @@ Inspect and the dashboard show the latest analysis for each page. Export include
 
 ### `crawl replay <task-id>`
 
-Analyzes stored page text without fetching pages. Existing matching analyses are skipped unless `--force` is set.
+Analyzes stored page text without fetching pages, then groups equivalent results. Existing matching analyses are skipped unless `--force` is set.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--prompt` | original prompt | Analyze under another goal |
 | `--limit` | all pages | Maximum pages to analyze |
-| `--max-tokens` | unlimited | Replay token budget |
+| `--max-tokens` | unlimited | Shared analysis and grouping token budget |
+| `--dedup` | `on` | Group results after replay (`on` or `off`) |
 | `--analyzer-max-chars` | `3000` | Maximum page-text characters per analysis |
 | `--force` | off | Re-analyze pages even when matching analyses exist |
 | `--log-level` | `INFO` | Logging level |

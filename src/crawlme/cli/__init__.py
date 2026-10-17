@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -14,6 +15,9 @@ from crawlme.cli.inspect import cmd_inspect
 from crawlme.cli.replay import cmd_replay
 from crawlme.cli.resume import cmd_resume
 from crawlme.cli.run import cmd_run
+from crawlme.errors import Error
+from crawlme.llm import close_litellm_clients
+from crawlme.logging.config import write_report
 
 
 def main() -> None:
@@ -133,6 +137,7 @@ def main() -> None:
     # replay ---------------------------------------------------------
     replay_p = sub.add_parser("replay", help="Re-analyze a completed task's pages")
     replay_p.add_argument("task_id", help="Task ID")
+    replay_p.add_argument("--dedup", choices=["on", "off"], default="on", help="Group results after replay")
     replay_p.add_argument("--prompt", help="New goal statement; analyses are stored under a new goal row")
     replay_p.add_argument("--limit", type=int, help="Re-analyze at most N pages (default: all)")
     replay_p.add_argument("--max-tokens", type=int, help="Token budget for this replay (default: unlimited)")
@@ -200,17 +205,31 @@ async def _interruptible(args: argparse.Namespace) -> None:
 
 
 async def _dispatch(args: argparse.Namespace) -> None:
-    cmd = args.command
+    report = None
+    try:
+        cmd = args.command
+        if cmd == "run":
+            report = await cmd_run(args)
+        elif cmd == "resume":
+            report = await cmd_resume(args)
+        elif cmd == "inspect":
+            await cmd_inspect(args)
+        elif cmd == "replay":
+            report = await cmd_replay(args)
+        elif cmd == "session":
+            await session.cmd_session(args)
+        elif cmd == "dedup":
+            report = await cmd_dedup(args)
+    except (Error, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    finally:
+        await close_litellm_clients()
 
-    if cmd == "run":
-        await cmd_run(args)
-    elif cmd == "resume":
-        await cmd_resume(args)
-    elif cmd == "inspect":
-        await cmd_inspect(args)
-    elif cmd == "replay":
-        await cmd_replay(args)
-    elif cmd == "session":
-        await session.cmd_session(args)
-    elif cmd == "dedup":
-        await cmd_dedup(args)
+    if report is not None:
+        if report.text:
+            print(report.text)
+            write_report(report.text)
+        logging.getLogger().setLevel(logging.CRITICAL)
+        if report.code:
+            raise SystemExit(report.code)

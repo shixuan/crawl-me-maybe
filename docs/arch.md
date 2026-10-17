@@ -83,14 +83,17 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | Location | Responsibility |
 |---|---|
 | `cli/` | Parse commands, apply settings, build goals, report results |
-| `cli/report.py` | Shared run/resume reports, token breakdowns and exit policy |
-| `scheduler/factory.py` | Assemble and inject workers and their component dependencies |
-| `scheduler/engine.py` | Run lifecycle, stopping and admission policy, checkpoint timing |
+| `cli/__init__.py` | Dispatch commands, close LLM clients, emit reports and apply exit codes |
+| `cli/report.py` | Format crawl, replay and dedup reports and derive exit codes |
+| `scheduler/engine/factory.py` | Create a generic Engine and bind a supplied Pipeline |
+| `scheduler/pipelines/factory.py` | Assemble and inject workers and their component dependencies |
+| `scheduler/engine/engine.py` | Run lifecycle, stopping and admission policy, checkpoint timing |
 | `scheduler/pipelines/crawl.py` | Module calls, pumps, page tasks, retry execution and dedup |
 | `scheduler/pipelines/page.py` | Process pages, resume stages, admit candidates and paginate |
 | `scheduler/workers/ranking.py` | Rank batches, save decisions and enqueue retained items |
 | `scheduler/pipelines/pipeline.py` | Shared execution protocol and callbacks from engine |
-| `scheduler/workers/dedup.py` | Execute final grouping and retain originals on failure |
+| `scheduler/pipelines/dedup.py` | Execute final grouping and retain originals on failure |
+| `scheduler/pipelines/replay.py` | Analyze stored pages, drain retries and return replay counts |
 | `scheduler/workers/` | Execute stages, persist their results and update stage statistics |
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Evaluate run stopping conditions |
@@ -103,7 +106,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts, provide ranking feedback and define source retirement rules |
-| `runtime/goal.py`, `runtime/task.py` | Crawl goals, extraction specifications and task lifecycle records |
+| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task lifecycle records |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `persist/storage.py` | Storage implementation using SQLite and raw files |
@@ -117,28 +120,41 @@ Workers are concrete classes with different input and output types, not intercha
 pipeline steps. They do not receive the engine. Analysis and ranking workers update
 state through Tracker. CrawlPipeline owns module calls and task handles. PagePipeline
 owns page ordering, candidate admission and cross-stage tracking; RankingWorker applies batches.
-Both pipelines explicitly implement `Pipeline[Input, Output]`, with `run(input, context)`
-and `aclose()`. PipelineContext carries task metadata, events, admission and checkpoint callbacks. Workers use the existing
+CrawlPipeline, PagePipeline, DedupPipeline and ReplayPipeline explicitly implement `Pipeline[Input, Output]`,
+with `run(input, context)` and `aclose()`.
+PipelineContext carries supervision,
+settlement, admission and checkpoint callbacks. Task metadata and events travel in
+the pipeline input. Workers use the existing
 Fetcher, Extractor and Ranker protocols, and the concrete Analyzer and Harvester stages.
 
-The factory assembles the pipeline and workers. CrawlPipeline runs seed expansion;
+The pipeline factory assembles crawl, replay and dedup pipelines and their workers.
+All three builders return a Pipeline. The generic Engine factory creates an Engine,
+binds the supplied pipeline, and returns it for `engine.run(input)`. It has no
+business-specific branches. CLI commands create their pipeline, pass it to
+`create_engine`, then call `run`. The pipeline factory creates shared crawl state,
+frontier and budget; the monitor factory uses those same instances through public
+properties. Commands do not construct buffers or concrete monitors. Source selection and seed-file parsing stay in `pioneer.sources`.
+CrawlPipeline retains Checkpointer binding and restoration; Engine receives its save
+callback and controls checkpoint timing and shutdown.
+CLI commands pass settings and feature switches rather than constructing LLM components. CrawlPipeline runs seed expansion;
 PagePipeline provides verification using the same FetchWorker, PersistWorker
 and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
 and payloads, and discovers candidates without publishing an unextracted Page row.
-`create_scheduler(..., fetcher=stub)` overrides a component.
-`create_scheduler(..., ranker=stub)` supplies the ranker used by RankingWorker.
+`create_crawl(..., fetcher=stub)` overrides a component.
+`create_crawl(..., ranker=stub)` supplies the ranker used by RankingWorker.
 
 ## Crawl lifecycle
 
 1. The CLI applies flags, validates dependencies and session settings, and creates
-   a goal, task, scheduler and shared `TokenBudget`.
+   a goal, task, crawl pipeline and shared `TokenBudget`.
 2. `GoalEnhancer` derives the goal statement, fields and optional publication
    cutoff. An explicit `--since` overrides the inferred cutoff.
 3. Optional seed expansion proposes URLs and verifies that fetched pages yield
    candidates. Accepted proposals receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
-5. CrawlPipeline runs `fetch_pump` and `rank_pump` concurrently. Engine decides admission
-   and stopping from pending-work snapshots, limits and progress.
+5. CrawlPipeline runs `fetch_pump` and `rank_pump` concurrently. Engine enforces admission
+   and stopping decisions supplied by StopMonitor. The monitor reads queues, limits,
+   progress and token usage from their owners.
 6. On normal completion, the scheduler settles page tasks and analysis retries, then
    optionally groups results and closes resources. Ctrl+C cancels active work without
    draining or grouping. Stage boundaries and a periodic timer save recovery checkpoints.
@@ -190,7 +206,8 @@ its platform in `metadata.text_source`. Analysis still applies its character lim
 enhanced goal, requested fields, candidate text and previous analysis results.
 It splits calls by candidate count and text size. Truncated batches are subdivided.
 Omitted candidates receive neutral priority. Unrecoverable errors propagate to
-CrawlPipeline and then Engine. Engine cancels the pipeline on failure.
+CrawlPipeline through supervised work. Engine freezes checkpoint writes before
+canceling active work; CrawlPipeline cancels remaining tasks and records failure.
 Unexpected page-task exceptions also stop the run and produce a FAILED task.
 Checkpoint recovery creates a new run owner from saved state; see the
 [Engine execution](engine.md). `--recall` retains rejected candidates at low priority.
@@ -198,6 +215,7 @@ Checkpoint recovery creates a new run owner from saved state; see the
 `Analyzer` requests a page relevance verdict and an `items` array. Each item is
 an independently useful answer to the goal, with a summary, score, source quotes,
 tags, declared fields and optional dates. The page itself may be the single item.
+Irrelevant pages return an empty items array and a short rejection reason in `summary`.
 Object attributes and conditions stay together; distinct answers are separate.
 Each field contains a value and a verbatim evidence span.
 The parser normalizes whitespace and checks evidence against `plain_text`. This
@@ -213,7 +231,8 @@ results. Legacy analyses remain single rows until replayed. Relevant-page limits
 and source-retirement votes remain page-based; reports count items separately.
 
 `AnalysisWorker` limits initial calls and checks the result target after acquiring
-its slot. `Analyzer` continues to own background retries and their shutdown.
+its slot. AnalysisWorker owns the retry queue; PagePipeline owns its preparation, retry
+startup, draining and shutdown. CrawlPipeline coordinates PagePipeline lifecycle.
 
 Analysis feeds relevant-page summaries back to ranking. It does not nominate links
 or bypass the harvester. Platform posts are leaves in the current traversal.
@@ -287,16 +306,18 @@ flowchart LR
     ranker -->|decisions via RankingWorker| storage["persist/storage.py · Storage"]
     sink -->|analyses| storage
     scheduler["PagePipeline"] -->|links and page events| storage
-    engine["Engine"] -->|checkpoint timing| cp["Checkpointer"] -->|snapshots| storage
-    engine -->|normal settlement| pipeline["CrawlPipeline"] --> dedup["DedupWorker"]
+    engine["Engine"] -->|checkpoint callback| pipeline["CrawlPipeline"]
+    pipeline -->|save / restore| cp["Checkpointer"] -->|snapshots| storage
+    engine -->|execution controls| pipeline
+    pipeline --> dedup["DedupPipeline"]
     scheduler --> persistence[PersistWorker]
     persistence -->|pages| storage
     persistence -->|HTML and payload bytes| raw["raw/ files"]
     state -->|read only| report["reporting.summary"]
-    budget -->|token count via Engine| report
+    budget -->|token count via CrawlPipeline| report
 ```
 
-The engine exposes `run_state`. `RunState` owns run-wide data:
+CrawlPipeline exposes `run_state`. `RunState` owns run-wide data:
 
 - `Limits` holds immutable run budgets and goal constraints.
 - `Progress` holds runtime-owned counters used by stopping policies. TokenBudget owns token usage.
@@ -325,7 +346,10 @@ analysis results join run-wide records by page identity.
 arrive in different orders because analysis can retry. A completed non-listing
 record contributes one relevance vote to its seed. PagePipeline retains page records and
 contexts while page tasks, analysis retries or waiting/active ranking batches need
-them, then releases them. Bounded relevant-page summaries remain separate.
+them, then releases them. PagePipeline observes Frontier context-key changes to
+release completed ranking inputs without a cleanup call from CrawlPipeline. Dispatched
+work entries protect pages that have not started yet. Bounded relevant-page summaries
+remain separate.
 
 The frontier owns both the scored queue and unranked buffer. CrawlPipeline waits for ranking
 through `wait_for_ranking` and signals changes through `wake_ranker`. Queue counts
@@ -350,7 +374,7 @@ Blocking extraction runs in worker threads. Digest operations using libxml2 shar
 
 ## Stopping and checkpoints
 
-`RunState.progress` holds only run-owned counters. The factory creates StopMonitor
+`RunState.progress` holds only run-owned counters. The monitor factory creates StopMonitor
 with RunState, Frontier and TokenBudget. Monitor reads queue counts and token usage
 directly from their owners and passes numbers alongside Progress and Limits to
 `check_stop()`. RunState does not bind owners or proxy their counts.
@@ -376,7 +400,7 @@ Admission checks guard newly dispatched work and newly acquired analysis slots.
 Fetch dispatch retains its scheduling poll. Checkpoint intervals, domain cooldowns and
 ranking batch timers remain separate scheduling concerns.
 
-Task lifecycle has one owner, Engine, and one value, `CrawlTask.state`.
+Task lifecycle has one owner, CrawlPipeline, and one value, `Task.state`.
 `task.stopping_reason` records the stop decision for reporting; policy does not read it.
 Ctrl+C cancels the run directly and records `INTERRUPTED` with `USER_REQUESTED`.
 There is no separate programmatic stop interface.
@@ -423,17 +447,20 @@ inherits `Checkpointable` and implements `dump()` and `restore()`. The analyzer'
 goal is bound before startup and recovery. `RunState` saves in-flight page stages
 and PageBook, while Frontier saves its queue and buffer.
 
-Engine owns checkpoint timing, recovery and the pipeline lifecycle. Checkpointer
+Engine owns checkpoint timing and execution controls. CrawlPipeline owns recovery and crawl task records. Checkpointer
 captures component state before awaiting, removes page text from snapshots, restores
-it from stored page rows and serializes writes. Engine emits the saved event only
+it from stored page rows and serializes writes. CrawlPipeline emits the saved event only
 after persistence succeeds.
 
 ```mermaid
 flowchart LR
   subgraph Process["Running process"]
-    Factory["Factory"] --> Engine
+    CLI["CLI"] --> EF["Engine factory"]
+    EF --> Engine
+    CLI --> Factory["Pipeline factory"]
     Factory --> CP["Checkpointer"]
-    Engine["Engine · lifecycle and checkpoint timing"] -->|save / restore| CP
+    Engine["Engine · execution and checkpoint timing"] -->|save callback| Pipeline["CrawlPipeline"]
+    Pipeline -->|save / restore| CP
     CP -->|dump / restore| States["frontier · runtime · analysis<br/>budget · robots"]
     CP -->|save_checkpoint / flush| Writer["SQLite writer"]
   end
@@ -450,7 +477,7 @@ flowchart LR
 At run completion, the scheduler settles pending Analyzer retries independently
 of dedup. Page limits and frontier exhaustion allow already-fetched pages to finish
 analysis. Token/time limits, the result target, user stop and run failures cancel
-remaining retries. Pump, page and analysis settlement share one 120-second
+remaining retries. Page and analysis settlement share one 120-second
 shutdown deadline. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
 When dedup is enabled, the scheduler passes relevant items and source evidence to `dedup/grouper.py`.
@@ -469,7 +496,7 @@ Storage atomically publishes `dedup_runs` (input fingerprint and model),
 `result_groups` (overview), and `result_item_members` (item IDs). Legacy snapshots
 retain `result_members` (analysis IDs). Original
 analyses remain intact. The dashboard reads the latest matching snapshot. A replay
-that changes the inputs invalidates it. Replay does not automatically regroup.
+that changes the inputs invalidates it. Replay regroups the selected goal after analysis unless `--dedup off` is set.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
 Semantic grouping remains open (reviewed 2026-10-06). Model responses can still
 merge distinct items, different editions or partially overlapping records despite
@@ -477,12 +504,13 @@ the shared-identity rules. The correction attempt validates JSON and member IDs;
 it does not validate semantic equivalence. Evaluate explicit identity evidence and
 per-member support before treating a successful grouping as semantically verified.
 
-Both automatic and standalone dedup use `dedup/grouper.py:group_results` for reading inputs
-and publishing groups, and `Grouper.from_settings` for client configuration.
+Both automatic and standalone dedup use DedupPipeline for reading inputs, grouping
+and publishing results. The shared factory builds Grouper and injects storage,
+the token budget and the error handler.
 Storage and the dashboard share the input query and row mapping in `persist/queries.py`,
 so snapshot validation uses the same evidence as grouping. Analyses join their exact
 page version by `page_id`.
-Each multi-source card shows an overview, arithmetic mean relevance, and source
+Each multi-source card shows an overview, a classification badge, and source
 cards with their original fields and dates. Search and field filters can match any
 member without hiding other members. Date filters use open if any member is open,
 otherwise undated if any is undated, otherwise later if any starts later, and over
@@ -523,7 +551,14 @@ schema setup, a write queue or a run log handler. Run lookup also opens database
 read-only. The dashboard uses the same read-only connection helper and filters
 results in the browser.
 
-`crawl replay` analyzes stored page text without refetching or re-extracting HTML.
+`crawl replay` uses Engine and ReplayPipeline to analyze stored page text without
+refetching or re-extracting HTML. ReplayPipeline reuses AnalysisWorker for concurrency,
+error policy, retries and publishing, then calls DedupPipeline with the same token budget.
+CLI commands use one report formatter, which renders the available statistics, and
+return report text and an exit code. The shared dispatcher closes
+LLM clients, prints and persists reports, and applies exit codes. Resume passes
+recovery input to the same CrawlPipeline. Run lookup and stored-model decoding live in
+`persist.read`, shared by the commands.
 It skips matching `(url_key, goal_id, spec_version, model)` analyses
 unless forced. A new goal prompt creates or reuses its content-derived goal ID.
 After editing analyzer instructions, use `--force` to reanalyze existing results.

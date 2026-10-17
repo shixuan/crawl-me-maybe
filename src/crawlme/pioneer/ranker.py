@@ -17,7 +17,7 @@ from crawlme.errors import Error, Kind
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class Ranker(Protocol):
 
     async def rank_batch(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         candidates: list[Candidate],
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None = None,
@@ -114,7 +114,7 @@ class LLMRanker(Ranker):
 
     async def rank_batch(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         candidates: list[Candidate],
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None = None,
@@ -161,7 +161,7 @@ class LLMRanker(Ranker):
 
     async def _rank_chunk(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         chunk: list[Candidate],
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]] | None,

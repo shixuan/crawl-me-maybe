@@ -15,12 +15,12 @@ from crawlme.cli.inspect import InspectError, _result_lines, cmd_inspect, inspec
 from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.urls import URL
 
 
-def _goal(prompt: str) -> CrawlGoal:
-    return CrawlGoal(prompt=prompt)
+def _goal(prompt: str) -> Goal:
+    return Goal(prompt=prompt)
 
 
 def _page(key: str, title: str = "Title") -> Page:
@@ -63,7 +63,7 @@ async def _write_run(root: Path, ts: str, *, task_id: str = "task1") -> Path:
     await db.start()
     db.save_goal(original.model_dump(mode="json"))
     db.save_goal(replay_goal.model_dump(mode="json"))
-    db.save_task(CrawlTask(task_id=task_id, goal_id=original.goal_id).model_dump(mode="json"))
+    db.save_task(Task(task_id=task_id, goal_id=original.goal_id).model_dump(mode="json"))
     for key in ("a", "b", "c"):
         db.save_page(_page(key))
     db.save_analysis(_analysis("a", original.goal_id, "RELEVANT", 0.9))

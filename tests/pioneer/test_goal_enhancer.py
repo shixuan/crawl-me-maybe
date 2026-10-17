@@ -15,7 +15,7 @@ import pytest
 from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError, TokenBudgetError
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 
 
 class _StubClient:
@@ -35,8 +35,8 @@ def _resp(content: str) -> LLMResponse:
     return LLMResponse(content=content, input_tokens=10, output_tokens=5, model="stub")
 
 
-def _goal(prompt: str = "find machine learning papers") -> CrawlGoal:
-    return CrawlGoal(prompt=prompt)
+def _goal(prompt: str = "find machine learning papers") -> Goal:
+    return Goal(prompt=prompt)
 
 
 def _valid_json() -> str:

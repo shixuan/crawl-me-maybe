@@ -83,7 +83,7 @@ test('upcoming remains distinct and during only limits future starts', () => {
   assert.equal(ui.visible().length, 2);
 });
 
-test('groups retain original sources and average all scores under filtering', () => {
+test('groups retain original sources under filtering', () => {
   const ui = groupingApp();
   ui.state.rows = [
     {analysis_id: 'a', classification: 'RELEVANT', relevance: 0.9, when: 'over', ends_on: '2026-09-30',
@@ -98,14 +98,33 @@ test('groups retain original sources and average all scores under filtering', ()
   const rows = ui.visible();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].members.length, 2);
-  assert.equal(rows[0].relevance, 0.8);
   assert.equal(rows[0].ends_on, '');
   const card = ui.card(rows[0]);
-  assert.match(card.innerHTML, /avg 0.80/);
+  assert.match(card.innerHTML, /class="class-tag">relevant</);
+  assert.doesNotMatch(card.innerHTML, /class="score"|avg /);
   assert.match(card.children[0].innerHTML, /two large/);
   assert.match(card.children[1].innerHTML, /any two/);
   assert.match(card.children[0].className, /result-ended/);
   assert.doesNotMatch(card.children[1].className, /result-ended/);
+});
+
+test('publication order ignores relevance scores', () => {
+  const ui = groupingApp();
+  ui.state.rows = [
+    {item_id: 'old', published_at: '2026-10-15T12:00:00Z', relevance: 0.9},
+    {item_id: 'undated', published_at: '', relevance: 1.0},
+    {item_id: 'new', published_at: '2026-10-17T12:00:00Z', relevance: 0.2},
+  ];
+  assert.deepEqual(Array.from(ui.visible(), r => r.item_id), ['new', 'old', 'undated']);
+});
+
+test('cards display classification without scores', () => {
+  const ui = groupingApp();
+  for (const classification of ['RELEVANT', 'IRRELEVANT']) {
+    const card = ui.card({classification, relevance: 0.85, url: 'https://example.com'});
+    assert.match(card.innerHTML, new RegExp(`class="class-tag">${classification.toLowerCase()}<`));
+    assert.doesNotMatch(card.innerHTML, /class="score"|0\.85/);
+  }
 });
 
 test('unknown dates prevent a group from being classified as over', () => {

@@ -14,7 +14,7 @@ from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ _SINCE_MAX_AGE_DAYS = 3650
 
 @dataclass(frozen=True)
 class EnhancedGoal:
-    """LLM-produced fields to copy onto the CrawlGoal."""
+    """LLM-produced fields to copy onto the Goal."""
 
     statement: str
     keywords: list[str]
@@ -47,7 +47,7 @@ class EnhancedGoal:
 
 
 class GoalEnhancer:
-    """Enhance a CrawlGoal, keeping the original when the reply cannot be used."""
+    """Enhance a Goal, keeping the original when the reply cannot be used."""
 
     def __init__(self, client: Client | None) -> None:
         self._client = client
@@ -72,7 +72,7 @@ class GoalEnhancer:
         )
 
     @activity("goal enhancer")
-    async def enhance(self, goal: CrawlGoal) -> EnhancedGoal | None:
+    async def enhance(self, goal: Goal) -> EnhancedGoal | None:
         """One chat call, then validation.  None means apply nothing."""
         if self._client is None:
             return None

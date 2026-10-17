@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from crawlme.digest import Page
 from crawlme.pioneer import Candidate
-from crawlme.runtime import CrawlGoal, spec_fields
+from crawlme.runtime import Goal, spec_fields
 
 if TYPE_CHECKING:
     from crawlme.pioneer import RankHistorySummary
@@ -61,7 +61,7 @@ SEEDS_SYSTEM = (
 )
 
 
-def seeds_input(goal: CrawlGoal, seeds: list[str], want: int) -> str:
+def seeds_input(goal: Goal, seeds: list[str], want: int) -> str:
     return (
         f"## Goal\n{goal.goal_statement or goal.prompt}\n\n"
         f"## Seeds already chosen\n" + "\n".join(f"- {s}" for s in seeds) + f"\n\n## Give at most {want}"
@@ -98,7 +98,7 @@ RANKING_REPAIR_SUFFIX = (
 
 
 def ranking_input(
-    goal: CrawlGoal,
+    goal: Goal,
     candidates: list[Candidate],
     history: RankHistorySummary,
     page_contexts: dict[str, dict[str, Any]] | None,
@@ -139,7 +139,7 @@ def ranking_input(
     return "\n".join(lines)
 
 
-def _extract_lines(goal: CrawlGoal) -> list[str]:
+def _extract_lines(goal: Goal) -> list[str]:
     """Include the same requested fields used by the analyzer."""
     fields = spec_fields(goal.extraction_spec)
     if not fields:
@@ -147,7 +147,7 @@ def _extract_lines(goal: CrawlGoal) -> list[str]:
     return ["## Extract", *(f"- {name}: {desc}" for name, desc in fields.items())]
 
 
-def _window_lines(goal: CrawlGoal) -> list[str]:
+def _window_lines(goal: Goal) -> list[str]:
     """Include the effective publication cutoff in the ranking prompt."""
     if goal.since is None:
         return []
@@ -208,10 +208,12 @@ _JUDGEMENT = (
 
 _ANALYSIS_SYSTEM = (
     "You analyze web pages for a goal-directed crawler. You get the crawl goal, the page "
-    "URL, title, and text. Classify the page, and describe it only if it is worth "
-    "keeping. Reply with JSON only, no prose. "
-    "For a page you discard, reply exactly "
-    '{"classification": "IRRELEVANT", "relevance_score": 0.0, "items": []}. '
+    "URL, title, and text. Classify the page and summarize the result. "
+    "Reply with JSON only, no prose. "
+    "For a page you discard, reply "
+    '{"classification": "IRRELEVANT", "relevance_score": 0.0, "summary": "...", "items": []}. '
+    "Use summary for one short sentence explaining why the page does not satisfy the goal, "
+    "grounded in the page content and the goal's requirements. "
     "For a page that answers the goal, reply "
     '{"classification": "RELEVANT", "relevance_score": 0.0, "summary": "...", '
     '"tags": ["..."], "items": [{"summary": "...", "relevance_score": 0.0, '
@@ -235,7 +237,7 @@ _ANALYSIS_EXTRACT_SYSTEM = (
 )
 
 
-def analysis_system(goal: CrawlGoal) -> str:
+def analysis_system(goal: Goal) -> str:
     """The contract, widened when the goal declares fields to collect."""
     system = _ANALYSIS_SYSTEM + _ANALYSIS_EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _ANALYSIS_SYSTEM
     if goal.time_policy:
@@ -258,7 +260,7 @@ def analysis_system(goal: CrawlGoal) -> str:
     return system
 
 
-def analysis_input(goal: CrawlGoal, page: Page, text: str, max_chars: int) -> str:
+def analysis_input(goal: Goal, page: Page, text: str, max_chars: int) -> str:
     """Assemble the user prompt: goal, fields to collect, page, text."""
     lines = ["## Goal", goal.goal_statement or goal.prompt]
     if goal.since is not None:
@@ -311,7 +313,7 @@ Never output scores.
 """
 
 
-def dedup_input(goal: CrawlGoal, rows: list[dict[str, Any]]) -> str:
+def dedup_input(goal: Goal, rows: list[dict[str, Any]]) -> str:
     return json.dumps(
         {"goal": goal.prompt, "spec": goal.extraction_spec, "results": rows},
         ensure_ascii=False,

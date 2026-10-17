@@ -20,9 +20,10 @@ import pytest
 from crawlme.config import Settings
 from crawlme.llm import LLMResponse
 from crawlme.pioneer import Candidate
-from crawlme.runtime import CrawlGoal, CrawlTask
-from crawlme.scheduler.factory import create_scheduler
+from crawlme.runtime import Goal, Task
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import URL
+from tests.scheduler.helpers import create_crawl
 
 # A small site shaped like a real focused crawl: a topical hub that
 # links to on-topic articles, one page the prefilter must drop, and one
@@ -280,12 +281,12 @@ async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     from crawlme.pioneer.ranker import LLMRanker
 
     cfg = _settings(tmp_path)
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=5, domain_budget=20)
-    task = CrawlTask(goal_id=goal.goal_id)
+    goal = Goal(prompt=_PROMPT, max_pages=5, domain_budget=20)
+    task = Task(goal_id=goal.goal_id)
 
     client = _ScriptedLLM()
     analyzer = Analyzer(client)  # type: ignore[arg-type]
-    scheduler = create_scheduler(
+    scheduler = create_crawl(
         cfg,
         goal=goal,
         llm_ranker=LLMRanker(client),  # type: ignore[arg-type]
@@ -294,7 +295,7 @@ async def test_scripted_llm(site: str, tmp_path: Path) -> None:
 
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
     assert await scheduler.pipeline.ingest_seeds(goal, [seed]) == 1
-    await scheduler.run(goal, task)
+    await scheduler.engine.run(CrawlInput(goal, task))
     await scheduler.aclose()
 
     db = _only_run_db(tmp_path / "results")
@@ -319,13 +320,13 @@ async def test_no_creds(site: str, tmp_path: Path) -> None:
     decisions; only the LLM-fed tables stay empty.
     """
     cfg = _settings(tmp_path)
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=4, domain_budget=20)
-    task = CrawlTask(goal_id=goal.goal_id)
+    goal = Goal(prompt=_PROMPT, max_pages=4, domain_budget=20)
+    task = Task(goal_id=goal.goal_id)
 
-    scheduler = create_scheduler(cfg, goal=goal)
+    scheduler = create_crawl(cfg, goal=goal)
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
     await scheduler.pipeline.ingest_seeds(goal, [seed])
-    await scheduler.run(goal, task)
+    await scheduler.engine.run(CrawlInput(goal, task))
     await scheduler.aclose()
 
     db = _only_run_db(tmp_path / "results")

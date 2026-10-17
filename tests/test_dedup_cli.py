@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from crawlme.analysis import AnalysisResult
-from crawlme.cli.dedup import cmd_dedup
+from crawlme.cli import _dispatch
 from crawlme.config import Settings
 from crawlme.dedup import Group
 from crawlme.digest import Page
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.urls import URL
 
 
@@ -18,9 +18,9 @@ from crawlme.urls import URL
 async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
     storage = Storage.create(tmp_path)
     await storage.start()
-    goal = CrawlGoal(prompt="find gifts")
-    other = CrawlGoal(prompt="another goal")
-    task = CrawlTask(goal_id=other.goal_id, state="COMPLETED")
+    goal = Goal(prompt="find gifts")
+    other = Goal(prompt="another goal")
+    task = Task(goal_id=other.goal_id, state="COMPLETED")
     storage.save_goal(goal.model_dump(mode="json"))
     storage.save_goal(other.model_dump(mode="json"))
     storage.save_task(task.model_dump(mode="json"))
@@ -54,16 +54,21 @@ async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
         return FakeGrouper()
 
     monkeypatch.setattr("crawlme.cli.dedup.Settings", lambda: Settings(_env_file=None, result_dir=tmp_path))
-    monkeypatch.setattr("crawlme.cli.dedup.Grouper.from_settings", build)
-    monkeypatch.setattr("crawlme.cli.dedup.close_litellm_clients", AsyncMock())
+    monkeypatch.setattr("crawlme.scheduler.pipelines.factory.Grouper.from_settings", build)
+    monkeypatch.setattr("crawlme.cli.close_litellm_clients", AsyncMock())
     args = argparse.Namespace(
-        task_id=task.task_id, goal=goal.goal_id, result_dir=str(tmp_path), log_level="WARNING", max_tokens=100
+        command="dedup",
+        task_id=task.task_id,
+        goal=goal.goal_id,
+        result_dir=str(tmp_path),
+        log_level="WARNING",
+        max_tokens=100,
     )
     if fail:
         with pytest.raises(SystemExit, match="1"):
-            await cmd_dedup(args)
+            await _dispatch(args)
     else:
-        await cmd_dedup(args)
+        await _dispatch(args)
     assert calls == [True]
     out = capsys.readouterr().out
     assert "10 in / 5 out" in out
@@ -77,10 +82,12 @@ async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
 async def test_missing_task_returns_failure_without_llm(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("crawlme.cli.dedup.Settings", lambda: Settings(_env_file=None, result_dir=tmp_path))
     factory = AsyncMock()
-    monkeypatch.setattr("crawlme.cli.dedup.Grouper.from_settings", factory)
-    monkeypatch.setattr("crawlme.cli.dedup.close_litellm_clients", AsyncMock())
-    args = argparse.Namespace(task_id="missing", goal=None, result_dir=None, log_level="OFF", max_tokens=None)
+    monkeypatch.setattr("crawlme.scheduler.pipelines.factory.Grouper.from_settings", factory)
+    monkeypatch.setattr("crawlme.cli.close_litellm_clients", AsyncMock())
+    args = argparse.Namespace(
+        command="dedup", task_id="missing", goal=None, result_dir=None, log_level="OFF", max_tokens=None
+    )
     with pytest.raises(SystemExit):
-        await cmd_dedup(args)
+        await _dispatch(args)
     factory.assert_not_called()
     assert "0 calls" in capsys.readouterr().out

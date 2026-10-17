@@ -11,7 +11,7 @@ from crawlme.util.ids import _new_id
 TaskState = Literal["CREATED", "RUNNING", "INTERRUPTED", "STOPPING", "COMPLETED", "FAILED"]
 
 
-class CrawlTask(BaseModel):
+class Task(BaseModel):
     task_id: str = Field(default_factory=_new_id)
     goal_id: str = ""
     state: TaskState = "CREATED"

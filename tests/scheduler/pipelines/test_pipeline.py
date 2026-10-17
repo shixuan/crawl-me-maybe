@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.runtime import CrawlGoal
-from crawlme.scheduler.pipelines import Pipeline, PipelineContext
+from crawlme.runtime import Task
+from crawlme.scheduler.pipelines import Pipeline
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 from tests.scheduler.test_control import build, candidate
 
 
@@ -18,19 +19,11 @@ async def test_cancel_composed_pipeline(tmp_path):
         await asyncio.Event().wait()
 
     scheduler, goal, _, _ = build(tmp_path, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
-    scheduler.run_state.reset(goal=goal)
-    await scheduler._storage.start()
+    scheduler.pipeline.run_state.reset(goal=goal)
+    await scheduler.pipeline._storage.start()
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    pipeline: Pipeline[CrawlGoal, None] = scheduler.pipeline
-    context = PipelineContext(
-        task_id="run",
-        events=None,
-        checkpoint=AsyncMock(),
-        can_dispatch=lambda: True,
-        can_run=lambda: True,
-        can_analyze=lambda: True,
-    )
-    running = asyncio.create_task(pipeline.run(goal, context))
+    pipeline: Pipeline[CrawlInput, Task] = scheduler.pipeline
+    running = asyncio.create_task(pipeline.run(CrawlInput(goal, Task(goal_id=goal.goal_id)), scheduler.engine.context))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         running.cancel()
@@ -39,8 +32,8 @@ async def test_cancel_composed_pipeline(tmp_path):
         await pipeline.aclose()
         assert not scheduler.pipeline._pump_tasks
         assert not scheduler.pipeline._inflight
-        assert scheduler.run_state.progress.in_flight == 0
-        assert scheduler.summary()["dedup"]["status"] == "disabled"
+        assert scheduler.pipeline.run_state.progress.in_flight == 0
+        assert scheduler.pipeline.summary()["dedup"]["status"] == "disabled"
     finally:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)

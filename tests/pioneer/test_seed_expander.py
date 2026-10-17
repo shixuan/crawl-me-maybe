@@ -12,7 +12,7 @@ from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
 from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 
@@ -26,8 +26,8 @@ def _expander(content: str) -> SeedExpander:
     return SeedExpander(client)
 
 
-def _goal() -> CrawlGoal:
-    return CrawlGoal(prompt="new drinks in Toronto")
+def _goal() -> Goal:
+    return Goal(prompt="new drinks in Toronto")
 
 
 # how many ----------------------------------------------------------------

@@ -219,7 +219,7 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         saved_log = (db_path.parent.parent / "log").read_text()
         assert report in saved_log
         assert saved_log.count(header) == 1
-        assert "finished after 2 pages and 60 tokens" in saved_log
+        assert "crawl totals: 2 pages and 60 tokens" in saved_log
         assert "60 (40 in / 20 out), 4 calls" in report
         assert "2 RELEVANT" in report
         assert requests.count("/first") == requests.count("/second") == 1

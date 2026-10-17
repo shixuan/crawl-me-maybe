@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from crawlme.discovery import Harvest
     from crawlme.llm import TokenBudget
     from crawlme.pioneer.models import Candidate, FrontierItem
-    from crawlme.runtime import CrawlGoal
+    from crawlme.runtime import Goal
     from crawlme.urls import Canonicalizer
 
 SeedProbe = Callable[["FrontierItem"], Awaitable["Harvest"]]
@@ -59,7 +59,7 @@ class SeedExpander:
             )
         )
 
-    async def propose(self, goal: CrawlGoal, seeds: list[str], want: int) -> list[tuple[str, str]]:
+    async def propose(self, goal: Goal, seeds: list[str], want: int) -> list[tuple[str, str]]:
         """Ask for more sources. Pairs of url and the reason given."""
         if self._client is None or want <= 0 or not seeds:
             return []

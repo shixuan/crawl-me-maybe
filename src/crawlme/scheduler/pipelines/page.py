@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from crawlme.config import Settings
@@ -19,10 +20,11 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
-from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker, why_retire
+from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Tracker, why_retire
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchFailure, FetchWorker, PersistWorker
 from crawlme.urls import Canonicalizer
+from crawlme.util import subscribe
 from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,9 @@ class FetchedPage:
 @dataclass(frozen=True)
 class PageInput:
     item: FrontierItem
-    goal: CrawlGoal
+    goal: Goal
+    task_id: str = ""
+    events: EventEmitter | None = None
 
 
 class PagePipeline(Pipeline[PageInput, None]):
@@ -77,7 +81,8 @@ class PagePipeline(Pipeline[PageInput, None]):
         self._canonicalizer = canonicalizer
         self._tracking = tracking
         self._active: dict[str, set[str]] = {}
-        self._started = False
+        self._prepared = False
+        self._unsubscribe: Callable[[], None] | None = None
         analysis.bind_completion(self.analysis_completed)
         self._page_slots = asyncio.Semaphore(settings.fetch_concurrency)
 
@@ -85,12 +90,32 @@ class PagePipeline(Pipeline[PageInput, None]):
     def run_state(self) -> RunState:
         return self._tracking.state
 
-    def prepare(self, item: FrontierItem) -> None:
-        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
-        self.retain_page(item)
+    def prepare(self, goal: Goal, task_id: str) -> None:
+        """Bind analysis before checkpoint restore, without starting background work."""
+        self._analysis.prepare(goal, task_id)
+        self._prepared = True
+        if self._unsubscribe is None:
+            self._unsubscribe = subscribe(self._frontier, lambda frontier: frontier.context_keys(), self._prune)
+
+    def start(self) -> None:
+        """Start restored retries after the initial checkpoint is committed."""
+        self._analysis.start_retries()
+
+    async def settle(self, context: PipelineContext) -> None:
+        await context.settle(self._analysis.drain_pending, "analysis")
+
+    async def abort(self) -> None:
+        await self._analysis.aclose()
+        self._prune()
 
     async def aclose(self) -> None:
-        await self._fetch.aclose()
+        try:
+            await self.abort()
+        finally:
+            if self._unsubscribe is not None:
+                self._unsubscribe()
+                self._unsubscribe = None
+            await self._fetch.aclose()
 
     async def probe(self, item: FrontierItem) -> Harvest:
         # Verification precedes run(), but the shared robots cache already needs storage.
@@ -119,7 +144,7 @@ class PagePipeline(Pipeline[PageInput, None]):
         item: FrontierItem,
         ctx: PreFilterContext,
         seed: str,
-        goal: CrawlGoal,
+        goal: Goal,
     ) -> None:
         """Queue a capped listing continuation at the same depth and neutral priority."""
         pages = self.run_state.seeds[seed].listing_pages
@@ -201,7 +226,10 @@ class PagePipeline(Pipeline[PageInput, None]):
 
     async def run(self, input: PageInput, context: PipelineContext) -> None:
         item, goal = input.item, input.goal
-        task_id, events = context.task_id, context.events
+        task_id, events = input.task_id, input.events
+        if not self._prepared:
+            self.prepare(goal, task_id)
+            self.start()
         work = self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
         keys = self.retain_page(item)
         if events:
@@ -230,7 +258,7 @@ class PagePipeline(Pipeline[PageInput, None]):
                 if is_stale(page.published_at, goal.since):
                     logger.debug("analysis.skipped url_key=%s reason=stale", page.url_key)
                 else:
-                    await self._analysis.analyze(page, goal, allowed=context.can_analyze)
+                    await self._analysis.analyze(page, goal, allowed=lambda: context.can_finish("analysis"))
                 work["analysis_done"] = True
                 await context.checkpoint()
             if events:
@@ -309,7 +337,7 @@ class PagePipeline(Pipeline[PageInput, None]):
 
             self.run_state.work.pop(item.item_id, None)
             self.release_page(item.item_id)
-            self.prune()
+            self._prune()
             await context.checkpoint()
 
         except asyncio.CancelledError:
@@ -319,14 +347,11 @@ class PagePipeline(Pipeline[PageInput, None]):
             raise
         finally:
             self.release_page(item.item_id)
-            self.prune()
-
-    def start(self) -> None:
-        self._started = True
+            self._prune()
 
     def analysis_completed(self, seed: str | None) -> None:
         self.retire(seed)
-        self.prune()
+        self._prune()
 
     def retain_page(self, item: FrontierItem) -> set[str]:
         keys = self._active.setdefault(item.item_id, {item.url_key})
@@ -336,9 +361,15 @@ class PagePipeline(Pipeline[PageInput, None]):
     def release_page(self, item_id: str) -> None:
         self._active.pop(item_id, None)
 
-    def prune(self) -> None:
-        if self._started:
+    def _prune(self) -> None:
+        if self._prepared:
             active = set().union(*self._active.values())
+            # Dispatched tasks may not have entered run() yet. Their checkpoint
+            # entries also protect restored page context while other pages finish.
+            for work in self.run_state.work.values():
+                active.add(work["item"]["url_key"])
+                if "page" in work:
+                    active.add(work["page"]["url_key"])
             self._tracking.retain(active | self._analysis.pending_keys | self._frontier.context_keys())
 
     def discovered(self, page: Page, item: FrontierItem, harvest: Harvest) -> None:

@@ -12,18 +12,20 @@ from pathlib import Path
 import pytest
 
 from crawlme.analysis import AnalysisError, AnalysisResult
-from crawlme.cli.replay import ReplayError, find_run_dir, run_replay
+from crawlme.cli.replay import run_replay
 from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind
 from crawlme.llm import RemoteError, TokenBudgetError
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.persist.read import find_run_dir
+from crawlme.runtime import Goal, Task
+from crawlme.scheduler.pipelines.replay import ReplayError
 from crawlme.urls import URL
 
 
-def _goal(prompt: str = "find rust posts") -> CrawlGoal:
-    return CrawlGoal(prompt=prompt)
+def _goal(prompt: str = "find rust posts") -> Goal:
+    return Goal(prompt=prompt)
 
 
 def _page(key: str, *, text: str = "hello world") -> Page:
@@ -46,7 +48,7 @@ async def _write_run(
     ts: str,
     *,
     task_id: str = "task1",
-    goal: CrawlGoal | None = None,
+    goal: Goal | None = None,
     pages: list[Page] | None = None,
 ) -> Path:
     """Create a fake run dir root/<ts>/ holding a goal, a task, pages."""
@@ -56,7 +58,7 @@ async def _write_run(
     db = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     db.save_goal(goal.model_dump(mode="json"))
-    db.save_task(CrawlTask(task_id=task_id, goal_id=goal.goal_id).model_dump(mode="json"))
+    db.save_task(Task(task_id=task_id, goal_id=goal.goal_id).model_dump(mode="json"))
     for page in pages or []:
         db.save_page(page)
     await db.close()
@@ -96,7 +98,9 @@ class _StubAnalyzer:
 
 @pytest.fixture(autouse=True)
 def immediate_retries(monkeypatch):
-    monkeypatch.setattr("crawlme.cli.replay.ErrorHandler", lambda: ErrorHandler(ErrorPolicy(retry_delay=0)))
+    monkeypatch.setattr(
+        "crawlme.scheduler.pipelines.factory.ErrorHandler", lambda: ErrorHandler(ErrorPolicy(retry_delay=0))
+    )
 
 
 def _cfg(tmp_path: Path) -> Settings:
@@ -145,13 +149,13 @@ async def test_find_run_picks(tmp_path):
 @pytest.mark.asyncio
 async def test_find_run_lists(tmp_path):
     await _write_run(tmp_path, "20260101_000001", task_id="known")
-    with pytest.raises(ReplayError, match="known"):
+    with pytest.raises(Error, match="known"):
         await find_run_dir(tmp_path, "missing")
 
 
 @pytest.mark.asyncio
 async def test_find_run_none(tmp_path):
-    with pytest.raises(ReplayError, match="no run databases"):
+    with pytest.raises(Error, match="no run databases"):
         await find_run_dir(tmp_path, "missing")
 
 
@@ -264,12 +268,12 @@ async def test_replay_dup_id(tmp_path):
     # text (hand-edited data or a hash collision): refuse to touch it.
     db.save_goal(
         {
-            "goal_id": CrawlGoal(prompt=prompt).goal_id,
+            "goal_id": Goal(prompt=prompt).goal_id,
             "prompt": "different text",
             "created_at": "2026-01-01T00:00:00Z",
         }
     )
-    db.save_task(CrawlTask(task_id="task1", goal_id=original.goal_id).model_dump(mode="json"))
+    db.save_task(Task(task_id="task1", goal_id=original.goal_id).model_dump(mode="json"))
     await db.close()
 
     with pytest.raises(ReplayError, match="different prompt"):
@@ -418,3 +422,91 @@ async def test_replay_outage_stops(tmp_path):
         await run_replay(_cfg(tmp_path), "task1", analyzer=analyzer)
     assert sum(key == "b" for key, _ in analyzer.calls) == 3
     assert len(await _read_analyses(run_dir, "a")) == 1
+
+
+@pytest.mark.parametrize("retry", [False, True])
+async def test_replay_cancel_closes_work(tmp_path, monkeypatch, retry):
+    """Cancellation stops requests and retries before the pipeline closes storage."""
+    run_dir = await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
+    entered = asyncio.Event()
+    active = 0
+    attempts = {}
+
+    class WaitingAnalyzer:
+        async def analyze(self, page, goal):
+            nonlocal active
+            attempts[page.url_key] = attempts.get(page.url_key, 0) + 1
+            if retry and attempts[page.url_key] == 1:
+                raise RemoteError("temporary", kind=Kind.UNAVAILABLE)
+            active += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                active -= 1
+
+    close = Storage.close
+    closed = []
+
+    async def checked_close(storage):
+        assert active == 0
+        await close(storage)
+        closed.append(storage.db_path)
+
+    monkeypatch.setattr(Storage, "close", checked_close)
+    cfg = _cfg(tmp_path)
+    cfg.llm_concurrency = 2
+    running = asyncio.create_task(run_replay(cfg, "task1", analyzer=WaitingAnalyzer()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, 2)
+        assert active == 0 and len(closed) == 1
+        assert await _read_analyses(run_dir, "a") == []
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_replay_groups_after_retries(tmp_path, monkeypatch, enabled):
+    """Grouping sees committed retry results for the replay goal and shares its budget."""
+    import sqlite3
+
+    from crawlme.dedup import Group
+
+    run_dir = await _write_run(tmp_path, "20260101_000001", pages=[_page("a"), _page("b")])
+    goal = _goal()
+    results = [
+        AnalysisResult(
+            page_id=f"p-{key}", url_key=key, goal_id=goal.goal_id, classification="RELEVANT", summary="same item"
+        )
+        for key in ("a", "b")
+    ]
+    analyzer = _StubAnalyzer(park=True, publish_on_drain=results)
+    grouped = []
+
+    def build(settings, *, budget):
+        assert enabled
+
+        class Grouper:
+            async def group(self, selected, rows):
+                assert selected.goal_id == goal.goal_id
+                assert {r["url"] for r in rows} == {"https://example.com/a", "https://example.com/b"}
+                assert all(sum(key == r.url_key for key, _ in analyzer.calls) == 2 for r in results)
+                grouped.append(True)
+                budget.record(12, 4, cached_tokens=8, stage="dedup")
+                return [Group(members=[r["item_id"] for r in rows], overview="same item")]
+
+        return Grouper()
+
+    monkeypatch.setattr("crawlme.scheduler.pipelines.factory.Grouper.from_settings", build)
+    result = await run_replay(_cfg(tmp_path), "task1", analyzer=analyzer, dedup_enabled=enabled)
+    assert result.retried_ok == result.published == 2
+    assert grouped == ([True] if enabled else [])
+    assert result.dedup["status"] == ("complete" if enabled else "disabled")
+    assert result.usage["used"] == (16 if enabled else 0)
+    with sqlite3.connect(run_dir / "db" / "crawl.db") as db:
+        assert db.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == int(enabled)
+        assert db.execute("SELECT count(*) FROM analyses").fetchone()[0] == 2

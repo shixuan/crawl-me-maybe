@@ -5,23 +5,28 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-import time
+from dataclasses import dataclass
 from typing import Any
 
+from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.errors import ErrorHandler, Skipped
+from crawlme.llm import TokenBudget
+from crawlme.logging import setup_logging
 from crawlme.logging.progress import activity
-from crawlme.persist import Storage
+from crawlme.persist import Lock, Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import SeedExpander, how_many, verify
-from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker, spec_fields
+from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Task, Tracker, spec_fields
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
+from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
-from crawlme.scheduler.workers import AnalysisWorker, DedupWorker, RankingWorker
+from crawlme.scheduler.reporting import summary
+from crawlme.scheduler.workers import RankingWorker
 from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
@@ -33,32 +38,46 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-class CrawlPipeline(Pipeline[CrawlGoal, None]):
+@dataclass(frozen=True)
+class CrawlInput:
+    goal: Goal
+    task: Task
+    checkpoint: dict[str, Any] | None = None
+    lock: Lock | None = None
+
+
+class CrawlPipeline(Pipeline[CrawlInput, Task]):
     def __init__(
         self,
         *,
         settings: Settings,
+        budget: TokenBudget,
+        checkpointer: Checkpointer,
         error_handler: ErrorHandler,
         goal_enhancer: GoalEnhancer,
         storage: Storage,
         frontier: Frontier,
         ranking: RankingWorker,
-        analysis: AnalysisWorker,
         robots: RobotsPolicy,
         prefilter: PreFilter,
         canonicalizer: Canonicalizer,
         tracking: Tracker,
-        dedup: DedupWorker,
+        dedup: DedupPipeline,
         page: PagePipeline,
         seed_expander: SeedExpander | None = None,
     ) -> None:
         self.error_handler = error_handler
         self._goal_enhancer = goal_enhancer
         self._cfg = settings
+        self._budget = budget
+        self._checkpointer = checkpointer
+        self._task: Task | None = None
+        self._lock: Lock | None = None
+        self._own_lock = False
+        self._closed = False
         self._storage = storage
         self._frontier = frontier
         self._ranking = ranking
-        self._analysis = analysis
         self._robots = robots
         self._prefilter = prefilter
         self._canonicalizer = canonicalizer
@@ -66,7 +85,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         self._dedup = dedup
         self._page = page
         self._seed_expander = seed_expander
-        self._goal: CrawlGoal | None = None
+        self._goal: Goal | None = None
         self._task_id = ""
         self._events: EventEmitter | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
@@ -75,7 +94,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
 
     async def startup(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         candidates: list[Candidate],
         *,
         allowed_domains: set[str] | None = None,
@@ -132,25 +151,119 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         return self._tracking.state
 
     @property
-    def features(self) -> dict[str, bool]:
-        return {
-            "dedup": self._dedup.grouper is not None,
-            "ranking": self._ranking.ranker is not None,
-            "analysis": self._analysis.analyzer is not None,
-        }
+    def failure(self) -> str:
+        return self.run_state.progress.fatal_error
 
-    def prepare(self, goal: CrawlGoal, task_id: str, events: EventEmitter | None) -> None:
-        self._goal, self._task_id, self._events = goal, task_id, events
-        self._page.start()
-        self._analysis.prepare(goal, task_id)
+    def record_failure(self, error: BaseException) -> None:
+        self.run_state.record_failure(error)
 
-    async def run(self, input: CrawlGoal, context: PipelineContext) -> None:
-        self.prepare(input, context.task_id, context.events)
+    @property
+    def frontier(self) -> Frontier:
+        return self._frontier
+
+    @property
+    def budget(self) -> TokenBudget:
+        return self._budget
+
+    @property
+    def counters(self) -> dict[str, int]:
+        return {"pages_fetched": self.run_state.progress.pages_fetched, "tokens_used": self._budget.used}
+
+    def prepare(self, goal: Goal, task: Task, context: PipelineContext) -> None:
+        self.run_state.reset(goal=goal)
+        self._goal, self._task_id = goal, task.task_id
+        self._events = EventEmitter(self._storage, task.task_id)
         self._context = context
+        self._page.prepare(goal, task.task_id)
+        logger.info(
+            "crawling, at most %d pages or %d tokens or %ds", goal.max_pages, goal.max_tokens, goal.max_duration_sec
+        )
+
+    def attach_log_file(self) -> None:
+        self._storage.attach_log_file()
+
+    async def run(self, input: CrawlInput, context: PipelineContext) -> Task:
+        goal, task = input.goal, input.task
+        self._own_lock = input.lock is None
+        self._lock = input.lock or Lock(self._storage.db_path)
+        if self._own_lock:
+            self._lock.acquire()
+        self._task = task
+        self._context = context
+        task.state = "RUNNING"
+        setup_logging(self._cfg)
+        recoverable = input.checkpoint is not None
+        try:
+            await self._storage.start()
+            self.prepare(goal, task, context)
+            assert self._events is not None
+            self._events.emit(
+                EventType.TASK_RESUMED if input.checkpoint is not None else EventType.TASK_STARTED,
+                {"goal_id": goal.goal_id, "prompt": goal.prompt[:200]},
+            )
+            self._checkpointer.bind(goal, task)
+            if input.checkpoint is not None:
+                await self._checkpointer.restore(input.checkpoint)
+            self._storage.save_goal(goal.model_dump(mode="json"))
+            self._storage.save_task(task.model_dump(mode="json"))
+            await context.checkpoint()
+            recoverable = True
+            try:
+                task.stopping_reason = await context.supervise(self._crawl())
+                task.state = "STOPPING"
+                logger.info("stopping: %s", task.stopping_reason)
+                await self.halt()
+                await context.settle(self.settle, "settle")
+            finally:
+                await context.stop_checkpoints()
+                await self.abort()
+            await self._dedup.run(goal, context)
+            self._finish_run()
+        except asyncio.CancelledError:
+            task.state = "INTERRUPTED"
+            task.stopping_reason = "USER_REQUESTED"
+            task.counters = self.counters
+            self._storage.save_task(task.model_dump(mode="json"))
+            logger.info("interrupted; resume with: crawl resume %s", task.task_id)
+            raise
+        except Exception as exc:
+            self._fail("run", exc)
+            self._finish_run()
+            if recoverable:
+                logger.error("resolve the error, then resume with: crawl resume %s", task.task_id)
+        return task
+
+    def _finish_run(self) -> None:
+        assert self._task is not None
+        task = self._task
+        task.state = "FAILED" if self.failure else "COMPLETED"
+        task.end_at = _utcnow()
+        task.counters = self.counters
+        logger.info("finished: %s", task.stopping_reason)
+        if self._events:
+            self._events.emit(EventType.STOPPED, {"reason": task.stopping_reason, **task.counters})
+        self._storage.save_task(task.model_dump(mode="json"))
+
+    def _fail(self, stage: str, error: BaseException) -> None:
+        if not self.failure:
+            self.record_failure(error)
+            logger.error("%s.died error=%s", stage, error)
+        if self._task is not None:
+            self._task.stopping_reason = "FATAL"
+            self._task.state = "FAILED"
+
+    async def save_checkpoint(self) -> None:
+        if self._task is None or self._task.state not in {"RUNNING", "STOPPING"} or self.failure:
+            return
+        await self._checkpointer.save()
+        if self._events:
+            self._events.emit(EventType.CHECKPOINT_SAVED, self.counters)
+
+    async def _crawl(self) -> None:
         self.error_handler.check()
         for work in list(self.run_state.work.values()):
             self._dispatch_page(FrontierItem.model_validate(work["item"]))
-        self._analysis.start_retries()
+        self._page.start()
         self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
         await self.error_handler.watch(asyncio.gather(*self._pump_tasks))
 
@@ -169,21 +282,18 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         if not task.cancelled() and (error := task.exception()) is not None:
             self.error_handler.abort(error, "page")
 
-    async def settle(self, deadline: float) -> None:
+    async def settle(self) -> None:
+        await self._context.settle(self._settle_pages, "pages")
+        await self._page.settle(self._context)
+
+    async def _settle_pages(self) -> None:
         if self._inflight:
-            done, pending = await asyncio.wait(self._inflight, timeout=max(0, deadline - time.monotonic()))
-            if pending:
-                logger.warning("task.settle_timeout abandoned=%d", len(pending))
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+            # Ending the wait must leave workers intact until checkpoint writes stop.
+            done, _ = await asyncio.wait(self._inflight, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 if not task.cancelled():
                     await task
         self.error_handler.check()
-
-    async def drain(self) -> None:
-        await self._analysis.drain_pending()
 
     async def abort(self) -> None:
         """Cancel consumers before awaiting cleanup; no retries or final processing."""
@@ -191,32 +301,65 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
         for task in tasks:
             task.cancel()
         try:
-            await self._analysis.aclose()
+            await self._page.abort()
         finally:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._pump_tasks.clear()
 
-    async def finish(self) -> None:
-        assert self._goal is not None
-        await self._dedup.run(self._goal)
-        self._page.prune()
-
     def summary(self) -> dict[str, Any]:
-        return {"dedup": self._dedup.report}
+        return {
+            **summary(self.run_state, tokens_used=self._budget.used),
+            "state": self._task.state if self._task else "CREATED",
+            "reason": self._task.stopping_reason if self._task else None,
+            "usage": self._budget.dump(),
+            "dedup": self._dedup.report,
+        }
 
     async def aclose(self) -> None:
-        errors = []
-        for close in (self.abort, self._ranking.aclose, self._page.aclose):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._reconcile()
+            for close in (self.abort, self._dedup.aclose, self._ranking.aclose, self._page.aclose):
+                try:
+                    await close()
+                except Exception as exc:
+                    self._fail("cleanup", exc)
+            if self._task is not None and self.failure:
+                self._task.state = "FAILED"
+                self._storage.save_task(self._task.model_dump(mode="json"))
+        finally:
             try:
-                await close()
-            except Exception as exc:
-                errors.append(exc)
-        self._page.prune()
-        if errors:
-            raise errors[0]
+                await self._storage.close()
+            finally:
+                if self._own_lock and self._lock is not None:
+                    self._lock.release()
+
+    def _reconcile(self) -> None:
+        """Report fetched, pending and refused work alongside the stop reason."""
+        logger.info("crawl totals: %d pages and %d tokens", self.run_state.progress.pages_fetched, self._budget.used)
+        left_frontier = self._frontier.size
+        left_buffer = self._frontier.waiting_size
+        stats = self.run_state.stats
+        logger.debug(
+            "task.reconcile discovered=%d ranked=%d fetched=%d left_in_frontier=%d left_in_buffer=%d",
+            stats.links_discovered,
+            stats.candidates_ranked,
+            self.run_state.progress.pages_fetched,
+            left_frontier,
+            left_buffer,
+        )
+        if left_frontier or left_buffer:
+            logger.warning(
+                "task.unfinished %d candidates were never read (frontier=%d buffer=%d)",
+                left_frontier + left_buffer,
+                left_frontier,
+                left_buffer,
+            )
 
     @activity("seed expander")
-    async def expand_seeds(self, goal: CrawlGoal, seeds: list[Candidate]) -> list[Candidate]:
+    async def expand_seeds(self, goal: Goal, seeds: list[Candidate]) -> list[Candidate]:
         """Propose and verify additional seeds when enabled."""
         expander = self._seed_expander
         if expander is None or not seeds:
@@ -251,7 +394,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
 
     async def ingest_seeds(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         candidates: list[Candidate],
         allowed_domains: set[str] | None = None,
     ) -> int:
@@ -291,7 +434,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
 
     async def _fetch_pump(self) -> None:
         while True:
-            if not self._context.can_dispatch():
+            if not self._context.can_start("dispatch"):
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -325,7 +468,7 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
             self._dispatch_page(item)
 
     def _dispatch_page(self, item: FrontierItem) -> None:
-        self._page.prepare(item)
+        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
         self.run_state.work_started()
         task = asyncio.create_task(self._run_page(item))
         self._inflight.add(task)
@@ -334,21 +477,21 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
     async def _run_page(self, item: FrontierItem) -> None:
         assert self._goal is not None
         try:
-            await self._page.run(PageInput(item, self._goal), self._context)
+            await self._page.run(PageInput(item, self._goal, self._task_id, self._events), self._context)
         finally:
             self.run_state.work_finished()
 
     async def _rank_pump(self) -> None:
         while True:
             logger.debug("rank_pump.wait frontier=%d buffer=%d", self._frontier.size, self._frontier.waiting_size)
-            await self._frontier.wait_for_ranking(lambda: not self._context.can_run())
+            await self._frontier.wait_for_ranking(lambda: not self._context.can_start("run"))
             logger.debug(
                 "rank_pump.woke frontier=%d buffer=%d state=%s",
                 self._frontier.size,
                 self._frontier.waiting_size,
-                self._context.can_run(),
+                self._context.can_start("run"),
             )
-            if not self._context.can_run():
+            if not self._context.can_start("run"):
                 await asyncio.sleep(_POP_SLEEP)
                 continue
 
@@ -365,5 +508,4 @@ class CrawlPipeline(Pipeline[CrawlGoal, None]):
                 raise
             finally:
                 self._frontier.finish_ranking(batch)
-                self._page.prune()
             await self._context.checkpoint()

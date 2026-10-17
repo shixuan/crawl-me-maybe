@@ -17,7 +17,7 @@ from crawlme.digest import Page
 from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError, TokenBudget, TokenBudgetError
 from crawlme.prompts import analysis_input
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 
@@ -38,8 +38,8 @@ def _resp(content: str) -> LLMResponse:
     return LLMResponse(content=content, input_tokens=300, output_tokens=60, model="stub")
 
 
-def _goal() -> CrawlGoal:
-    goal = CrawlGoal(prompt="find rust compiler internals posts")
+def _goal() -> Goal:
+    goal = Goal(prompt="find rust compiler internals posts")
     goal.goal_statement = "Find Rust compiler internals posts"
     return goal
 
@@ -229,7 +229,7 @@ def test_wires_chars():
 _OFFER_PAGE = "Free sago topping for members at Union Square, until August 31 2026. Come by."
 
 
-def _spec_goal() -> CrawlGoal:
+def _spec_goal() -> Goal:
     goal = _goal()
     goal.extraction_spec = {"fields": {"offer": "what is given away", "deadline": "when it ends"}}
     return goal
@@ -349,7 +349,7 @@ def test_negation_drop():
     """A quote proves what a page says.  Nothing on a page proves an
     absence, so "no" is a claim its evidence cannot support -- and the
     field simply not being there already says it."""
-    goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"limited_edition": "whether it is limited"}})
+    goal = Goal(prompt="p", extraction_spec={"fields": {"limited_edition": "whether it is limited"}})
     page = _page("Lemon Pie or Matcha Cookies - only $5.80 all month!")
 
     kept = _parse_extracted(
@@ -364,7 +364,7 @@ def test_negation_drop():
 def test_negation_inside():
     """Only a bare negation is unprovable; "no-sugar option" is an
     answer the page really does state."""
-    goal = CrawlGoal(prompt="p", extraction_spec={"fields": {"variant": "which variant"}})
+    goal = Goal(prompt="p", extraction_spec={"fields": {"variant": "which variant"}})
     page = _page("Now with a no-sugar option at every store.")
 
     kept = _parse_extracted(
@@ -379,14 +379,14 @@ def test_negation_inside():
 def test_window_told() -> None:
     """It judges relevance against the statement, which is the user's
     wording and need not match the window being enforced."""
-    goal = CrawlGoal(prompt="events this month")
+    goal = Goal(prompt="events this month")
     goal.since = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
     prompt = analysis_input(goal, _page(), "body", 3000)
     assert "2026-08-20" in prompt
 
 
 def test_window_absent() -> None:
-    prompt = analysis_input(CrawlGoal(prompt="g"), _page(), "body", 3000)
+    prompt = analysis_input(Goal(prompt="g"), _page(), "body", 3000)
     assert "out of scope" not in prompt
 
 
@@ -396,14 +396,12 @@ def _contract(analyzer_goal=None):
     return analysis_system(analyzer_goal or _goal())
 
 
-def test_discard_shape_asks_for_nothing_else():
-    """Two thirds of this stage's bill is what the model writes, and on a
-    page that will be thrown away every field after the verdict is
-    written and then discarded."""
+def test_discard_reason():
     system = _contract()
     discard = system[system.index("For a page you discard") : system.index("For a page that answers")]
     assert '"classification"' in discard and '"relevance_score"' in discard
-    assert "summary" not in discard and "tags" not in discard
+    assert '"summary"' in discard and '"items": []' in discard
+    assert "tags" not in discard
 
 
 def test_both_shapes_name_their_fields():
@@ -448,7 +446,7 @@ def test_aggregator_is_gone():
 @pytest.mark.parametrize("evidence", ["Offer ends August 16, 2027.", "invented evidence", ""])
 def test_dates_require_validated_evidence(evidence):
     text = "Offer ends August 16, 2027."
-    goal = CrawlGoal(
+    goal = Goal(
         prompt="find offers",
         extraction_spec={
             "fields": {"deadline": "when the offer ends"},
@@ -477,7 +475,7 @@ def test_dates_require_validated_evidence(evidence):
 @pytest.mark.parametrize("policy", [None, "offer validity"])
 def test_time_policy_is_independent_of_requested_fields(policy):
     text = "Offer ends August 16, 2027."
-    goal = CrawlGoal(prompt="find offers", time_policy=policy)
+    goal = Goal(prompt="find offers", time_policy=policy)
     result = _parse_analysis(
         {"classification": "RELEVANT", "time": {"ends_on": {"value": "August 16, 2027", "evidence": text}}},
         _page(text),
@@ -500,7 +498,7 @@ def test_time_requires_date_inside_source_evidence(value, evidence):
     result = _parse_analysis(
         {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
         _page("Offer ends August 16, 2027."),
-        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        Goal(prompt="offers", time_policy="offer validity"),
         model="stub",
         tokens_used=0,
     )
@@ -518,7 +516,7 @@ def test_inverted_time_window_is_unknown():
             },
         },
         _page(text),
-        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        Goal(prompt="offers", time_policy="offer validity"),
         model="stub",
         tokens_used=0,
     )
@@ -545,7 +543,7 @@ def test_time_range_evidence(value, evidence, endpoint, expected):
     result = _parse_analysis(
         {"classification": "RELEVANT", "time": {endpoint: {"value": value, "evidence": evidence}}},
         page,
-        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        Goal(prompt="offers", time_policy="offer validity"),
         model="stub",
         tokens_used=0,
     )
@@ -558,7 +556,7 @@ def test_time_rejects_unsupported(value):
     result = _parse_analysis(
         {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
         _page(evidence),
-        CrawlGoal(prompt="offers", time_policy="offer validity"),
+        Goal(prompt="offers", time_policy="offer validity"),
         model="stub",
         tokens_used=0,
     )
@@ -584,7 +582,7 @@ def _time_reply(evidence):
 async def test_split_time_evidence():
     client = _StubClient([_resp(_time_reply(["One day only.", "May 12, 2027"]))])
     result = await _analyzer(client).analyze(
-        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+        _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
     )
     assert result.starts_on == result.ends_on == datetime.date(2027, 5, 12)
     assert len(client.calls) == 1
@@ -599,7 +597,7 @@ async def test_time_correction():
         ]
     )
     result = await _analyzer(client).analyze(
-        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+        _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
     )
     assert result.ends_on == datetime.date(2027, 5, 12)
     assert result.tokens_used == 720
@@ -622,12 +620,12 @@ async def test_time_correction_fails(failure, caplog):
     if isinstance(failure, Exception):
         with pytest.raises(type(failure)):
             await _analyzer(client).analyze(
-                _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+                _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
             )
         assert len(client.calls) == 2
         return
     result = await _analyzer(client).analyze(
-        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+        _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
     )
     assert result.classification == "RELEVANT"
     assert result.ends_on is None
@@ -641,9 +639,7 @@ async def test_unknown_time_no_retry(time):
     import json
 
     client = _StubClient([_resp(json.dumps({"classification": "RELEVANT", "time": time}))])
-    result = await _analyzer(client).analyze(
-        _page("May 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
-    )
+    result = await _analyzer(client).analyze(_page("May 12, 2027"), Goal(prompt="events", time_policy="event dates"))
     assert result.ends_on is None
     assert len(client.calls) == 1
 
@@ -657,7 +653,7 @@ async def test_correction_keeps_analysis():
         ]
     )
     result = await _analyzer(client).analyze(
-        _page("One day only.\nMay 12, 2027"), CrawlGoal(prompt="events", time_policy="event dates")
+        _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
     )
     assert result.classification == "RELEVANT"
     assert result.summary == "A one-day event."

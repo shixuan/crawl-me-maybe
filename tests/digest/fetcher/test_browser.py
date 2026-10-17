@@ -25,7 +25,7 @@ from crawlme.digest import DispatchingFetcher, FetchError, PlaywrightFetcher
 from crawlme.digest.fetcher.browser import _load_storage_state
 from crawlme.errors import Kind
 from crawlme.pioneer import FrontierItem
-from crawlme.scheduler.factory import _build_fetcher
+from crawlme.scheduler.pipelines.factory import _build_fetcher
 from crawlme.urls import URL
 
 

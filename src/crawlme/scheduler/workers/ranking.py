@@ -13,7 +13,7 @@ from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.ranker import Ranker
-from crawlme.runtime import CrawlGoal, EventEmitter, EventType, Tracker
+from crawlme.runtime import EventEmitter, EventType, Goal, Tracker
 from crawlme.urls import URL
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class RankingWorker:
     async def rank(
         self,
         batch: list[Candidate],
-        goal: CrawlGoal,
+        goal: Goal,
         history: RankHistorySummary,
         page_contexts: dict[str, dict[str, Any]],
     ) -> RankedBatch:
@@ -97,7 +97,7 @@ class RankingWorker:
     async def run(
         self,
         batch: list[Candidate],
-        goal: CrawlGoal,
+        goal: Goal,
         events: EventEmitter | None = None,
     ) -> None:
         history, page_contexts = self._tracking.feedback(goal, batch)

@@ -1,11 +1,11 @@
-"""Crawl goals, tasks, run data, tracking and persisted events."""
+"""Goals, tasks, run data, tracking and persisted events."""
 
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from crawlme.runtime.events import EventEmitter, EventType
-from crawlme.runtime.goal import CrawlGoal, spec_fields, spec_time_field, spec_version
-from crawlme.runtime.task import CrawlTask, TaskState
+from crawlme.runtime.goal import Goal, spec_fields, spec_time_field, spec_version
+from crawlme.runtime.task import Task, TaskState
 
 if TYPE_CHECKING:
     from crawlme.runtime.state import (
@@ -24,11 +24,10 @@ if TYPE_CHECKING:
 __all__ = [
     "MAX_STALE_STREAK",
     "RELEVANCE_WINDOW",
-    "CrawlGoal",
-    "CrawlTask",
     "EventEmitter",
     "EventType",
     "Funnel",
+    "Goal",
     "Limits",
     "PageBook",
     "PageRecord",
@@ -36,6 +35,7 @@ __all__ = [
     "RunState",
     "SeedState",
     "Stats",
+    "Task",
     "TaskState",
     "Tracker",
     "spec_fields",

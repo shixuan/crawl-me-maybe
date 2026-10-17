@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from crawlme.runtime import CrawlTask
+from crawlme.runtime import Task
 
 
 def test_task_defaults():
-    ct = CrawlTask()
+    ct = Task()
     assert ct.task_id
     assert ct.state == "CREATED"

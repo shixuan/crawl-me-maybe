@@ -8,12 +8,13 @@ from typing import Any
 from crawlme.dedup.grouper import Grouper, fingerprint
 from crawlme.errors import ErrorHandler, Skipped
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
+from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 
 logger = logging.getLogger(__name__)
 
 
-class DedupWorker:
+class DedupPipeline(Pipeline[Goal, dict[str, Any]]):
     def __init__(self, grouper: Grouper | None, *, storage: Storage, model: str, error_handler: ErrorHandler) -> None:
         self.error_handler = error_handler
         self.grouper = grouper
@@ -21,7 +22,8 @@ class DedupWorker:
         self._model = model
         self.report: dict[str, Any] = {"status": "disabled" if grouper is None else "pending"}
 
-    async def run(self, goal: CrawlGoal) -> dict[str, Any]:
+    async def run(self, input: Goal, context: PipelineContext) -> dict[str, Any]:
+        goal = input
         grouper = self.grouper
         if grouper is None:
             return self.report
@@ -47,3 +49,7 @@ class DedupWorker:
             self.report = {"status": "complete", "sources": sources, "items": len(rows), "groups": len(groups)}
             logger.info("dedup: %d items from %d pages grouped into %d results", len(rows), sources, len(groups))
         return self.report
+
+    async def aclose(self) -> None:
+        # Storage belongs to the composing pipeline or command.
+        pass

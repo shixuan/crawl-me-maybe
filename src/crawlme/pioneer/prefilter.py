@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class PreFilterContext:
         return url_key in self.visited or url_key in self.frontier_keys
 
 
-RuleFunc = Callable[[Candidate, CrawlGoal, PreFilterContext], tuple[Decision, str] | None]
+RuleFunc = Callable[[Candidate, Goal, PreFilterContext], tuple[Decision, str] | None]
 """A rule returns (Decision, rule_name) or None to skip."""
 
 
@@ -82,25 +82,25 @@ _NEGATIVE_ANCHOR = re.compile(
 # rules ----------------------------------------------------------------
 
 
-def blacklist_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def blacklist_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if c.url.reg_domain in DOMAIN_BLACKLIST or c.url.domain in DOMAIN_BLACKLIST:
         return Decision.DROP, "blacklist"
     return None
 
 
-def scope_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def scope_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if ctx.allowed_domains and c.url.reg_domain not in ctx.allowed_domains:
         return Decision.DROP, "scope"
     return None
 
 
-def dedup_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def dedup_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if ctx.is_visited_or_queued(c.url.url_key):
         return Decision.DROP, "dedup"
     return None
 
 
-def robots_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def robots_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if ctx.allow_fetch is None:
         return None
     if not ctx.allow_fetch(c.url.canonical):
@@ -108,13 +108,13 @@ def robots_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[
     return None
 
 
-def protocol_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def protocol_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if c.url.raw.startswith(("javascript:", "mailto:", "tel:", "#")):
         return Decision.DROP, "protocol"
     return None
 
 
-def extension_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def extension_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     """Reject non-page extensions unless the goal explicitly asks for that format."""
     if c.depth == 0:
         return None
@@ -123,32 +123,32 @@ def extension_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tup
     return None
 
 
-def url_pattern_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def url_pattern_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if _URL_PATTERN_DENYLIST.search(c.url.path):
         return Decision.DROP, "url_pattern"
     return None
 
 
-def depth_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def depth_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if c.depth > goal.depth_limit:
         return Decision.DROP, "depth"
     return None
 
 
-def domain_budget_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def domain_budget_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     used = ctx.domain_counters.get(c.url.reg_domain, 0)
     if goal.domain_budget > 0 and used >= goal.domain_budget:
         return Decision.DROP, "domain_budget"
     return None
 
 
-def negative_anchor_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def negative_anchor_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
     if c.anchor and _NEGATIVE_ANCHOR.match(c.anchor):
         return Decision.DROP, "negative_anchor"
     return None
 
 
-def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[Decision, str] | None:
+def stale_check(c: Candidate, goal: Goal, _ctx: PreFilterContext) -> tuple[Decision, str] | None:
     """Reject candidates with a known publication date before the goal cutoff."""
     return (Decision.DROP, "stale") if is_stale(c.posted_at, goal.since) else None
 
@@ -174,7 +174,7 @@ class PreFilter:
             rules.append(negative_anchor_check)
         self._rules = rules
 
-    def check(self, c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) -> tuple[Decision, str]:
+    def check(self, c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str]:
         for rule in self._rules:
             try:
                 result = rule(c, goal, ctx)

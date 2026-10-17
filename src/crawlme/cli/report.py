@@ -1,32 +1,19 @@
-"""Shared crawl reports and CLI completion behavior."""
+"""Format command reports and derive exit codes without performing output."""
 
 from __future__ import annotations
 
-import logging
-import sys
+from dataclasses import dataclass
 from typing import Any
 
 from crawlme.analysis import CLASSIFICATIONS
-from crawlme.llm import Stage, TokenBudget
+from crawlme.llm import Stage
 from crawlme.platforms import PageProblem
-from crawlme.runtime import CrawlTask
-from crawlme.scheduler import Engine
 
 
-def finish(
-    scheduler: Engine,
-    task: CrawlTask,
-    budget: TokenBudget,
-    *,
-    session: str = "",
-    platform: str = "",
-) -> None:
-    """Print and persist the report after cleanup, then apply the shared exit policy."""
-    print_summary(scheduler, task, budget, session=session, platform=platform)
-    code = exit_code(task.stopping_reason)
-    logging.getLogger().setLevel(logging.CRITICAL)
-    if code:
-        sys.exit(code)
+@dataclass(frozen=True)
+class Report:
+    text: str
+    code: int = 0
 
 
 # Stop reasons that mean the crawl was prevented rather than finished.
@@ -38,43 +25,31 @@ def exit_code(stopping_reason: str | None) -> int:
     return 1 if _REFUSALS.intersection((stopping_reason or "").split("+")) else 0
 
 
-def print_summary(
-    scheduler: Engine,
-    task: CrawlTask,
-    budget: TokenBudget,
-    *,
-    session: str = "",
-    platform: str = "",
-) -> None:
-    """Print results, stopping reasons, per-source counts and LLM usage."""
-    summary = scheduler.summary()
-    if not isinstance(summary, dict):
-        return
-    summary["state"] = task.state
-    summary["reason"] = task.stopping_reason or "none"
-    summary["session"] = session
-    summary["platform"] = platform
-    summary["llm_calls"] = budget.calls
-    summary["tokens_in"] = budget.input_tokens
-    summary["tokens_out"] = budget.output_tokens
-    summary["tokens_cached"] = budget.cached_input_tokens
-    summary["tokens_thinking"] = budget.reasoning_tokens
-    summary["tokens_by_stage"] = {
-        name: {
-            "used": u.used,
-            "calls": u.calls,
-            "in": u.input_tokens,
-            "out": u.output_tokens,
-            "cached": u.cached_input_tokens,
-            "thinking": u.reasoning_tokens,
-        }
-        for name, u in budget.by_stage.items()
-    }
-    report = format_summary(summary)
-    print(report)
-    from crawlme.logging.config import write_report
-
-    write_report(report)
+def make_report(summary: dict[str, Any]) -> Report:
+    """Render command statistics through one formatter, without performing output."""
+    summary = dict(summary)
+    if usage := summary.get("usage"):
+        summary.update(
+            tokens_used=usage["used"],
+            tokens_in=usage["input_tokens"],
+            tokens_out=usage["output_tokens"],
+            tokens_cached=usage["cached_input_tokens"],
+            tokens_thinking=usage["reasoning_tokens"],
+            llm_calls=usage["calls"],
+            tokens_by_stage={
+                name: {
+                    "used": u["input_tokens"] + u["output_tokens"],
+                    "calls": u["calls"],
+                    "in": u["input_tokens"],
+                    "out": u["output_tokens"],
+                    "cached": u["cached_input_tokens"],
+                    "thinking": u["reasoning_tokens"],
+                }
+                for name, u in usage["by_stage"].items()
+            },
+        )
+    code = 1 if summary.get("error") is not None else exit_code(summary.get("reason"))
+    return Report(format_summary(summary), code)
 
 
 # Between the report's parts. Indentation alone left them reading as
@@ -181,19 +156,33 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
 
 def format_summary(s: dict[str, Any]) -> str:
     """Render the summary dict as aligned terminal lines."""
-    lines = [f"crawl finished: {s.get('state', '?')} ({s.get('reason', 'none')})"]
-
-    lines.append(_RULE)
-    pages = f"{s.get('pages_fetched', 0)} fetched"
-    if s.get("candidates_discovered"):
-        pages += f", {s['candidates_discovered']} links discovered"
-    if s.get("candidates_ranked"):
-        pages += f", {s['candidates_ranked']} ranked"
-    lines.append(f"  pages:      {pages}")
+    outcome = "failed" if s.get("error") is not None else "finished"
+    identity = s.get("task_id") or s.get("state", "?")
+    heading = f"{s.get('command', 'crawl')} {outcome}: {identity}"
+    if s.get("reason"):
+        heading += f" ({s['reason']})"
+    lines = [heading, _RULE]
+    if s.get("run_dir"):
+        state = f" (state={s['state']})" if s.get("state") else ""
+        lines.append(f"  run:        {s['run_dir']}{state}")
+    if s.get("goal_id"):
+        suffix = " (new prompt)" if s.get("new_goal") else ""
+        lines.append(f"  goal:       {s['goal_id']}{suffix}")
+    if s.get("error") is not None:
+        lines.append(f"  error:      {s['error']}")
+    if "pages_fetched" in s:
+        pages = f"{s['pages_fetched']} fetched"
+        if s.get("candidates_discovered"):
+            pages += f", {s['candidates_discovered']} links discovered"
+        if s.get("candidates_ranked"):
+            pages += f", {s['candidates_ranked']} ranked"
+        lines.append(f"  pages:      {pages}")
+    elif "pages_total" in s:
+        lines.append(f"  pages:      {s['pages_total']} in run")
 
     calls = s.get("llm_calls", 0)
     tokens = f"{s.get('tokens_used', 0)}"
-    if calls:
+    if "llm_calls" in s:
         tokens += f" ({s.get('tokens_in', 0)} in / {s.get('tokens_out', 0)} out), {calls} calls"
     lines.append(f"  tokens:     {tokens}")
     # Zero cached input may mean the provider did not report it.
@@ -220,7 +209,8 @@ def format_summary(s: dict[str, Any]) -> str:
     elif dedup:
         lines.append(f"  dedup:      {dedup['status']} (original results)")
 
-    lines.append(f"  errors:     {s.get('fetch_errors', 0)} fetch failures")
+    if "fetch_errors" in s:
+        lines.append(f"  errors:     {s['fetch_errors']} fetch failures")
 
     retired = s.get("retired_seeds") or []
     if retired:
@@ -248,6 +238,21 @@ def format_summary(s: dict[str, Any]) -> str:
         unjudged = s.get("pages_fetched", 0) - sum(analyses.values())
         if unjudged > 0:
             lines.append(f"              {unjudged} fetched pages were never judged; the run stopped first")
+
+    if "published" in s:
+        attempts = [f"{s['analyzed']} first-try"]
+        if s.get("retried_ok"):
+            attempts.append(f"{s['retried_ok']} retried")
+        lines.append(f"  analyses:   {s['published']} written ({', '.join(attempts)})")
+    skipped = []
+    if s.get("skipped"):
+        skipped.append(f"{s['skipped']} identical")
+    if s.get("empty"):
+        skipped.append(f"{s['empty']} empty text")
+    if skipped:
+        lines.append(f"  skipped:    {', '.join(skipped)}")
+    if s.get("failed"):
+        lines.append(f"  failed:     {s['failed']}")
 
     # Report unavailable or refused pages separately from relevance.
     refused = s.get("not_content") or {}

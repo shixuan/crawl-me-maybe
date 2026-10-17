@@ -9,9 +9,10 @@ import pytest
 
 from crawlme.digest import FetchResult
 from crawlme.pioneer import FrontierItem
-from crawlme.runtime import CrawlGoal, CrawlTask
-from crawlme.scheduler.factory import create_scheduler
+from crawlme.runtime import Goal, Task
+from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
+from tests.scheduler.helpers import create_crawl
 
 # ── test HTML pages (simplified, known structure) ────────────────────────
 
@@ -96,23 +97,23 @@ def _seed_item(seed_url: str) -> FrontierItem:
 async def test_fetch_to_links(integration_settings):
     """Single seed → fetch → extract → links → prefilter → buffer."""
     cfg = integration_settings
-    goal = CrawlGoal(
+    goal = Goal(
         prompt="memory safety and compiler design",
         max_pages=1,
         depth_limit=1,
     )
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg, fetcher=_MockFetcher())
+    sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
     assert task.state == "COMPLETED"
-    assert sched.run_state.progress.pages_fetched == 1
+    assert sched.pipeline.run_state.progress.pages_fetched == 1
 
     # Verify DB contents.
-    async with aiosqlite.connect(sched._storage.db_path) as db:
+    async with aiosqlite.connect(sched.pipeline._storage.db_path) as db:
         db.row_factory = aiosqlite.Row
         row = await db.execute("SELECT title, extraction_status FROM pages")
         page = await row.fetchone()
@@ -129,15 +130,15 @@ async def test_fetch_to_links(integration_settings):
 async def test_drops_junk(integration_settings):
     """PDF, javascript, wikidata URLs should be filtered out, so only BUFFERED ones persist."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg, fetcher=_MockFetcher())
+    sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
-    async with aiosqlite.connect(sched._storage.db_path) as db:
+    async with aiosqlite.connect(sched.pipeline._storage.db_path) as db:
         db.row_factory = aiosqlite.Row
         row = await db.execute("SELECT COUNT(*) FROM links")
         (total,) = await row.fetchone()
@@ -154,15 +155,15 @@ async def test_drops_junk(integration_settings):
 async def test_stop_pages(integration_settings):
     """With max_pages=2, crawl should stop after fetching 2 pages."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2, depth_limit=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=2, depth_limit=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg, fetcher=_MockFetcher())
+    sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
-    pages = sched.run_state.progress.pages_fetched
+    pages = sched.pipeline.run_state.progress.pages_fetched
     assert 1 <= pages <= 2 + 1  # budget + possible in-flight
     assert "BUDGET_PAGES" in (task.stopping_reason or "")
 
@@ -171,33 +172,33 @@ async def test_stop_pages(integration_settings):
 async def test_drains(integration_settings):
     """Crawl stops naturally when no new candidates pass ranking threshold."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=100, depth_limit=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=100, depth_limit=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg, fetcher=_MockFetcher())
+    sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
     # With our small mock site (3 pages) and depth_limit=1, should drain naturally.
     assert task.state == "COMPLETED"
     # At minimum the seed page was fetched.
-    assert sched.run_state.progress.pages_fetched >= 1
+    assert sched.pipeline.run_state.progress.pages_fetched >= 1
 
 
 @pytest.mark.asyncio
 async def test_events_emitted(integration_settings):
     """Events table should contain the full lifecycle for a single-page crawl."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg, fetcher=_MockFetcher())
+    sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
-    async with aiosqlite.connect(sched._storage.db_path) as db:
+    async with aiosqlite.connect(sched.pipeline._storage.db_path) as db:
         db.row_factory = aiosqlite.Row
         row = await db.execute("SELECT COUNT(*) FROM events")
         (count,) = await row.fetchone()
@@ -214,15 +215,15 @@ async def test_events_emitted(integration_settings):
 async def test_ranks_saved(integration_settings):
     """Rank decisions should be written to the DB."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=2)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg, fetcher=_MockFetcher())
+    sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
-    async with aiosqlite.connect(sched._storage.db_path) as db:
+    async with aiosqlite.connect(sched.pipeline._storage.db_path) as db:
         db.row_factory = aiosqlite.Row
         row = await db.execute("SELECT COUNT(*) FROM rank_decisions")
         (count,) = await row.fetchone()
@@ -270,14 +271,14 @@ class _RecordingAnalyzer:
 async def test_analyzes_all(integration_settings):
     """The v0.2 analysis stage runs after each page extraction."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     analyzer = _RecordingAnalyzer()
-    sched = create_scheduler(cfg, fetcher=_MockFetcher(), analyzer=analyzer)
+    sched = create_crawl(cfg, fetcher=_MockFetcher(), analyzer=analyzer)
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
 
-    await asyncio.wait_for(sched.run(goal, task), timeout=30)
+    await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=30)
 
     seed_key = Canonicalizer().canonicalize(_SEED_URL, _SEED_URL).url_key
     assert analyzer.pages == [seed_key]

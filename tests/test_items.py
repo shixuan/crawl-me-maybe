@@ -16,8 +16,9 @@ from crawlme.digest import Page
 from crawlme.errors import Error, ErrorHandler, Kind
 from crawlme.llm import LLMResponse
 from crawlme.persist import Storage, read_results
-from crawlme.runtime import CrawlGoal
-from crawlme.scheduler.workers import DedupWorker
+from crawlme.runtime import Goal
+from crawlme.scheduler.engine import create_engine
+from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.urls import URL
 
 
@@ -56,7 +57,7 @@ def response(entries):
     ],
 )
 def test_general_item_protocol(goal_text, entries):
-    goal = CrawlGoal(prompt=goal_text, extraction_spec={"fields": {"name": "matching entry"}})
+    goal = Goal(prompt=goal_text, extraction_spec={"fields": {"name": "matching entry"}})
     result = _parse_analysis(response(entries), page("\n".join(entries)), goal, model="test", tokens_used=10)
     assert len(result.items) == len(entries)
     assert len({item.item_id for item in result.items}) == len(entries)
@@ -71,7 +72,7 @@ def test_invalid_items_rejected(items):
         _parse_analysis(
             {"classification": "RELEVANT", "items": items},
             page("source"),
-            CrawlGoal(prompt="find entries"),
+            Goal(prompt="find entries"),
             model="test",
             tokens_used=0,
         )
@@ -94,9 +95,7 @@ async def test_item_time_correction():
         ]
     )
     analyzer = Analyzer(client)
-    result = await analyzer.analyze(
-        page("\n".join(entries)), CrawlGoal(prompt="find offers", time_policy="offer expiry")
-    )
+    result = await analyzer.analyze(page("\n".join(entries)), Goal(prompt="find offers", time_policy="offer expiry"))
     assert [i.ends_on for i in result.items] == [datetime.date(2027, 5, 12), datetime.date(2027, 6, 9)]
     assert result.tokens_used == 300
     assert client.chat.await_count == 2
@@ -111,7 +110,7 @@ async def test_items_replay_and_groups(tmp_path, capsys):
 
     storage = Storage.create(tmp_path)
     await storage.start()
-    goal = CrawlGoal(prompt="find products", extraction_spec={"fields": {"name": "product name"}})
+    goal = Goal(prompt="find products", extraction_spec={"fields": {"name": "product name"}})
     source = page("Aster camera.\nBirch camera.")
     storage.save_goal(goal.model_dump(mode="json"))
     storage.save_page(source)
@@ -124,8 +123,8 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         assert len({row["url"] for row in rows}) == 1
         client = MagicMock()
         client.chat = AsyncMock(return_value=LLMResponse('{"groups": []}', 20, 10, "test"))
-        report = await DedupWorker(
-            Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler()
+        report = await create_engine(
+            DedupPipeline(Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler())
         ).run(goal)
         assert report["groups"] == 2
         stored = read_results(Path(storage.db_path))
@@ -144,8 +143,8 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         client.chat.return_value = LLMResponse(
             json.dumps({"groups": [{"members": pair, "overview": "Aster camera"}]}), 20, 10, "test"
         )
-        report = await DedupWorker(
-            Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler()
+        report = await create_engine(
+            DedupPipeline(Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler())
         ).run(goal)
         assert report == {"status": "complete", "sources": 2, "items": 3, "groups": 2}
         shown = serve._results(tmp_path, Path(storage.db_path).parent.parent.name, goal.goal_id)

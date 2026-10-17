@@ -11,7 +11,7 @@ from typing import Any
 from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.config import Settings
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 
 VERSION = 1
 
@@ -27,6 +27,7 @@ class Checkpointer:
         analysis: Checkpointable | None,
         budget: Checkpointable | None,
         robots: Checkpointable,
+        features: dict[str, bool],
     ) -> None:
         self.storage = storage
         self.settings = settings
@@ -36,13 +37,12 @@ class Checkpointer:
         self.budget = budget
         self.robots = robots
         self._lock = asyncio.Lock()
-        self._goal: CrawlGoal | None = None
-        self._task: CrawlTask | None = None
-        self._features: dict[str, bool] = {}
+        self._goal: Goal | None = None
+        self._task: Task | None = None
+        self._features = dict(features)
 
-    def bind(self, goal: CrawlGoal, task: CrawlTask, *, dedup: bool, ranking: bool, analysis: bool) -> None:
+    def bind(self, goal: Goal, task: Task) -> None:
         self._goal, self._task = goal, task
-        self._features = {"dedup": dedup, "ranking": ranking, "analysis": analysis}
 
     async def save(self) -> None:
         async with self._lock:

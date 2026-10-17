@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 
 from crawlme.analysis import AnalysisResult, AnalyzerFeedback
@@ -13,26 +14,41 @@ from crawlme.errors import ErrorHandler, ErrorPolicy
 from crawlme.llm import TokenBudget
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.runtime import CrawlGoal, CrawlTask, Limits, Progress, RunState, Stats
-from crawlme.scheduler.engine import Engine
-from crawlme.scheduler.factory import create_scheduler
-from crawlme.scheduler.monitor import StopMonitor
-from crawlme.scheduler.pipelines import PipelineContext
+from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Task
+from crawlme.scheduler.engine import Engine, create_engine
+from crawlme.scheduler.monitor import StopMonitor, create_monitor
+from crawlme.scheduler.pipelines import factory as pipelines
+from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.urls import URL
+
+
+@dataclass
+class CrawlFixture:
+    pipeline: CrawlPipeline
+    engine: Engine
+
+    async def aclose(self):
+        await self.engine.aclose()
+
+
+def create_crawl(settings, goal=None, budget=None, **overrides):
+    pipeline = pipelines.create_crawl(settings, goal, budget=budget, **overrides)
+    engine = create_engine(pipeline, monitor=create_monitor(pipeline), checkpoint=pipeline.save_checkpoint)
+    return CrawlFixture(pipeline, engine)
 
 
 def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _goal(**kw) -> CrawlGoal:
+def _goal(**kw) -> Goal:
     defaults: dict = dict(prompt="test", max_pages=5)
     defaults.update(kw)
-    return CrawlGoal(**defaults)
+    return Goal(**defaults)
 
 
-def _task() -> CrawlTask:
-    return CrawlTask(task_id="t1", state="CREATED")  # type: ignore[arg-type]
+def _task() -> Task:
+    return Task(task_id="t1", state="RUNNING")  # type: ignore[arg-type]
 
 
 def _item() -> FrontierItem:
@@ -63,13 +79,14 @@ def _set_context(sched, **kw):
     state = _ctx(**kw)
     budget = TokenBudget(limit=state.limits.max_tokens)
     budget.record(kw.get("tokens_used", 0), 0)
-    sched._checkpointer.budget = budget
+    sched.pipeline._checkpointer.budget = budget
+    sched.pipeline._budget = budget
     sched.pipeline._tracking.state = state
-    sched._monitor.close()
-    sched._monitor = StopMonitor(state, sched.pipeline._frontier, budget)
+    sched.engine._monitor.close()
+    sched.engine._monitor = StopMonitor(state, sched.pipeline._frontier, budget)
 
 
-def _make_sched(**overrides) -> Engine:
+def _make_sched(**overrides) -> CrawlFixture:
     """Build a scheduler with all-mock components for unit tests."""
     frontier_mock = MagicMock(spec=Frontier)
     frontier_mock.wake_ranker = AsyncMock()
@@ -106,16 +123,10 @@ def _make_sched(**overrides) -> Engine:
     if overrides.get("analyzer") is None:
         settings.analysis_enabled = False
     kwargs.setdefault("harvester", Harvester(kwargs["canonicalizer"]))
-    scheduler = create_scheduler(settings, **kwargs)
-    scheduler._task = _task()
-    scheduler.pipeline._context = PipelineContext(
-        task_id="t1",
-        events=None,
-        checkpoint=AsyncMock(),
-        can_run=scheduler._allow_work,
-        can_dispatch=scheduler._allow_dispatch,
-        can_analyze=scheduler._allow_analysis,
-    )
+    scheduler = create_crawl(settings, **kwargs)
+    scheduler.engine._save = AsyncMock()
+    scheduler.pipeline._task = _task()
+    scheduler.pipeline._context = scheduler.engine.context
     scheduler.pipeline._task_id = "t1"
     return scheduler
 
@@ -176,7 +187,7 @@ def _robots_sched(raw: str, *, cached=None):
 
 
 def _judge(sched, url_key, score):
-    sched.pipeline._analysis.apply(
+    sched.pipeline._page._analysis.apply(
         AnalysisResult(
             url_key=url_key,
             classification="RELEVANT" if score >= 0.7 else "IRRELEVANT",
@@ -187,7 +198,7 @@ def _judge(sched, url_key, score):
 
 
 def _vote(sched, seed, url_key, relevant):
-    sched.run_state.pages.open(url_key, f"https://x.test/{url_key}", seed)
-    sched.run_state.pages.of(url_key).relevant = relevant
-    sched.run_state.pages.of(url_key).listing = False
+    sched.pipeline.run_state.pages.open(url_key, f"https://x.test/{url_key}", seed)
+    sched.pipeline.run_state.pages.of(url_key).relevant = relevant
+    sched.pipeline.run_state.pages.of(url_key).listing = False
     sched.pipeline._page.vote(url_key)
