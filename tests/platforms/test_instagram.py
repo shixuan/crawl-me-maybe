@@ -287,3 +287,20 @@ def test_the_home_timeline_does_not_clear_it():
         [Payload(url="u", content_type="application/json", body=home.encode())],
     )
     assert lst.degraded
+
+
+@pytest.mark.parametrize("path", ["/graphql/query", "/graphql/query/", "/api/graphql", "/api/graphql/"])
+@pytest.mark.parametrize("ctype", ["application/json", "text/javascript; charset=utf-8"])
+def test_graphql_paths(path, ctype):
+    payload = _payload()
+    payload.url = f"https://www.instagram.com{path}?doc_id=123"
+    payload.content_type = ctype
+    kept = [payload] if ig.keeps_payload(payload.url, payload.content_type) else []
+    listing = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", kept)
+    assert not listing.degraded
+    assert any(item.published_at is not None for item in listing.own)
+
+
+@pytest.mark.parametrize("path", ["/api/graphql/schema", "/static/bundle.js?next=/api/graphql", "/api/v1/feed/"])
+def test_other_paths_not_kept(path):
+    assert not ig.keeps_payload(f"https://www.instagram.com{path}", "application/json")
