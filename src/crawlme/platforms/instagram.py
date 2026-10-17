@@ -87,7 +87,7 @@ def next_page(html: str, url: str) -> str:
 
 def keeps_payload(url: str, content_type: str) -> bool:
     """Keep GraphQL responses regardless of content type; grids may use text/javascript."""
-    return "/graphql/query" in url
+    return urlsplit(url).path.rstrip("/") in {"/graphql/query", "/api/graphql"}
 
 
 def extract_text(result: FetchResult) -> str | None:

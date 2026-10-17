@@ -1,4 +1,4 @@
-"""Parse explicit event dates and group date ranges. Relative phrases are not resolved."""
+"""Parse explicit dates, compare timestamps and group ranges. Relative phrases are not resolved."""
 
 from __future__ import annotations
 
@@ -35,6 +35,17 @@ _SAME_MONTH_RANGE = re.compile(
     r"(?:\s*,?\s*(\d{4}))?",
     re.IGNORECASE,
 )
+
+
+def is_stale(published_at: datetime.datetime | None, since: datetime.datetime | None) -> bool:
+    """Compare known publication times; naive timestamps are interpreted as UTC."""
+    if since is None or published_at is None:
+        return False
+    if published_at.tzinfo is None:
+        published_at = published_at.replace(tzinfo=datetime.timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=datetime.timezone.utc)
+    return published_at < since
 
 
 def read_dates(text: str, *, said_on: datetime.datetime | None = None) -> tuple[datetime.date, datetime.date] | None:

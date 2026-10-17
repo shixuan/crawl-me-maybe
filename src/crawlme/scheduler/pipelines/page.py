@@ -23,6 +23,7 @@ from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracke
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchFailure, FetchWorker, PersistWorker
 from crawlme.urls import Canonicalizer
+from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +227,10 @@ class PagePipeline(Pipeline[PageInput, None]):
                 self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
             )
             if not work.get("analysis_done"):
-                await self._analysis.analyze(page, goal, allowed=context.can_analyze)
+                if is_stale(page.published_at, goal.since):
+                    logger.debug("analysis.skipped url_key=%s reason=stale", page.url_key)
+                else:
+                    await self._analysis.analyze(page, goal, allowed=context.can_analyze)
                 work["analysis_done"] = True
                 await context.checkpoint()
             if events:

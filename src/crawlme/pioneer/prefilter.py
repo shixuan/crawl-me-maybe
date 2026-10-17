@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import json
 import logging
 import re
@@ -13,6 +12,7 @@ from pathlib import Path
 
 from crawlme.pioneer.models import Candidate
 from crawlme.runtime import CrawlGoal
+from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -150,14 +150,7 @@ def negative_anchor_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) 
 
 def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[Decision, str] | None:
     """Reject candidates with a known publication date before the goal cutoff."""
-    if goal.since is None or c.posted_at is None:
-        return None
-    posted = c.posted_at
-    if posted.tzinfo is None:
-        posted = posted.replace(tzinfo=datetime.timezone.utc)
-    if posted < goal.since:
-        return Decision.DROP, "stale"
-    return None
+    return (Decision.DROP, "stale") if is_stale(c.posted_at, goal.since) else None
 
 
 # -----------------------------------------------------------------------

@@ -220,8 +220,10 @@ or bypass the harvester. Platform posts are leaves in the current traversal.
 
 ### Event dates
 
-Publication time controls `--since` and source retirement. Event dates describe
-what a page announces and affect result grouping only.
+Publication time controls `--since` and source retirement. Known old candidates are
+filtered before ranking. If the date becomes available only after fetching, the same
+cutoff skips analysis while preserving the page and link discovery. Unknown dates
+remain eligible. Event dates describe what a page announces and affect result grouping only.
 
 Goal Enhancer independently sets `time_policy` to describe the relevant validity
 window, or null for timeless/uncertain goals. This does not require a user-requested
