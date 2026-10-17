@@ -208,10 +208,12 @@ _JUDGEMENT = (
 
 _ANALYSIS_SYSTEM = (
     "You analyze web pages for a goal-directed crawler. You get the crawl goal, the page "
-    "URL, title, and text. Classify the page, and describe it only if it is worth "
-    "keeping. Reply with JSON only, no prose. "
-    "For a page you discard, reply exactly "
-    '{"classification": "IRRELEVANT", "relevance_score": 0.0, "items": []}. '
+    "URL, title, and text. Classify the page and summarize the result. "
+    "Reply with JSON only, no prose. "
+    "For a page you discard, reply "
+    '{"classification": "IRRELEVANT", "relevance_score": 0.0, "summary": "...", "items": []}. '
+    "Use summary for one short sentence explaining why the page does not satisfy the goal, "
+    "grounded in the page content and the goal's requirements. "
     "For a page that answers the goal, reply "
     '{"classification": "RELEVANT", "relevance_score": 0.0, "summary": "...", '
     '"tags": ["..."], "items": [{"summary": "...", "relevance_score": 0.0, '

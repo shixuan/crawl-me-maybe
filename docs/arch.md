@@ -215,6 +215,7 @@ Checkpoint recovery creates a new run owner from saved state; see the
 `Analyzer` requests a page relevance verdict and an `items` array. Each item is
 an independently useful answer to the goal, with a summary, score, source quotes,
 tags, declared fields and optional dates. The page itself may be the single item.
+Irrelevant pages return an empty items array and a short rejection reason in `summary`.
 Object attributes and conditions stay together; distinct answers are separate.
 Each field contains a value and a verbatim evidence span.
 The parser normalizes whitespace and checks evidence against `plain_text`. This

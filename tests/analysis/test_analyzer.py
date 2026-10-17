@@ -396,14 +396,12 @@ def _contract(analyzer_goal=None):
     return analysis_system(analyzer_goal or _goal())
 
 
-def test_discard_shape_asks_for_nothing_else():
-    """Two thirds of this stage's bill is what the model writes, and on a
-    page that will be thrown away every field after the verdict is
-    written and then discarded."""
+def test_discard_reason():
     system = _contract()
     discard = system[system.index("For a page you discard") : system.index("For a page that answers")]
     assert '"classification"' in discard and '"relevance_score"' in discard
-    assert "summary" not in discard and "tags" not in discard
+    assert '"summary"' in discard and '"items": []' in discard
+    assert "tags" not in discard
 
 
 def test_both_shapes_name_their_fields():
