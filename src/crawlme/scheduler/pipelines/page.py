@@ -16,13 +16,14 @@ from crawlme.errors import Kind
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.prefilter import PreFilter, PreFilterContext, is_stale
+from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
 from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker, why_retire
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchFailure, FetchWorker, PersistWorker
 from crawlme.urls import Canonicalizer
+from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import json
 import logging
 import re
@@ -13,6 +12,7 @@ from pathlib import Path
 
 from crawlme.pioneer.models import Candidate
 from crawlme.runtime import CrawlGoal
+from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -146,17 +146,6 @@ def negative_anchor_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) 
     if c.anchor and _NEGATIVE_ANCHOR.match(c.anchor):
         return Decision.DROP, "negative_anchor"
     return None
-
-
-def is_stale(published_at: datetime.datetime | None, since: datetime.datetime | None) -> bool:
-    """Compare known publication times; naive timestamps are interpreted as UTC."""
-    if since is None or published_at is None:
-        return False
-    if published_at.tzinfo is None:
-        published_at = published_at.replace(tzinfo=datetime.timezone.utc)
-    if since.tzinfo is None:
-        since = since.replace(tzinfo=datetime.timezone.utc)
-    return published_at < since
 
 
 def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[Decision, str] | None:
