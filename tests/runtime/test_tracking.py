@@ -6,7 +6,7 @@ from crawlme.analysis import AnalysisResult, AnalyzerFeedback, ResultItem
 from crawlme.digest import Page
 from crawlme.discovery import Harvest
 from crawlme.pioneer import Candidate, FrontierItem
-from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker, why_retire
+from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker, why_retire
 from crawlme.urls import URL
 
 
@@ -39,7 +39,7 @@ def test_feedback_isolated():
             source_url_key="parent",
         )
     ]
-    _, contexts = tracking.feedback(CrawlGoal(prompt="test"), batch)
+    _, contexts = tracking.feedback(Goal(prompt="test"), batch)
     tracking.record_page_context("parent", {"title": "after"})
     assert contexts == {"parent": {"title": "before"}}
     contexts["parent"]["title"] = "local"
@@ -49,7 +49,7 @@ def test_feedback_isolated():
 def test_reset_uses_current_state():
     tracking = _tracking()
     old_progress = tracking.state.progress
-    tracking.state.reset(goal=CrawlGoal(prompt="test"))
+    tracking.state.reset(goal=Goal(prompt="test"))
     tracking.analysis(AnalysisResult(url_key="p", relevance_score=0.9))
     assert tracking.state.progress.relevant_found == 1
     assert old_progress.relevant_found == 0
@@ -82,7 +82,7 @@ def test_trackers_share_one_state():
     candidate = Candidate(
         url=URL(raw="https://example.com/p", canonical="https://example.com/p", url_key="p"), source_url_key="p"
     )
-    _, contexts = second.feedback(CrawlGoal(prompt="test"), [candidate])
+    _, contexts = second.feedback(Goal(prompt="test"), [candidate])
     assert contexts == {"p": {"title": "shared"}}
 
 

@@ -14,7 +14,7 @@ from crawlme.errors import ErrorHandler, ErrorPolicy
 from crawlme.llm import TokenBudget
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.runtime import CrawlGoal, CrawlTask, Limits, Progress, RunState, Stats
+from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Task
 from crawlme.scheduler.engine import Engine, create_engine
 from crawlme.scheduler.monitor import StopMonitor, create_monitor
 from crawlme.scheduler.pipelines import factory as pipelines
@@ -41,14 +41,14 @@ def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _goal(**kw) -> CrawlGoal:
+def _goal(**kw) -> Goal:
     defaults: dict = dict(prompt="test", max_pages=5)
     defaults.update(kw)
-    return CrawlGoal(**defaults)
+    return Goal(**defaults)
 
 
-def _task() -> CrawlTask:
-    return CrawlTask(task_id="t1", state="RUNNING")  # type: ignore[arg-type]
+def _task() -> Task:
+    return Task(task_id="t1", state="RUNNING")  # type: ignore[arg-type]
 
 
 def _item() -> FrontierItem:

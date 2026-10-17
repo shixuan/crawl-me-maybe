@@ -8,7 +8,7 @@ from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind, Skipped
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.seed_expander import SeedExpander
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 
@@ -16,7 +16,7 @@ from crawlme.urls import URL
 async def test_foreign_error_propagates(component):
     error = Error("database unavailable", source="persist", code="write_failed", kind=Kind.UNAVAILABLE)
     client = MagicMock(chat=AsyncMock(side_effect=error))
-    goal = CrawlGoal(prompt="compiler articles")
+    goal = Goal(prompt="compiler articles")
     if component == "analysis":
         analyzer = Analyzer(client)
         page = Page(

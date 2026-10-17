@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 
@@ -26,7 +26,7 @@ class Source(Protocol):
     def allowed_domains(self) -> set[str] | None:
         return None
 
-    async def discover(self, goal: CrawlGoal) -> list[Candidate]: ...
+    async def discover(self, goal: Goal) -> list[Candidate]: ...
 
 
 def _make_candidate(raw_url: str) -> Candidate:
@@ -38,7 +38,7 @@ class ManualSource(Source):
     def __init__(self, seeds: list[str]) -> None:
         self._seeds = seeds
 
-    async def discover(self, goal: CrawlGoal) -> list[Candidate]:
+    async def discover(self, goal: Goal) -> list[Candidate]:
         return [_make_candidate(u) for u in self._seeds if u.strip()]
 
 
@@ -51,7 +51,7 @@ class FileSource(Source):
     def allowed_domains(self) -> set[str] | None:
         return self._allowed_domains
 
-    async def discover(self, goal: CrawlGoal) -> list[Candidate]:
+    async def discover(self, goal: Goal) -> list[Candidate]:
         data = json.loads(self._path.read_text())
         if isinstance(data, list):
             urls = data

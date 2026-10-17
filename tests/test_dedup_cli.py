@@ -10,7 +10,7 @@ from crawlme.config import Settings
 from crawlme.dedup import Group
 from crawlme.digest import Page
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.urls import URL
 
 
@@ -18,9 +18,9 @@ from crawlme.urls import URL
 async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
     storage = Storage.create(tmp_path)
     await storage.start()
-    goal = CrawlGoal(prompt="find gifts")
-    other = CrawlGoal(prompt="another goal")
-    task = CrawlTask(goal_id=other.goal_id, state="COMPLETED")
+    goal = Goal(prompt="find gifts")
+    other = Goal(prompt="another goal")
+    task = Task(goal_id=other.goal_id, state="COMPLETED")
     storage.save_goal(goal.model_dump(mode="json"))
     storage.save_goal(other.model_dump(mode="json"))
     storage.save_task(task.model_dump(mode="json"))

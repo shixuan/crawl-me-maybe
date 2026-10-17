@@ -506,7 +506,7 @@ async def test_the_target_holds_under_a_queue():
 async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed):
     import datetime
 
-    from crawlme.runtime import CrawlGoal
+    from crawlme.runtime import Goal
     from crawlme.scheduler.pipelines import PipelineContext
     from crawlme.scheduler.pipelines.page import PageInput
 
@@ -520,7 +520,7 @@ async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed
     worker, _, storage = _worker(tmp_path, extract=MagicMock(return_value=page))
     worker._analysis.analyze = AsyncMock(return_value=None)
     worker._discovery.discover = AsyncMock(return_value=Harvest([]))
-    goal = CrawlGoal(prompt="offers", since=datetime.datetime.fromisoformat(cutoff) if cutoff else None)
+    goal = Goal(prompt="offers", since=datetime.datetime.fromisoformat(cutoff) if cutoff else None)
     context = PipelineContext(
         checkpoint=AsyncMock(),
         stop_checkpoints=AsyncMock(),

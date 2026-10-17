@@ -12,7 +12,7 @@ from crawlme.discovery import Harvest
 from crawlme.logging import where
 from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
 from crawlme.platforms import PageProblem
-from crawlme.runtime.goal import CrawlGoal
+from crawlme.runtime.goal import Goal
 from crawlme.runtime.state import RELEVANCE_WINDOW, RunState
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class Tracker:
         self.state.pages.retain(keys)
         self.state.page_contexts = {k: v for k, v in self.state.page_contexts.items() if k in keys}
 
-    def feedback(self, goal: CrawlGoal, batch: list[Candidate]) -> tuple[RankHistorySummary, dict[str, dict[str, Any]]]:
+    def feedback(self, goal: Goal, batch: list[Candidate]) -> tuple[RankHistorySummary, dict[str, dict[str, Any]]]:
         """Freeze the batch's source context without copying the entire crawl history."""
         sources = {c.source_url_key or "" for c in batch}
         return (

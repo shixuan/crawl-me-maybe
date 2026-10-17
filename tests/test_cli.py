@@ -124,7 +124,7 @@ def test_seed_expansion_flag(flag):
 
 
 def test_flags_win(tmp_path):
-    """Per-run flags override Settings; goal budgets land in CrawlGoal."""
+    """Per-run flags override Settings; goal budgets land in Goal."""
     captured: dict = {}
     fake_results = tmp_path / "fake-results"
 
@@ -160,7 +160,7 @@ def test_flags_win(tmp_path):
     assert str(cfg.result_dir) == str(fake_results)
     assert cfg.log_level == "WARNING"
     assert cfg.analyzer_max_chars == 3000
-    # Flags -> CrawlGoal
+    # Flags -> Goal
     assert goal.max_pages == 42
     assert goal.domain_budget == 7
 
@@ -1070,13 +1070,13 @@ async def test_dispatch_cleanup_and_report(monkeypatch, capsys, outcome, command
     from crawlme.cli import _dispatch
     from crawlme.cli.report import make_report
     from crawlme.llm import TokenBudget
-    from crawlme.runtime import CrawlGoal, CrawlTask
+    from crawlme.runtime import Goal, Task
     from crawlme.scheduler.pipelines import Pipeline
     from crawlme.scheduler.pipelines.crawl import CrawlInput
 
     order = []
 
-    class Crawl(Pipeline[CrawlInput, CrawlTask]):
+    class Crawl(Pipeline[CrawlInput, Task]):
         async def run(self, input, context):
             if outcome == "cancelled":
                 raise asyncio.CancelledError
@@ -1102,7 +1102,7 @@ async def test_dispatch_cleanup_and_report(monkeypatch, capsys, outcome, command
     monkeypatch.setattr(logging.getLogger(), "level", logging.INFO)
     pipeline = Crawl()
     engine = create_engine(pipeline)
-    input = CrawlInput(CrawlGoal(prompt="test"), CrawlTask(task_id="example"))
+    input = CrawlInput(Goal(prompt="test"), Task(task_id="example"))
 
     async def cmd(args):
         await engine.run(input)

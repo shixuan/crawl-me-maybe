@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, SeedState, Stats
+from crawlme.runtime import Goal, Limits, Progress, RunState, SeedState, Stats
 
 
 def _ctx() -> RunState:
@@ -11,7 +11,7 @@ def _ctx() -> RunState:
 
 def test_reset_counters():
     ctx = _ctx()
-    goal = CrawlGoal(prompt="p", max_pages=7, max_tokens=123, max_duration_sec=60)
+    goal = Goal(prompt="p", max_pages=7, max_tokens=123, max_duration_sec=60)
     ctx.reset(goal=goal)
 
     assert ctx.limits.max_pages == 7
@@ -27,7 +27,7 @@ def test_reset_stats():
     ctx.stats.analyses_by_class = {"RELEVANT": 2}
     ledger_id = id(ctx.stats)
 
-    ctx.reset(goal=CrawlGoal(prompt="p"))
+    ctx.reset(goal=Goal(prompt="p"))
 
     assert id(ctx.stats) == ledger_id  # identity preserved, stage refs stay valid
     assert ctx.stats.links_discovered == 0
@@ -38,7 +38,7 @@ def test_reset_identity():
     """Startup replaces fields, never the RunState object itself."""
     ctx = _ctx()
     ctx_id = id(ctx)
-    ctx.reset(goal=CrawlGoal(prompt="p"))
+    ctx.reset(goal=Goal(prompt="p"))
     assert id(ctx) == ctx_id
 
 
@@ -54,7 +54,7 @@ def test_reset_keeps_prepared_seeds():
     state.page_contexts["page"] = {"title": "previous"}
     state.relevant_pages.append({"url": "https://example.com/page"})
 
-    state.reset(goal=CrawlGoal(prompt="test"))
+    state.reset(goal=Goal(prompt="test"))
 
     assert list(state.seeds) == ["seed"]
     assert state.seeds["seed"] == SeedState(url="https://example.com/")

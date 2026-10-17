@@ -10,7 +10,7 @@ import pytest
 
 from crawlme.logging import setup_logging
 from crawlme.pioneer import FrontierItem
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
 from tests.scheduler.helpers import create_crawl
@@ -34,8 +34,8 @@ async def test_wiki_basic(e2e_settings):
     cfg = e2e_settings
     setup_logging(cfg, force=True)
 
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=_MAX_PAGES)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt=_PROMPT, max_pages=_MAX_PAGES)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg)
 
@@ -136,8 +136,8 @@ async def test_wiki_budget(e2e_settings):
     cfg = e2e_settings
     setup_logging(cfg, force=True)
 
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=2)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt=_PROMPT, max_pages=2)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg)
 
@@ -202,8 +202,8 @@ async def test_wiki_draining(e2e_settings):
     cfg = e2e_settings
     setup_logging(cfg, force=True)
 
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=0, depth_limit=_DRAINING_DEPTH)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt=_PROMPT, max_pages=0, depth_limit=_DRAINING_DEPTH)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg)
 

@@ -9,7 +9,7 @@ from crawlme.analysis import AnalysisResult, Analyzer
 from crawlme.digest import Page
 from crawlme.errors import ErrorHandler, Kind
 from crawlme.llm import LLMResponse, RemoteError
-from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.workers import AnalysisWorker
 from crawlme.urls import URL
 
@@ -42,7 +42,7 @@ async def test_admission_after_wait():
         tracking=Tracker(RunState(limits=Limits(), progress=Progress(), stats=Stats())),
         error_handler=ErrorHandler(),
     )
-    goal = CrawlGoal(prompt="test")
+    goal = Goal(prompt="test")
     first = asyncio.create_task(worker.analyze(_page(), goal, allowed=lambda: allowed))
     await started.wait()
     second = asyncio.create_task(worker.analyze(_page(), goal, allowed=lambda: allowed))
@@ -82,7 +82,7 @@ async def test_retry_reaches_sink():
     results = []
     worker.bind_completion(results.append)
     try:
-        assert await worker.analyze(_page(), CrawlGoal(prompt="test"), allowed=lambda: True) is None
+        assert await worker.analyze(_page(), Goal(prompt="test"), allowed=lambda: True) is None
         await asyncio.wait_for(worker.drain_pending(), timeout=3)
         assert len(results) == 1
         saved = storage.save_analysis.call_args.args[0]

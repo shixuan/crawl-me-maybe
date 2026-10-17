@@ -48,7 +48,7 @@ with the same context. Workers perform stage operations; pipelines compose those
 operations and own their task handles. DedupPipeline reads stored inputs, invokes
 the grouper and publishes groups for both automatic and standalone dedup.
 
-Engine depends on Pipeline and Monitor, not CrawlPipeline, CrawlGoal, CrawlTask,
+Engine depends on Pipeline and Monitor, not CrawlPipeline, Goal, Task,
 Storage or Checkpointer. The generic `create_engine(pipeline, ...)` factory constructs
 Engine and binds the supplied pipeline. It imports only execution contracts and has
 no crawl, replay or dedup branches. Callers then use `engine.run(input)`. Binding is
@@ -135,7 +135,7 @@ flowchart TD
 ```
 
 CrawlInput contains the goal, task, optional checkpoint and optional caller-owned
-lock. CrawlPipeline owns changes to `CrawlTask.state`. RunState holds runtime data
+lock. CrawlPipeline owns changes to `Task.state`. RunState holds runtime data
 and has no duplicate task lifecycle state. Reset preserves seed preparation and
 pre-run token usage; restore then loads checkpointed execution data.
 

@@ -18,7 +18,7 @@ from crawlme.llm import Stage, TokenBudget
 from crawlme.llm.client import Client
 from crawlme.llm.parsing import parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class Grouper:
         return cls(client, max_chars=settings.llm_dedup_max_chars) if client is not None else None
 
     @activity("dedup")
-    async def group(self, goal: CrawlGoal, rows: list[dict[str, Any]]) -> list[Group]:
+    async def group(self, goal: Goal, rows: list[dict[str, Any]]) -> list[Group]:
         if len(rows) < 2:
             return [Group(members=[_identity(r)], overview=r.get("summary") or "Result") for r in rows]
         prompt = prompts.dedup_input(goal, rows)

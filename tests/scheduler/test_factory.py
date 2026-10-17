@@ -66,7 +66,7 @@ def test_sched_run_state(tmp_path: Path):
 async def test_expander_created_once(tmp_path, monkeypatch, injected):
     from crawlme.pioneer import Candidate
     from crawlme.pioneer.seed_expander import SeedExpander
-    from crawlme.runtime import CrawlGoal
+    from crawlme.runtime import Goal
     from crawlme.urls import URL
 
     expander = SeedExpander(None)
@@ -77,7 +77,7 @@ async def test_expander_created_once(tmp_path, monkeypatch, injected):
         _env_file=None, result_dir=tmp_path, analysis_enabled=False, expand_seeds=True, llm_api_key="", llm_base_url=""
     )
     scheduler = create_crawl(cfg, **({"seed_expander": expander} if injected else {}))
-    goal = CrawlGoal(prompt="compiler articles")
+    goal = Goal(prompt="compiler articles")
     url = URL(raw="https://example.test", canonical="https://example.test", url_key="seed")
     try:
         for _ in range(2):
@@ -99,7 +99,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     from crawlme.digest import FetchResult, Payload
     from crawlme.pioneer.seed_expander import SeedExpander
     from crawlme.pioneer.sources import ManualSource
-    from crawlme.runtime import CrawlGoal
+    from crawlme.runtime import Goal
 
     url = "https://example.com/source"
     calls = []
@@ -125,7 +125,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
         ignore_robots=ignore,
     )
     scheduler = create_crawl(cfg, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
-    goal = CrawlGoal(prompt="compiler safety")
+    goal = Goal(prompt="compiler safety")
     seeds = await ManualSource(["https://example.com/start"]).discover(goal)
     try:
         kept = await scheduler.pipeline.expand_seeds(goal, seeds)
@@ -151,7 +151,7 @@ async def test_seed_failure(tmp_path, monkeypatch):
 
     from crawlme.llm import Client
     from crawlme.pioneer.sources import ManualSource
-    from crawlme.runtime import CrawlGoal, CrawlTask
+    from crawlme.runtime import Goal, Task
 
     calls = []
 
@@ -175,8 +175,8 @@ async def test_seed_failure(tmp_path, monkeypatch):
         expand_seeds=True,
         ignore_robots=True,
     )
-    goal = CrawlGoal(prompt="compiler safety")
-    task = CrawlTask(goal_id=goal.goal_id)
+    goal = Goal(prompt="compiler safety")
+    task = Task(goal_id=goal.goal_id)
     fetcher = MagicMock(fetch=AsyncMock(side_effect=RuntimeError("Unexpected fetch")), aclose=AsyncMock())
     scheduler = create_crawl(cfg, goal=goal, fetcher=fetcher)
     seeds = await ManualSource(["https://example.com/start"]).discover(goal)

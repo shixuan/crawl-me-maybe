@@ -9,7 +9,7 @@ import pytest
 
 from crawlme.digest import FetchResult
 from crawlme.pioneer import FrontierItem
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
 from tests.scheduler.helpers import create_crawl
@@ -97,12 +97,12 @@ def _seed_item(seed_url: str) -> FrontierItem:
 async def test_fetch_to_links(integration_settings):
     """Single seed → fetch → extract → links → prefilter → buffer."""
     cfg = integration_settings
-    goal = CrawlGoal(
+    goal = Goal(
         prompt="memory safety and compiler design",
         max_pages=1,
         depth_limit=1,
     )
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
@@ -130,8 +130,8 @@ async def test_fetch_to_links(integration_settings):
 async def test_drops_junk(integration_settings):
     """PDF, javascript, wikidata URLs should be filtered out, so only BUFFERED ones persist."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
@@ -155,8 +155,8 @@ async def test_drops_junk(integration_settings):
 async def test_stop_pages(integration_settings):
     """With max_pages=2, crawl should stop after fetching 2 pages."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2, depth_limit=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=2, depth_limit=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
@@ -172,8 +172,8 @@ async def test_stop_pages(integration_settings):
 async def test_drains(integration_settings):
     """Crawl stops naturally when no new candidates pass ranking threshold."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=100, depth_limit=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=100, depth_limit=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
@@ -190,8 +190,8 @@ async def test_drains(integration_settings):
 async def test_events_emitted(integration_settings):
     """Events table should contain the full lifecycle for a single-page crawl."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
@@ -215,8 +215,8 @@ async def test_events_emitted(integration_settings):
 async def test_ranks_saved(integration_settings):
     """Rank decisions should be written to the DB."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=2)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=2)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     sched = create_crawl(cfg, fetcher=_MockFetcher())
     await sched.pipeline._frontier.push_batch([_seed_item(_SEED_URL)])
@@ -271,8 +271,8 @@ class _RecordingAnalyzer:
 async def test_analyzes_all(integration_settings):
     """The v0.2 analysis stage runs after each page extraction."""
     cfg = integration_settings
-    goal = CrawlGoal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
-    task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
+    goal = Goal(prompt="memory safety and compiler design", max_pages=1, depth_limit=1)
+    task = Task(goal_id=goal.goal_id, state="CREATED")
 
     analyzer = _RecordingAnalyzer()
     sched = create_crawl(cfg, fetcher=_MockFetcher(), analyzer=analyzer)

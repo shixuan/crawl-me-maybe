@@ -15,7 +15,7 @@ import aiosqlite
 from crawlme.digest import Page
 from crawlme.errors import Error, Kind
 from crawlme.persist import queries
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.urls import URL
 
 
@@ -99,17 +99,17 @@ async def find_run_dir(result_dir: Path, task_id: str) -> tuple[Path, dict[str, 
     )
 
 
-def goal_from_row(row: dict[str, Any]) -> CrawlGoal:
+def goal_from_row(row: dict[str, Any]) -> Goal:
     """Restore a goal and its extraction specification from a database row."""
     data = dict(row)
     data["keywords"] = json.loads(data.get("keywords") or "[]")
     data["extraction_spec"] = json.loads(data["extraction_spec"]) if data.get("extraction_spec") else None
-    return CrawlGoal.model_validate(data)
+    return Goal.model_validate(data)
 
 
-def task_from_row(row: dict[str, Any]) -> CrawlTask:
+def task_from_row(row: dict[str, Any]) -> Task:
     """Restore a task, including its JSON-encoded counters."""
-    return CrawlTask.model_validate({**row, "counters": json.loads(row.get("counters") or "{}")})
+    return Task.model_validate({**row, "counters": json.loads(row.get("counters") or "{}")})
 
 
 def page_from_row(row: dict[str, Any]) -> Page:

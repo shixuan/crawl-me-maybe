@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from crawlme.runtime import CrawlTask
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines import Pipeline
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from tests.scheduler.test_control import build, candidate
@@ -22,10 +22,8 @@ async def test_cancel_composed_pipeline(tmp_path):
     scheduler.pipeline.run_state.reset(goal=goal)
     await scheduler.pipeline._storage.start()
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    pipeline: Pipeline[CrawlInput, CrawlTask] = scheduler.pipeline
-    running = asyncio.create_task(
-        pipeline.run(CrawlInput(goal, CrawlTask(goal_id=goal.goal_id)), scheduler.engine.context)
-    )
+    pipeline: Pipeline[CrawlInput, Task] = scheduler.pipeline
+    running = asyncio.create_task(pipeline.run(CrawlInput(goal, Task(goal_id=goal.goal_id)), scheduler.engine.context))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         running.cancel()

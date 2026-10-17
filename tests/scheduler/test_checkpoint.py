@@ -16,7 +16,7 @@ from crawlme.llm import LLMResponse, RemoteError, TokenBudget
 from crawlme.persist import Lock, Storage
 from crawlme.pioneer import RankDecision
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.runtime import CrawlTask
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from tests.scheduler.test_control import build, candidate
 
@@ -95,7 +95,7 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
         budget=TokenBudget(100),
     )
     original_snapshot = copy.deepcopy(saved)
-    restored_task = CrawlTask.model_validate(saved["task"])
+    restored_task = Task.model_validate(saved["task"])
     await asyncio.wait_for(fresh.engine.run(CrawlInput(goal, restored_task, checkpoint=saved)), 3)
     assert saved == original_snapshot
     assert restored_task.state == "COMPLETED"
@@ -135,7 +135,7 @@ async def test_resume_older_snapshot(tmp_path):
     fresh, _, _, _ = build(
         tmp_path, storage=reopen(first), analyzer=Analyzer(MagicMock(chat=AsyncMock(return_value=response)))
     )
-    await fresh.engine.run(CrawlInput(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved))
+    await fresh.engine.run(CrawlInput(goal, Task.model_validate(saved["task"]), checkpoint=saved))
     with sqlite3.connect(first.pipeline._storage.db_path) as db:
         assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 1
     assert fresh.pipeline.run_state.stats.analyses_by_class == {"RELEVANT": 1}
@@ -180,7 +180,7 @@ async def test_recovery_keeps_limits(tmp_path):
     saved["state"]["progress"]["started_at"] = 12.0
     saved["task"]["start_at"] = "2000-01-01T00:00:00+00:00"
     fresh, _, _, _ = build(tmp_path, storage=reopen(first), budget=TokenBudget(10))
-    await fresh.engine.run(CrawlInput(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved))
+    await fresh.engine.run(CrawlInput(goal, Task.model_validate(saved["task"]), checkpoint=saved))
     assert 12 <= time.monotonic() - fresh.pipeline.run_state.progress.started_at < 15
     assert fresh.pipeline._checkpointer.budget.used == fresh.pipeline.summary()["tokens_used"] == 6
     assert fresh.pipeline._checkpointer.budget.by_stage["ranking"].calls == 1
@@ -288,7 +288,7 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
         analyzer=Analyzer(MagicMock(chat=analyze)),
         ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()),
     )
-    restored_task = CrawlTask.model_validate(saved["task"])
+    restored_task = Task.model_validate(saved["task"])
     await asyncio.wait_for(fresh.engine.run(CrawlInput(goal, restored_task, checkpoint=saved)), 2)
     assert restored_task.state == "COMPLETED"
     assert fresh.pipeline.run_state.stats.analyses_by_class == {"RELEVANT": 2 if stage == "dedup" else 1}

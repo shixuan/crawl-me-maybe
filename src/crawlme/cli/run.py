@@ -13,7 +13,7 @@ from crawlme.config import Settings
 from crawlme.logging import setup_logging
 from crawlme.pioneer.sources import create_source, declared_seeds
 from crawlme.platforms import ADAPTERS
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.monitor import create_monitor
 from crawlme.scheduler.pipelines.crawl import CrawlInput
@@ -49,7 +49,7 @@ async def cmd_run(args: argparse.Namespace) -> Report:
         cfg.log_level = args.log_level
     # Apply final CLI settings even if logging was already configured.
     setup_logging(cfg, force=True)
-    goal = CrawlGoal(prompt=args.prompt)
+    goal = Goal(prompt=args.prompt)
     if args.draining:
         if args.max_pages is not None and args.max_pages > 0:
             raise ValueError("--draining and --max-pages are mutually exclusive")
@@ -78,7 +78,7 @@ async def cmd_run(args: argparse.Namespace) -> Report:
     # call: bad arguments should cost nothing.
     source = create_source(args.seeds)
 
-    task = CrawlTask(goal_id=goal.goal_id)
+    task = Task(goal_id=goal.goal_id)
     pipeline = create_crawl(
         cfg,
         goal=goal,

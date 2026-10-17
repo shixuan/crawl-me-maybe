@@ -24,7 +24,7 @@ from crawlme.pioneer.ranker import LLMRanker, Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.platforms import ADAPTERS, FeedAdapter
-from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PagePipeline
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 def create_crawl(
     settings: Settings,
-    goal: CrawlGoal | None = None,
+    goal: Goal | None = None,
     llm_ranker: Ranker | None = None,
     analyzer: Analyzer | None = None,
     *,

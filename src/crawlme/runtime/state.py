@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from crawlme.checkpoint import Checkpointable
-from crawlme.runtime.goal import CrawlGoal
+from crawlme.runtime.goal import Goal
 from crawlme.util import notify
 
 # How many of a source's own analyzed pages its window keeps.
@@ -230,7 +230,7 @@ class RunState(Checkpointable):
             self.progress.fatal_error = str(error) or type(error).__name__
 
     @notify
-    def reset(self, *, goal: CrawlGoal) -> None:
+    def reset(self, *, goal: Goal) -> None:
         """Reset execution history while preserving prepared seeds and expansion metadata.
 
         Seed ingestion precedes run(), so source URLs and proposal details must

@@ -20,7 +20,7 @@ import pytest
 from crawlme.config import Settings
 from crawlme.llm import LLMResponse
 from crawlme.pioneer import Candidate
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import URL
 from tests.scheduler.helpers import create_crawl
@@ -281,8 +281,8 @@ async def test_scripted_llm(site: str, tmp_path: Path) -> None:
     from crawlme.pioneer.ranker import LLMRanker
 
     cfg = _settings(tmp_path)
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=5, domain_budget=20)
-    task = CrawlTask(goal_id=goal.goal_id)
+    goal = Goal(prompt=_PROMPT, max_pages=5, domain_budget=20)
+    task = Task(goal_id=goal.goal_id)
 
     client = _ScriptedLLM()
     analyzer = Analyzer(client)  # type: ignore[arg-type]
@@ -320,8 +320,8 @@ async def test_no_creds(site: str, tmp_path: Path) -> None:
     decisions; only the LLM-fed tables stay empty.
     """
     cfg = _settings(tmp_path)
-    goal = CrawlGoal(prompt=_PROMPT, max_pages=4, domain_budget=20)
-    task = CrawlTask(goal_id=goal.goal_id)
+    goal = Goal(prompt=_PROMPT, max_pages=4, domain_budget=20)
+    task = Task(goal_id=goal.goal_id)
 
     scheduler = create_crawl(cfg, goal=goal)
     seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))

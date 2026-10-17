@@ -5,11 +5,11 @@ import json
 import pytest
 
 from crawlme.pioneer.sources import FileSource, ManualSource
-from crawlme.runtime import CrawlGoal
+from crawlme.runtime import Goal
 
 
-def _goal() -> CrawlGoal:
-    return CrawlGoal(prompt="test")
+def _goal() -> Goal:
+    return Goal(prompt="test")
 
 
 # -- ManualSource --------------------------------------------------------

@@ -73,9 +73,9 @@ def test_goal_roundtrip(storage):
 
 def test_time_policy_survives_goal_restore_without_fields(storage):
     from crawlme.persist.read import goal_from_row
-    from crawlme.runtime import CrawlGoal, spec_version
+    from crawlme.runtime import Goal, spec_version
 
-    goal = CrawlGoal(prompt="find upcoming events", time_policy="event occurrence")
+    goal = Goal(prompt="find upcoming events", time_policy="event occurrence")
     storage.save_goal(goal.model_dump(mode="json"))
     _run(storage._write_queue.join())
     restored = goal_from_row(_run(storage.get_goal(goal.goal_id)))

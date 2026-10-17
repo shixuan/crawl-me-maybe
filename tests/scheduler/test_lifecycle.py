@@ -12,7 +12,7 @@ from crawlme.digest import FetchResult
 from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer.sources import ManualSource
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.scheduler.workers import AnalysisWorker
 from tests.scheduler.helpers import create_crawl
@@ -44,12 +44,12 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
     analyzer = Analyzer(MagicMock(chat=chat))
     monkeypatch.setattr("crawlme.scheduler.pipelines.factory.AnalysisWorker", RetryWorker)
     cfg = Settings(_env_file=None, result_dir=tmp_path, llm_api_key="", llm_base_url="", ignore_robots=True)
-    goal = CrawlGoal(prompt="compiler safety", max_pages=1)
+    goal = Goal(prompt="compiler safety", max_pages=1)
     if stop == "time":
         goal.max_duration_sec = 60
     if stop == "deadline":
         monkeypatch.setattr("crawlme.scheduler.engine.engine._SETTLE_TIMEOUT", 0.05)
-    task = CrawlTask(goal_id=goal.goal_id)
+    task = Task(goal_id=goal.goal_id)
 
     async def fetch(item):
         return FetchResult(

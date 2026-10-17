@@ -12,7 +12,7 @@ from crawlme.config import Settings
 from crawlme.logging import setup_logging
 from crawlme.persist import Lock, Storage
 from crawlme.persist.read import find_run_dir
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.monitor import create_monitor
 from crawlme.scheduler.pipelines.crawl import CrawlInput
@@ -41,8 +41,8 @@ async def cmd_resume(args: argparse.Namespace) -> Report:
             cfg.log_level = args.log_level
         setup_logging(cfg, force=True)
         storage.attach_log_file()
-        goal = CrawlGoal.model_validate(payload["goal"])
-        task = CrawlTask.model_validate(payload["task"])
+        goal = Goal.model_validate(payload["goal"])
+        task = Task.model_validate(payload["task"])
         if task.task_id != args.task_id or task.goal_id != goal.goal_id:
             raise ValueError("checkpoint does not match this task and goal")
         task.stopping_reason = None

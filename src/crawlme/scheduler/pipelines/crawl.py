@@ -21,7 +21,7 @@ from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import SeedExpander, how_many, verify
-from crawlme.runtime import CrawlGoal, CrawlTask, EventEmitter, EventType, RunState, Tracker, spec_fields
+from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Task, Tracker, spec_fields
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
@@ -40,13 +40,13 @@ def _utcnow() -> datetime.datetime:
 
 @dataclass(frozen=True)
 class CrawlInput:
-    goal: CrawlGoal
-    task: CrawlTask
+    goal: Goal
+    task: Task
     checkpoint: dict[str, Any] | None = None
     lock: Lock | None = None
 
 
-class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
+class CrawlPipeline(Pipeline[CrawlInput, Task]):
     def __init__(
         self,
         *,
@@ -71,7 +71,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         self._cfg = settings
         self._budget = budget
         self._checkpointer = checkpointer
-        self._task: CrawlTask | None = None
+        self._task: Task | None = None
         self._lock: Lock | None = None
         self._own_lock = False
         self._closed = False
@@ -85,7 +85,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         self._dedup = dedup
         self._page = page
         self._seed_expander = seed_expander
-        self._goal: CrawlGoal | None = None
+        self._goal: Goal | None = None
         self._task_id = ""
         self._events: EventEmitter | None = None
         self._pump_tasks: list[asyncio.Task[None]] = []
@@ -94,7 +94,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
 
     async def startup(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         candidates: list[Candidate],
         *,
         allowed_domains: set[str] | None = None,
@@ -169,7 +169,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
     def counters(self) -> dict[str, int]:
         return {"pages_fetched": self.run_state.progress.pages_fetched, "tokens_used": self._budget.used}
 
-    def prepare(self, goal: CrawlGoal, task: CrawlTask, context: PipelineContext) -> None:
+    def prepare(self, goal: Goal, task: Task, context: PipelineContext) -> None:
         self.run_state.reset(goal=goal)
         self._goal, self._task_id = goal, task.task_id
         self._events = EventEmitter(self._storage, task.task_id)
@@ -182,7 +182,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
     def attach_log_file(self) -> None:
         self._storage.attach_log_file()
 
-    async def run(self, input: CrawlInput, context: PipelineContext) -> CrawlTask:
+    async def run(self, input: CrawlInput, context: PipelineContext) -> Task:
         goal, task = input.goal, input.task
         self._own_lock = input.lock is None
         self._lock = input.lock or Lock(self._storage.db_path)
@@ -359,7 +359,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
             )
 
     @activity("seed expander")
-    async def expand_seeds(self, goal: CrawlGoal, seeds: list[Candidate]) -> list[Candidate]:
+    async def expand_seeds(self, goal: Goal, seeds: list[Candidate]) -> list[Candidate]:
         """Propose and verify additional seeds when enabled."""
         expander = self._seed_expander
         if expander is None or not seeds:
@@ -394,7 +394,7 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
 
     async def ingest_seeds(
         self,
-        goal: CrawlGoal,
+        goal: Goal,
         candidates: list[Candidate],
         allowed_domains: set[str] | None = None,
     ) -> int:

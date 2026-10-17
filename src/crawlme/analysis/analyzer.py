@@ -17,7 +17,7 @@ from crawlme.errors import Error, Kind
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.logging.progress import activity
-from crawlme.runtime import CrawlGoal, spec_fields, spec_time_field, spec_version
+from crawlme.runtime import Goal, spec_fields, spec_time_field, spec_version
 from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class Analyzer:
         return cls(client, max_page_chars=settings.analyzer_max_chars)
 
     @activity("analyze")
-    async def analyze(self, page: Page, goal: CrawlGoal) -> AnalysisResult | None:
+    async def analyze(self, page: Page, goal: Goal) -> AnalysisResult | None:
         text = _page_text(page)
         if not text:
             return None
@@ -100,7 +100,7 @@ class Analyzer:
         return result
 
     async def _correct_time(
-        self, data: dict[str, Any], page: Page, goal: CrawlGoal, prompt: str
+        self, data: dict[str, Any], page: Page, goal: Goal, prompt: str
     ) -> tuple[dict[str, Any], int]:
         tokens = 0
         if goal.time_policy:
@@ -182,7 +182,7 @@ def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def _parse_extracted(data: dict[str, Any], page: Page, goal: CrawlGoal) -> dict[str, ExtractedField]:
+def _parse_extracted(data: dict[str, Any], page: Page, goal: Goal) -> dict[str, ExtractedField]:
     """Keep declared, nonempty fields whose evidence appears in normalized page text."""
     fields = spec_fields(goal.extraction_spec)
     if not fields:
@@ -224,7 +224,7 @@ def _item_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
-def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem:
+def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
     summary = data.get("summary")
     evidence = data.get("evidence")
     if not isinstance(summary, str) or not summary.strip():
@@ -257,7 +257,7 @@ def _parse_item(data: dict[str, Any], page: Page, goal: CrawlGoal) -> ResultItem
 def _parse_analysis(
     data: dict[str, Any],
     page: Page,
-    goal: CrawlGoal,
+    goal: Goal,
     *,
     model: str,
     tokens_used: int,
@@ -354,7 +354,7 @@ def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None 
     return dates
 
 
-def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: CrawlGoal) -> dict[str, Any]:
+def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: Goal) -> dict[str, Any]:
     """Derive event dates from the validated field declared by the goal."""
     declared = spec_time_field(goal.extraction_spec)
     if declared is None:

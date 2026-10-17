@@ -19,13 +19,13 @@ from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind
 from crawlme.llm import RemoteError, TokenBudgetError
 from crawlme.persist import Storage
 from crawlme.persist.read import find_run_dir
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.pipelines.replay import ReplayError
 from crawlme.urls import URL
 
 
-def _goal(prompt: str = "find rust posts") -> CrawlGoal:
-    return CrawlGoal(prompt=prompt)
+def _goal(prompt: str = "find rust posts") -> Goal:
+    return Goal(prompt=prompt)
 
 
 def _page(key: str, *, text: str = "hello world") -> Page:
@@ -48,7 +48,7 @@ async def _write_run(
     ts: str,
     *,
     task_id: str = "task1",
-    goal: CrawlGoal | None = None,
+    goal: Goal | None = None,
     pages: list[Page] | None = None,
 ) -> Path:
     """Create a fake run dir root/<ts>/ holding a goal, a task, pages."""
@@ -58,7 +58,7 @@ async def _write_run(
     db = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     await db.start()
     db.save_goal(goal.model_dump(mode="json"))
-    db.save_task(CrawlTask(task_id=task_id, goal_id=goal.goal_id).model_dump(mode="json"))
+    db.save_task(Task(task_id=task_id, goal_id=goal.goal_id).model_dump(mode="json"))
     for page in pages or []:
         db.save_page(page)
     await db.close()
@@ -268,12 +268,12 @@ async def test_replay_dup_id(tmp_path):
     # text (hand-edited data or a hash collision): refuse to touch it.
     db.save_goal(
         {
-            "goal_id": CrawlGoal(prompt=prompt).goal_id,
+            "goal_id": Goal(prompt=prompt).goal_id,
             "prompt": "different text",
             "created_at": "2026-01-01T00:00:00Z",
         }
     )
-    db.save_task(CrawlTask(task_id="task1", goal_id=original.goal_id).model_dump(mode="json"))
+    db.save_task(Task(task_id="task1", goal_id=original.goal_id).model_dump(mode="json"))
     await db.close()
 
     with pytest.raises(ReplayError, match="different prompt"):

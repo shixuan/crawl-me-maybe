@@ -11,7 +11,7 @@ from crawlme.checkpoint import Checkpointable
 from crawlme.digest import Page
 from crawlme.errors import Action, ErrorContext, ErrorHandler, Skipped
 from crawlme.persist import Storage
-from crawlme.runtime import CrawlGoal, Tracker
+from crawlme.runtime import Goal, Tracker
 from crawlme.util.ids import _content_id
 
 
@@ -30,14 +30,14 @@ class AnalysisWorker(Checkpointable):
         self._slots = asyncio.Semaphore(concurrency)
         self._storage = storage
         self._tracking = tracking
-        self._goal: CrawlGoal | None = None
+        self._goal: Goal | None = None
         self._task_id: str | None = None
         self._completed: Callable[[str | None], None] | None = None
-        self._pending: asyncio.Queue[tuple[Page, CrawlGoal, int, float]] = asyncio.Queue()
+        self._pending: asyncio.Queue[tuple[Page, Goal, int, float]] = asyncio.Queue()
         self._retry_entries: dict[str, tuple[Page, int]] = {}
         self._drain_task: asyncio.Task[None] | None = None
 
-    def prepare(self, goal: CrawlGoal, task_id: str) -> None:
+    def prepare(self, goal: Goal, task_id: str) -> None:
         self._task_id, self._goal = task_id, goal
 
     def dump(self) -> dict[str, Any]:
@@ -74,7 +74,7 @@ class AnalysisWorker(Checkpointable):
     async def analyze(
         self,
         page: Page,
-        goal: CrawlGoal,
+        goal: Goal,
         *,
         allowed: Callable[[], bool] = lambda: True,
     ) -> AnalysisResult | Skipped | None:
@@ -83,7 +83,7 @@ class AnalysisWorker(Checkpointable):
     async def _attempt(
         self,
         page: Page,
-        goal: CrawlGoal,
+        goal: Goal,
         attempt: int,
         allowed: Callable[[], bool],
     ) -> AnalysisResult | Skipped | None:

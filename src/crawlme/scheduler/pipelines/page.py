@@ -20,7 +20,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
-from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker, why_retire
+from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Tracker, why_retire
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchFailure, FetchWorker, PersistWorker
 from crawlme.urls import Canonicalizer
@@ -46,7 +46,7 @@ class FetchedPage:
 @dataclass(frozen=True)
 class PageInput:
     item: FrontierItem
-    goal: CrawlGoal
+    goal: Goal
     task_id: str = ""
     events: EventEmitter | None = None
 
@@ -90,7 +90,7 @@ class PagePipeline(Pipeline[PageInput, None]):
     def run_state(self) -> RunState:
         return self._tracking.state
 
-    def prepare(self, goal: CrawlGoal, task_id: str) -> None:
+    def prepare(self, goal: Goal, task_id: str) -> None:
         """Bind analysis before checkpoint restore, without starting background work."""
         self._analysis.prepare(goal, task_id)
         self._prepared = True
@@ -144,7 +144,7 @@ class PagePipeline(Pipeline[PageInput, None]):
         item: FrontierItem,
         ctx: PreFilterContext,
         seed: str,
-        goal: CrawlGoal,
+        goal: Goal,
     ) -> None:
         """Queue a capped listing continuation at the same depth and neutral priority."""
         pages = self.run_state.seeds[seed].listing_pages

@@ -16,7 +16,7 @@ from crawlme.discovery import Harvest
 from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
-from crawlme.runtime import CrawlGoal, CrawlTask
+from crawlme.runtime import Goal, Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
 from tests.scheduler.helpers import create_crawl
@@ -40,7 +40,7 @@ def build(tmp_path, **overrides):
     cfg = Settings(
         _env_file=None, result_dir=tmp_path, llm_api_key="", llm_base_url="", llm_model="", ignore_robots=True
     )
-    goal = CrawlGoal(prompt="compiler correctness", max_pages=0, max_duration_sec=0, domain_budget=0)
+    goal = Goal(prompt="compiler correctness", max_pages=0, max_duration_sec=0, domain_budget=0)
     kwargs = dict(
         error_handler=ErrorHandler(ErrorPolicy(retry_delay=0)),
         fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()),
@@ -49,7 +49,7 @@ def build(tmp_path, **overrides):
     )
     kwargs.update(overrides)
     scheduler = create_crawl(cfg, goal=goal, **kwargs)
-    return scheduler, goal, CrawlTask(goal_id=goal.goal_id), fetched
+    return scheduler, goal, Task(goal_id=goal.goal_id), fetched
 
 
 async def wait_until(predicate):

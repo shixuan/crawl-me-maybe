@@ -106,7 +106,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts, provide ranking feedback and define source retirement rules |
-| `runtime/goal.py`, `runtime/task.py` | Crawl goals, extraction specifications and task lifecycle records |
+| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task lifecycle records |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `persist/storage.py` | Storage implementation using SQLite and raw files |
@@ -399,7 +399,7 @@ Admission checks guard newly dispatched work and newly acquired analysis slots.
 Fetch dispatch retains its scheduling poll. Checkpoint intervals, domain cooldowns and
 ranking batch timers remain separate scheduling concerns.
 
-Task lifecycle has one owner, CrawlPipeline, and one value, `CrawlTask.state`.
+Task lifecycle has one owner, CrawlPipeline, and one value, `Task.state`.
 `task.stopping_reason` records the stop decision for reporting; policy does not read it.
 Ctrl+C cancels the run directly and records `INTERRUPTED` with `USER_REQUESTED`.
 There is no separate programmatic stop interface.

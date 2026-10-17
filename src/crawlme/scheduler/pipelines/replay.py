@@ -14,7 +14,7 @@ from crawlme.llm import TokenBudget, TokenBudgetError
 from crawlme.persist import Storage
 from crawlme.persist.read import goal_from_row, page_from_row
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.runtime import CrawlGoal, CrawlTask, spec_version
+from crawlme.runtime import Goal, Task, spec_version
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.workers import AnalysisWorker
@@ -32,7 +32,7 @@ class ReplayError(Error):
 
 @dataclass(frozen=True)
 class ReplayInput:
-    task: CrawlTask
+    task: Task
     run_dir: Path
     prompt: str | None = None
     limit: int | None = None
@@ -95,7 +95,7 @@ class ReplayPipeline(Pipeline[ReplayInput, ReplayResult]):
         new_goal = False
         if prompt:
             # Prompt-derived goal IDs make repeated replay requests idempotent.
-            goal = CrawlGoal(prompt=prompt)
+            goal = Goal(prompt=prompt)
             existing = await storage.get_goal(goal.goal_id)
             if existing is None:
                 new_goal = True
