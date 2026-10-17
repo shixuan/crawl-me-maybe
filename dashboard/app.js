@@ -22,7 +22,7 @@ const state = {
   // name of the one field a result has to carry.
   hasField: "",
   headline: TITLE_KEY,
-  sort: "relevance",
+  sort: "published",
   loading: false,
   error: "",
 };
@@ -124,7 +124,6 @@ function groupedRows() {
     if (members.length === 1) { groups.push(members[0]); continue; }
     groups.push({
       members, title: g.overview, summary: g.overview, classification: "RELEVANT",
-      relevance: members.reduce((n, m) => n + Number(m.relevance), 0) / members.length,
       published_at: members.map(m => m.published_at || "").sort().at(-1),
       ends_on: members.every(m => m.ends_on === members[0].ends_on) ? members[0].ends_on : "",
     });
@@ -273,7 +272,6 @@ function visible() {
     });
   }
   const by = {
-    relevance: (a, b) => Number(b.relevance) - Number(a.relevance),
     published: (a, b) => String(b.published_at || "").localeCompare(String(a.published_at || "")),
     title: (a, b) => String(headlineOf(a)).localeCompare(String(headlineOf(b))),
     // Soonest first, and anything with no end after everything that has one.
@@ -319,7 +317,6 @@ function card(r) {
   el.innerHTML = `
     <div class="result-head">
       <h3 class="result-title"><a href="${escape(r.url)}" target="_blank" rel="noopener">${escape(headline)}</a></h3>
-      <span class="score" title="relevance">${Number(r.relevance).toFixed(2)}</span>
       <span class="class-tag">${escape(r.classification.toLowerCase())}</span>
       ${mark ? `<span class="when-tag">${escape(mark)}</span>` : ""}
     </div>
@@ -341,7 +338,7 @@ function groupCard(r) {
   el.className = "result result-group";
   el.innerHTML = `<div class="result-head">
     <h3 class="result-title">${r.members.length} sources</h3>
-    <span class="score" title="mean source relevance">avg ${r.relevance.toFixed(2)}</span>
+    <span class="class-tag">${escape(r.classification.toLowerCase())}</span>
     </div><p class="summary">${escape(r.summary)}</p>`;
   r.members.forEach((member, i) => {
     if (i < 2) { el.append(card(member)); return; }

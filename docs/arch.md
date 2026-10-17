@@ -509,7 +509,7 @@ the token budget and the error handler.
 Storage and the dashboard share the input query and row mapping in `persist/queries.py`,
 so snapshot validation uses the same evidence as grouping. Analyses join their exact
 page version by `page_id`.
-Each multi-source card shows an overview, arithmetic mean relevance, and source
+Each multi-source card shows an overview, a classification badge, and source
 cards with their original fields and dates. Search and field filters can match any
 member without hiding other members. Date filters use open if any member is open,
 otherwise undated if any is undated, otherwise later if any starts later, and over
