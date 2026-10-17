@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.7.2](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.1...v0.7.2) (2026-10-17)
+
+
+### Fixes
+
+* allow concurrent browser fetches ([1cc4caa](https://github.com/shixuan/crawl-me-maybe/commit/1cc4caad7ea292f155d92a71b34e2191a241943a))
+* allow concurrent browser fetches ([cb51680](https://github.com/shixuan/crawl-me-maybe/commit/cb51680ccac7342d34ed66b501c5b0f688e19ade))
+* capture Instagram GraphQL responses ([92208dc](https://github.com/shixuan/crawl-me-maybe/commit/92208dcf735cb52511811c70b54681e097c7196d))
+* crawl resume ([01a609b](https://github.com/shixuan/crawl-me-maybe/commit/01a609b79667f3e2bee7af0c1baa4a926e1b5483))
+* explain irrelevant page verdicts ([39e3ed1](https://github.com/shixuan/crawl-me-maybe/commit/39e3ed12853fefb85174b248339b9ef2fc5811aa))
+* hide dashboard relevance scores ([6228ba7](https://github.com/shixuan/crawl-me-maybe/commit/6228ba7a997f456409ee537ebcf150861f39964c))
+* instagram feed capture ([e15eb88](https://github.com/shixuan/crawl-me-maybe/commit/e15eb884b6a5bd90178b80a8d2fb7ca73338e891))
+* rename checkpoint storage ([e9f1b25](https://github.com/shixuan/crawl-me-maybe/commit/e9f1b25a594b8327b6b901a3baaba246c10a84c3))
+* restore reports after resume ([c725dc8](https://github.com/shixuan/crawl-me-maybe/commit/c725dc818a0af891fb38391d94d463398a1a2b6f))
+* restore reports after resume ([affc4e7](https://github.com/shixuan/crawl-me-maybe/commit/affc4e7cc87d28a0a26452c31adb511070f5ca3f))
+* **runtime:** resume from checkpoints ([7a0d847](https://github.com/shixuan/crawl-me-maybe/commit/7a0d847e810b1d549728744f3a1c5603f23458bb))
+* skip analysis before publication cutoff ([b7765c9](https://github.com/shixuan/crawl-me-maybe/commit/b7765c9d18920800d631115f9de25e397686cf8c))
+* stop crawls on fatal errors ([825e799](https://github.com/shixuan/crawl-me-maybe/commit/825e799d15a0c34730f6aa7dc0aaab57a3817ad6))
+* stop crawls on persistent provider errors ([437dca3](https://github.com/shixuan/crawl-me-maybe/commit/437dca3b994af787ac55529fd416f710fb0bed6a))
+* stop on persistent provider errors ([9a42574](https://github.com/shixuan/crawl-me-maybe/commit/9a425749fb83761a0e29645b5bd402980e2afc8b))
+
+
+### Changed
+
+* decouple engine from business pipelines ([e1d695b](https://github.com/shixuan/crawl-me-maybe/commit/e1d695b508ac5bb69fd58f81478ed3eda1548599))
+* decouple engine from crawl pipelines ([0c73740](https://github.com/shixuan/crawl-me-maybe/commit/0c73740bf5b560692f5e3b21c7f7ac8dbdbfb89a))
+* decouple stop notifications ([050b5e1](https://github.com/shixuan/crawl-me-maybe/commit/050b5e14afa2de277061826971c9d7fe4af13fa7))
+* engine pipelines and module boundaries ([eb49506](https://github.com/shixuan/crawl-me-maybe/commit/eb495061ef43a05538bfc3adfc0c484f0379dc94))
+* **engine:** run stages in pipelines ([b2bae8d](https://github.com/shixuan/crawl-me-maybe/commit/b2bae8d562b573a9c8418291f842f870ed158c71))
+* generalize runtime model names ([e518b73](https://github.com/shixuan/crawl-me-maybe/commit/e518b732a013d9e04d543dccf89a7a74b4d5a433))
+* let page pipeline own analysis lifecycle ([88d2256](https://github.com/shixuan/crawl-me-maybe/commit/88d225675e71f7aa449e0e0275d60a78fde68374))
+* place models with their owners ([ae2d7b6](https://github.com/shixuan/crawl-me-maybe/commit/ae2d7b6607a3aee25fcbc0398cc420ca1f67834e))
+* share pipeline execution ([590745b](https://github.com/shixuan/crawl-me-maybe/commit/590745bab5755124eb9c2b6044f93b7e5eab3fd6))
+* share publication date checks ([5e0cea2](https://github.com/shixuan/crawl-me-maybe/commit/5e0cea27f6b7cbebf2183edac8ceac8b36935ca4))
+* simplify module interfaces ([522c995](https://github.com/shixuan/crawl-me-maybe/commit/522c9955fe15c209eab6a934a7a246ca9611a46f))
+
 ## [0.7.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.0...v0.7.1) (2026-10-09)
 
 
