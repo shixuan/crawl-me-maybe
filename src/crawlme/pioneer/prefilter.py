@@ -148,16 +148,20 @@ def negative_anchor_check(c: Candidate, goal: CrawlGoal, ctx: PreFilterContext) 
     return None
 
 
+def is_stale(published_at: datetime.datetime | None, since: datetime.datetime | None) -> bool:
+    """Compare known publication times; naive timestamps are interpreted as UTC."""
+    if since is None or published_at is None:
+        return False
+    if published_at.tzinfo is None:
+        published_at = published_at.replace(tzinfo=datetime.timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=datetime.timezone.utc)
+    return published_at < since
+
+
 def stale_check(c: Candidate, goal: CrawlGoal, _ctx: PreFilterContext) -> tuple[Decision, str] | None:
     """Reject candidates with a known publication date before the goal cutoff."""
-    if goal.since is None or c.posted_at is None:
-        return None
-    posted = c.posted_at
-    if posted.tzinfo is None:
-        posted = posted.replace(tzinfo=datetime.timezone.utc)
-    if posted < goal.since:
-        return Decision.DROP, "stale"
-    return None
+    return (Decision.DROP, "stale") if is_stale(c.posted_at, goal.since) else None
 
 
 # -----------------------------------------------------------------------

@@ -489,3 +489,52 @@ async def test_the_target_holds_under_a_queue():
     await asyncio.gather(*[sched.pipeline._run_page(_item()) for _ in range(20)])
 
     assert sched.run_state.limits.max_relevant <= calls <= sched.run_state.limits.max_relevant + 2
+
+
+@pytest.mark.parametrize(
+    "published,cutoff,analyzed",
+    [
+        ("2026-10-01T00:00:00+00:00", "2026-10-09T00:00:00+00:00", False),
+        ("2026-10-09T00:00:00+00:00", "2026-10-09T00:00:00+00:00", True),
+        ("2026-10-10T00:00:00+00:00", "2026-10-09T00:00:00+00:00", True),
+        (None, "2026-10-09T00:00:00+00:00", True),
+        ("2026-10-01T00:00:00+00:00", None, True),
+        ("2026-10-08T20:00:00-04:00", "2026-10-09T00:00:00+00:00", True),
+        ("2026-10-08T00:00:00", "2026-10-09T00:00:00+00:00", False),
+    ],
+)
+async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed):
+    import datetime
+
+    from crawlme.runtime import CrawlGoal
+    from crawlme.scheduler.pipelines import PipelineContext
+    from crawlme.scheduler.pipelines.page import PageInput
+
+    item = _item()
+    page = Page(
+        url=item.url,
+        url_key=item.url_key,
+        plain_text="A matching offer",
+        published_at=datetime.datetime.fromisoformat(published) if published else None,
+    )
+    worker, _, storage = _worker(tmp_path, extract=MagicMock(return_value=page))
+    worker._analysis.analyze = AsyncMock(return_value=None)
+    worker._discovery.discover = AsyncMock(return_value=Harvest([]))
+    goal = CrawlGoal(prompt="offers", since=datetime.datetime.fromisoformat(cutoff) if cutoff else None)
+    context = PipelineContext(
+        task_id="test",
+        events=None,
+        checkpoint=AsyncMock(),
+        can_run=lambda: True,
+        can_dispatch=lambda: True,
+        can_analyze=lambda: True,
+    )
+    # The candidate has no date; the real extraction path supplies it.
+    await worker.run(PageInput(item, goal), context)
+    assert worker._analysis.analyze.await_count == int(analyzed)
+    storage.save_page.assert_called_once_with(page)
+    storage.save_analysis.assert_not_called()
+    worker._discovery.discover.assert_awaited_once_with(page, item.depth)
+    worker._frontier.record_outcome.assert_awaited_once_with(item, "COMPLETED")
+    assert worker.run_state.progress.pages_fetched == 1
+    assert not worker.run_state.work

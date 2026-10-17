@@ -16,7 +16,7 @@ from crawlme.errors import Kind
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
+from crawlme.pioneer.prefilter import PreFilter, PreFilterContext, is_stale
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
 from crawlme.runtime import CrawlGoal, EventEmitter, EventType, RunState, Tracker, why_retire
@@ -226,7 +226,10 @@ class PagePipeline(Pipeline[PageInput, None]):
                 self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
             )
             if not work.get("analysis_done"):
-                await self._analysis.analyze(page, goal, allowed=context.can_analyze)
+                if is_stale(page.published_at, goal.since):
+                    logger.debug("analysis.skipped url_key=%s reason=stale", page.url_key)
+                else:
+                    await self._analysis.analyze(page, goal, allowed=context.can_analyze)
                 work["analysis_done"] = True
                 await context.checkpoint()
             if events:
