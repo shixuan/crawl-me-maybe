@@ -11,9 +11,9 @@ import pytest
 from crawlme.logging import setup_logging
 from crawlme.pioneer import FrontierItem
 from crawlme.runtime import CrawlGoal, CrawlTask
-from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
+from tests.scheduler.helpers import create_crawl
 
 pytestmark = pytest.mark.e2e
 
@@ -37,7 +37,7 @@ async def test_wiki_basic(e2e_settings):
     goal = CrawlGoal(prompt=_PROMPT, max_pages=_MAX_PAGES)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg)
+    sched = create_crawl(cfg)
 
     # Push seed into frontier.
     canon = Canonicalizer()
@@ -60,7 +60,7 @@ async def test_wiki_basic(e2e_settings):
     t0 = time.monotonic()
     timed_out = False
     try:
-        await asyncio.wait_for(sched.run(CrawlInput(goal, task)), timeout=180)
+        await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=180)
     except asyncio.TimeoutError:
         timed_out = True
         print("\nTimed out after 180s — checking partial results.")
@@ -139,7 +139,7 @@ async def test_wiki_budget(e2e_settings):
     goal = CrawlGoal(prompt=_PROMPT, max_pages=2)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg)
+    sched = create_crawl(cfg)
 
     canon = Canonicalizer()
     url = canon.canonicalize(_SEED, _SEED)
@@ -154,7 +154,7 @@ async def test_wiki_budget(e2e_settings):
 
     print("\nSmall-budget test: max_pages=2")
     try:
-        await asyncio.wait_for(sched.run(CrawlInput(goal, task)), timeout=120)
+        await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=120)
     except asyncio.TimeoutError:
         pass
 
@@ -205,7 +205,7 @@ async def test_wiki_draining(e2e_settings):
     goal = CrawlGoal(prompt=_PROMPT, max_pages=0, depth_limit=_DRAINING_DEPTH)
     task = CrawlTask(goal_id=goal.goal_id, state="CREATED")
 
-    sched = create_scheduler(cfg)
+    sched = create_crawl(cfg)
 
     # Push all seeds.
     canon = Canonicalizer()
@@ -229,7 +229,7 @@ async def test_wiki_draining(e2e_settings):
     t0 = time.monotonic()
     timed_out = False
     try:
-        await asyncio.wait_for(sched.run(CrawlInput(goal, task)), timeout=_DRAINING_TIMEOUT)
+        await asyncio.wait_for(sched.engine.run(CrawlInput(goal, task)), timeout=_DRAINING_TIMEOUT)
     except asyncio.TimeoutError:
         timed_out = True
         print(f"\nTimed out after {_DRAINING_TIMEOUT}s — checking partial results.")

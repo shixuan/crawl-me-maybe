@@ -1,7 +1,8 @@
-"""Select concrete implementations and assemble the crawl scheduler."""
+"""Select concrete implementations and assemble pipelines and their shared dependencies."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -19,16 +20,15 @@ from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
-from crawlme.pioneer.ranker import Ranker
+from crawlme.pioneer.ranker import LLMRanker, Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.platforms import ADAPTERS, FeedAdapter
 from crawlme.runtime import CrawlGoal, Limits, Progress, RunState, Stats, Tracker
-from crawlme.scheduler.engine import Engine
-from crawlme.scheduler.monitor import StopMonitor
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PagePipeline
+from crawlme.scheduler.pipelines.replay import ReplayError, ReplayPipeline
 from crawlme.scheduler.workers import (
     AnalysisWorker,
     DiscoveryWorker,
@@ -38,32 +38,47 @@ from crawlme.scheduler.workers import (
 )
 from crawlme.urls import Canonicalizer
 
+logger = logging.getLogger(__name__)
 
-def create_scheduler(
+
+def create_crawl(
     settings: Settings,
     goal: CrawlGoal | None = None,
     llm_ranker: Ranker | None = None,
     analyzer: Analyzer | None = None,
+    *,
     budget: TokenBudget | None = None,
+    frontier: Frontier | None = None,
+    tracking: Tracker | None = None,
     dedup_enabled: bool = True,
+    ranking_enabled: bool = False,
     **overrides: Any,
-) -> Engine[CrawlPipeline]:
-    """Assemble scheduler components with optional test overrides.
+) -> CrawlPipeline:
+    """Assemble crawl components with optional test overrides.
 
     A missing analyzer is built from settings when enabled and configured.
     The supplied token budget is shared with that analyzer."""
-    storage = overrides.pop("storage") if "storage" in overrides else Storage.create(settings.result_dir)
-    # The tracker and reporting use the same state across startup reset.
+    budget = budget if budget is not None else TokenBudget(goal.max_tokens if goal else 0)
     state = overrides.pop("run_state", None)
-    if state is None:
-        state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+    if tracking is None:
+        state = state if state is not None else RunState(limits=Limits(), progress=Progress(), stats=Stats())
+        tracking = Tracker(state)
+    if frontier is None:
+        frontier = Frontier(
+            domain_budget=goal.domain_budget if goal else 50,
+            buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
+        )
+    storage = overrides.pop("storage") if "storage" in overrides else Storage.create(settings.result_dir)
     canonicalizer = overrides.pop("canonicalizer", None) or Canonicalizer()
     fetcher = overrides.pop("fetcher") if "fetcher" in overrides else _build_fetcher(settings)
     extractor = overrides.pop("extractor", None) or TrafExtractor(adapters=adapters_for(settings))
     robots = overrides.pop("robots", None) or RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots)
     harvester = overrides.pop("harvester") if "harvester" in overrides else _build_harvester(settings, canonicalizer)
+    if ranking_enabled and llm_ranker is None:
+        llm_ranker = LLMRanker.from_settings(settings, budget=budget)
     ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
-    budget = budget if budget is not None else TokenBudget(limit=goal.max_tokens if goal else 0)
+    if ranker is not None:
+        logger.info("ranking with the LLM")
     if "seed_expander" in overrides:
         seed_expander = overrides.pop("seed_expander")
     elif settings.expand_seeds:
@@ -72,11 +87,16 @@ def create_scheduler(
         seed_expander = None
     if analyzer is None and settings.analysis_enabled:
         analyzer = Analyzer.from_settings(settings, budget=budget)
-    grouper = None
-    if dedup_enabled and settings.analysis_enabled and (settings.llm_api_key or settings.llm_base_url):
-        grouper = Grouper.from_settings(settings, budget=budget)
-
     error_handler = overrides.pop("error_handler", None) or ErrorHandler()
+    dedup = create_dedup(
+        settings,
+        storage=storage,
+        budget=budget,
+        enabled=dedup_enabled and settings.analysis_enabled,
+        **({"grouper": overrides.pop("grouper")} if "grouper" in overrides else {}),
+        error_handler=error_handler,
+    )
+
     fetch = overrides.pop("fetch", None) or FetchWorker(
         fetcher,
         robots,
@@ -95,10 +115,7 @@ def create_scheduler(
         "error_handler": error_handler,
         "goal_enhancer": GoalEnhancer.from_settings(settings, budget=budget),
         "storage": storage,
-        "frontier": Frontier(
-            domain_budget=goal.domain_budget if goal else 50,
-            buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
-        ),
+        "frontier": frontier,
         "fetch": fetch,
         "persist": persist,
         "extractor": extractor,
@@ -106,8 +123,8 @@ def create_scheduler(
         "robots": robots,
         "prefilter": PreFilter(),
         "canonicalizer": canonicalizer,
-        "tracking": Tracker(state),
-        "grouper": grouper,
+        "tracking": tracking,
+        "dedup": dedup,
         "seed_expander": seed_expander,
     }
     kwargs.update(overrides)
@@ -119,11 +136,7 @@ def create_scheduler(
             tracking=kwargs["tracking"],
             error_handler=error_handler,
         )
-    state = kwargs["tracking"].state
     analysis = kwargs.pop("analysis")
-    kwargs["dedup"] = DedupPipeline(
-        kwargs.pop("grouper"), storage=storage, model=settings.llm_model, error_handler=error_handler
-    )
     kwargs["ranking"] = RankingWorker(
         ranker, storage=storage, frontier=kwargs["frontier"], tracking=kwargs["tracking"], error_handler=error_handler
     )
@@ -155,11 +168,73 @@ def create_scheduler(
             "analysis": analysis.analyzer is not None,
         },
     )
-    pipeline = CrawlPipeline(**kwargs, budget=budget, checkpointer=checkpointer)
-    return Engine(
-        pipeline=pipeline,
-        checkpoint=pipeline.save_checkpoint,
-        monitor=StopMonitor(state, kwargs["frontier"], budget),
+    return CrawlPipeline(
+        **kwargs,
+        budget=budget,
+        checkpointer=checkpointer,
+    )
+
+
+def create_dedup(
+    settings: Settings,
+    *,
+    storage: Storage,
+    budget: TokenBudget,
+    error_handler: ErrorHandler | None = None,
+    enabled: bool = True,
+    required: bool = False,
+    **overrides: Any,
+) -> DedupPipeline:
+    """Assemble grouping with the caller's storage, budget and error policy."""
+    if "grouper" in overrides:
+        grouper = overrides.pop("grouper")
+    else:
+        grouper = Grouper.from_settings(settings, budget=budget) if enabled else None
+    if required and grouper is None:
+        raise ValueError("dedup needs LLM_API_KEY or LLM_BASE_URL")
+    return DedupPipeline(
+        grouper,
+        storage=storage,
+        model=settings.llm_model,
+        error_handler=error_handler if error_handler is not None else ErrorHandler(),
+    )
+
+
+def create_replay(
+    settings: Settings,
+    *,
+    storage: Storage,
+    budget: TokenBudget,
+    analyzer: Analyzer | None = None,
+    dedup_enabled: bool = True,
+) -> ReplayPipeline:
+    """Assemble replay analysis and grouping with one budget and error handler."""
+    if analyzer is None:
+        analyzer = Analyzer.from_settings(settings, budget=budget)
+        if analyzer is None:
+            raise ReplayError(
+                "replay needs LLM credentials to analyze pages: configure LLM_API_KEY / LLM_BASE_URL",
+                code="llm_unconfigured",
+            )
+    error_handler = ErrorHandler()
+    return ReplayPipeline(
+        settings,
+        storage=storage,
+        budget=budget,
+        analysis=AnalysisWorker(
+            analyzer,
+            concurrency=settings.llm_concurrency,
+            storage=storage,
+            error_handler=error_handler,
+        ),
+        enhancer=GoalEnhancer.from_settings(settings, budget=budget),
+        dedup=create_dedup(
+            settings,
+            storage=storage,
+            budget=budget,
+            enabled=dedup_enabled,
+            error_handler=error_handler,
+        ),
     )
 
 

@@ -15,20 +15,18 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_INTERVAL = 2.0
 _SETTLE_TIMEOUT = 120.0
 
-P = TypeVar("P", bound=Pipeline[Any, Any], covariant=True)
 Input = TypeVar("Input")
 Output = TypeVar("Output")
 
 
-class Engine(Generic[P]):
+class Engine(Generic[Input, Output]):
     def __init__(
         self,
-        pipeline: P,
         *,
         monitor: Monitor | None = None,
         checkpoint: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        self._pipeline = pipeline
+        self._pipeline: Pipeline[Input, Output] | None = None
         self._monitor = monitor
         self._save = checkpoint
         self._runner: asyncio.Task[Any] | None = None
@@ -48,15 +46,19 @@ class Engine(Generic[P]):
             settle=self._settle_step,
         )
 
-    @property
-    def pipeline(self) -> P:
-        return self._pipeline
+    def bind(self, pipeline: Pipeline[Input, Output]) -> None:
+        if self._pipeline is not None or self._runner is not None or self._closed:
+            raise RuntimeError("engine already bound, started or closed")
+        self._pipeline = pipeline
 
-    async def run(self: Engine[Pipeline[Input, Output]], input: Input) -> Output:
+    async def run(self, input: Input) -> Output:
         if self._runner is not None or self._closed:
             raise RuntimeError("engine already started or closed")
+        pipeline = self._pipeline
+        if pipeline is None:
+            raise RuntimeError("engine has no pipeline")
         self._runner = asyncio.current_task()
-        work = asyncio.create_task(self.pipeline.run(input, self.context))
+        work = asyncio.create_task(pipeline.run(input, self.context))
         try:
             # Cancellation must stop checkpoint writers before pipeline cleanup runs.
             return await asyncio.shield(work)
@@ -143,9 +145,12 @@ class Engine(Generic[P]):
             return
         self._closed = True
         await self._stop_checkpoints()
-        if self._monitor is not None:
-            self._monitor.close()
-        await self.pipeline.aclose()
+        try:
+            if self._monitor is not None:
+                self._monitor.close()
+        finally:
+            if self._pipeline is not None:
+                await self._pipeline.aclose()
 
     async def _checkpoint(self) -> None:
         if not self._checkpointing or self._closed or self._save is None:

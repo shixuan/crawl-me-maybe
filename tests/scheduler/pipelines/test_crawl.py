@@ -128,7 +128,7 @@ async def test_inflight_waits():
     sched.pipeline._inflight.add(task)
     task.add_done_callback(sched.pipeline._inflight.discard)
 
-    sched._deadline = time.monotonic() + 0.05
+    sched.engine._deadline = time.monotonic() + 0.05
     settling = asyncio.create_task(sched.pipeline.settle())
     await asyncio.sleep(0)
     assert not settling.done(), "it must wait, not walk past"
@@ -145,12 +145,12 @@ async def test_settle_defers_abort(caplog):
     stuck = asyncio.create_task(asyncio.sleep(3600))
     sched.pipeline._inflight.add(stuck)
 
-    sched._deadline = time.monotonic() + 0.05
+    sched.engine._deadline = time.monotonic() + 0.05
     with caplog.at_level(logging.WARNING):
         await sched.pipeline.settle()
 
     assert not stuck.done()
-    await sched._stop_checkpoints()
+    await sched.engine._stop_checkpoints()
     await sched.pipeline.abort()
     assert stuck.cancelled()
     assert "settle_timeout" in caplog.text

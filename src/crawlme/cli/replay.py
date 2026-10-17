@@ -1,48 +1,26 @@
-"""Re-analyze stored page text without fetching or re-extracting pages.
-
-Matching analysis identities are skipped unless forced. New prompts create or
-reuse a goal row; successful analyses are appended to the run database."""
+"""Prepare replay inputs, execute the replay pipeline and render its report."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import datetime
-import json
-import logging
-import sqlite3
-import sys
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from dataclasses import asdict
+from typing import TYPE_CHECKING
 
-import aiosqlite
-
-from crawlme.analysis import Analyzer
+from crawlme.cli.report import Report, make_report
 from crawlme.config import Settings
-from crawlme.digest import Page
-from crawlme.errors import Error, ErrorHandler, Kind, Skipped
-from crawlme.llm import TokenBudget, TokenBudgetError, close_litellm_clients
+from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
 from crawlme.persist import Storage
-from crawlme.persist.read import readonly_uri
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.runtime import CrawlGoal, spec_version
-from crawlme.scheduler.workers import AnalysisWorker
-from crawlme.urls import URL
+from crawlme.persist.read import find_run_dir, task_from_row
+from crawlme.scheduler.engine import create_engine
+from crawlme.scheduler.pipelines.factory import create_replay
+from crawlme.scheduler.pipelines.replay import ReplayInput, ReplayResult
 
-logger = logging.getLogger(__name__)
-
-
-class ReplayError(Error):
-    """Replay cannot proceed: task not found, no credentials, etc."""
-
-    source = "replay"
-    code = "replay_failed"
-    kind = Kind.INVALID_INPUT
+if TYPE_CHECKING:
+    from crawlme.analysis import Analyzer
 
 
-async def cmd_replay(args: argparse.Namespace) -> None:
+async def cmd_replay(args: argparse.Namespace) -> Report:
     """The ``crawl replay`` command: settings layering, run, report."""
     cfg = Settings()
     # Flags override env/defaults (same layering as run, see config.py).
@@ -52,44 +30,16 @@ async def cmd_replay(args: argparse.Namespace) -> None:
         cfg.log_level = args.log_level
     # Replay is the first (and only) logger configuration on this path.
     setup_logging(cfg)
-    try:
-        report = await run_replay(
-            cfg,
-            args.task_id,
-            prompt=args.prompt,
-            limit=args.limit,
-            max_tokens=args.max_tokens,
-            force=args.force,
-        )
-    except Error as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        await close_litellm_clients()
-    print_replay_summary(report)
-    logging.getLogger().setLevel(logging.CRITICAL)
-
-
-@dataclass
-class ReplayReport:
-    """The numbers a replay run ends with (rendered by the CLI)."""
-
-    task_id: str
-    run_dir: Path
-    state: str
-    goal_id: str
-    new_goal: bool
-    pages_total: int
-    analyzed: int
-    retried_ok: int
-    skipped: int
-    empty: int
-    failed: int
-    published: int
-    tokens_in: int
-    tokens_out: int
-    tokens_used: int
-    llm_calls: int
+    report = await run_replay(
+        cfg,
+        args.task_id,
+        prompt=args.prompt,
+        limit=args.limit,
+        max_tokens=args.max_tokens,
+        force=args.force,
+        dedup_enabled=args.dedup == "on",
+    )
+    return make_report({"command": "replay", **asdict(report)})
 
 
 async def run_replay(
@@ -101,264 +51,22 @@ async def run_replay(
     max_tokens: int | None = None,
     force: bool = False,
     analyzer: Analyzer | None = None,
-) -> ReplayReport:
+    dedup_enabled: bool = True,
+) -> ReplayResult:
     """Analyze stored pages and wait for bounded retries before closing.
 
     An injected analyzer avoids provider calls in tests. Otherwise settings build
     the analyzer with the replay token budget."""
     run_dir, task_row = await find_run_dir(settings.result_dir, task_id)
     budget = TokenBudget(limit=max_tokens or 0)
-    if analyzer is None:
-        analyzer = Analyzer.from_settings(settings, budget=budget)
-        if analyzer is None:
-            raise ReplayError(
-                "replay needs LLM credentials to analyze pages: configure LLM_API_KEY / LLM_BASE_URL",
-                code="llm_unconfigured",
-            )
-
     storage = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
-    error_handler = ErrorHandler()
-    worker = AnalysisWorker(
-        analyzer, concurrency=settings.llm_concurrency, storage=storage, error_handler=error_handler
+    pipeline = create_replay(
+        settings,
+        storage=storage,
+        budget=budget,
+        analyzer=analyzer,
+        dedup_enabled=dedup_enabled,
     )
-    await storage.start()
-    try:
-        goal_row = await storage.get_goal(task_row["goal_id"])
-        if goal_row is None:
-            raise ReplayError(
-                f"goal {task_row['goal_id']} missing from the run database",
-                code="goal_missing",
-                kind=Kind.NOT_FOUND,
-                details={"goal_id": task_row["goal_id"]},
-            )
-        goal = _goal_from_row(goal_row)
-        new_goal = False
-        if prompt:
-            # Prompt-derived goal IDs make repeated replay requests idempotent.
-            goal = CrawlGoal(prompt=prompt)
-            existing = await storage.get_goal(goal.goal_id)
-            if existing is None:
-                new_goal = True
-                enhancer = GoalEnhancer.from_settings(settings, budget=budget)
-                enhanced = await error_handler.call(
-                    "goal", lambda: enhancer.enhance(goal), optional=True, repeatable=True
-                )
-                if enhanced is not None and not isinstance(enhanced, Skipped):
-                    goal.goal_statement = enhanced.statement
-                    goal.keywords = enhanced.keywords
-                    goal.since = enhanced.since
-                    goal.extraction_spec = enhanced.extraction_spec
-                    goal.time_policy = enhanced.time_policy
-                storage.save_goal(goal.model_dump(mode="json"))
-            else:
-                if existing.get("prompt") != prompt:
-                    # Reject goal-ID collisions before save_goal can replace a different prompt.
-                    raise ReplayError(
-                        f"goal id {goal.goal_id} already exists with a different prompt",
-                        code="goal_conflict",
-                        kind=Kind.CONFLICT,
-                        details={"goal_id": goal.goal_id},
-                    )
-                # Same prompt replayed before: reuse the stored goal
-                # (already enhanced), never pay the enhancer again.
-                goal = _goal_from_row(existing)
-
-        published = 0
-
-        def completed(seed: str | None) -> None:
-            nonlocal published
-            published += 1
-
-        worker.bind_completion(completed)
-
-        rows = await storage.list_pages()
-        pages_total = len(rows)
-        if limit is not None:
-            rows = rows[:limit]
-        analyzed = parked = skipped = empty = 0
-        remaining = iter(rows)
-        exhausted = False
-
-        async def work() -> None:
-            nonlocal analyzed, parked, skipped, empty, exhausted
-            for row in remaining:
-                if exhausted:
-                    return
-                page = _page_from_row(row)
-                # Mirrors the analyzer's own empty-text skip, so the
-                # report can tell "no text" apart from "parked".
-                if not ((page.plain_text or "").strip() or (page.markdown or "").strip()):
-                    empty += 1
-                    continue
-                if not force and await storage.has_analysis(
-                    page.url_key,
-                    goal.goal_id,
-                    settings.llm_model,
-                    spec_version(goal.extraction_spec, goal.time_policy),
-                ):
-                    skipped += 1
-                    continue
-                if exhausted:
-                    return
-                try:
-                    budget.check()
-                    result = await worker.analyze(page, goal)
-                except TokenBudgetError:
-                    if not exhausted:
-                        logger.warning("replay.budget_exhausted used=%d/%d", budget.used, budget.limit)
-                    exhausted = True
-                    return
-                if isinstance(result, Skipped):
-                    if result.reason == "limit_reached":
-                        exhausted = True
-                        return
-                    parked += 1
-                elif result is not None:
-                    analyzed += 1
-                else:
-                    parked += 1
-
-        workers = [asyncio.create_task(work()) for _ in range(min(max(1, settings.llm_concurrency), len(rows)))]
-        try:
-            await error_handler.watch(asyncio.gather(*workers))
-        finally:
-            for task in workers:
-                task.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
-
-        # Parked pages retry in the background; wait them out so every
-        # one settles before the analyzer (and this run) closes.
-        await worker.drain_pending()
-        retried_ok = published - analyzed
-        failed = parked - retried_ok
-
-        return ReplayReport(
-            task_id=task_id,
-            run_dir=run_dir,
-            state=task_row.get("state", ""),
-            goal_id=goal.goal_id,
-            new_goal=new_goal,
-            pages_total=pages_total,
-            analyzed=analyzed,
-            retried_ok=retried_ok,
-            skipped=skipped,
-            empty=empty,
-            failed=failed,
-            published=published,
-            tokens_in=budget.input_tokens,
-            tokens_out=budget.output_tokens,
-            tokens_used=budget.used,
-            llm_calls=budget.calls,
-        )
-    finally:
-        await worker.aclose()
-        await storage.close()
-
-
-async def find_run_dir(result_dir: Path, task_id: str) -> tuple[Path, dict[str, Any]]:
-    """Find the run database containing task_id; raise ReplayError if absent."""
-    seen: dict[str, str] = {}
-    for db_path in sorted(result_dir.glob("*/db/crawl.db"), reverse=True):
-        try:
-            async with aiosqlite.connect(readonly_uri(db_path), uri=True) as conn:
-                conn.row_factory = aiosqlite.Row
-                cur = await conn.execute("SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,))
-                row = await cur.fetchone()
-                if row is not None:
-                    return db_path.parent.parent, dict(row)
-                cur = await conn.execute("SELECT task_id FROM crawl_tasks")
-                for r in await cur.fetchall():
-                    seen[r["task_id"]] = db_path.parent.parent.name
-        except sqlite3.Error:
-            # A stray or unreadable database; keep scanning.
-            continue
-    if seen:
-        detail = ", ".join(f"{tid} ({ts})" for tid, ts in sorted(seen.items()))
-        raise ReplayError(
-            f"task {task_id} not found; runs under {result_dir} hold: {detail}",
-            code="task_missing",
-            kind=Kind.NOT_FOUND,
-            details={"task_id": task_id},
-        )
-    raise ReplayError(
-        f"task {task_id} not found: no run databases under {result_dir}",
-        code="task_missing",
-        kind=Kind.NOT_FOUND,
-        details={"task_id": task_id},
+    return await create_engine(pipeline).run(
+        ReplayInput(task_from_row(task_row), run_dir, prompt=prompt, limit=limit, force=force)
     )
-
-
-def print_replay_summary(r: ReplayReport) -> None:
-    """Render the replay report as aligned terminal lines."""
-    goal = r.goal_id
-    if r.new_goal:
-        goal += " (new prompt)"
-    lines = [f"replay finished: {r.task_id}"]
-    lines.append(f"  run:        {r.run_dir} (state={r.state})")
-    lines.append(f"  goal:       {goal}")
-    lines.append(f"  pages:      {r.pages_total} in run")
-    parts = [f"{r.analyzed} first-try"]
-    if r.retried_ok:
-        parts.append(f"{r.retried_ok} retried")
-    lines.append(f"  analyses:   {r.published} written ({', '.join(parts)})")
-    if r.skipped or r.empty:
-        skip_parts = []
-        if r.skipped:
-            skip_parts.append(f"{r.skipped} identical")
-        if r.empty:
-            skip_parts.append(f"{r.empty} empty text")
-        lines.append(f"  skipped:    {', '.join(skip_parts)}")
-    if r.failed:
-        lines.append(f"  failed:     {r.failed}")
-    tokens = f"{r.tokens_used}"
-    if r.llm_calls:
-        tokens += f" ({r.tokens_in} in / {r.tokens_out} out), {r.llm_calls} calls"
-    lines.append(f"  tokens:     {tokens}")
-    from crawlme.logging.config import write_report
-
-    report = "\n".join(lines)
-    print(report)
-    write_report(report)
-
-
-def _goal_from_row(row: dict[str, Any]) -> CrawlGoal:
-    """Restore a goal and its extraction specification from a database row."""
-    data = dict(row)
-    data["keywords"] = json.loads(data.get("keywords") or "[]")
-    data["extraction_spec"] = json.loads(data["extraction_spec"]) if data.get("extraction_spec") else None
-    return CrawlGoal.model_validate(data)
-
-
-def _page_from_row(row: dict[str, Any]) -> Page:
-    """Rebuild a Page from a stored row (the frozen corpus)."""
-    return Page(
-        page_id=row["page_id"],
-        url_key=row["url_key"],
-        url=URL.model_validate(json.loads(row["url_json"])),
-        raw_html_path=row.get("raw_html_path", ""),
-        title=row.get("title"),
-        markdown=row.get("markdown"),
-        plain_text=row.get("plain_text"),
-        metadata=json.loads(row.get("metadata_json") or "{}"),
-        text_hash=row.get("text_hash", ""),
-        text_len=row.get("text_len", 0),
-        published_at=_parse_optional_ts(row.get("published_at")),
-        extracted_at=_parse_ts(row.get("extracted_at")),
-        extraction_status=row.get("extraction_status", "OK"),
-    )
-
-
-def _parse_ts(value: Any) -> datetime.datetime:
-    if isinstance(value, str) and value:
-        return datetime.datetime.fromisoformat(value)
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def _parse_optional_ts(value: Any) -> datetime.datetime | None:
-    """Parse a nullable timestamp, preserving missing values as None."""
-    if isinstance(value, str) and value:
-        try:
-            return datetime.datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    return None

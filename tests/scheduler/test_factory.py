@@ -7,8 +7,9 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.pioneer.ranker import LLMRanker
-from crawlme.scheduler.factory import _build_ranker, create_scheduler
 from crawlme.scheduler.pipelines.crawl import CrawlInput
+from crawlme.scheduler.pipelines.factory import _build_ranker
+from tests.scheduler.helpers import create_crawl
 
 
 def test_ranker_is_llm(tmp_path: Path):
@@ -25,14 +26,14 @@ def test_ranker_no_creds(tmp_path: Path):
 
 def test_sched_no_ranker(tmp_path: Path):
     """A scheduler with no credentials still builds and still crawls."""
-    sched = create_scheduler(Settings(result_dir=tmp_path, llm_api_key="", llm_base_url=""))
+    sched = create_crawl(Settings(result_dir=tmp_path, llm_api_key="", llm_base_url=""))
     assert sched.pipeline._ranking.ranker is None
 
 
 def test_sched_analyzer(tmp_path: Path):
     """The factory binds the supplied analyzer to the shared result sink."""
     analyzer = MagicMock()
-    sched = create_scheduler(Settings(result_dir=tmp_path), analyzer=analyzer)
+    sched = create_crawl(Settings(result_dir=tmp_path), analyzer=analyzer)
     assert sched.pipeline._page._analysis.analyzer is analyzer
     assert sched.pipeline._checkpointer.analysis is sched.pipeline._page._analysis
 
@@ -40,7 +41,7 @@ def test_sched_analyzer(tmp_path: Path):
 def test_scheduler_no_analyzer(tmp_path: Path):
     """analysis_enabled off: the engine runs with the subsystem absent."""
     cfg = Settings(result_dir=tmp_path, analysis_enabled=False)
-    sched = create_scheduler(cfg)
+    sched = create_crawl(cfg)
     assert sched.pipeline._page._analysis.analyzer is None
 
 
@@ -49,9 +50,16 @@ def test_sched_run_state(tmp_path: Path):
     from crawlme.runtime import Limits, Progress, RunState, Stats
 
     state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
-    sched = create_scheduler(Settings(result_dir=tmp_path), run_state=state)
+    sched = create_crawl(Settings(result_dir=tmp_path), run_state=state)
     assert sched.pipeline.run_state is state
     assert sched.pipeline._tracking.state is state
+    assert sched.engine._monitor.runtime is state
+    assert sched.engine._monitor.frontier is sched.pipeline._frontier
+    assert sched.engine._monitor.budget is sched.pipeline._budget
+    assert sched.pipeline._checkpointer.runtime is state
+    assert sched.pipeline._checkpointer.frontier is sched.engine._monitor.frontier
+    assert sched.pipeline._checkpointer.budget is sched.engine._monitor.budget
+    assert sched.engine._save == sched.pipeline.save_checkpoint
 
 
 @pytest.mark.parametrize("injected", [True, False])
@@ -68,7 +76,7 @@ async def test_expander_created_once(tmp_path, monkeypatch, injected):
     cfg = Settings(
         _env_file=None, result_dir=tmp_path, analysis_enabled=False, expand_seeds=True, llm_api_key="", llm_base_url=""
     )
-    scheduler = create_scheduler(cfg, **({"seed_expander": expander} if injected else {}))
+    scheduler = create_crawl(cfg, **({"seed_expander": expander} if injected else {}))
     goal = CrawlGoal(prompt="compiler articles")
     url = URL(raw="https://example.test", canonical="https://example.test", url_key="seed")
     try:
@@ -78,7 +86,7 @@ async def test_expander_created_once(tmp_path, monkeypatch, injected):
         if injected:
             builder.assert_not_called()
         else:
-            builder.assert_called_once_with(cfg, budget=scheduler._monitor.budget)
+            builder.assert_called_once_with(cfg, budget=scheduler.engine._monitor.budget)
     finally:
         await scheduler.aclose()
 
@@ -116,7 +124,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
         expand_seeds=True,
         ignore_robots=ignore,
     )
-    scheduler = create_scheduler(cfg, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
+    scheduler = create_crawl(cfg, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
     goal = CrawlGoal(prompt="compiler safety")
     seeds = await ManualSource(["https://example.com/start"]).discover(goal)
     try:
@@ -170,14 +178,14 @@ async def test_seed_failure(tmp_path, monkeypatch):
     goal = CrawlGoal(prompt="compiler safety")
     task = CrawlTask(goal_id=goal.goal_id)
     fetcher = MagicMock(fetch=AsyncMock(side_effect=RuntimeError("Unexpected fetch")), aclose=AsyncMock())
-    scheduler = create_scheduler(cfg, goal=goal, fetcher=fetcher)
+    scheduler = create_crawl(cfg, goal=goal, fetcher=fetcher)
     seeds = await ManualSource(["https://example.com/start"]).discover(goal)
     from crawlme.llm import RemoteError
 
     with pytest.raises(RemoteError):
         await scheduler.pipeline.expand_seeds(goal, seeds)
     await scheduler.pipeline.ingest_seeds(goal, seeds)
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"
     assert calls == ["seeds"] and scheduler.pipeline.run_state.progress.pages_fetched == 0
     assert "Insufficient credits" in scheduler.pipeline.run_state.progress.fatal_error
@@ -185,3 +193,43 @@ async def test_seed_failure(tmp_path, monkeypatch):
     with sqlite3.connect(scheduler.pipeline._storage.db_path) as db:
         saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
     assert not saved["state"]["progress"]["fatal_error"]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_ranking_budget(tmp_path, monkeypatch, enabled):
+    from crawlme.llm import TokenBudget
+
+    budget = TokenBudget(100)
+    ranker = MagicMock(spec=LLMRanker)
+    build = MagicMock(return_value=ranker)
+    monkeypatch.setattr(LLMRanker, "from_settings", build)
+    scheduler = create_crawl(
+        Settings(result_dir=tmp_path, llm_api_key="", llm_base_url=""),
+        budget=budget,
+        ranking_enabled=enabled,
+    )
+    assert scheduler.pipeline._ranking.ranker is (ranker if enabled else None)
+    if enabled:
+        assert build.call_args.kwargs["budget"] is budget
+    else:
+        build.assert_not_called()
+
+
+def test_replay_shared_dependencies(tmp_path, monkeypatch):
+    from crawlme.llm import TokenBudget
+    from crawlme.persist import Storage
+    from crawlme.scheduler.pipelines import factory
+
+    budget = TokenBudget(100)
+    storage = Storage(str(tmp_path / "crawl.db"), str(tmp_path / "raw"))
+    builders = []
+    for component in (factory.Analyzer, factory.Grouper, factory.GoalEnhancer):
+        build = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(component, "from_settings", build)
+        builders.append(build)
+    pipeline = factory.create_replay(Settings(result_dir=tmp_path), storage=storage, budget=budget)
+    for build in builders:
+        assert build.call_args.kwargs["budget"] is budget
+    assert pipeline._analysis.error_handler is pipeline._dedup.error_handler
+    assert pipeline._analysis._storage is storage
+    assert pipeline._dedup._storage is storage

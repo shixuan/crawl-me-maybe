@@ -22,6 +22,10 @@ class Source(Protocol):
     Each implementation produces depth=0 Candidates that the scheduler
     canonicalizes, pre-filters, and enqueues into the frontier."""
 
+    @property
+    def allowed_domains(self) -> set[str] | None:
+        return None
+
     async def discover(self, goal: CrawlGoal) -> list[Candidate]: ...
 
 
@@ -59,3 +63,31 @@ class FileSource(Source):
         else:
             return []
         return [_make_candidate(u) for u in urls if isinstance(u, str) and u.strip()]
+
+
+def create_source(value: str | None) -> Source:
+    path = _seed_file(value)
+    return FileSource(path) if path is not None else ManualSource(_split(value))
+
+
+def declared_seeds(value: str | None) -> list[str]:
+    """Read seed URLs for validation without starting discovery."""
+    path = _seed_file(value)
+    if path is None:
+        return _split(value)
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []  # Discovery reports the file error.
+    if isinstance(data, dict):
+        data = data.get("seeds", [])
+    return [url for url in data if isinstance(url, str)] if isinstance(data, list) else []
+
+
+def _seed_file(value: str | None) -> str | None:
+    text = (value or "").strip()
+    return text if text and not text.lower().startswith(("http://", "https://")) else None
+
+
+def _split(value: str | None) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]

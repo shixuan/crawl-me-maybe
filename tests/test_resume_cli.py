@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from crawlme.cli.resume import cmd_resume
+from crawlme.cli import _dispatch
 from crawlme.persist import Storage
 
 # Commands use this interpreter and test-generated arguments only.
@@ -100,7 +100,7 @@ def test_cli_resume_process(tmp_path, interrupt):
             timeout=10,
         )
         assert locked.returncode == 1
-        assert "already active" in locked.stdout
+        assert "already active" in locked.stderr
         assert process.poll() is None
         process.send_signal(interrupt)
         output, _ = process.communicate(timeout=10)
@@ -130,7 +130,7 @@ def test_cli_resume_process(tmp_path, interrupt):
             timeout=10,
         )
         assert again.returncode == 1
-        assert "only interrupted or failed" in again.stdout
+        assert "only interrupted or failed" in again.stderr
     finally:
         release.set()
         if process.poll() is None:
@@ -153,8 +153,8 @@ async def test_reject_old_checkpoint(tmp_path, capsys, monkeypatch, payload):
     def fail(*args, **kwargs):
         raise AssertionError("workers must not be created for an unsupported checkpoint")
 
-    monkeypatch.setattr("crawlme.cli.resume.create_scheduler", fail)
+    monkeypatch.setattr("crawlme.cli.resume.create_crawl", fail)
     with pytest.raises(SystemExit) as error:
-        await cmd_resume(argparse.Namespace(task_id="test", result_dir=str(tmp_path), log_level=None))
+        await _dispatch(argparse.Namespace(command="resume", task_id="test", result_dir=str(tmp_path), log_level=None))
     assert error.value.code == 1
-    assert "no supported recovery checkpoint" in capsys.readouterr().out
+    assert "no supported recovery checkpoint" in capsys.readouterr().err

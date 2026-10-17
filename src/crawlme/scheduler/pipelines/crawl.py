@@ -158,6 +158,14 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
         self.run_state.record_failure(error)
 
     @property
+    def frontier(self) -> Frontier:
+        return self._frontier
+
+    @property
+    def budget(self) -> TokenBudget:
+        return self._budget
+
+    @property
     def counters(self) -> dict[str, int]:
         return {"pages_fetched": self.run_state.progress.pages_fetched, "tokens_used": self._budget.used}
 
@@ -299,7 +307,13 @@ class CrawlPipeline(Pipeline[CrawlInput, CrawlTask]):
             self._pump_tasks.clear()
 
     def summary(self) -> dict[str, Any]:
-        return {**summary(self.run_state, tokens_used=self._budget.used), "dedup": self._dedup.report}
+        return {
+            **summary(self.run_state, tokens_used=self._budget.used),
+            "state": self._task.state if self._task else "CREATED",
+            "reason": self._task.stopping_reason if self._task else None,
+            "usage": self._budget.dump(),
+            "dedup": self._dedup.report,
+        }
 
     async def aclose(self) -> None:
         if self._closed:

@@ -32,7 +32,7 @@ def reopen(scheduler):
 
 @pytest.mark.parametrize("stage", ["fetch", "analysis", "discovery", "ranking", "retry"])
 async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
-    monkeypatch.setattr("crawlme.scheduler.engine._CHECKPOINT_INTERVAL", 0.01)
+    monkeypatch.setattr("crawlme.scheduler.engine.engine._CHECKPOINT_INTERVAL", 0.01)
     entered = asyncio.Event()
     calls = []
     budget = TokenBudget(100)
@@ -63,9 +63,9 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
         await scheduler.pipeline._frontier.push_candidates([candidate()])
     else:
         await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
-    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     await asyncio.wait_for(entered.wait(), 3)
-    await scheduler._checkpoint()
+    await scheduler.engine._checkpoint()
     saved = snapshot(scheduler)
     assert saved["version"] == 1
     assert "llm_api_key" not in saved["settings"]
@@ -96,7 +96,7 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     )
     original_snapshot = copy.deepcopy(saved)
     restored_task = CrawlTask.model_validate(saved["task"])
-    await asyncio.wait_for(fresh.run(CrawlInput(goal, restored_task, checkpoint=saved)), 3)
+    await asyncio.wait_for(fresh.engine.run(CrawlInput(goal, restored_task, checkpoint=saved)), 3)
     assert saved == original_snapshot
     assert restored_task.state == "COMPLETED"
     assert fresh.pipeline.run_state.progress.pages_fetched == 1
@@ -118,7 +118,7 @@ async def test_resume_older_snapshot(tmp_path):
     first.pipeline._page._discovery.discover = block
     await first.pipeline.ingest_seeds(goal, [candidate()])
     # Keep the initial checkpoint; allow results to advance ahead of it.
-    original = first._save
+    original = first.engine._save
     saved = None
 
     async def once():
@@ -127,15 +127,15 @@ async def test_resume_older_snapshot(tmp_path):
             await original()
             saved = snapshot(first)
 
-    first._save = once
-    run = asyncio.create_task(first.run(CrawlInput(goal, task)))
+    first.engine._save = once
+    run = asyncio.create_task(first.engine.run(CrawlInput(goal, task)))
     await asyncio.wait_for(entered.wait(), 3)
     run.cancel()
     await asyncio.gather(run, return_exceptions=True)
     fresh, _, _, _ = build(
         tmp_path, storage=reopen(first), analyzer=Analyzer(MagicMock(chat=AsyncMock(return_value=response)))
     )
-    await fresh.run(CrawlInput(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved))
+    await fresh.engine.run(CrawlInput(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved))
     with sqlite3.connect(first.pipeline._storage.db_path) as db:
         assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 1
     assert fresh.pipeline.run_state.stats.analyses_by_class == {"RELEVANT": 1}
@@ -171,16 +171,16 @@ async def test_recovery_keeps_limits(tmp_path):
     )
     first.pipeline._robots.record_response("example.com", 429)
     await first.pipeline.ingest_seeds(goal, [candidate()])
-    run = asyncio.create_task(first.run(CrawlInput(goal, task)))
+    run = asyncio.create_task(first.engine.run(CrawlInput(goal, task)))
     await asyncio.wait_for(entered.wait(), 2)
-    await first._checkpoint()
+    await first.engine._checkpoint()
     saved = snapshot(first)
     run.cancel()
     await asyncio.gather(run, return_exceptions=True)
     saved["state"]["progress"]["started_at"] = 12.0
     saved["task"]["start_at"] = "2000-01-01T00:00:00+00:00"
     fresh, _, _, _ = build(tmp_path, storage=reopen(first), budget=TokenBudget(10))
-    await fresh.run(CrawlInput(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved))
+    await fresh.engine.run(CrawlInput(goal, CrawlTask.model_validate(saved["task"]), checkpoint=saved))
     assert 12 <= time.monotonic() - fresh.pipeline.run_state.progress.started_at < 15
     assert fresh.pipeline._checkpointer.budget.used == fresh.pipeline.summary()["tokens_used"] == 6
     assert fresh.pipeline._checkpointer.budget.by_stage["ranking"].calls == 1
@@ -255,7 +255,7 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
         scheduler.pipeline._goal_enhancer = GoalEnhancer(client) if stage == "goal" else GoalEnhancer(None)
         scheduler.pipeline._seed_expander = SeedExpander(client) if stage == "seeds" else None
         await scheduler.pipeline.startup(goal, [candidate()])
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"
     error = scheduler.pipeline.run_state.progress.fatal_error
     assert str(status) in error and message in error
@@ -289,7 +289,7 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
         ranker=MagicMock(rank_batch=rank, aclose=AsyncMock()),
     )
     restored_task = CrawlTask.model_validate(saved["task"])
-    await asyncio.wait_for(fresh.run(CrawlInput(goal, restored_task, checkpoint=saved)), 2)
+    await asyncio.wait_for(fresh.engine.run(CrawlInput(goal, restored_task, checkpoint=saved)), 2)
     assert restored_task.state == "COMPLETED"
     assert fresh.pipeline.run_state.stats.analyses_by_class == {"RELEVANT": 2 if stage == "dedup" else 1}
 
@@ -319,7 +319,7 @@ async def test_remote_cancels_calls(tmp_path, monkeypatch):
     scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(Client("provider/model", concurrency=2)))
     scheduler.pipeline._page._analysis._slots = asyncio.Semaphore(3)
     await scheduler.pipeline.ingest_seeds(goal, [candidate("first"), candidate("second"), candidate("third")])
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"
     assert cancelled.is_set() and requests == 2
     assert not scheduler.pipeline._inflight and not scheduler.pipeline._pump_tasks
@@ -328,7 +328,7 @@ async def test_remote_cancels_calls(tmp_path, monkeypatch):
 async def test_failed_initial_checkpoint(tmp_path, caplog):
     scheduler, goal, task, _ = build(tmp_path)
     scheduler.pipeline._checkpointer.save = AsyncMock(side_effect=OSError("Disk full"))
-    await scheduler.run(CrawlInput(goal, task))
+    await scheduler.engine.run(CrawlInput(goal, task))
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"
     assert "Disk full" in caplog.text and "crawl resume" not in caplog.text
     with sqlite3.connect(scheduler.pipeline._storage.db_path) as db:
@@ -355,7 +355,7 @@ async def test_stop_queued_checkpoint(tmp_path, monkeypatch, stop, source):
 
     monkeypatch.setattr(Client, "_complete", complete)
     if source == "periodic":
-        monkeypatch.setattr("crawlme.scheduler.engine._CHECKPOINT_INTERVAL", 0.005)
+        monkeypatch.setattr("crawlme.scheduler.engine.engine._CHECKPOINT_INTERVAL", 0.005)
     scheduler, goal, task, _ = build(tmp_path, analyzer=Analyzer(Client("provider/model")))
     if stop == "ranking":
 
@@ -374,14 +374,16 @@ async def test_stop_queued_checkpoint(tmp_path, monkeypatch, stop, source):
         await abort()
 
     scheduler.pipeline.abort = held_abort
-    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     queued = None
     try:
         await asyncio.wait_for(entered.wait(), 2)
         async with scheduler.pipeline._checkpointer._lock:
             saved = snapshot(scheduler)
             queued = (
-                scheduler._checkpoint_task if source == "periodic" else asyncio.create_task(scheduler._checkpoint())
+                scheduler.engine._checkpoint_task
+                if source == "periodic"
+                else asyncio.create_task(scheduler.engine._checkpoint())
             )
             await wait_until(lambda: scheduler.pipeline._checkpointer._lock._waiters)
             if stop in {"remote", "ranking"}:
@@ -423,12 +425,14 @@ async def test_settle_freezes_before_abort(tmp_path, monkeypatch, stop):
         try:
             await asyncio.Event().wait()
         finally:
-            cancelled_after_freeze.append(not scheduler._checkpointing and not scheduler._checkpoint_saves)
+            cancelled_after_freeze.append(
+                not scheduler.engine._checkpointing and not scheduler.engine._checkpoint_saves
+            )
 
     scheduler, goal, task, _ = build(tmp_path, fetcher=MagicMock(fetch=fetch, aclose=AsyncMock()))
     goal.max_relevant = 1
     if stop == "deadline":
-        monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.05)
+        monkeypatch.setattr("crawlme.scheduler.engine.engine._SETTLE_TIMEOUT", 0.05)
     settle_pages = scheduler.pipeline._settle_pages
 
     async def wait_for_pages():
@@ -437,7 +441,7 @@ async def test_settle_freezes_before_abort(tmp_path, monkeypatch, stop):
 
     scheduler.pipeline._settle_pages = wait_for_pages
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
-    running = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    running = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         scheduler.pipeline.run_state.analysis_completed(True)

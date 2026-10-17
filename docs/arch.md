@@ -83,14 +83,17 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | Location | Responsibility |
 |---|---|
 | `cli/` | Parse commands, apply settings, build goals, report results |
-| `cli/report.py` | Shared run/resume reports, token breakdowns and exit policy |
-| `scheduler/factory.py` | Assemble and inject workers and their component dependencies |
-| `scheduler/engine.py` | Run lifecycle, stopping and admission policy, checkpoint timing |
+| `cli/__init__.py` | Dispatch commands, close LLM clients, emit reports and apply exit codes |
+| `cli/report.py` | Format crawl, replay and dedup reports and derive exit codes |
+| `scheduler/engine/factory.py` | Create a generic Engine and bind a supplied Pipeline |
+| `scheduler/pipelines/factory.py` | Assemble and inject workers and their component dependencies |
+| `scheduler/engine/engine.py` | Run lifecycle, stopping and admission policy, checkpoint timing |
 | `scheduler/pipelines/crawl.py` | Module calls, pumps, page tasks, retry execution and dedup |
 | `scheduler/pipelines/page.py` | Process pages, resume stages, admit candidates and paginate |
 | `scheduler/workers/ranking.py` | Rank batches, save decisions and enqueue retained items |
 | `scheduler/pipelines/pipeline.py` | Shared execution protocol and callbacks from engine |
 | `scheduler/pipelines/dedup.py` | Execute final grouping and retain originals on failure |
+| `scheduler/pipelines/replay.py` | Analyze stored pages, drain retries and return replay counts |
 | `scheduler/workers/` | Execute stages, persist their results and update stage statistics |
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Evaluate run stopping conditions |
@@ -117,23 +120,33 @@ Workers are concrete classes with different input and output types, not intercha
 pipeline steps. They do not receive the engine. Analysis and ranking workers update
 state through Tracker. CrawlPipeline owns module calls and task handles. PagePipeline
 owns page ordering, candidate admission and cross-stage tracking; RankingWorker applies batches.
-CrawlPipeline, PagePipeline and DedupPipeline explicitly implement `Pipeline[Input, Output]`,
-with `run(input, context)` and `aclose()`. PipelineContext carries supervision,
+CrawlPipeline, PagePipeline, DedupPipeline and ReplayPipeline explicitly implement `Pipeline[Input, Output]`,
+with `run(input, context)` and `aclose()`.
+PipelineContext carries supervision,
 settlement, admission and checkpoint callbacks. Task metadata and events travel in
 the pipeline input. Workers use the existing
 Fetcher, Extractor and Ranker protocols, and the concrete Analyzer and Harvester stages.
 
-The factory assembles the pipeline and workers. CrawlPipeline runs seed expansion;
+The pipeline factory assembles crawl, replay and dedup pipelines and their workers.
+All three builders return a Pipeline. The generic Engine factory creates an Engine,
+binds the supplied pipeline, and returns it for `engine.run(input)`. It has no
+business-specific branches. CLI commands create their pipeline, pass it to
+`create_engine`, then call `run`. The pipeline factory creates shared crawl state,
+frontier and budget; the monitor factory uses those same instances through public
+properties. Commands do not construct buffers or concrete monitors. Source selection and seed-file parsing stay in `pioneer.sources`.
+CrawlPipeline retains Checkpointer binding and restoration; Engine receives its save
+callback and controls checkpoint timing and shutdown.
+CLI commands pass settings and feature switches rather than constructing LLM components. CrawlPipeline runs seed expansion;
 PagePipeline provides verification using the same FetchWorker, PersistWorker
 and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
 and payloads, and discovers candidates without publishing an unextracted Page row.
-`create_scheduler(..., fetcher=stub)` overrides a component.
-`create_scheduler(..., ranker=stub)` supplies the ranker used by RankingWorker.
+`create_crawl(..., fetcher=stub)` overrides a component.
+`create_crawl(..., ranker=stub)` supplies the ranker used by RankingWorker.
 
 ## Crawl lifecycle
 
 1. The CLI applies flags, validates dependencies and session settings, and creates
-   a goal, task, scheduler and shared `TokenBudget`.
+   a goal, task, crawl pipeline and shared `TokenBudget`.
 2. `GoalEnhancer` derives the goal statement, fields and optional publication
    cutoff. An explicit `--since` overrides the inferred cutoff.
 3. Optional seed expansion proposes URLs and verifies that fetched pages yield
@@ -360,7 +373,7 @@ Blocking extraction runs in worker threads. Digest operations using libxml2 shar
 
 ## Stopping and checkpoints
 
-`RunState.progress` holds only run-owned counters. The factory creates StopMonitor
+`RunState.progress` holds only run-owned counters. The monitor factory creates StopMonitor
 with RunState, Frontier and TokenBudget. Monitor reads queue counts and token usage
 directly from their owners and passes numbers alongside Progress and Limits to
 `check_stop()`. RunState does not bind owners or proxy their counts.
@@ -441,7 +454,9 @@ after persistence succeeds.
 ```mermaid
 flowchart LR
   subgraph Process["Running process"]
-    Factory["Factory"] --> Engine
+    CLI["CLI"] --> EF["Engine factory"]
+    EF --> Engine
+    CLI --> Factory["Pipeline factory"]
     Factory --> CP["Checkpointer"]
     Engine["Engine · execution and checkpoint timing"] -->|save callback| Pipeline["CrawlPipeline"]
     Pipeline -->|save / restore| CP
@@ -480,7 +495,7 @@ Storage atomically publishes `dedup_runs` (input fingerprint and model),
 `result_groups` (overview), and `result_item_members` (item IDs). Legacy snapshots
 retain `result_members` (analysis IDs). Original
 analyses remain intact. The dashboard reads the latest matching snapshot. A replay
-that changes the inputs invalidates it. Replay does not automatically regroup.
+that changes the inputs invalidates it. Replay regroups the selected goal after analysis unless `--dedup off` is set.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
 Semantic grouping remains open (reviewed 2026-10-06). Model responses can still
 merge distinct items, different editions or partially overlapping records despite
@@ -489,7 +504,8 @@ it does not validate semantic equivalence. Evaluate explicit identity evidence a
 per-member support before treating a successful grouping as semantically verified.
 
 Both automatic and standalone dedup use DedupPipeline for reading inputs, grouping
-and publishing results, and `Grouper.from_settings` for client configuration.
+and publishing results. The shared factory builds Grouper and injects storage,
+the token budget and the error handler.
 Storage and the dashboard share the input query and row mapping in `persist/queries.py`,
 so snapshot validation uses the same evidence as grouping. Analyses join their exact
 page version by `page_id`.
@@ -534,7 +550,14 @@ schema setup, a write queue or a run log handler. Run lookup also opens database
 read-only. The dashboard uses the same read-only connection helper and filters
 results in the browser.
 
-`crawl replay` analyzes stored page text without refetching or re-extracting HTML.
+`crawl replay` uses Engine and ReplayPipeline to analyze stored page text without
+refetching or re-extracting HTML. ReplayPipeline reuses AnalysisWorker for concurrency,
+error policy, retries and publishing, then calls DedupPipeline with the same token budget.
+CLI commands use one report formatter, which renders the available statistics, and
+return report text and an exit code. The shared dispatcher closes
+LLM clients, prints and persists reports, and applies exit codes. Resume passes
+recovery input to the same CrawlPipeline. Run lookup and stored-model decoding live in
+`persist.read`, shared by the commands.
 It skips matching `(url_key, goal_id, spec_version, model)` analyses
 unless forced. A new goal prompt creates or reuses its content-derived goal ID.
 After editing analyzer instructions, use `--force` to reanalyze existing results.

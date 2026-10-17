@@ -15,7 +15,7 @@ from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.discovery import Harvester
 from crawlme.platforms import PageProblem, instagram
-from crawlme.scheduler.factory import _build_harvester
+from crawlme.scheduler.pipelines.factory import _build_harvester
 from crawlme.urls import URL, Canonicalizer
 
 _LINKS_HTML = b"""<html><body><article>

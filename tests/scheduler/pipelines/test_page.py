@@ -16,7 +16,6 @@ from crawlme.discovery import Harvest
 from crawlme.errors import Error, Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.pipelines.page import FetchedPage
 from crawlme.urls import URL
 from tests.scheduler.helpers import (
@@ -29,6 +28,7 @@ from tests.scheduler.helpers import (
     _task,
     _url,
     _utcnow,
+    create_crawl,
 )
 
 
@@ -50,7 +50,7 @@ def _worker(tmp_path, *, extract=None, timeout=1):
     page = Page(url=url, url_key="p")
     extractor = MagicMock(extract=extract or MagicMock(return_value=page))
     frontier = MagicMock(record_outcome=AsyncMock())
-    worker = create_scheduler(
+    worker = create_crawl(
         Settings(result_dir=tmp_path, fetch_concurrency=1, extract_timeout=timeout, analysis_enabled=False),
         fetcher=fetcher,
         extractor=extractor,
@@ -178,7 +178,7 @@ async def test_harvest_timeout(monkeypatch):
     sched = _make_sched()
     sched.pipeline._goal = _goal(max_pages=5)
     sched.pipeline._task = _task()
-    sched._save = AsyncMock()
+    sched.engine._save = AsyncMock()
     _set_context(sched, max_pages=5, max_tokens=100000, max_duration_sec=3600)
     sched.pipeline._page._discovery._timeout = 0.2
     sched.pipeline._page._fetch.fetcher.fetch = AsyncMock(
@@ -231,7 +231,7 @@ async def test_analysis_free(monkeypatch):
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._save = AsyncMock()
+    sched.engine._save = AsyncMock()
 
     await sched.pipeline._run_page(_item())
 
@@ -268,7 +268,7 @@ async def test_missing_extra():
     )
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._save = AsyncMock()
+    sched.engine._save = AsyncMock()
 
     with pytest.raises(FeedDependencyError, match="crawl-me-maybe"):
         await sched.pipeline._run_page(_item())
@@ -425,7 +425,7 @@ async def test_seed_credited_mid_judge():
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._save = AsyncMock()
+    sched.engine._save = AsyncMock()
 
     await sched.pipeline._run_page(_item())
 
@@ -449,7 +449,7 @@ async def test_a_met_target_stops_analysis():
     sched.pipeline._page.fetch_and_extract = AsyncMock(return_value=FetchedPage(result, page))
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._save = AsyncMock()
+    sched.engine._save = AsyncMock()
 
     await sched.pipeline._run_page(_item())
 
@@ -468,7 +468,7 @@ async def test_the_target_holds_under_a_queue():
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=3)
     sched.pipeline._frontier.record_outcome = AsyncMock()
     sched.pipeline._frontier.get_prefilter_context = MagicMock(return_value=MagicMock())
-    sched._save = AsyncMock()
+    sched.engine._save = AsyncMock()
 
     calls = 0
 
@@ -574,7 +574,7 @@ async def test_page_owns_analysis_lifecycle(finish_retry):
     pipeline._discovery.discover = AsyncMock(return_value=Harvest([]))
     pipeline._frontier.record_outcome = AsyncMock()
     pipeline._frontier.context_keys.return_value = set()
-    engine = Engine(pipeline)
+    engine = Engine()
     try:
         await pipeline.run(PageInput(item, goal, "standalone"), engine.context)
         await asyncio.wait_for(entered.wait(), 2)
@@ -586,6 +586,7 @@ async def test_page_owns_analysis_lifecycle(finish_retry):
             saved = pipeline._storage.save_analysis.call_args.args[0]
             assert saved["analysis_id"] == _content_id(f"standalone:{goal.goal_id}:{item.url_key}")
         await engine.aclose()
+        await pipeline.aclose()
         assert pipeline._analysis._drain_task is None
         assert not pipeline._analysis.pending_keys
         assert pipeline._unsubscribe is None
@@ -594,7 +595,8 @@ async def test_page_owns_analysis_lifecycle(finish_retry):
     finally:
         release.set()
         await engine.aclose()
-        sched._monitor.close()
+        await pipeline.aclose()
+        sched.engine._monitor.close()
 
 
 async def test_page_releases_ranked_context():
@@ -619,4 +621,4 @@ async def test_page_releases_ranked_context():
         assert pipeline._unsubscribe is None
     finally:
         await pipeline.aclose()
-        sched._monitor.close()
+        sched.engine._monitor.close()

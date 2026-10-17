@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from crawlme.scheduler.engine import Engine
+from crawlme.scheduler.engine import Engine, create_engine
 from crawlme.scheduler.monitor import Monitor
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.stop_conds import StopReason
@@ -66,11 +66,13 @@ class Sum(Pipeline[int, int]):
 
 
 async def test_pipeline_composition():
+    engine = Engine()
     one = Add(1)
-    assert await Engine(one).run(10) == 11
+    engine.bind(one)
+    assert await engine.run(10) == 11
     assert one.closed
     first, last = Add(2), Add(3)
-    assert await Engine(Sum(first, Sum(last))).run(10) == 15
+    assert await create_engine(Sum(first, Sum(last))).run(10) == 15
     assert first.closed and last.closed
 
 
@@ -117,7 +119,7 @@ class Records(Pipeline[int, list[int]]):
 async def test_generic_completion():
     pipeline = Records("complete")
     save = AsyncMock()
-    engine = Engine(pipeline, checkpoint=save)
+    engine = create_engine(pipeline, checkpoint=save)
     assert await engine.run(5) == [5, 99]
     assert pipeline.reason == "COMPLETED"
     assert pipeline.closed
@@ -132,10 +134,10 @@ async def test_generic_stop(monkeypatch, mode):
     pipeline = Records(mode)
     monitor = ManualMonitor()
     save = AsyncMock()
-    engine = Engine(pipeline, checkpoint=save, monitor=monitor)
-    monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.05 if mode == "deadline" else 5)
+    engine = create_engine(pipeline, checkpoint=save, monitor=monitor)
+    monkeypatch.setattr("crawlme.scheduler.engine.engine._SETTLE_TIMEOUT", 0.05 if mode == "deadline" else 5)
     if mode == "checkpoint_fail":
-        monkeypatch.setattr("crawlme.scheduler.engine._CHECKPOINT_INTERVAL", 0.01)
+        monkeypatch.setattr("crawlme.scheduler.engine.engine._CHECKPOINT_INTERVAL", 0.01)
         save.side_effect = [None, RuntimeError("save failed")]
     running = asyncio.create_task(engine.run(5))
     try:
@@ -165,3 +167,37 @@ async def test_generic_stop(monkeypatch, mode):
     finally:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_rejects_concurrent_pipeline():
+    engine = Engine()
+    first = Records("wait")
+    second = Add(1)
+    engine.bind(first)
+    running = asyncio.create_task(engine.run(5))
+    try:
+        await asyncio.wait_for(first.entered.wait(), 2)
+        with pytest.raises(RuntimeError, match="already bound"):
+            engine.bind(second)
+        with pytest.raises(RuntimeError, match="already started"):
+            await engine.run(10)
+        assert not second.closed
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert first.closed
+
+
+async def test_binding_guards():
+    engine = Engine()
+    with pytest.raises(RuntimeError, match="no pipeline"):
+        await engine.run(1)
+    pipeline = Add(1)
+    engine.bind(pipeline)
+    with pytest.raises(RuntimeError, match="already bound"):
+        engine.bind(Add(2))
+    await engine.aclose()
+    assert pipeline.closed
+    with pytest.raises(RuntimeError, match="closed"):
+        await engine.run(1)

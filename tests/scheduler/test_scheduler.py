@@ -43,9 +43,9 @@ async def test_stop_drained():
     # Mock frontier.pop_next to return None immediately.
     sched.pipeline._frontier.pop_next = AsyncMock(return_value=None)
 
-    reason = await sched._supervise(asyncio.sleep(10))
+    reason = await sched.engine._supervise(asyncio.sleep(10))
 
-    assert sched._stopping
+    assert sched.engine._stopping
     assert reason != "COMPLETED"
 
 
@@ -66,10 +66,10 @@ async def test_stop_pages():
         relevance_threshold=0.7,
     )
 
-    reason = await sched._supervise(asyncio.sleep(10))
+    reason = await sched.engine._supervise(asyncio.sleep(10))
 
     # BUDGET_PAGES fires immediately, so it never reaches pop_next.
-    assert sched._stopping
+    assert sched.engine._stopping
     assert reason != "COMPLETED"
 
 
@@ -263,9 +263,9 @@ def test_enough_found_reads_the_target():
     sched = _make_sched()
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=15)
     sched.pipeline.run_state.progress.relevant_found = 14
-    assert sched._allow_finish("analysis") is True
+    assert sched.engine._allow_finish("analysis") is True
     sched.pipeline.run_state.progress.relevant_found = 15
-    assert sched._allow_finish("analysis") is False
+    assert sched.engine._allow_finish("analysis") is False
 
 
 def test_no_target_never_enough():
@@ -273,4 +273,4 @@ def test_no_target_never_enough():
     sched = _make_sched()
     sched.pipeline.run_state.limits = dataclasses.replace(sched.pipeline.run_state.limits, max_relevant=0)
     sched.pipeline.run_state.progress.relevant_found = 99
-    assert sched._allow_finish("analysis") is True
+    assert sched.engine._allow_finish("analysis") is True

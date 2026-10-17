@@ -23,7 +23,9 @@ async def test_cancel_composed_pipeline(tmp_path):
     await scheduler.pipeline._storage.start()
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
     pipeline: Pipeline[CrawlInput, CrawlTask] = scheduler.pipeline
-    running = asyncio.create_task(pipeline.run(CrawlInput(goal, CrawlTask(goal_id=goal.goal_id)), scheduler.context))
+    running = asyncio.create_task(
+        pipeline.run(CrawlInput(goal, CrawlTask(goal_id=goal.goal_id)), scheduler.engine.context)
+    )
     try:
         await asyncio.wait_for(entered.wait(), 2)
         running.cancel()

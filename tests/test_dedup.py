@@ -15,9 +15,9 @@ from crawlme.errors import Error, ErrorHandler, Kind
 from crawlme.llm import LLMResponse, TokenBudget
 from crawlme.persist import Storage
 from crawlme.runtime import CrawlGoal
-from crawlme.scheduler import Engine
-from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.engine import create_engine
 from crawlme.urls import URL
+from tests.scheduler.helpers import create_crawl
 
 
 def client_response(groups, *, truncated=False):
@@ -216,7 +216,7 @@ async def test_grouping_failure_retains_results():
     grouper = MagicMock(group=AsyncMock(side_effect=DedupError("bad model reply")))
     storage = MagicMock(dedup_inputs=AsyncMock(return_value=[{"analysis_id": "a"}]), save_groups=AsyncMock())
     worker = DedupPipeline(grouper, storage=storage, model="test", error_handler=ErrorHandler())
-    await Engine(worker).run(CrawlGoal(prompt="gifts"))
+    await create_engine(worker).run(CrawlGoal(prompt="gifts"))
     assert worker.report == {"status": "failed", "error": "bad model reply"}
     storage.save_groups.assert_not_called()
 
@@ -226,7 +226,7 @@ async def test_factory_switch_and_reasoning_default(tmp_path, enabled):
     cfg = Settings(
         _env_file=None, llm_api_key="test", llm_base_url="", llm_dedup_reasoning_effort="off", result_dir=tmp_path
     )
-    scheduler = create_scheduler(cfg, budget=TokenBudget(limit=100), dedup_enabled=enabled)
+    scheduler = create_crawl(cfg, budget=TokenBudget(limit=100), dedup_enabled=enabled)
     if enabled:
         assert scheduler.pipeline._dedup.grouper.client._reasoning_effort == "off"
         assert scheduler.pipeline._dedup.grouper.client._stage == "dedup"
@@ -352,7 +352,7 @@ async def test_group_storage_failure_is_not_retried():
     storage = MagicMock(dedup_inputs=AsyncMock(return_value=[]), save_groups=AsyncMock(side_effect=failure))
     worker = DedupPipeline(grouper, storage=storage, model="test", error_handler=ErrorHandler())
     with pytest.raises(OSError) as caught:
-        await Engine(worker).run(CrawlGoal(prompt="gifts"))
+        await create_engine(worker).run(CrawlGoal(prompt="gifts"))
     assert caught.value is failure
     grouper.group.assert_awaited_once()
     storage.save_groups.assert_awaited_once()

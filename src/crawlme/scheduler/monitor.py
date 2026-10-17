@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from crawlme.llm import TokenBudget
 from crawlme.pioneer import Frontier
 from crawlme.runtime import RunState
 from crawlme.scheduler.stop_conds import StopReason, can_drain_analysis, can_settle_pages, check_stop
 from crawlme.util import subscribe
+
+if TYPE_CHECKING:
+    from crawlme.scheduler.pipelines.crawl import CrawlPipeline
+
+
+def create_monitor(pipeline: CrawlPipeline) -> Monitor:
+    return StopMonitor(pipeline.run_state, pipeline.frontier, pipeline.budget)
 
 
 class Monitor(Protocol):

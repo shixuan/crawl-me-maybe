@@ -7,11 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from crawlme.cli import main
-from crawlme.cli.run import _build_source
 from crawlme.errors import ErrorHandler
 from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker import LLMRanker
+from crawlme.pioneer.sources import create_source
 from crawlme.runtime import Limits, Progress, RunState, Stats
+from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 
 
@@ -59,12 +60,15 @@ def test_prints_prompt(caplog):
     import logging
 
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler") as mock_factory:
+        with patch("crawlme.cli.run.create_crawl") as mock_factory:
             mock_sched = MagicMock()
-            mock_sched.pipeline.startup = AsyncMock()
-            mock_sched.pipeline.ingest_seeds = AsyncMock()
-            mock_sched.pipeline.expand_seeds = AsyncMock(return_value=[])
-            mock_sched.pipeline.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+            mock_sched.startup = AsyncMock()
+            mock_sched.ingest_seeds = AsyncMock()
+            mock_sched.expand_seeds = AsyncMock(return_value=[])
+            mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+            mock_sched.monitor = None
+            mock_sched.checkpoint = None
+            mock_sched.aclose = AsyncMock()
             mock_sched.run = AsyncMock()
             mock_factory.return_value = mock_sched
 
@@ -91,15 +95,18 @@ def _capturing_factory(captured: dict):
         captured["goal"] = goal
         captured["overrides"] = overrides
         sched = MagicMock()
-        from crawlme.scheduler.factory import GoalEnhancer as Enhancer
+        from crawlme.scheduler.pipelines.factory import GoalEnhancer as Enhancer
 
-        sched.pipeline.error_handler = ErrorHandler()
-        sched.pipeline._goal_enhancer = Enhancer.from_settings(cfg)
-        sched.pipeline.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched.pipeline, *args, **kwargs)
-        sched.pipeline.ingest_seeds = AsyncMock()
-        sched.pipeline.expand_seeds = AsyncMock(return_value=[])
-        sched.pipeline.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
-        sched.run = AsyncMock()
+        sched.error_handler = ErrorHandler()
+        sched._goal_enhancer = Enhancer.from_settings(cfg)
+        sched.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched, *args, **kwargs)
+        sched.ingest_seeds = AsyncMock()
+        sched.expand_seeds = AsyncMock(return_value=[])
+        sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+        sched.monitor = None
+        sched.checkpoint = None
+        sched.aclose = AsyncMock()
+        sched.run = AsyncMock(side_effect=lambda input, context: captured.update(goal=input.goal))
         return sched
 
     return _capture
@@ -110,7 +117,7 @@ def test_seed_expansion_flag(flag):
     captured: dict = {}
     with (
         patch("sys.argv", ["crawl", "run", "test", "--seeds", "https://example.com", flag]),
-        patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)),
+        patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)),
     ):
         main()
     assert captured["cfg"].expand_seeds is True
@@ -140,7 +147,7 @@ def test_flags_win(tmp_path):
         str(fake_results),
     ]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -170,7 +177,7 @@ def test_env_defaults(monkeypatch):
 
     captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -197,9 +204,9 @@ def test_goal_enhanced(monkeypatch):
         async def enhance(self, goal):
             return EnhancedGoal(statement="Find ML papers", keywords=["ml", "papers"], since=None)
 
-    monkeypatch.setattr("crawlme.scheduler.factory.GoalEnhancer", _StubEnhancer)
+    monkeypatch.setattr("crawlme.scheduler.pipelines.factory.GoalEnhancer", _StubEnhancer)
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -225,13 +232,13 @@ def test_session_browser(_installed, tmp_path):
     state = str(session)
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--session", state]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
                 pass
     from crawlme.digest import PlaywrightFetcher
-    from crawlme.scheduler.factory import _build_fetcher
+    from crawlme.scheduler.pipelines.factory import _build_fetcher
 
     cfg = captured["cfg"]
     assert cfg.browser_storage_state == state
@@ -242,25 +249,14 @@ def test_session_browser(_installed, tmp_path):
     assert not isinstance(fetcher._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
-def test_wires_ranker(monkeypatch):
-    """A configured LLM ranker is passed to the scheduler factory."""
+def test_requests_ranking():
     captured: dict = {}
-    sentinel = object()
-
-    def _fake_from_settings(cls, settings, *, budget=None):
-        return sentinel
-
-    monkeypatch.setattr(
-        "crawlme.cli.run.LLMRanker", type("_Stub", (), {"from_settings": classmethod(_fake_from_settings)})
-    )
-    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-
-    assert captured["overrides"]["llm_ranker"] is sentinel
+    with (
+        patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]),
+        patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)),
+    ):
+        main()
+    assert captured["overrides"]["ranking_enabled"] is True
 
 
 def test_analysis_off():
@@ -268,7 +264,7 @@ def test_analysis_off():
     captured: dict = {}
     argv = ["crawl", "run", "test prompt", "--seeds", "https://example.com", "--analysis", "off"]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -280,7 +276,7 @@ def test_analysis_on():
     """Without the flag the subsystem stays enabled (default True)."""
     captured: dict = {}
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -293,16 +289,19 @@ def test_prints_summary(capsys):
 
     def _capture(cfg, goal=None, **overrides):
         sched = MagicMock()
-        from crawlme.scheduler.factory import GoalEnhancer as Enhancer
+        from crawlme.scheduler.pipelines.factory import GoalEnhancer as Enhancer
 
-        sched.pipeline.error_handler = ErrorHandler()
-        sched.pipeline._goal_enhancer = Enhancer.from_settings(cfg)
-        sched.pipeline.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched.pipeline, *args, **kwargs)
-        sched.pipeline.ingest_seeds = AsyncMock()
-        sched.pipeline.expand_seeds = AsyncMock(return_value=[])
-        sched.pipeline.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())
+        sched.error_handler = ErrorHandler()
+        sched._goal_enhancer = Enhancer.from_settings(cfg)
+        sched.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched, *args, **kwargs)
+        sched.ingest_seeds = AsyncMock()
+        sched.expand_seeds = AsyncMock(return_value=[])
+        sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())
+        sched.monitor = None
+        sched.checkpoint = None
+        sched.aclose = AsyncMock()
         sched.run = AsyncMock()
-        sched.pipeline.summary = lambda: {
+        sched.summary = lambda: {
             "pages_fetched": 5,
             "tokens_used": 1234,
             "candidates_discovered": 100,
@@ -314,7 +313,7 @@ def test_prints_summary(capsys):
         return sched
 
     with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capture):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capture):
             try:
                 main()
             except SystemExit:
@@ -331,13 +330,14 @@ def test_prints_summary(capsys):
 @pytest.mark.parametrize("log_format", ["console", "json"])
 @pytest.mark.parametrize("log_level", ["INFO", "WARNING", "OFF"])
 def test_summary_in_log(tmp_path, capsys, log_format, log_level):
+    import asyncio
     import logging
 
-    from crawlme.cli.report import print_summary
+    from crawlme.cli import _dispatch
+    from crawlme.cli.report import make_report
     from crawlme.config import Settings
     from crawlme.llm import TokenBudget
     from crawlme.logging import setup_logging, to_file
-    from crawlme.runtime import CrawlTask
 
     scheduler = MagicMock()
     scheduler.pipeline.summary.return_value = {
@@ -352,7 +352,9 @@ def test_summary_in_log(tmp_path, capsys, log_format, log_level):
         try:
             budget = TokenBudget(limit=100)
             budget.record(12, 8, stage="dedup")
-            print_summary(scheduler.pipeline.summary(), CrawlTask(goal_id="goal", state="COMPLETED"), budget)
+            report = make_report({**scheduler.pipeline.summary(), "state": "COMPLETED", "usage": budget.dump()})
+            with patch("crawlme.cli.cmd_run", AsyncMock(return_value=report)):
+                asyncio.run(_dispatch(argparse.Namespace(command="run")))
             captured = capsys.readouterr()
             saved = path.read_text()
             assert captured.out.strip() in saved
@@ -423,8 +425,8 @@ def _source_for(argv_tail: list[str], tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "test prompt", "--result-dir", str(tmp_path), *argv_tail]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
-            with patch("crawlme.cli.run._build_source", side_effect=_build_source) as spy:
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
+            with patch("crawlme.cli.run.create_source", side_effect=create_source) as spy:
                 try:
                     main()
                 except SystemExit as exc:
@@ -444,7 +446,7 @@ def test_recall_flag(tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--recall", "--result-dir", str(tmp_path)]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -456,7 +458,7 @@ def test_recall_default(tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -480,7 +482,7 @@ def test_feed_no_ceiling(_installed, tmp_path):
         str(tmp_path),
     ]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -504,7 +506,7 @@ def test_budget_explicit(_installed, tmp_path):
         str(tmp_path),
     ]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -517,7 +519,7 @@ def test_graph_ceiling(tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -539,7 +541,7 @@ def test_result_dir(tmp_path):
         str(tmp_path),
     ]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -552,7 +554,7 @@ def test_budget_aliases(tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--max-pages", "7", "--result-dir", str(tmp_path)]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -613,9 +615,9 @@ def test_walled_refused(tmp_path, capsys):
     from crawlme.cli.run import _check_session
 
     args = argparse.Namespace(session=None, seeds="https://www.instagram.com/cafe/")
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError) as error:
         _check_session(args)
-    assert "crawling instagram needs a session" in capsys.readouterr().err
+    assert "crawling instagram needs a session" in str(error.value)
 
 
 def test_walled_in_file(tmp_path, capsys):
@@ -625,9 +627,9 @@ def test_walled_in_file(tmp_path, capsys):
     f = tmp_path / "seeds.json"
     f.write_text('{"seeds": ["https://www.instagram.com/cafe/"]}')
     args = argparse.Namespace(session=None, seeds=str(f))
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError) as error:
         _check_session(args)
-    assert "instagram" in capsys.readouterr().err
+    assert "instagram" in str(error.value)
 
 
 def test_plain_seeds_ok(tmp_path, capsys):
@@ -646,9 +648,9 @@ def test_feed_needs_session(capsys):
     """
     from crawlme.cli.run import _check_session
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError) as error:
         _check_session(argparse.Namespace(session=None, seeds="https://www.instagram.com/cafe/"))
-    assert "crawl session" in capsys.readouterr().err
+    assert "crawl session" in str(error.value)
 
 
 def test_graph_no_login(capsys):
@@ -664,7 +666,7 @@ def test_graph_no_hint(tmp_path, capsys):
     offering it here would point at a command that cannot serve it."""
     from crawlme.cli.run import _check_session
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError) as error:
         _check_session(
             argparse.Namespace(
                 session=str(tmp_path / "nope.json"),
@@ -675,7 +677,7 @@ def test_graph_no_hint(tmp_path, capsys):
                 source_path=None,
             )
         )
-    err = capsys.readouterr().err
+    err = str(error.value)
     assert "no session file" in err
     assert "crawl session" not in err
 
@@ -696,9 +698,9 @@ def test_no_feedparser(capsys):
     from crawlme.config import Settings
 
     with patch("importlib.util.find_spec", return_value=None):
-        with pytest.raises(SystemExit):
+        with pytest.raises(ValueError) as error:
             _check_extras(Settings(), _extras_args(seeds="https://x/feed.xml"))
-    err = capsys.readouterr().err
+    err = str(error.value)
     assert "a feed among the seeds needs feedparser" in err
     assert "crawl-me-maybe[rss]" in err
 
@@ -710,9 +712,9 @@ def test_no_playwright(capsys):
     from crawlme.config import Settings
 
     with patch("importlib.util.find_spec", return_value=None):
-        with pytest.raises(SystemExit):
+        with pytest.raises(ValueError) as error:
             _check_extras(Settings(fetcher="browser"), _extras_args(session="s.json"))
-    err = capsys.readouterr().err
+    err = str(error.value)
     assert "--session needs playwright" in err
     assert "playwright install chromium" in err, "the package alone does not fetch a browser"
 
@@ -787,7 +789,7 @@ def test_session_sets_no_depth(_installed, tmp_path, flags, expected_depth):
         *flags,
     ]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -803,7 +805,7 @@ def test_session_ceiling(_installed, tmp_path):
     captured: dict = {}
     argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--session", str(session)]
     with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_scheduler", side_effect=_capturing_factory(captured)):
+        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
             try:
                 main()
             except SystemExit:
@@ -1057,3 +1059,118 @@ def test_own_seeds_get_their_own_funnel():
     assert "6 found, 6 scored, 6 wanted, 0 fetched, 0 judged" in out
     # The proposed one belongs to the section below, not this one.
     assert "https://b.example/y" not in out
+
+
+@pytest.mark.parametrize("command", ["run", "resume", "replay", "dedup"])
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "exception", "invalid"])
+async def test_dispatch_cleanup_and_report(monkeypatch, capsys, outcome, command):
+    import asyncio
+    import logging
+
+    from crawlme.cli import _dispatch
+    from crawlme.cli.report import make_report
+    from crawlme.llm import TokenBudget
+    from crawlme.runtime import CrawlGoal, CrawlTask
+    from crawlme.scheduler.pipelines import Pipeline
+    from crawlme.scheduler.pipelines.crawl import CrawlInput
+
+    order = []
+
+    class Crawl(Pipeline[CrawlInput, CrawlTask]):
+        async def run(self, input, context):
+            if outcome == "cancelled":
+                raise asyncio.CancelledError
+            if outcome == "exception":
+                raise RuntimeError("unhandled")
+            if outcome == "invalid":
+                raise ValueError("invalid input")
+            input.task.state = "FAILED" if outcome == "failed" else "COMPLETED"
+            input.task.stopping_reason = "FATAL" if outcome == "failed" else "FRONTIER_DRAINED"
+            return input.task
+
+        async def aclose(self):
+            order.append("pipeline closed")
+
+        def summary(self):
+            assert order == ["pipeline closed"]
+            return {"pages_fetched": 3}
+
+    async def close_clients():
+        order.append("clients closed")
+
+    monkeypatch.setattr("crawlme.cli.close_litellm_clients", close_clients)
+    monkeypatch.setattr(logging.getLogger(), "level", logging.INFO)
+    pipeline = Crawl()
+    engine = create_engine(pipeline)
+    input = CrawlInput(CrawlGoal(prompt="test"), CrawlTask(task_id="example"))
+
+    async def cmd(args):
+        await engine.run(input)
+        return make_report(
+            {
+                **pipeline.summary(),
+                "state": input.task.state,
+                "reason": input.task.stopping_reason,
+                "usage": TokenBudget(0).dump(),
+            }
+        )
+
+    def write(text):
+        assert order == ["pipeline closed", "clients closed"]
+
+    monkeypatch.setattr(f"crawlme.cli.cmd_{command}", cmd)
+    monkeypatch.setattr("crawlme.cli.write_report", write)
+    call = _dispatch(argparse.Namespace(command=command))
+    if outcome in {"failed", "invalid"}:
+        with pytest.raises(SystemExit) as exc:
+            await call
+        assert exc.value.code == 1
+    elif outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await call
+    elif outcome == "exception":
+        with pytest.raises(RuntimeError, match="unhandled"):
+            await call
+    else:
+        await call
+    assert order == ["pipeline closed", "clients closed"]
+    output = capsys.readouterr().out
+    assert output.count("crawl finished") == (1 if outcome in {"completed", "failed"} else 0)
+
+
+@pytest.mark.parametrize("command", ["crawl", "replay", "dedup"])
+def test_shared_report_sections(command):
+    from crawlme.cli.report import make_report
+    from crawlme.llm import TokenBudget
+
+    budget = TokenBudget(0)
+    budget.record(12, 4, cached_tokens=8, reasoning_tokens=2, stage="dedup")
+    statistics = {
+        "command": command,
+        "state": "COMPLETED",
+        "usage": budget.dump(),
+        "dedup": {"status": "complete", "sources": 2, "items": 3, "groups": 1},
+    }
+    if command == "crawl":
+        statistics.update(pages_fetched=2, fetch_errors=0, analyses={"RELEVANT": 2})
+    elif command == "replay":
+        statistics.update(pages_total=5, analyzed=1, retried_ok=1, published=2, skipped=2, empty=1)
+    report = make_report(statistics)
+    assert report.code == 0
+    assert "tokens:     16 (12 in / 4 out), 1 calls" in report.text
+    assert "3 items from 2 pages -> 1 results" in report.text
+    assert "8 (67% of input)" in report.text
+    assert "2 (50% of output)" in report.text
+    assert "by stage:" in report.text
+    if command == "replay":
+        assert "2 written (1 first-try, 1 retried)" in report.text
+        assert "2 identical, 1 empty text" in report.text
+    if command != "crawl":
+        assert "fetched" not in report.text
+        assert "fetch failures" not in report.text
+    assert "tokens_used" not in statistics  # Formatting does not mutate its input.
+
+
+@pytest.fixture(autouse=True)
+def no_cli_monitor(monkeypatch):
+    monkeypatch.setattr("crawlme.cli.run.create_monitor", lambda pipeline: None)

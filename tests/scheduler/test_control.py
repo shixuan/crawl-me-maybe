@@ -17,9 +17,9 @@ from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
 from crawlme.runtime import CrawlGoal, CrawlTask
-from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
+from tests.scheduler.helpers import create_crawl
 
 
 def candidate(path="child", **kwargs):
@@ -48,7 +48,7 @@ def build(tmp_path, **overrides):
         harvester=MagicMock(harvest=lambda page, depth: Harvest([])),
     )
     kwargs.update(overrides)
-    scheduler = create_scheduler(cfg, goal=goal, **kwargs)
+    scheduler = create_crawl(cfg, goal=goal, **kwargs)
     return scheduler, goal, CrawlTask(goal_id=goal.goal_id), fetched
 
 
@@ -88,7 +88,7 @@ async def test_failure_stops_both(tmp_path, stage):
     elif stage == "page":
         scheduler.pipeline._page._extractor.extract = MagicMock(side_effect=RuntimeError("page failed"))
         await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED"
     assert task.stopping_reason == "FATAL"
     assert f"{stage} failed" in scheduler.pipeline.run_state.progress.fatal_error
@@ -110,8 +110,8 @@ async def test_cancel_releases_workers(tmp_path, monkeypatch):
     fetcher = MagicMock(fetch=fetch, aclose=AsyncMock())
     scheduler, goal, task, _ = build(tmp_path, fetcher=fetcher)
     await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
-    monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.03)
-    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    monkeypatch.setattr("crawlme.scheduler.engine.engine._SETTLE_TIMEOUT", 0.03)
+    run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     await asyncio.wait_for(entered.wait(), 2)
     run.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -125,7 +125,7 @@ async def test_cancel_releases_workers(tmp_path, monkeypatch):
 async def test_cleanup_continues_on_error(tmp_path):
     ranker = MagicMock(aclose=AsyncMock(side_effect=RuntimeError("close failed")))
     scheduler, goal, task, _ = build(tmp_path, ranker=ranker)
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED"
     assert task.stopping_reason == "FATAL"
     scheduler.pipeline._page._fetch.fetcher.aclose.assert_awaited_once()
@@ -144,7 +144,7 @@ async def test_page_retention_tracks_work(tmp_path):
 
     scheduler, goal, task, fetched = build(tmp_path, harvester=MagicMock(harvest=harvest))
     await scheduler.pipeline.ingest_seeds(goal, [candidate("1")])
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 15)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 15)
     assert len(fetched) == limit
     assert max(p for p, _ in peaks) <= 2
     assert max(c for _, c in peaks) <= 2
@@ -186,7 +186,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
     seed = candidate("seed")
     key = seed.url.url_key
     await scheduler.pipeline.ingest_seeds(goal, [seed])
-    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(retry_entered.wait(), 2)
         await wait_until(lambda: not scheduler.pipeline._inflight)
@@ -230,7 +230,7 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop):
     scheduler.pipeline._page._analysis._slots = asyncio.Semaphore(1)
     goal.max_duration_sec = 60
     await scheduler.pipeline.ingest_seeds(goal, [candidate("first"), candidate("second")])
-    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         await wait_until(
@@ -243,7 +243,7 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop):
             scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
         elif stop == "time":
             scheduler.pipeline.run_state.progress.started_at -= 61
-            scheduler._monitor._notify()
+            scheduler.engine._monitor._notify()
         else:
             run.cancel()
         release.set()
@@ -266,7 +266,7 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop):
 async def test_pipeline_start_failure(tmp_path):
     scheduler, goal, task, _ = build(tmp_path)
     scheduler.pipeline._crawl = AsyncMock(side_effect=RuntimeError("pipeline startup failed"))
-    await asyncio.wait_for(scheduler.run(CrawlInput(goal, task)), 2)
+    await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED"
     assert task.stopping_reason == "FATAL"
     assert scheduler.pipeline.run_state.progress.fatal_error == "pipeline startup failed"
@@ -285,14 +285,14 @@ async def test_budget_settle_state(tmp_path):
 
     scheduler.pipeline.settle = held_settle
     await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
-    running = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    running = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
         await asyncio.wait_for(entered.wait(), 2)
         assert task.state == "STOPPING"
         assert "BUDGET_PAGES" in task.stopping_reason
         assert "USER_REQUESTED" not in task.stopping_reason
-        assert scheduler._allow_finish("analysis")
-        assert not scheduler._allow_work()
+        assert scheduler.engine._allow_finish("analysis")
+        assert not scheduler.engine._allow_work()
         release.set()
         await asyncio.wait_for(running, 2)
         assert task.state == "COMPLETED"

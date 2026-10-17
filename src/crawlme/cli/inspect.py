@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.cli.cutoff import read_cutoff
-from crawlme.cli.replay import ReplayError, find_run_dir
 from crawlme.config import Settings
 from crawlme.errors import Error, Kind
 from crawlme.persist import read_results
+from crawlme.persist.read import find_run_dir
 from crawlme.util.dates import LATER, OVER, UNDATED, group_of
 
 
@@ -82,7 +82,7 @@ async def cmd_inspect(args: argparse.Namespace) -> None:
     """The ``crawl inspect`` command: read-only results view."""
     try:
         data = await inspect_task(Settings(), args.task_id, goal_id=args.goal)
-    except (ReplayError, InspectError) as e:
+    except Error as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     if args.export:

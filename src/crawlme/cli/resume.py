@@ -7,25 +7,25 @@ import json
 from pathlib import Path
 
 from crawlme.checkpoint import VERSION
-from crawlme.cli.replay import find_run_dir
-from crawlme.cli.report import finish
+from crawlme.cli.report import Report, make_report
 from crawlme.config import Settings
-from crawlme.llm import TokenBudget, close_litellm_clients
 from crawlme.logging import setup_logging
 from crawlme.persist import Lock, Storage
-from crawlme.pioneer.ranker import LLMRanker
+from crawlme.persist.read import find_run_dir
 from crawlme.runtime import CrawlGoal, CrawlTask
-from crawlme.scheduler.factory import create_scheduler
+from crawlme.scheduler.engine import create_engine
+from crawlme.scheduler.monitor import create_monitor
 from crawlme.scheduler.pipelines.crawl import CrawlInput
+from crawlme.scheduler.pipelines.factory import create_crawl
 
 
-async def cmd_resume(args: argparse.Namespace) -> None:
+async def cmd_resume(args: argparse.Namespace) -> Report:
     cfg = Settings()
     root = Path(args.result_dir) if args.result_dir else cfg.result_dir
     run_dir, _ = await find_run_dir(root, args.task_id)
     storage = Storage(str(run_dir / "db" / "crawl.db"), str(run_dir / "raw"))
     lock = Lock(storage.db_path)
-    scheduler = None
+    pipeline = None
     try:
         lock.acquire()
         await storage.start()
@@ -47,29 +47,23 @@ async def cmd_resume(args: argparse.Namespace) -> None:
             raise ValueError("checkpoint does not match this task and goal")
         task.stopping_reason = None
         task.end_at = None
-        budget = TokenBudget(limit=goal.max_tokens)
-        ranker = LLMRanker.from_settings(cfg, budget=budget) if payload["ranking"] else None
-        if (payload["ranking"] and ranker is None) or (
-            payload["analysis"] and not (cfg.llm_api_key or cfg.llm_base_url)
-        ):
+        if (payload["ranking"] or payload["analysis"]) and not (cfg.llm_api_key or cfg.llm_base_url):
             raise ValueError("configure LLM credentials before resuming this run")
         cfg.analysis_enabled = payload["analysis"]
-        scheduler = create_scheduler(
-            cfg, goal=goal, llm_ranker=ranker, budget=budget, storage=storage, dedup_enabled=payload["dedup"]
+        pipeline = create_crawl(
+            cfg,
+            goal=goal,
+            ranking_enabled=payload["ranking"],
+            storage=storage,
+            dedup_enabled=payload["dedup"],
         )
+        engine = create_engine(pipeline, monitor=create_monitor(pipeline), checkpoint=pipeline.save_checkpoint)
         print(f"resuming: {task.task_id} ({run_dir})")
-        await scheduler.run(CrawlInput(goal, task, checkpoint=payload, lock=lock))
-    except ValueError as exc:
-        print(f"resume failed: {exc}")
-        raise SystemExit(1) from exc
+        await engine.run(CrawlInput(goal, task, checkpoint=payload, lock=lock))
+        return make_report({**pipeline.summary(), "session": cfg.browser_storage_state})
     finally:
         try:
-            if scheduler is not None:
-                await scheduler.aclose()
-            else:
+            if pipeline is None:
                 await storage.close()
-            await close_litellm_clients()
         finally:
             lock.release()
-
-    finish(scheduler.pipeline.summary(), task, budget, session=cfg.browser_storage_state)

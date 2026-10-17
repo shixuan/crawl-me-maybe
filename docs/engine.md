@@ -1,6 +1,6 @@
 # Engine execution
 
-Checked against the implementation on 2026-10-15.
+Checked against the implementation on 2026-10-16.
 
 Engine executes a Pipeline and owns stop supervision, settlement deadlines and
 checkpoint timing. CrawlPipeline owns crawl preparation, stage composition, task
@@ -11,32 +11,36 @@ records and resource cleanup. All pipelines implement the same Protocol with
 
 ```mermaid
 flowchart TB
-    CLI[CLI run / resume] --> Factory[Factory]
-    Factory --> Engine
-    Factory --> Crawl[CrawlPipeline]
-    Factory --> Monitor[StopMonitor]
-    Factory --> CP[Checkpointer]
-    Engine -->|Pipeline.run / aclose| Crawl
-    Engine -->|wait / allowed / close| Monitor
+    CLI[CLI commands] --> PF[pipelines.factory]
+    CLI --> MF[monitor.create_monitor for crawl]
+    CLI --> EF[engine.create_engine]
+    PF --> Shared[Runtime / frontier / budget]
+    Shared --> MF
+    MF --> Monitor[StopMonitor]
+    PF --> Crawl[CrawlPipeline]
+    PF --> Replay[ReplayPipeline]
+    PF --> Dedup[DedupPipeline]
+    EF -->|create then bind supplied pipeline| Engine
+    Monitor -->|injected through protocol| Engine
+    Engine -->|run / aclose| Crawl
+    Engine -->|run / aclose| Replay
+    Engine -->|run / aclose| Dedup
     Engine --> Context[PipelineContext]
-    Context -->|control callbacks| Crawl
-    Crawl -->|PageInput + same context| Page[PagePipeline]
-    Crawl -->|CrawlGoal + same context| Dedup[DedupPipeline]
-    CLI2[CLI dedup] --> Engine2[Engine]
-    Engine2 -->|same Pipeline contract| Dedup
+    Context -->|execution callbacks| Crawl
+    Context -->|execution callbacks| Replay
+    Crawl --> Page[PagePipeline]
+    Crawl --> Dedup
+    Replay --> Dedup
+    Replay --> Analysis[AnalysisWorker]
+    Page --> Analysis
+    Page --> Workers[Fetch / Persist / Discovery workers]
     Crawl --> Ranking[RankingWorker]
-    Page --> Fetch[FetchWorker]
-    Page --> Persist[PersistWorker]
-    Page --> Extract[Extractor]
-    Page --> Analysis[AnalysisWorker]
-    Page --> Discovery[DiscoveryWorker]
-    Crawl -->|save / restore| CP
+    PF --> CP[Checkpointer]
+    Crawl -->|bind / restore / save| CP
     Engine -->|injected save callback| Crawl
     CP --> Storage[Storage]
     Crawl -->|task records and events| Storage
     Dedup -->|read inputs / publish groups| Storage
-    Monitor -->|read and subscribe| Runtime[RunState / Frontier / TokenBudget]
-    Crawl -->|summary| Runtime
 ```
 
 There is no separate root-pipeline interface. A pipeline can call another pipeline
@@ -45,9 +49,27 @@ operations and own their task handles. DedupPipeline reads stored inputs, invoke
 the grouper and publishes groups for both automatic and standalone dedup.
 
 Engine depends on Pipeline and Monitor, not CrawlPipeline, CrawlGoal, CrawlTask,
-Storage or Checkpointer. The factory injects `CrawlPipeline.save_checkpoint` as a
-callback. CrawlPipeline owns its storage and child resources. DedupPipeline borrows
-storage from its parent or CLI, so its close method does not close that storage.
+Storage or Checkpointer. The generic `create_engine(pipeline, ...)` factory constructs
+Engine and binds the supplied pipeline. It imports only execution contracts and has
+no crawl, replay or dedup branches. Callers then use `engine.run(input)`. Binding is
+allowed once, before execution; running without a pipeline or rebinding is rejected.
+Closing Engine also closes its bound pipeline, even if execution never started.
+
+The pipeline factory creates crawl's state, frontier, buffer, budget and tracker.
+`create_monitor(pipeline)` shares its public runtime, frontier and budget with
+StopMonitor. The monitor is passed separately to `create_engine`; Pipeline does not
+hold it. CLI commands create a pipeline, call the Engine factory and run the bound
+Engine. They neither select queue implementations nor instantiate concrete sources.
+Source selection and seed-file parsing belong to `pioneer.sources`.
+
+Engine and its factory live in `scheduler/engine/`, exported as `Engine` and
+`create_engine`. There is no intermediate scheduler assembly entrypoint.
+
+CrawlPipeline retains Checkpointer binding, restoration and its guarded save method.
+The command passes that method to the Engine factory. Engine controls save timing
+and stops outstanding saves before pipeline cleanup. Moving Checkpointer out of
+CrawlPipeline is deferred. Pipeline's protocol exposes neither monitor nor checkpointer.
+DedupPipeline borrows storage from its parent or CLI.
 
 PipelineContext supplies execution controls:
 
@@ -57,7 +79,7 @@ PipelineContext supplies execution controls:
 | `can_start(phase)` | Reject new work after supervision stops or the monitor disallows it |
 | `can_finish(phase)` | Check whether the monitor permits finishing this phase |
 | `settle(work, phase)` | Await a finishing step under live stop checks and one shared deadline |
-| `checkpoint()` | Request an injected save while writes are enabled |
+| `checkpoint()` | Invoke the pipeline save callback while writes are enabled |
 | `stop_checkpoints()` | Disable requests, cancel and await outstanding writes and timer |
 
 The pipeline chooses which work needs supervision and where settlement belongs.
@@ -378,5 +400,63 @@ Cancellation does not stop parser threads already running. A hard kill can leave
 a RUNNING task but releases its OS lock. A second Ctrl+C exits with code 130.
 
 CrawlPipeline.summary combines runtime statistics, shared token usage and the dedup
-report. CLI run and resume pass that dictionary to the same report writer after
-cleanup. Reporting and exit codes remain outside Engine.
+report. Commands return a CLI Report containing formatted text and an exit code.
+The shared `_dispatch()` entry point closes LLM clients in `finally`, then prints
+and persists the report and applies its exit code. Cancellation and raised
+exceptions skip completed-run reporting. Expected command errors are printed to
+stderr and exit with code 1. Engine does not format reports or terminate the process.
+
+
+## Replay and command boundaries
+
+```mermaid
+flowchart TD
+    Dispatch[CLI _dispatch] --> Command{Command}
+    Command --> Run[run<br/>parse flags, create goal, prepare seeds]
+    Command --> Resume[resume<br/>lock run, validate checkpoint]
+    Run --> CrawlEngine[Engine.run CrawlInput]
+    Resume --> CrawlEngine
+    CrawlEngine --> Crawl[CrawlPipeline]
+    Crawl --> Format[Shared make_report / format_summary]
+    Command --> Replay[replay<br/>lookup task and assemble components]
+    Replay --> ReplayEngine[Engine.run ReplayInput]
+    ReplayEngine --> Pipeline[ReplayPipeline]
+    Pipeline --> Goal[Read stored goal or enhance a new prompt]
+    Goal --> Pages[Load stored pages, apply limit and skip rules]
+    Pages --> Analyze[Bounded AnalysisWorker calls and pending retries]
+    Analyze --> Group[DedupPipeline groups selected goal with shared budget]
+    Group --> ReplayClose[Engine closes pipelines and storage]
+    ReplayClose --> Format
+    Command --> Dedup[dedup<br/>Engine runs DedupPipeline]
+    Dedup --> DedupClose[Close command storage]
+    DedupClose --> Format
+    Format --> Return[Command returns Report text and code]
+    Return --> Cleanup[_dispatch finally closes LLM clients]
+    Cleanup --> Output[Print and persist report, apply exit code]
+    Command -. error or cancellation .-> Error[Propagate to dispatcher, skip completion report]
+    Error --> ErrorCleanup[Finally close LLM clients]
+```
+
+Resume uses CrawlPipeline with checkpoint input. It has no separate pipeline.
+The resume command retains the lock while it reads and validates recovery data,
+and releases it when the command exits, before the dispatcher emits the report. Before Engine exists,
+failed validation still closes the storage opened by that command.
+
+ReplayPipeline owns goal selection, page selection, concurrency, retries and result
+counts. It uses AnalysisWorker directly because stored pages need neither fetching
+nor link discovery. The analysis phase and its retries run under Engine supervision.
+On error or cancellation, concurrent tasks stop before the worker and storage close.
+After analysis and retries finish, ReplayPipeline runs DedupPipeline for the selected
+goal using the same token budget. `--dedup off` disables grouping. Analysis failure or
+cancellation skips grouping. Replay creates no crawl recovery checkpoints and leaves
+the original crawl task state unchanged. Successful replay analyses remain revisions;
+replaying with `--force` does not overwrite the crawl's stable analysis identity.
+
+`persist.read` owns run lookup and conversion of stored goals, tasks and pages. Replay,
+resume, dedup and inspect use that module rather than importing another command.
+
+Factory owns component selection for all command paths. Run and resume request ranking
+through a feature switch; resume uses the checkpoint's saved value. Replay receives
+AnalysisWorker, GoalEnhancer and DedupPipeline from the factory. Crawl, replay and
+standalone dedup share the same dedup builder. Each composed pipeline shares its
+budget and ErrorHandler across its stages.

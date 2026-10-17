@@ -13,9 +13,9 @@ from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer.sources import ManualSource
 from crawlme.runtime import CrawlGoal, CrawlTask
-from crawlme.scheduler.factory import create_scheduler
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.scheduler.workers import AnalysisWorker
+from tests.scheduler.helpers import create_crawl
 
 
 @pytest.mark.parametrize("dedup", [False, True])
@@ -42,13 +42,13 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
             await super().drain_pending()
 
     analyzer = Analyzer(MagicMock(chat=chat))
-    monkeypatch.setattr("crawlme.scheduler.factory.AnalysisWorker", RetryWorker)
+    monkeypatch.setattr("crawlme.scheduler.pipelines.factory.AnalysisWorker", RetryWorker)
     cfg = Settings(_env_file=None, result_dir=tmp_path, llm_api_key="", llm_base_url="", ignore_robots=True)
     goal = CrawlGoal(prompt="compiler safety", max_pages=1)
     if stop == "time":
         goal.max_duration_sec = 60
     if stop == "deadline":
-        monkeypatch.setattr("crawlme.scheduler.engine._SETTLE_TIMEOUT", 0.05)
+        monkeypatch.setattr("crawlme.scheduler.engine.engine._SETTLE_TIMEOUT", 0.05)
     task = CrawlTask(goal_id=goal.goal_id)
 
     async def fetch(item):
@@ -67,7 +67,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         grouped.extend(rows)
         return []
 
-    scheduler = create_scheduler(
+    scheduler = create_crawl(
         cfg,
         error_handler=ErrorHandler(ErrorPolicy(retry_delay=0)),
         goal=goal,
@@ -77,7 +77,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
     )
     seeds = await ManualSource(["https://example.com/article"]).discover(goal)
     await scheduler.pipeline.ingest_seeds(goal, seeds)
-    run = asyncio.create_task(scheduler.run(CrawlInput(goal, task)))
+    run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
         if stop is not None:
             await asyncio.wait_for(settling.wait(), timeout=3)
@@ -85,7 +85,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
                 scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
             elif stop == "time":
                 scheduler.pipeline.run_state.progress.started_at -= 61
-                scheduler._monitor._notify()
+                scheduler.engine._monitor._notify()
             elif stop == "user":
                 run.cancel()
         if stop == "user":

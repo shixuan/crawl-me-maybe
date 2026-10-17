@@ -137,7 +137,7 @@ def test_walled_skipped():
     actually gets is what decides this, and it is not the whole set.
     """
     from crawlme.config import Settings
-    from crawlme.scheduler.factory import adapters_for
+    from crawlme.scheduler.pipelines.factory import adapters_for
 
     d, http, browser = _pair(adapters_for(Settings(_env_file=None)))
     assert not any(a.NEEDS_SESSION for a in d._rendered)
