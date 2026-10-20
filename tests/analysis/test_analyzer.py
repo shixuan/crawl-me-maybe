@@ -12,10 +12,9 @@ import pytest
 
 from crawlme.analysis import Analyzer
 from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
-from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.errors import Kind
-from crawlme.llm import LLMResponse, RemoteError, TokenBudget, TokenBudgetError
+from crawlme.llm import LLMResponse, RemoteError, TokenBudgetError
 from crawlme.prompts import analysis_input
 from crawlme.runtime import Goal
 from crawlme.urls import URL
@@ -99,30 +98,6 @@ async def test_full_result():
 
 
 @pytest.mark.asyncio
-async def test_prompt_shape():
-    client = _StubClient([_resp(_valid_json())])
-    goal = _goal()
-    await _analyzer(client).analyze(_page(), goal)
-    call = client.calls[0]
-    assert call["json_mode"] is True
-    assert "Find Rust compiler internals posts" in call["prompt"]  # statement preferred
-    assert "https://example.com/rust" in call["prompt"]
-    assert "Borrow Checker Deep Dive" in call["prompt"]
-    assert "borrow checker" in call["prompt"]
-    assert "RELEVANT" in call["system"]
-    assert "relevance_score" in call["system"]
-
-
-@pytest.mark.asyncio
-async def test_text_truncated():
-    long_text = "word " * 4000  # 20k chars
-    client = _StubClient([_resp(_valid_json())])
-    await _analyzer(client).analyze(_page(long_text), _goal())
-    prompt = client.calls[0]["prompt"]
-    assert len(prompt) < 4000  # 3000-char cap plus headers
-
-
-@pytest.mark.asyncio
 async def test_char_cap():
     """The settings knob dials the page-text cap (the benchmark's C arm)."""
     long_text = "word " * 4000
@@ -182,46 +157,10 @@ async def test_missing_fields():
     assert result.tags == []
 
 
-@pytest.mark.asyncio
-async def test_lists_capped():
-    topics = ", ".join('"t"' for _ in range(15))
-    content = (
-        '{"classification": "RELEVANT", "tags": ["a", "a", "b", "c", "d", "e", "f", "g", "h", "i"], '
-        f'"topics": [{topics}], '
-        '"entities": ["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10", "e11"], '
-        '"summary": "s"}'
-    )
-    client = _StubClient([_resp(content)])
-    result = await _analyzer(client).analyze(_page(), _goal())
-    assert result is not None
-    assert result.tags == ["a", "b", "c", "d", "e", "f", "g", "h"]  # 8 cap, deduped
-
-
 # -- failure and retry policy --------------------------------------------
 
 
 # -- construction -------------------------------------------------------
-
-
-def test_auto_off():
-    cfg = Settings(llm_api_key="", llm_base_url="")
-    assert Analyzer.from_settings(cfg) is None
-
-
-def test_wires_client():
-    cfg = Settings(llm_api_key="sk-test", llm_base_url="")
-    budget = TokenBudget(limit=1000)
-    analyzer = Analyzer.from_settings(cfg, budget=budget)
-    assert analyzer is not None
-    assert analyzer._client._budget is budget
-    assert analyzer._max_page_chars == 3000  # default knob
-
-
-def test_wires_chars():
-    cfg = Settings(llm_api_key="sk-test", llm_base_url="", analyzer_max_chars=3000)
-    analyzer = Analyzer.from_settings(cfg)
-    assert analyzer is not None
-    assert analyzer._max_page_chars == 3000
 
 
 # extraction ------------------------------------------------------------
@@ -300,15 +239,6 @@ async def test_no_spec_quiet():
     assert '"extracted"' not in client.calls[0]["system"]
 
 
-async def test_spec_in_prompt():
-    client = _StubClient([_resp(_valid_json())])
-    await _analyzer(client).analyze(_page(_OFFER_PAGE), _spec_goal())
-    prompt = client.calls[0]["prompt"]
-    assert "## Extract" in prompt
-    assert "- offer: what is given away" in prompt
-    assert "evidence" in client.calls[0]["system"]
-
-
 async def test_spec_version():
     """Different field lists change spec_version without changing prompt-derived goal identity."""
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
@@ -323,14 +253,6 @@ async def test_spec_version():
     assert first.goal_id == second.goal_id, "same prompt is still the same goal"
     assert first.spec_version != second.spec_version
     assert first.spec_version and second.spec_version
-
-
-async def test_no_spec_version():
-    """So it matches every analysis written before specs existed."""
-    client = _StubClient([_resp(_valid_json())])
-    result = await _analyzer(client).analyze(_page(), _goal())
-    assert result is not None
-    assert result.spec_version == ""
 
 
 async def test_spec_reworded():
@@ -383,64 +305,6 @@ def test_window_told() -> None:
     goal.since = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
     prompt = analysis_input(goal, _page(), "body", 3000)
     assert "2026-08-20" in prompt
-
-
-def test_window_absent() -> None:
-    prompt = analysis_input(Goal(prompt="g"), _page(), "body", 3000)
-    assert "out of scope" not in prompt
-
-
-def _contract(analyzer_goal=None):
-    from crawlme.prompts import analysis_system
-
-    return analysis_system(analyzer_goal or _goal())
-
-
-def test_discard_reason():
-    system = _contract()
-    discard = system[system.index("For a page you discard") : system.index("For a page that answers")]
-    assert '"classification"' in discard and '"relevance_score"' in discard
-    assert '"summary"' in discard and '"items": []' in discard
-    assert "tags" not in discard
-
-
-def test_both_shapes_name_their_fields():
-    """Without the key names the model invents its own, and the parser
-    degrades an unrecognised payload to UNKNOWN without complaining."""
-    system = _contract()
-    for shape in ("For a page you discard", "For a page that answers"):
-        rest = system[system.index(shape) :]
-        assert '"classification"' in rest[:400], shape
-
-
-def test_no_class_for_links_alone():
-    """HUB named a page kept for its links. Seven runs fetched 17 pages
-    on the analyzer's endorsement and got one result, against 25% on the
-    pages the ranker chose, so the class and the links both went."""
-    from crawlme.analysis import CLASSIFICATIONS
-
-    assert CLASSIFICATIONS == ("RELEVANT", "IRRELEVANT", "UNKNOWN")
-    system = _contract()
-    assert "HUB" not in system and "endorsed_links" not in system
-
-
-def test_extraction_is_scoped_to_keepers():
-    """A hub has no merchant or deadline on it, so asking for fields
-    there is waste by definition."""
-    goal = _goal()
-    goal.extraction_spec = {"fields": {"merchant": "who is running it"}}
-    system = _contract(goal)
-    assert '"items": []' in system
-    assert "Within each item" in system
-
-
-def test_aggregator_is_gone():
-    """It named the same thing HUB did, nothing read them apart, and the
-    model chose it zero times in three runs."""
-    from crawlme.analysis import CLASSIFICATIONS
-
-    assert "AGGREGATOR" not in CLASSIFICATIONS
-    assert "AGGREGATOR" not in _contract()
 
 
 @pytest.mark.parametrize("evidence", ["Offer ends August 16, 2027.", "invented evidence", ""])

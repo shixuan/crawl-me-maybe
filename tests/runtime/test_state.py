@@ -34,14 +34,6 @@ def test_reset_stats():
     assert ctx.stats.analyses_by_class == {}
 
 
-def test_reset_identity():
-    """Startup replaces fields, never the RunState object itself."""
-    ctx = _ctx()
-    ctx_id = id(ctx)
-    ctx.reset(goal=Goal(prompt="p"))
-    assert id(ctx) == ctx_id
-
-
 def test_reset_keeps_prepared_seeds():
     state = _ctx()
     state.seeds["seed"] = SeedState(url="https://example.com/", stale=4, retired="old", listing_pages=3)

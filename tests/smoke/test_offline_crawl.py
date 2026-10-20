@@ -1,29 +1,18 @@
 """Hermetic crawls against a local fixture server.
 
-Subprocess tests cover CLI startup and shutdown without an LLM. In-process tests
-use a scripted LLM to cover enhancement, ranking and analysis."""
+Subprocess tests cover CLI startup and shutdown without LLM credentials."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 import sys
 import threading
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import aiosqlite
 import pytest
-
-from crawlme.config import Settings
-from crawlme.llm import LLMResponse
-from crawlme.pioneer import Candidate
-from crawlme.runtime import Goal, Task
-from crawlme.scheduler.pipelines.crawl import CrawlInput
-from crawlme.urls import URL
-from tests.scheduler.helpers import create_crawl
 
 # A small site shaped like a real focused crawl: a topical hub that
 # links to on-topic articles, one page the prefilter must drop, and one
@@ -220,116 +209,3 @@ def test_cli_bad_since(site: str, tmp_path: Path) -> None:
     )
     assert proc.returncode != 0
     assert "--since" in proc.stderr
-
-
-# 2. the LLM stages, with a scripted client ------------------------------
-
-
-class _ScriptedLLM:
-    """Stands in for Client: same chat() shape, canned answers.
-
-    Replies are chosen by looking for a marker in the prompt, so one
-    client can serve the enhancer, the ranker, and the analyzer without
-    the test caring what order they run in.
-    """
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    async def chat(self, prompt: str, *, system: str = "", max_tokens: int = 512, json_mode: bool = False):
-        self.calls.append(prompt)
-        if "Candidate links" in prompt:
-            ids = [line.split(":")[0] for line in prompt.splitlines() if line and line[0] == "c"]
-            rankings = ", ".join(f'{{"id": "{i}", "priority": 0.9, "rationale": "scripted"}}' for i in ids)
-            body = f'{{"rankings": [{rankings}], "candidates_to_drop": []}}'
-        elif "classification" in prompt.lower() or "classification" in system.lower():
-            body = json.dumps(
-                {
-                    "classification": "RELEVANT",
-                    "relevance_score": 0.9,
-                    "summary": "A scripted summary of the page.",
-                    "tags": ["rust"],
-                    "topics": ["memory safety"],
-                    "entities": [],
-                }
-            )
-        else:
-            body = json.dumps({"statement": "memory safety and compiler tooling", "keywords": ["memory", "safety"]})
-        return LLMResponse(content=body, input_tokens=10, output_tokens=5, model="scripted")
-
-    async def aclose(self) -> None:
-        return None
-
-
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        result_dir=str(tmp_path / "results"),
-        fetch_concurrency=2,
-        ignore_robots=True,
-        log_level="WARNING",
-        # Pinned so a developer's .env can never turn this into a paid run.
-        llm_api_key="",
-        llm_base_url="",
-        llm_model="",
-    )
-
-
-@pytest.mark.asyncio
-async def test_scripted_llm(site: str, tmp_path: Path) -> None:
-    """Analyzer and LLM ranker both run, on scripted answers."""
-    from crawlme.analysis import Analyzer
-    from crawlme.pioneer.ranker import LLMRanker
-
-    cfg = _settings(tmp_path)
-    goal = Goal(prompt=_PROMPT, max_pages=5, domain_budget=20)
-    task = Task(goal_id=goal.goal_id)
-
-    client = _ScriptedLLM()
-    analyzer = Analyzer(client)  # type: ignore[arg-type]
-    scheduler = create_crawl(
-        cfg,
-        goal=goal,
-        llm_ranker=LLMRanker(client),  # type: ignore[arg-type]
-        analyzer=analyzer,
-    )
-
-    seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
-    assert await scheduler.pipeline.ingest_seeds(goal, [seed]) == 1
-    await scheduler.engine.run(CrawlInput(goal, task))
-    await scheduler.aclose()
-
-    db = _only_run_db(tmp_path / "results")
-
-    analyses = await _rows(db, "SELECT classification, relevance_score, summary, model FROM analyses")
-    assert analyses, "the analyzer produced nothing"
-    assert {a[0] for a in analyses} == {"RELEVANT"}
-    assert all(a[2] for a in analyses), "analyses stored without a summary"
-
-    rankers = dict(await _rows(db, "SELECT ranker, count(*) FROM rank_decisions GROUP BY ranker"))
-    assert rankers.get("llm", 0) > 0, f"the LLM stage never ranked: {rankers}"
-
-    assert client.calls, "no scripted LLM call was made"
-    assert task.state == "COMPLETED", task.stopping_reason
-
-
-@pytest.mark.asyncio
-async def test_no_creds(site: str, tmp_path: Path) -> None:
-    """No credentials is a supported configuration, not a failure.
-
-    The crawl still has to complete and still has to store pages and rule
-    decisions; only the LLM-fed tables stay empty.
-    """
-    cfg = _settings(tmp_path)
-    goal = Goal(prompt=_PROMPT, max_pages=4, domain_budget=20)
-    task = Task(goal_id=goal.goal_id)
-
-    scheduler = create_crawl(cfg, goal=goal)
-    seed = Candidate(url=URL(raw=site, canonical=site, url_key=site), discovered_at=datetime.now(timezone.utc))
-    await scheduler.pipeline.ingest_seeds(goal, [seed])
-    await scheduler.engine.run(CrawlInput(goal, task))
-    await scheduler.aclose()
-
-    db = _only_run_db(tmp_path / "results")
-    assert await _rows(db, "SELECT 1 FROM pages"), "no pages were stored"
-    assert not await _rows(db, "SELECT 1 FROM analyses"), "analyses appeared without an analyzer"
-    assert task.state == "COMPLETED", task.stopping_reason

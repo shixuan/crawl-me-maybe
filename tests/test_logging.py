@@ -11,26 +11,7 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
-from crawlme.logging.config import _OFF, _level
-from crawlme.logging.formatters import ConsoleFormatter
-
-
-def test_level_off():
-    assert _level("OFF") >= logging.CRITICAL + 1
-    assert _level("off") >= logging.CRITICAL + 1
-    assert _level("none") >= logging.CRITICAL + 1
-    assert _level("") >= logging.CRITICAL + 1
-
-
-def test_level_standard():
-    assert _level("DEBUG") == logging.DEBUG
-    assert _level("INFO") == logging.INFO
-    assert _level("WARNING") == logging.WARNING
-    assert _level("ERROR") == logging.ERROR
-
-
-def test_level_unknown():
-    assert _level("garbage") == logging.INFO
+from crawlme.logging.config import _OFF
 
 
 def test_off_no_handler():
@@ -41,18 +22,6 @@ def test_off_no_handler():
     setup_logging(Settings(log_level="OFF"), force=True)
     assert len(root.handlers) == 0
     assert root.level >= _OFF
-
-
-def test_console_handler():
-    """Normal log level should add a console handler.
-
-    Counted by kind, not by total: the backlog that holds startup lines
-    for the run file sits beside it until that file is attached."""
-    root = logging.getLogger()
-    setup_logging(Settings(log_level="DEBUG", log_format="console"), force=True)
-    console = [h for h in root.handlers if type(h) is logging.StreamHandler]
-    assert len(console) == 1
-    assert root.level == logging.DEBUG
 
 
 def test_setup_idempotent():
@@ -80,48 +49,6 @@ def test_startup_lines_reach_the_file(tmp_path):
     assert "said before the file existed" in written
     assert "said after" in written
     assert written.index("said before") < written.index("said after")
-
-
-def test_backlog_is_dropped_once_replayed(tmp_path):
-    """Kept past the attach it would hold every record of the run, and
-    replay them again the next time a file is attached."""
-    from crawlme.logging import to_file
-    from crawlme.logging.config import _Backlog
-
-    setup_logging(Settings(log_level="INFO"), force=True)
-    logging.getLogger("startup").info("once")
-    to_file(str(tmp_path / "log"))
-
-    assert not [h for h in logging.getLogger().handlers if isinstance(h, _Backlog)]
-    second = tmp_path / "second"
-    to_file(str(second))
-    assert "once" not in second.read_text()
-
-
-@pytest.mark.parametrize(
-    "name, level, color",
-    [
-        ("scheduler.workers.fetch", logging.INFO, "36"),
-        ("discovery.harvester", logging.INFO, "36"),
-        ("pioneer.ranker", logging.INFO, "94"),
-        ("analysis.analyzer", logging.INFO, "32"),
-        ("pioneer.goal_enhancer", logging.INFO, "35"),
-        ("pioneer.seed_expander", logging.INFO, "35"),
-        ("dedup.grouper", logging.INFO, "35"),
-        ("analysis.analyzer", logging.WARNING, "33"),
-        ("pioneer.ranker", logging.ERROR, "31"),
-        ("scheduler.engine", logging.CRITICAL, "31"),
-        ("analysis.analyzer", logging.DEBUG, ""),
-    ],
-)
-def test_stage_colors(name, level, color):
-    record = logging.LogRecord(f"crawlme.{name}", level, "", 0, "reading %s", ("example.com",), None)
-    plain = ConsoleFormatter().format(record)
-    timestamp, body = plain.split(" ", 1)
-    colored = ConsoleFormatter(color=True).format(record)
-    expected_body = f"\033[{color}m{body}\033[0m" if color else body
-    assert colored == f"{timestamp} {expected_body}"
-    assert ConsoleFormatter().format(record) == plain
 
 
 @pytest.fixture

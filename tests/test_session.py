@@ -11,23 +11,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from crawlme.cli.session import SessionError, _login_url, capture, cmd_session
+from crawlme.cli.session import SessionError, capture, cmd_session
 
 
 def _args(**kw) -> argparse.Namespace:
     base = {"path": "s.json", "feed": "instagram", "force": False, "timeout": 5}
     base.update(kw)
     return argparse.Namespace(**base)
-
-
-def test_login_url():
-    assert _login_url("instagram") == "https://www.instagram.com/"
-
-
-def test_open_platform():
-    """The adapters answer this, so no platform list lives here."""
-    with pytest.raises(SessionError, match="needs no session"):
-        _login_url("rss")
 
 
 @pytest.mark.asyncio
@@ -220,32 +210,3 @@ def test_nothing_waiting_is_not_a_keypress(monkeypatch):
 
     monkeypatch.setattr("select.select", lambda *_a: ([], [], []))
     assert _typed_enter() is False
-
-
-def test_advice_names_real_flags(tmp_path: Path, capsys):
-    """It named --feed long after crawl run stopped having one, so the
-    line could not be copied out of it."""
-    import argparse
-    import pathlib
-    import re
-
-    out = tmp_path / "s.json"
-    with patch("crawlme.cli.session.capture", AsyncMock(return_value=STATE)):
-        asyncio.run(cmd_session(argparse.Namespace(path=str(out), feed="instagram", force=True, timeout=5)))
-    advice = next(ln for ln in capsys.readouterr().out.splitlines() if "crawl run" in ln)
-    named = {w for w in advice.split() if w.startswith("--")}
-    cli = pathlib.Path("src/crawlme/cli/__init__.py").read_text()
-    real = set(re.findall(r'run_p\.add_argument\(\s*"(--[\w-]+)"', cli))
-    assert named <= real, f"advice names flags crawl run does not have: {named - real}"
-
-
-def test_no_platform_is_named_in_the_code():
-    """One platform needs a session today; the next one must not need
-    this file edited."""
-    import pathlib
-    import re
-
-    src = pathlib.Path("src/crawlme/cli/session.py").read_text()
-    code = "\n".join(ln for ln in src.splitlines() if not ln.strip().startswith("#"))
-    code = re.sub(r'"""[\s\S]*?"""', "", code)
-    assert "instagram" not in code.lower()

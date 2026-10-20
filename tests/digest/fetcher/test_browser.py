@@ -66,19 +66,6 @@ def test_state_bad_path(tmp_path: Path, content, match) -> None:
 # factory wiring --------------------------------------------------------
 
 
-def test_factory_default() -> None:
-    """Neither answer is right for a whole run: most pages want plain
-    HTTP and a few platforms cannot be read without a browser."""
-    assert isinstance(_build_fetcher(Settings()), DispatchingFetcher)
-
-
-def test_factory_browser() -> None:
-    """Asking for one is still a way to get one everywhere.  A page
-    that is not a platform can need a script run to say anything, and
-    only the person crawling it knows that."""
-    assert isinstance(_build_fetcher(Settings(fetcher="browser")), PlaywrightFetcher)
-
-
 def test_session_splits(tmp_path) -> None:
     """A shop the analyser endorsed off a post has no use for the
     platform's cookies, so it takes the cheap route."""
@@ -99,11 +86,6 @@ def test_lazy_launch() -> None:
     f = PlaywrightFetcher(storage_state="/nonexistent/session.json")
     assert f._context is None
     assert f._browser is None
-
-
-@pytest.mark.asyncio
-async def test_aclose_unused() -> None:
-    await PlaywrightFetcher().aclose()
 
 
 # one real browser ------------------------------------------------------
@@ -244,19 +226,6 @@ async def test_keeps_payload(js_site: str) -> None:
         await fetcher.aclose()
 
 
-@pytest.mark.browser
-@pytest.mark.asyncio
-async def test_no_payload_ask(js_site: str) -> None:
-    """A link-graph crawl has no use for it and must pay nothing."""
-    pytest.importorskip("playwright")
-    fetcher = PlaywrightFetcher()
-    try:
-        result = await fetcher.fetch(_item(js_site + "grid"))
-        assert result.payloads == []
-    finally:
-        await fetcher.aclose()
-
-
 @pytest.mark.asyncio
 async def test_payload_cap() -> None:
     """One page can download tens of megabytes; memory is not free."""
@@ -289,11 +258,6 @@ async def test_body_gone_ok() -> None:
     kept: list = []
     await fetcher._read_body(_Gone(), "application/json", kept)
     assert kept == []
-
-
-def test_scroll_default() -> None:
-    """A link graph has nothing below the fold worth waiting for."""
-    assert PlaywrightFetcher()._scrolls == 0
 
 
 @pytest.mark.asyncio

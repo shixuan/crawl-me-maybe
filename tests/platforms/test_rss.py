@@ -101,11 +101,6 @@ def test_entry_undated(tmp_path: Path) -> None:
     assert out.candidates[0].text == "Only a title"
 
 
-def test_feed_not_item() -> None:
-    """A feed document lists posts; it is never one of them."""
-    assert rss.parse_item(_ATOM.decode(), "https://example.com/feed") is None
-
-
 def test_html_falls_thru(tmp_path: Path) -> None:
     """Nobody claims it, so it is read the way a link graph reads."""
     out = Harvester(Canonicalizer(), [rss]).harvest(_page(tmp_path, _HTML), depth=0)

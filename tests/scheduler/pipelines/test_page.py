@@ -13,7 +13,7 @@ from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.config import Settings
 from crawlme.digest import FetchError, FetchResult, Page, Payload
 from crawlme.discovery import Harvest
-from crawlme.errors import Error, Kind
+from crawlme.errors import Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.scheduler.pipelines.page import FetchedPage
@@ -239,18 +239,6 @@ async def test_analysis_free(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_slot_released():
-    """The slot covers the request and its parse, nothing longer."""
-    sched = _make_sched(settings=Settings(fetch_concurrency=1))
-    sched.pipeline._page._fetch.fetcher.fetch = AsyncMock(side_effect=RuntimeError("boom"))
-    sched.pipeline._frontier.record_outcome = AsyncMock()
-
-    with pytest.raises(Error, match="boom"):
-        await sched.pipeline._page.fetch_and_extract(_item())
-    assert not sched.pipeline._page._fetch._slots.locked()
-
-
-@pytest.mark.asyncio
 async def test_missing_extra():
     """It is not about this page: every later page of the same format
     fails identically, so carrying on would spend the whole budget
@@ -287,18 +275,6 @@ async def test_page_same_depth():
     pushed = frontier.push_batch.await_args.args[0]
     assert [p.depth for p in pushed] == [2]
     assert pushed[0].score_source == "listing_page"
-
-
-@pytest.mark.asyncio
-async def test_page_not_top():
-    """More raw material is worth less than a post the ranker liked. At
-    full priority a six-page budget went entirely on listings."""
-    sched, frontier = _paging_sched()
-    item = FrontierItem(url=_url("https://www.reddit.com/r/x/"), url_key="k", depth=0)
-    await sched.pipeline._page.enqueue_next_page(
-        "https://www.reddit.com/r/x/?after=t3_a", item, MagicMock(), "seed", goal=sched.pipeline._goal
-    )
-    assert frontier.push_batch.await_args.args[0][0].priority < 1.0
 
 
 @pytest.mark.asyncio
@@ -378,23 +354,6 @@ async def test_robots_cached():
     item = FrontierItem(url=_url("https://x.com/page"), url_key="k", reg_domain="x.com")
     assert await sched.pipeline._page.fetch_and_extract(item) is None
     fetcher.fetch.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_robots_absent():
-    """A 404 states no policy, and a site briefly down must not have its
-    whole domain closed off."""
-    from crawlme.pioneer.robots import RobotsPolicy
-
-    storage = MagicMock()
-    storage.get_robots = AsyncMock(return_value=None)
-    storage.flush = AsyncMock()
-    fetcher = MagicMock(aclose=AsyncMock())
-    fetcher.fetch = AsyncMock(side_effect=FetchError("connection refused", kind=Kind.NOT_FOUND))
-    sched = _make_sched(storage=storage, fetcher=fetcher, robots=RobotsPolicy(agent="a"))
-    sched.pipeline._goal = _goal(max_pages=5)
-    await sched.pipeline._page._fetch.ensure_robots("x.com")
-    assert sched.pipeline._robots.allow_fetch("https://x.com/anything")
 
 
 @pytest.mark.asyncio

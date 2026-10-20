@@ -13,6 +13,8 @@
 
 An LLM-powered crawler that turns a plain-language goal into structured results with source evidence. It evaluates pages for relevance, prioritizes promising links, and extracts the fields you ask for across websites and social feeds, with configurable page, token, and time budgets.
 
+Currently supported sources include Instagram, Reddit, websites, and RSS feeds.
+
 ## Install
 
 Requires Python 3.10 or later. From this checkout:
@@ -32,12 +34,28 @@ Configure the LLM using [`.env.example`](.env.example). Without an API key or ba
 
 ## Quick start
 
-**Web pages**
+**Instagram** requires the `browser` extra and a saved login session:
+
+Create a login session file by using `crawl session`
+```bash
+crawl session ./ig-session.json --feed instagram
+```
 
 ```bash
-crawl run "recent funding news for AI startups" \
-  --seeds "https://news.ycombinator.com,https://techcrunch.com" \
-  --max-relevant 40 --page-budget 200
+crawl run "merchants giving something away, with the shop, offer and deadline" \
+  --seeds "seeds.json" \
+  --session ig-session.json \
+  --max-relevant 40 --page-budget 150 --since "2 weeks" \
+  --ignore-robots
+```
+
+**Reddit** requires the `browser` extra.
+
+```bash
+crawl run "Toronto events this weekend, with the place and date" \
+  --seeds "https://www.reddit.com/r/askTO/" \
+  --max-relevant 20 --page-budget 60 \
+  --ignore-robots
 ```
 
 **RSS** requires the `rss` extra.
@@ -48,23 +66,12 @@ crawl run "language features shipped this year, with the version that carries ea
   --max-relevant 20
 ```
 
-**Reddit** requires the `browser` extra.
+**Web pages**
 
 ```bash
-crawl run "Toronto events this weekend, with the place and date" \
-  --seeds "https://www.reddit.com/r/askTO/" \
-  --max-relevant 20 --page-budget 60
-```
-
-**Instagram** requires the `browser` extra and a saved login session:
-
-```bash
-crawl session ./ig-session.json --feed instagram
-
-crawl run "nearby merchants giving something away, with the shop, offer and deadline" \
-  --seeds "seeds.json" \
-  --session ig-session.json \
-  --max-relevant 40 --page-budget 150 --since "2 weeks"
+crawl run "recent funding news for AI startups" \
+  --seeds "https://news.ycombinator.com,https://techcrunch.com" \
+  --max-relevant 40 --page-budget 200
 ```
 
 **Read results** using the task ID printed by the run:
@@ -72,6 +79,10 @@ crawl run "nearby merchants giving something away, with the shop, offer and dead
 ```bash
 crawl inspect <task-id> --during "1 week"
 crawl inspect <task-id> --export json
+```
+
+Alternatively, you can simply launch the dashboard and manage everything from there:
+```bash
 python dashboard/serve.py
 ```
 

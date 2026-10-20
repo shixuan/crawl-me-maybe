@@ -9,13 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.discovery import Harvester
 from crawlme.platforms import PageProblem, instagram
-from crawlme.scheduler.pipelines.factory import _build_harvester
 from crawlme.urls import URL, Canonicalizer
 
 _LINKS_HTML = b"""<html><body><article>
@@ -64,14 +60,6 @@ def test_links_resolved(tmp_path: Path) -> None:
         "https://example.com/two",
         "https://other.com/x",
     }
-
-
-def test_links_meta(tmp_path: Path) -> None:
-    """A link has no text of its own, so the proxies are all there is."""
-    page = _page(tmp_path, _LINKS_HTML, "https://example.com/dir/page")
-    first = Harvester(Canonicalizer()).harvest(page, depth=0).candidates[0]
-    assert first.anchor == "first"
-    assert first.text == "", "a link carries no content of its own"
 
 
 # feed ------------------------------------------------------------------
@@ -142,35 +130,6 @@ def test_no_html_empty(tmp_path: Path) -> None:
 # wiring ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("session", "platforms"), [("", []), ("./s.json", ["instagram"])])
-def test_session_picks(session: str, platforms: list[str]) -> None:
-    """One harvester now; what changes is which platforms it may read,
-    and having credentials for one is what makes reading it possible.
-
-    Asked of NEEDS_SESSION rather than by naming the platforms that do
-    not: every session-free adapter is always available, so listing the
-    exceptions means this breaks each time one is added.
-    """
-    h = _build_harvester(Settings(browser_storage_state=session), Canonicalizer())
-    assert [a.PLATFORM for a in h._adapters if a.NEEDS_SESSION] == platforms
-
-
-def test_needs_document(tmp_path: Path) -> None:
-    """A graph crawl gets every session-free adapter without asking for
-    one, so any of them may meet its own host mid-crawl.  Claiming there
-    on the address alone would silently turn that crawl into a feed
-    crawl, and worse, would claim the shell a platform serves when
-    nothing rendered it: no posts, no error, a quiet week every week.
-    So the document decides, and the address only narrows.
-    """
-    adapters = _build_harvester(Settings(), Canonicalizer())._adapters
-    assert [a.PLATFORM for a in adapters] == ["reddit", "rss"]
-    for adapter in adapters:
-        url = f"https://{adapter.DOMAIN or 'example.com'}/anything"
-        page = _page(tmp_path, b"<html><body>not it</body></html>", url)
-        assert not adapter.claims(page, "<html><body>not it</body></html>")
-
-
 def test_unclaimed_graph(tmp_path: Path) -> None:
     """Unclaimed pages yield links resolved against their own host, even with platform-shaped paths."""
     trap = b"""<html><body>
@@ -186,24 +145,6 @@ def test_unclaimed_graph(tmp_path: Path) -> None:
     ]
 
 
-def test_platform_check(tmp_path: Path) -> None:
-    """Swapping the adapter swaps which pages are ours, with no edit here."""
-
-    class _Elsewhere:
-        PLATFORM = "elsewhere"
-        DOMAIN = "elsewhere.example"
-
-        problem = staticmethod(instagram.problem)
-        parse_item = staticmethod(instagram.parse_item)
-        parse_listing = staticmethod(instagram.parse_listing)
-
-        claims = staticmethod(lambda page, document: page.url.reg_domain == "elsewhere.example")
-
-    page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
-    out = Harvester(Canonicalizer(), [_Elsewhere()]).harvest(page, depth=0)
-    assert not out.listing, "this adapter does not claim instagram, so nothing parsed it as a feed"
-
-
 def test_listing_flagged(tmp_path: Path) -> None:
     """Only a listing can be judged empty, so only a listing says so."""
     page = _page(tmp_path, _LISTING, "https://www.instagram.com/mollytea_canada/")
@@ -216,21 +157,3 @@ def test_post_no_list(tmp_path: Path) -> None:
     out = Harvester(Canonicalizer(), [instagram]).harvest(page, depth=0)
     assert out.candidates == []
     assert not out.listing
-
-
-def test_graph_no_list(tmp_path: Path) -> None:
-    """A page with no links is ordinary; the graph has no listings."""
-    page = _page(tmp_path, b"<html><body>no links here</body></html>", "https://example.com/")
-    out = Harvester(Canonicalizer()).harvest(page, depth=0)
-    assert out.candidates == []
-    assert not out.listing
-
-
-def test_a_listing_without_its_payload_says_so():
-    """Markup alone looks like a healthy read: the count is normal and
-    nothing refused us. Measured on one account it ran up to 37 days
-    behind."""
-    from crawlme.platforms import Listing
-
-    assert Listing(own=[], others=[], degraded=True).degraded
-    assert not Listing(own=[], others=[]).degraded

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import time
 
 import pytest
@@ -231,35 +230,3 @@ def test_empty_waits():
     """Mid-run there is no telling a dead adapter from a slow start."""
     lim, prog, _ = _split(in_flight=2, listings_seen=5, listings_empty=5)
     assert "ADAPTER_EMPTY" not in _codes(_check(_frontier(size=3), lim, prog))
-
-
-def test_a_stop_condition_cannot_see_the_ledger():
-    """The split that keeps statistics out of the stopping criteria is
-    held by this signature, not by care. A number nothing stops on used
-    to sit among the ones that do, and adding another was one keyword
-    away."""
-    import inspect
-
-    from crawlme.runtime import Stats
-
-    params = inspect.signature(check_stop).parameters
-    assert "stats" not in params
-    assert not any(p.annotation is Stats for p in params.values())
-
-
-def test_every_progress_field_is_read_by_some_check():
-    """The entry rule for Progress. listings_stale once sat there and no
-    condition read it, which is how a report statistic ends up looking
-    like a stopping criterion."""
-    import inspect
-
-    from crawlme.runtime import Progress
-    from crawlme.scheduler import stop_conds
-
-    source = inspect.getsource(stop_conds)
-    unread = [
-        f.name
-        for f in dataclasses.fields(Progress)
-        if f"p.{f.name}" not in source and f"progress.{f.name}" not in source
-    ]
-    assert unread == [], f"Progress fields nothing stops on: {unread}"

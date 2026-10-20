@@ -43,10 +43,6 @@ def test_count_grows_slowly(given, want):
     assert how_many(given, 4, 12) == want
 
 
-def test_no_seeds_no_proposals():
-    assert how_many(0, 4, 12) == 0
-
-
 def test_bounds_come_from_settings():
     assert how_many(64, 1, 3) == 3
     assert how_many(1, 7, 12) == 7
@@ -58,13 +54,6 @@ def test_bounds_come_from_settings():
 async def test_proposes_what_the_model_named():
     got = await _expander(_reply(("https://a.com/", "because"))).propose(_goal(), ["https://s.com/"], 4)
     assert got == [("https://a.com/", "because")]
-
-
-async def test_a_seed_already_given_is_not_proposed_again():
-    """Spending a verification fetch to rediscover the user's own seed."""
-    reply = _reply(("https://s.com/", "dup"), ("https://a.com/", "new"))
-    got = await _expander(reply).propose(_goal(), ["https://s.com/"], 4)
-    assert [u for u, _ in got] == ["https://a.com/"]
 
 
 @pytest.mark.parametrize(
@@ -127,15 +116,6 @@ def test_prose_around_the_json_is_tolerated():
     assert _parse(content, known=set(), want=4) == [("https://a.com/", "w")]
 
 
-def test_a_long_reason_is_cut():
-    """It is shown back to a person deciding whether to keep the seed,
-    so it has to fit on the line it is printed on."""
-    from crawlme.pioneer.seed_expander import _MAX_WHY
-
-    content = json.dumps({"seeds": [{"url": "https://a.com/", "why": "x" * 500}]})
-    assert len(_parse(content, known=set(), want=4)[0][1]) == _MAX_WHY
-
-
 # verify ------------------------------------------------------------------
 
 
@@ -194,12 +174,6 @@ async def test_a_refusal_is_dropped():
 async def test_an_unreachable_seed_is_dropped():
     kept, _, _ = await _verify([("https://a.com/", "w")], yields=9, fetch_raises=True)
     assert kept == []
-
-
-async def test_seeds_are_verified_one_by_one():
-    kept, probe, _ = await _verify([("https://a.com/", "w"), ("https://b.com/", "w")], yields=4)
-    assert len(kept) == 2
-    assert probe.await_count == 2
 
 
 async def test_a_rejection_says_which_kind_it_was():

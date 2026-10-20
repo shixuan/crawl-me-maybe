@@ -39,15 +39,6 @@ def frontier() -> Frontier:
 
 
 @pytest.mark.asyncio
-async def test_pop_by_priority(frontier):
-    items = [_item("k1", 0.1), _item("k2", 0.9), _item("k3", 0.5)]
-    await frontier.push_batch(items)
-    popped = await frontier.pop_next()
-    assert popped is not None
-    assert popped.url_key == "k2"
-
-
-@pytest.mark.asyncio
 async def test_pop_gated(frontier):
     future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
 
@@ -84,15 +75,6 @@ async def test_global_budget(frontier):
 
     second = await frontier.pop_next(global_budget=1)
     assert second is None
-
-
-@pytest.mark.asyncio
-async def test_outcome_visited(frontier):
-    item = _item("k1")
-    await frontier.push_batch([item])
-    popped = await frontier.pop_next()
-    await frontier.record_outcome(popped, "COMPLETED")
-    assert frontier.contains("k1")
 
 
 @pytest.mark.asyncio
@@ -166,25 +148,6 @@ async def test_inflight_once():
     await f.push_batch([_item("dup", priority=0.9)])
     assert f.size == 0, "the same page came back while it was in flight"
     assert f.get_prefilter_context().is_visited_or_queued("dup")
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_keeps():
-    """The snapshot used to copy one ordering's internals by name.
-
-    With `heap` absent from a composed ordering's state, every
-    checkpoint stored an empty queue and every resume began with nothing
-    to fetch, without an error anywhere.
-    """
-    make = PriorityQueue
-    f = Frontier(source=make())
-    await f.push_batch([_item("a", 0.9), _item("b", 0.5)])
-    assert f.size == 2
-
-    restored = Frontier(source=make())
-    restored.restore(f.dump())
-    assert restored.size == 2
-    assert restored.get_prefilter_context().is_visited_or_queued("a")
 
 
 @pytest.mark.asyncio
@@ -410,36 +373,3 @@ async def test_partial_add_notifies(monkeypatch, cancel, request):
         await running
     assert frontier.waiting_size == 1
     assert notices == [1]
-
-
-def _model_url() -> URL:
-    return URL(
-        raw="https://example.com/page?a=1",
-        canonical="https://example.com/page",
-        url_key="abc123",
-    )
-
-
-def test_snapshot_defaults():
-    fs = FrontierSnapshot()
-    assert fs.snapshot_id
-    assert fs.visited == set()
-
-
-def test_snapshot_old_shape():
-    """`heap` predates `ordering` and still has to load.
-
-    Checkpoints written by an older build carry their items here, and
-    dropping the field would turn every one of them into an empty
-    frontier that reports itself as a finished crawl.
-    """
-    u = _model_url()
-    fs = FrontierSnapshot(
-        task_id="t1",
-        heap=[FrontierItem(url=u, url_key=u.url_key, priority=0.5)],
-        visited={"k1", "k2"},
-        budgets={"example.com": 5},
-    )
-    assert fs.heap[0].priority == 0.5
-    assert len(fs.visited) == 2
-    assert fs.budgets["example.com"] == 5

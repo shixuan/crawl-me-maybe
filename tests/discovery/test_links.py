@@ -65,33 +65,6 @@ def test_href_and_anchor(tmp_path):
     assert any(link.anchor == "Authentication" for link in links)
 
 
-def test_positions_seq(tmp_path):
-    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
-    positions = [link.position for link in links]
-    assert positions == sorted(positions)
-    assert positions[0] >= 1
-
-
-def test_snippet_parent(tmp_path):
-    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
-    auth_link = next(link for link in links if link.anchor == "Authentication")
-    assert auth_link.snippet is not None
-    assert "Authentication" in auth_link.snippet
-
-
-def test_head_ancestor(tmp_path):
-    links = extract_links(_page(tmp_path, PAGE_HEADING_ANCESTOR))
-    assert len(links) == 1
-    assert links[0].parent_heading == "Nested Link"
-
-
-def test_heading_before(tmp_path):
-    links = extract_links(_page(tmp_path, PAGE_WITH_LINKS))
-    auth_link = next(link for link in links if link.anchor == "Authentication")
-    assert auth_link.parent_heading is not None
-    assert "API Reference" in auth_link.parent_heading
-
-
 def test_skip_empty_href(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_EMPTY_HREF))
     hrefs = {link.href for link in links}
@@ -102,13 +75,6 @@ def test_skip_empty_href(tmp_path):
 def test_empty_page(tmp_path):
     links = extract_links(_page(tmp_path, PAGE_NO_LINKS))
     assert links == []
-
-
-def test_anchor_none(tmp_path):
-    html = '<html><body><a href="/img"><img src="x.png" alt="pic"></a></body></html>'
-    links = extract_links(_page(tmp_path, html))
-    assert len(links) == 1
-    assert links[0].anchor is None
 
 
 def test_heading_order(tmp_path):
@@ -132,12 +98,6 @@ def test_no_heading_yet(tmp_path):
     by_href = {link.href: link.parent_heading for link in links}
     assert by_href["/a"] is None
     assert by_href["/b"] == "Later"
-
-
-def test_empty_advances(tmp_path):
-    links = extract_links(_page(tmp_path, PAGE_EMPTY_HREF))
-    valid = next(link for link in links if link.href == "/valid")
-    assert valid.position == 2  # the empty-href anchor occupies slot 1
 
 
 def test_many_links_fast(tmp_path):

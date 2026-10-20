@@ -8,27 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.config import Settings
-
-
-@pytest.fixture
-def e2e_settings() -> Settings:
-    """Live fetching with robots bypassed and LLM stages disabled."""
-    return Settings(
-        fetch_concurrency=2,
-        fetch_timeout_connect=15.0,
-        fetch_timeout_read=30.0,
-        fetch_max_retries=2,
-        log_level="DEBUG",
-        log_format="console",
-        ignore_robots=True,
-        embedding_provider="",
-        # Keep live tests independent of LLM services.
-        llm_api_key="",
-        llm_base_url="",
-    )
-
-
 _HERE = Path(__file__).parent
 
 

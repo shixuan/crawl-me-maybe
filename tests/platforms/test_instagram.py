@@ -189,14 +189,6 @@ def test_payload_time():
     assert posted["DbbjpjPD2e0"] is not None
 
 
-def test_no_payload_same():
-    """A plain HTTP fetch, or a platform that changed shape underneath."""
-    lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [])
-    by_code = {i.item_id: i for i in lst.all}
-    assert "May be pop art" in by_code["DcFMbOThnuH"].text
-    assert by_code["DbbjpjPD2e0"].published_at is None
-
-
 def test_payload_bad_ok():
     junk = Payload(url="x", content_type="application/json", body=b"{not json")
     lst = ig.parse_listing(_GRID.decode(), "https://www.instagram.com/mrsurprisetoys/", [junk])

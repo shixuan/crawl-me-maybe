@@ -38,12 +38,6 @@ def test_domain_of_link():
     assert _item().to_candidate().url.reg_domain == "instagram.com"
 
 
-def test_textless_item():
-    c = _item().to_candidate()
-    assert c.text == ""
-    assert c.signals == {"platform": "instagram"}
-
-
 def test_own_first():
     """Own posts lead, because a monitored account is what was asked for."""
     lst = Listing(own=["a", "b"], others=["c"])

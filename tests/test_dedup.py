@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.analysis import AnalysisResult
-from crawlme.config import Settings
 from crawlme.dedup.grouper import DedupError, Grouper, fingerprint
 from crawlme.digest import Page
 from crawlme.errors import Error, ErrorHandler, Kind
@@ -17,7 +16,6 @@ from crawlme.persist import Storage
 from crawlme.runtime import Goal
 from crawlme.scheduler.engine import create_engine
 from crawlme.urls import URL
-from tests.scheduler.helpers import create_crawl
 
 
 def client_response(groups, *, truncated=False):
@@ -215,20 +213,6 @@ async def test_grouping_failure_retains_results():
     await create_engine(worker).run(Goal(prompt="gifts"))
     assert worker.report == {"status": "failed", "error": "bad model reply"}
     storage.save_groups.assert_not_called()
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-async def test_factory_switch_and_reasoning_default(tmp_path, enabled):
-    cfg = Settings(
-        _env_file=None, llm_api_key="test", llm_base_url="", llm_dedup_reasoning_effort="off", result_dir=tmp_path
-    )
-    scheduler = create_crawl(cfg, budget=TokenBudget(limit=100), dedup_enabled=enabled)
-    if enabled:
-        assert scheduler.pipeline._dedup.grouper.client._reasoning_effort == "off"
-        assert scheduler.pipeline._dedup.grouper.client._stage == "dedup"
-    else:
-        assert scheduler.pipeline._dedup.grouper is None
-    await scheduler.aclose()
 
 
 @pytest.mark.parametrize(

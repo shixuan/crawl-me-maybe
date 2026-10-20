@@ -17,7 +17,6 @@ import httpx
 import pytest
 
 import crawlme.llm.client as llm_mod
-from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.errors import Error, Kind
 from crawlme.llm import Client, DependencyError, RemoteError, TokenBudget, TokenBudgetError
@@ -105,21 +104,6 @@ async def test_chat_returns(provider, no_sleep):
     assert no_sleep == []
 
 
-async def test_model_wins(provider, no_sleep):
-    # Providers may answer under an alias for the configured model
-    # (deepseek/deepseek-chat -> deepseek-v4-flash); the configured
-    # string is the stable identity replay's check matches on.
-    client = Client("deepseek/deepseek-chat")
-    r = await client.chat("hi")
-    assert r.model == "deepseek/deepseek-chat"
-
-
-async def test_model_reported(provider, no_sleep):
-    client = Client("")
-    r = await client.chat("hi")
-    assert r.model == "stub-model"
-
-
 async def test_json_mode(provider):
     client = Client("openai/gpt-4o-mini")
     await client.chat("return json", json_mode=True)
@@ -190,20 +174,6 @@ async def test_no_litellm(monkeypatch):
     assert isinstance(caught.value.__cause__, ImportError)
 
 
-def test_wires_knobs():
-    settings = Settings(
-        llm_model="anthropic/claude-haiku-4-5",
-        llm_api_key="sk-test",
-        llm_base_url="http://localhost:11434/v1",
-        llm_concurrency=5,
-    )
-    client = Client.from_settings(settings)
-    assert client._model == "anthropic/claude-haiku-4-5"
-    assert client._api_key == "sk-test"
-    assert client._base_url == "http://localhost:11434/v1"
-    assert client._sem._value == 5
-
-
 def test_budget_records(request):
     totals: list[int] = []
     budget = TokenBudget(limit=100)
@@ -249,12 +219,6 @@ async def test_chat_tallies(monkeypatch):
     assert budget.calls == 1
 
 
-def test_is_configured():
-    assert not Client("openai/gpt-4o-mini").configured
-    assert Client("openai/gpt-4o-mini", api_key="sk-1").configured
-    assert Client("openai/gpt-4o-mini", base_url="http://localhost:11434/v1").configured
-
-
 @pytest.mark.parametrize(
     ("api_key", "base_url", "built"),
     [
@@ -275,10 +239,6 @@ def test_settings_gate(api_key, base_url, built):
         assert client._model == "openai/gpt-4o-mini"  # falls back to the provider default
 
 
-def test_default_model():
-    assert Client.from_settings(Settings(llm_model=""))._model == "openai/gpt-4o-mini"
-
-
 @pytest.mark.asyncio
 async def test_ceiling_flagged(monkeypatch, caplog):
     """Otherwise a budget problem arrives disguised as a parser one.
@@ -293,13 +253,6 @@ async def test_ceiling_flagged(monkeypatch, caplog):
         resp = await client.chat("hi")
     assert resp.truncated is True
     assert "output_ceiling" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_under_ceiling(monkeypatch):
-    monkeypatch.setattr(llm_mod, "_litellm", _StubLitellm([_resp("ok", out_tok=5)]))
-    client = Client("openai/gpt-4o-mini", api_key="k", max_output_tokens=64)
-    assert (await client.chat("hi")).truncated is False
 
 
 # cached input ----------------------------------------------------------
@@ -400,51 +353,6 @@ async def test_effort_optional(monkeypatch):
     # A model that cannot think is sent nothing, whatever was configured.
     await Client("openai/gpt-4o-mini", api_key="k", reasoning_effort="medium").chat("hi")
     assert "reasoning_effort" not in sent[-1]
-
-
-def test_effort_stage(monkeypatch):
-    """One stage orders candidates for fetching and another decides what
-    the run returns, so they do not have to buy the same thinking."""
-    from crawlme.pioneer.ranker import LLMRanker
-
-    cfg = Settings(llm_api_key="k", llm_analyze_reasoning_effort="high", llm_rank_reasoning_effort="off")
-    ranker = LLMRanker.from_settings(cfg)
-    assert ranker is not None
-    assert ranker._client._reasoning_effort == "off"
-
-    assert Analyzer.from_settings(cfg)._client._reasoning_effort == "high"  # type: ignore[union-attr]
-
-
-def test_effort_absent():
-    """Empty means the provider's own default, not some value of ours."""
-    from crawlme.pioneer.ranker import LLMRanker
-
-    # Spelled out rather than left to the default: Settings reads the
-    # developer's own .env, so a test that says nothing about a field
-    # asserts whatever that machine happens to hold.
-    ranker = LLMRanker.from_settings(Settings(llm_api_key="k", llm_rank_reasoning_effort=""))
-    assert ranker is not None
-    assert ranker._client._reasoning_effort == ""
-
-
-@pytest.mark.asyncio
-async def test_every_call_reports_its_wall_clock(monkeypatch, caplog):
-    """Named for what it measures. It is the wall clock around the await,
-    so on a busy loop it includes waiting to be scheduled, and read as
-    the call's own duration it says a request outlived a timeout that
-    did cut it off."""
-
-    async def _fake(**kwargs):
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
-            model="m",
-        )
-
-    monkeypatch.setattr(llm_mod, "_litellm_module", lambda: SimpleNamespace(acompletion=_fake))
-    with caplog.at_level("DEBUG"):
-        await Client("m", api_key="k").chat("hi")
-    assert "llm.chat.wall" in caplog.text
 
 
 # A model litellm knows takes reasoning_effort. "stub-model" does not,

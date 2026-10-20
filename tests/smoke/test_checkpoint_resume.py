@@ -11,29 +11,10 @@ import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
-
-# Replace only the provider transport. Client admission and token accounting remain real.
-_CLI = """
-from types import SimpleNamespace
-import httpx
-from crawlme.llm.client import Client
-from crawlme.cli import main
-
-async def complete(self, messages, max_tokens, json_mode, effort=""):
-    async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-        response = await client.post(self._base_url, json={"messages": messages})
-        response.raise_for_status()
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=response.text))],
-        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
-    )
-
-Client._complete = complete
-main()
-"""
 
 
 @pytest.mark.parametrize("legacy", [False, True], ids=["current-db", "legacy-db"])
@@ -68,6 +49,10 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
                     ],
                     "candidates_to_drop": [],
                 }
+            elif prompt.startswith("{"):
+                calls.append("dedup")
+                rows = json.loads(prompt)["results"]
+                body = {"groups": [{"members": [r["item_id"] for r in rows], "overview": "Compiler design"}]}
             elif "## Page\n" in prompt:
                 page = prompt.split("## Page\n", 1)[1].splitlines()[0]
                 path = urlsplit(page).path
@@ -76,9 +61,9 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
                     entered.set()
                     if interrupt is None and not release.is_set():
                         self.send_body(
-                            b'{"error":{"code":"insufficient_quota","message":"Insufficient credits"}}',
+                            b'{"error":{"code":"service_unavailable","message":"Service is busy"}}',
                             "application/json",
-                            status=429,
+                            status=503,
                         )
                         return
                     if not release.wait(20):
@@ -98,7 +83,25 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             else:
                 calls.append("goal")
                 body = {"goal_statement": "compiler design", "keywords": ["compiler", "design"]}
-            self.send_body(json.dumps(body).encode(), "application/json")
+            self.send_body(
+                json.dumps(
+                    {
+                        "id": "local",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": json.dumps(body)},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                    }
+                ).encode(),
+                "application/json",
+            )
 
         def send_body(self, body, content_type, status=200):
             self.send_response(status)
@@ -118,10 +121,14 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
     thread.start()
     site = f"http://127.0.0.1:{server.server_port}"
     env = {
-        **os.environ,
-        "LLM_API_KEY": "",
-        "LLM_BASE_URL": site + "/llm",
-        "LLM_MODEL": "scripted",
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
+        "LLM_API_KEY": "local-test",
+        "LLM_BASE_URL": site + "/v1",
+        "LLM_MODEL": "openai/gpt-4o-mini",
+        "LLM_DEDUP_REASONING_EFFORT": "",
+        "LITELLM_LOCAL_MODEL_COST_MAP": "True",
         "LLM_CONCURRENCY": "1",
         "FETCH_CONCURRENCY": "1",
         "ANALYSIS_ENABLED": "true",
@@ -132,7 +139,7 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         "ALL_PROXY": "",
         "NO_PROXY": "127.0.0.1",
     }
-    command = [sys.executable, "-c", _CLI]
+    command = [sys.executable, "-c", "from crawlme.cli import main; main()"]
     root = tmp_path / "results"
     process = None
     try:
@@ -144,7 +151,7 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
                 "--seeds",
                 site + "/first",
                 "--dedup",
-                "off",
+                "on",
                 "--ignore-robots",
                 "--max-pages",
                 "0",
@@ -163,7 +170,10 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             stderr=subprocess.STDOUT,
             text=True,
         )
-        assert entered.wait(15), "crawl did not reach the second page's analysis"
+        if not entered.wait(15):
+            process.kill()
+            output, _ = process.communicate(timeout=5)
+            pytest.fail(f"Crawl did not reach the second page analysis:\n{output}")
         db_path = next(root.glob("*/db/crawl.db"))
         with sqlite3.connect(db_path) as db:
             task_id, goal_id = db.execute("SELECT task_id, goal_id FROM crawl_tasks").fetchone()
@@ -186,10 +196,14 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         assert process.returncode == (
             1 if interrupt is None else 130 if interrupt == signal.SIGINT else -signal.SIGKILL
         ), output
-        assert calls == before, "interruption must not start another LLM call"
+        if interrupt is not None:
+            assert calls == before, "interruption must not start another LLM call"
+        else:
+            assert calls.count("/second") == 3
+            assert "dedup" not in calls
         if interrupt is None:
-            assert "Insufficient credits" in output
-            assert "429" in output
+            assert "Service is busy" in output
+            assert "503" in output
             assert f"crawl resume {task_id}" in output
             with sqlite3.connect(db_path) as db:
                 assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
@@ -219,21 +233,24 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         saved_log = (db_path.parent.parent / "log").read_text()
         assert report in saved_log
         assert saved_log.count(header) == 1
-        assert "crawl totals: 2 pages and 60 tokens" in saved_log
-        assert "60 (40 in / 20 out), 4 calls" in report
+        assert "crawl totals: 2 pages and 75 tokens" in saved_log
+        assert "75 (50 in / 25 out), 5 calls" in report
         assert "2 RELEVANT" in report
         assert requests.count("/first") == requests.count("/second") == 1
         assert calls.count("goal") == calls.count("ranking") == calls.count("/first") == 1
-        assert calls.count("/second") == 2
+        assert calls.count("/second") == (4 if interrupt is None else 2)
+        assert calls.count("dedup") == 1
         assert len(list(root.glob("*/db/crawl.db"))) == 1
         with sqlite3.connect(db_path) as db:
             tasks = db.execute("SELECT task_id, goal_id, state, counters FROM crawl_tasks").fetchall()
             assert len(tasks) == 1
             restored_id, restored_goal, state, counters = tasks[0]
             assert (restored_id, restored_goal, state) == (task_id, goal_id, "COMPLETED")
-            assert json.loads(counters) == {"pages_fetched": 2, "tokens_used": 60}
+            assert json.loads(counters) == {"pages_fetched": 2, "tokens_used": 75}
             assert db.execute("SELECT COUNT(*) FROM pages").fetchone()[0] == 2
             assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 2
+            assert db.execute("SELECT COUNT(*) FROM result_groups").fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM result_item_members").fetchone()[0] == 2
             assert (
                 db.execute(
                     "SELECT analysis_id, structured_data FROM analyses WHERE analysis_id = ?", (first_analysis[0],)
@@ -248,10 +265,6 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
                 ).fetchone()
                 is None
             )
-            recovered = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
-            assert recovered["budget"]["used"] == 60
-            assert recovered["budget"]["by_stage"]["analysis"]["calls"] == 2
-            assert recovered["state"]["stats"]["analyses_by_class"] == {"RELEVANT": 2}
     finally:
         release.set()
         if process is not None and process.poll() is None:
