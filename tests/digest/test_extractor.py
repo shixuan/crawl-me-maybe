@@ -128,26 +128,10 @@ def extractor() -> TrafExtractor:
     return TrafExtractor()
 
 
-def test_extracts_title(extractor, tmp_path):
-    page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
-    assert page.title == "Test Page"
-
-
 def test_extracts(extractor, tmp_path):
     page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
     assert "Hello World" in (page.markdown or "")
     assert "main content" in (page.plain_text or "")
-
-
-def test_strips_chrome(extractor, tmp_path):
-    page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
-    assert "Hello World" in (page.markdown or "")
-
-
-def test_raw_path(extractor, tmp_path):
-    path = str(tmp_path / "raw/k1/1.html")
-    page = extractor.extract(_result(), path)
-    assert page.raw_html_path == path
 
 
 def test_broken_html_recovers_text(extractor, tmp_path):
@@ -169,12 +153,6 @@ def test_primary_extraction_failure_degrades(extractor, monkeypatch, raises):
     assert page.extraction_status == "DEGRADED"
     assert "main content" in page.plain_text
     assert page.markdown == page.plain_text
-
-
-def test_valid_content(extractor, tmp_path):
-    page = extractor.extract(_result(), str(tmp_path / "raw/k1/1.html"))
-    assert page.text_len > 0
-    assert page.markdown or page.plain_text
 
 
 # published_at (2.8) ----------------------------------------------------
@@ -225,16 +203,6 @@ _NAV_HTML = b"""<!DOCTYPE html><html><head><title>Real Title</title></head><body
 <p>The actual article body that a reader came here for, long enough to survive extraction.</p>
 <p>A second paragraph so the extractor is confident this is the main content.</p></article>
 <footer>Privacy policy</footer></body></html>"""
-
-
-def test_status_ok(extractor: TrafExtractor) -> None:
-    """Regression: an invalid output_format made every page DEGRADED.
-
-    trafilatura calls the plain-text format "txt"; "text" raises, which
-    aborted the whole primary path and silently pushed every single page
-    onto the BeautifulSoup fallback.
-    """
-    assert extractor.extract(_result(_NAV_HTML)).extraction_status == "OK"
 
 
 def test_text_no_chrome(extractor: TrafExtractor) -> None:

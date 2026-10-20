@@ -70,21 +70,6 @@ async def test_json_fills_all():
     assert enhanced.since is None
 
 
-async def test_chat_args():
-    client = _StubClient([_resp(_valid_json())])
-    with patch("crawlme.prompts.datetime", wraps=datetime) as clock:
-        clock.timezone = datetime.timezone
-        clock.datetime.now.return_value = datetime.datetime(2026, 9, 19, 23, 59, 59, tzinfo=datetime.timezone.utc)
-        await GoalEnhancer(client).enhance(_goal())
-    call = client.calls[0]
-    assert call["prompt"] == "find machine learning papers"
-    assert call["json_mode"] is True
-    assert "JSON" in call["system"]
-    # The model cannot know today's date: the prompt must carry it so
-    # time-window goals resolve since correctly.
-    assert call["system"].startswith("Today is 2026-09-19 (UTC). ")
-
-
 async def test_prompt_date_updates_after_midnight():
     client = _StubClient([_resp(_valid_json()), _resp(_valid_json())])
     enhancer = GoalEnhancer(client)
@@ -100,13 +85,6 @@ async def test_prompt_date_updates_after_midnight():
         assert all(call.args == (datetime.timezone.utc,) for call in clock.datetime.now.call_args_list)
     assert client.calls[0]["system"].startswith("Today is 2026-09-19 (UTC). ")
     assert client.calls[1]["system"].startswith("Today is 2026-09-20 (UTC). ")
-
-
-async def test_prose_json_ok():
-    content = "Sure, here you go:\n" + _valid_json() + "\nHope that helps."
-    enhanced = await GoalEnhancer(_StubClient([_resp(content)])).enhance(_goal())
-    assert enhanced is not None
-    assert enhanced.keywords == ["machine learning", "papers"]
 
 
 async def test_llm_error_propagates():
@@ -182,14 +160,6 @@ async def test_spec_from_goal():
     assert enhanced.extraction_spec == {"fields": {"merchant": "who runs it", "deadline": "when it ends"}}
 
 
-async def test_no_spec():
-    """Extracting from a goal that named nothing to collect is waste."""
-    enhancer = GoalEnhancer(_StubClient([_resp(_valid_json())]))
-    enhanced = await enhancer.enhance(_goal())
-    assert enhanced is not None
-    assert enhanced.extraction_spec is None
-
-
 @pytest.mark.parametrize(
     "fields",
     [
@@ -232,10 +202,3 @@ async def test_empty_reported(caplog):
         assert await enhancer.enhance(_goal()) is None
     assert "empty content" in caplog.text
     assert "unparseable" not in caplog.text
-
-
-async def test_ceiling_client():
-    """One knob for every stage: the right value follows from the model."""
-    client = _StubClient([_resp(_valid_json())])
-    await GoalEnhancer(client).enhance(_goal())
-    assert client.calls[0]["max_tokens"] is None

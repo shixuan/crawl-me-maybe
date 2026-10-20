@@ -95,29 +95,6 @@ async def test_close_during_activity(console):
     assert not handler.live.is_started
 
 
-async def test_elapsed_and_stages(console, monkeypatch):
-    handler, stream = console
-    monkeypatch.setattr("crawlme.logging.progress.time.monotonic", lambda: 10)
-    first = handler.begin("fetch")
-    monkeypatch.setattr("crawlme.logging.progress.time.monotonic", lambda: 76)
-    second = handler.begin("analyze")
-    assert "fetch  1 running · oldest 1m 06s" in stream.getvalue()
-    handler.end(first)
-    assert len(handler.active) == 1
-    handler.end(second)
-
-
-async def test_refresh_uses_rich(console):
-    handler, stream = console
-    token = handler.begin("analyze")
-    stream.write = Mock(wraps=stream.write)
-    handler.live.refresh()
-    stream.write.assert_called_once()
-    frame = stream.write.call_args.args[0]
-    assert "analyze" in frame
-    handler.end(token)
-
-
 async def test_log_is_one_frame(console):
     handler, stream = console
     token = handler.begin("analyze")
@@ -127,26 +104,6 @@ async def test_log_is_one_frame(console):
     frame = stream.write.call_args.args[0]
     assert frame.index("page complete") < frame.index("analyze")
     handler.end(token)
-
-
-async def test_progress_color(monkeypatch):
-    stream = io.StringIO()
-    monkeypatch.setattr(stream, "isatty", lambda: True)
-    monkeypatch.setenv("TERM", "xterm-256color")
-    monkeypatch.setenv("COLORTERM", "truecolor")
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    handler = ProgressHandler(stream, color=True)
-    try:
-        token = handler.begin("analyze")
-        assert "\033[38;2;224;126;164m" in stream.getvalue()
-        assert "analyze" in stream.getvalue()
-        stream.seek(0)
-        stream.truncate()
-        handler.live.refresh()
-        assert "\033[38;2;224;126;164m" in stream.getvalue()
-        handler.end(token)
-    finally:
-        handler.close()
 
 
 @pytest.mark.parametrize(

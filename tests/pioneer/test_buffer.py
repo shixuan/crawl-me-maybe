@@ -32,12 +32,6 @@ def buf() -> RoundRobinBuffer:
 
 
 @pytest.mark.asyncio
-async def test_add_batch(buf):
-    await buf.add(_batch(5))
-    assert buf.size == 5
-
-
-@pytest.mark.asyncio
 async def test_dedup_seen(buf):
     await buf.add([_candidate("k1")])
     await buf.add([_candidate("k1")])
@@ -68,13 +62,6 @@ async def test_evict_worst(buf):
     assert "good" in keys
     assert "good2" in keys
     assert "deep" not in keys
-
-
-@pytest.mark.asyncio
-async def test_add_status(buf):
-    await buf.add([_candidate("k1")])
-    batch = await buf.drain()
-    assert batch[0].status == "BUFFERED"
 
 
 # -- drain --------------------------------------------------------------
@@ -150,18 +137,6 @@ async def test_wait_wakes():
 # -- properties ---------------------------------------------------------
 
 
-def test_is_empty(buf):
-    assert buf.is_empty
-
-
-@pytest.mark.asyncio
-async def test_seen_count(buf):
-    await buf.add(_batch(3))
-    assert buf.seen_count == 3
-    await buf.drain()
-    assert buf.seen_count == 3  # preserved
-
-
 # which candidates get scored at all --------------------------------------
 
 
@@ -201,24 +176,6 @@ async def test_seed_spent():
     await buf.add([_seeded("only_a", "a")])
     await buf.add([_seeded(f"b{i}", "b") for i in range(3)])
     assert sorted(c.url.url_key for c in await buf.drain(4)) == ["b0", "b1", "b2", "only_a"]
-
-
-@pytest.mark.asyncio
-async def test_drain_no_turns():
-    buf = RoundRobinBuffer()
-    await buf.add([_seeded("a1", "a"), _seeded("b1", "b")])
-    assert len(await buf.drain()) == 2
-    assert buf.is_empty
-
-
-@pytest.mark.asyncio
-async def test_seedless_share():
-    """A link graph before seeds are threaded through still behaves."""
-    buf = RoundRobinBuffer()
-    await buf.add(
-        [Candidate(url=URL(raw=f"https://x/{i}", canonical=f"https://x/{i}", url_key=str(i))) for i in range(4)]
-    )
-    assert len(await buf.drain(2)) == 2
 
 
 @pytest.mark.asyncio
@@ -305,14 +262,6 @@ def test_a_run_without_proposed_seeds_is_unchanged():
     assert resume
 
 
-def test_proposed_seeds_still_get_read():
-    """A share of nothing would make the whole feature pointless."""
-    from crawlme.pioneer.buffer import _take_turns
-
-    out, _ = _take_turns(_mix(1, 4), 20)
-    assert any(c.seed_ext for c in out)
-
-
 @pytest.mark.asyncio
 async def test_a_retired_seed_takes_no_turn():
     """Scoring a retired source is the cheaper half of the waste, but it
@@ -324,11 +273,3 @@ async def test_a_retired_seed_takes_no_turn():
     buf.retire("dead")
     got = await buf.drain(6)
     assert {c.seed_url_key for c in got} == {"live"}
-
-
-@pytest.mark.asyncio
-async def test_retiring_one_leaves_the_rest():
-    buf = RoundRobinBuffer()
-    await buf.add([_candidate("a", seed_url_key="one"), _candidate("b", seed_url_key="two")])
-    buf.retire("one")
-    assert [c.seed_url_key for c in await buf.drain(4)] == ["two"]

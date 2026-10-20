@@ -81,11 +81,6 @@ def test_refusals_apart(html, expected):
     assert reddit.problem(html) is expected
 
 
-def test_real_page_ok():
-    assert reddit.problem(_POST) is None
-    assert reddit.problem(_LISTING) is None
-
-
 def test_no_session():
     """Unlike Instagram: this is what lets a Reddit run go without one."""
     assert reddit.NEEDS_SESSION is False

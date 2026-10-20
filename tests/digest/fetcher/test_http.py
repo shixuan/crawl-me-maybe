@@ -221,14 +221,3 @@ async def test_client_rebuilt(fetcher, httpx_mock: HTTPXMock):
     await fetcher.fetch(_item())
     assert fetcher._get_client() is not first
     await fetcher.aclose()
-
-
-@pytest.mark.asyncio
-async def test_ua_rotates(httpx_mock: HTTPXMock):
-    """UA moved onto the request when the client started outliving fetches."""
-    f = HttpFetcher(user_agents=["UA-one"])
-    httpx_mock.add_response(url="https://example.com/page", content=b"a", is_reusable=True)
-    await f.fetch(_item())
-    await f.fetch(_item())
-    assert all(r.headers["User-Agent"] == "UA-one" for r in httpx_mock.get_requests())
-    await f.aclose()

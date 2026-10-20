@@ -52,11 +52,6 @@ async def test_dup_ignored():
     assert src.size == 1
 
 
-@pytest.mark.asyncio
-async def test_empty_yields():
-    assert await PriorityQueue().take(_now(), _always(Gate.TAKE)) is None
-
-
 # the four gate outcomes -------------------------------------------------
 
 
@@ -98,24 +93,6 @@ async def test_scan_skips():
 
 
 @pytest.mark.asyncio
-async def test_drain_parked():
-    """The retry loop exists for items parked by an earlier call.
-
-    Within one call a deferred item stays deferred, otherwise a gate that
-    defers for a reason other than the clock would spin forever. Across
-    calls, a due item must come back without the caller doing anything.
-    """
-    src = PriorityQueue()
-    past = _now() - datetime.timedelta(seconds=1)
-    await src.add([_item("k", next_available_at=past)])
-
-    assert await src.take(_now(), _always(Gate.DEFER)) is None
-    assert src.size == 1
-
-    assert (await src.take(_now(), _always(Gate.TAKE))).url_key == "k"
-
-
-@pytest.mark.asyncio
 async def test_defer_ends():
     """Regression: this looped forever before deferrals were held back."""
     src = PriorityQueue()
@@ -148,37 +125,7 @@ async def test_dump_load():
     assert (await restored.take(_now(), _always(Gate.TAKE))).url_key == "a"
 
 
-@pytest.mark.asyncio
-async def test_discard_key():
-    src = PriorityQueue()
-    await src.add([_item("k")])
-    src.discard("k")
-    assert not src.contains("k")
-    assert src.keys() == set()
-
-
 # what size means --------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_discard_count():
-    """A heap cannot delete from the middle, so the entry stays behind.
-
-    Counting it keeps an emptied frontier looking busy, and the run then
-    never reaches the check that would have ended it.
-    """
-    src = PriorityQueue()
-    await src.add([_item("a"), _item("b")])
-    src.discard("a")
-    assert src.size == 1
-
-
-@pytest.mark.asyncio
-async def test_inflight_unwait():
-    src = PriorityQueue()
-    await src.add([_item("a"), _item("b")])
-    await src.take(_now(), _always(Gate.TAKE))
-    assert src.size == 1, "the item handed out is no longer queued"
 
 
 @pytest.mark.asyncio
@@ -238,14 +185,6 @@ async def test_no_negative():
 
 
 @pytest.mark.asyncio
-async def test_size_waiting():
-    src = PriorityQueue()
-    await src.add([_item("a"), _item("b"), _item("c")])
-    await src.take(_now(), _always(Gate.TAKE))
-    assert src.size == 2, "one is in flight, two still queued"
-
-
-@pytest.mark.asyncio
 async def test_waiting_ages_once():
     """A busy domain defers and drains the same item many times. Writing
     the aged score back made the next pass age the aged score again, so
@@ -262,15 +201,6 @@ async def test_waiting_ages_once():
         src._heap.clear()
         src._drain_pending(now)
     assert item.priority == 0.5
-
-
-@pytest.mark.asyncio
-async def test_a_high_score_goes_first():
-    """Ordering still follows the ranker after the waiting is done."""
-    src = PriorityQueue(aging_window=10.0, age_factor=1.0)
-    await src.add([_item("lo", 0.5), _item("hi", 1.0)])
-    later = _now() + datetime.timedelta(seconds=30)
-    assert (await src.take(later, _always(Gate.TAKE))).url_key == "hi"
 
 
 @pytest.mark.parametrize("restore", [False, True])

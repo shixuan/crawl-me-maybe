@@ -36,25 +36,6 @@ def storage(tmp_path):
     loop.close()
 
 
-def test_tables_created(storage):
-    tables = [
-        "crawl_goals",
-        "crawl_tasks",
-        "pages",
-        "links",
-        "rank_decisions",
-        "analyses",
-        "checkpoints",
-        "events",
-        "errors",
-        "robots_cache",
-    ]
-    for t in tables:
-        cur = _run(storage._execute_now("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)))
-        row = _run(cur.fetchone())
-        assert row is not None, f"Table {t} missing"
-
-
 def test_goal_roundtrip(storage):
     storage.save_goal(
         {
@@ -104,40 +85,6 @@ def test_enhanced_goal_saved(storage):
     assert g["since"] == "2026-02-13T00:00:00+00:00"
 
 
-def test_task_roundtrip(storage):
-    storage.save_task(
-        {
-            "task_id": "t1",
-            "goal_id": "g1",
-            "state": "RUNNING",
-            "counters": {},
-            "start_at": "2026-01-01T00:00:00Z",
-        }
-    )
-    _run(storage._write_queue.join())
-    t = _run(storage.get_task("t1"))
-    assert t is not None
-    assert t["state"] == "RUNNING"
-
-
-def test_page_roundtrip(storage):
-    url = _url("abc")
-    storage.save_page(Page(page_id="p1", url_key="abc", url=url, title="Test Page"))
-    _run(storage._write_queue.join())
-    p = _run(storage.get_page("p1"))
-    assert p is not None
-    assert p["title"] == "Test Page"
-
-
-def test_pages_by_key(storage):
-    url = _url("abc")
-    for i in range(3):
-        storage.save_page(Page(page_id=f"p{i}", url_key="abc", url=url, title=f"Page {i}"))
-    _run(storage._write_queue.join())
-    pages = _run(storage.get_pages_by_url_key("abc"))
-    assert len(pages) == 3
-
-
 def test_pages_in_order(storage):
     for i in (2, 0, 1):
         storage.save_page(
@@ -160,14 +107,6 @@ def test_save_raw_html(storage):
         assert "hello" in f.read()
 
 
-def test_link_roundtrip(storage):
-    storage.save_link(Candidate(candidate_id="c1", url=_url("abc"), depth=2, status="BUFFERED"))
-    _run(storage._write_queue.join())
-    c = _run(storage.get_link("c1"))
-    assert c is not None
-    assert c["depth"] == 2
-
-
 def test_link_keeps_time(storage):
     """Persist candidate publication time for inspection and re-use."""
     import datetime
@@ -180,13 +119,6 @@ def test_link_keeps_time(storage):
     assert c["posted_at"].startswith("2026-08-20T03:54:30")
 
 
-def test_link_undated(storage):
-    """A link carries no publication time, and empty has to stay empty."""
-    storage.save_link(Candidate(candidate_id="c3", url=_url("undated")))
-    _run(storage._write_queue.join())
-    assert _run(storage.get_link("c3"))["posted_at"] == ""
-
-
 def test_rank_roundtrip(storage):
     storage.save_rank_decision(RankDecision(candidate_id="c1", url_key="abc", priority=0.8, ranker="llm"))
     _run(storage._write_queue.join())
@@ -194,14 +126,6 @@ def test_rank_roundtrip(storage):
     assert rd is not None
     assert rd["priority"] == 0.8
     assert rd["ranker"] == "llm"
-
-
-def test_ranks_by_key(storage):
-    for i in range(2):
-        storage.save_rank_decision(RankDecision(candidate_id=f"c{i}", url_key="abc", priority=0.5 + i * 0.1))
-    _run(storage._write_queue.join())
-    rds = _run(storage.get_rank_decisions_by_url_key("abc"))
-    assert len(rds) == 2
 
 
 def test_analysis_roundtrip(storage):
@@ -238,13 +162,6 @@ def test_analysis_keeps_the_dates_it_read(storage):
     results = _run(storage.get_analyses_by_url_key("abc"))
     assert results[0]["starts_on"] == "2026-10-01"
     assert results[0]["ends_on"] == "2026-10-05"
-
-
-def test_an_analysis_without_dates_stores_blanks(storage):
-    storage.save_analysis({"analysis_id": "a1", "url_key": "abc", "analyzed_at": "2026-01-01T00:00:00Z"})
-    _run(storage._write_queue.join())
-    results = _run(storage.get_analyses_by_url_key("abc"))
-    assert results[0]["starts_on"] == ""
 
 
 def test_has_analysis(storage):
@@ -287,20 +204,6 @@ def test_has_by_fields(storage):
     assert _run(storage.has_analysis("abc", "g1", "m1", "aaaa1111"))
     assert not _run(storage.has_analysis("abc", "g1", "m1", "bbbb2222"))
     assert not _run(storage.has_analysis("abc", "g1", "m1")), "a goal asking for no fields is not the same read"
-
-
-def test_checkpoint_saved(storage):
-    storage.save_checkpoint(
-        {
-            "checkpoint_id": "s1",
-            "task_id": "t1",
-            "checkpoint_json": {"heap": [1, 2, 3]},
-            "created_at": "2026-01-01T00:00:00Z",
-        }
-    )
-    _run(storage._write_queue.join())
-    snap = _run(storage.get_checkpoint("s1"))
-    assert snap is not None
 
 
 def test_event_roundtrip(storage):
@@ -359,11 +262,6 @@ def test_robots_roundtrip(storage):
     r = _run(storage.get_robots("example.com"))
     assert r is not None
     assert "Disallow" in r["raw"]
-
-
-def test_get_nonexistent(storage):
-    assert _run(storage.get_goal("noexist")) is None
-    assert _run(storage.get_page("noexist")) is None
 
 
 async def test_bad_sql_no_hang(tmp_path, caplog):

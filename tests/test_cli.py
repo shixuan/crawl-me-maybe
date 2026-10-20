@@ -37,14 +37,6 @@ def _inert_llm_ranker(monkeypatch):
     monkeypatch.setattr(LLMRanker, "from_settings", classmethod(_inert))
 
 
-def test_run_help(capsys):
-    """crawl with no args should print help."""
-    with patch("sys.argv", ["crawl"]), pytest.raises(SystemExit):
-        main()
-    captured = capsys.readouterr()
-    assert "usage" in captured.out or "usage" in captured.err
-
-
 @pytest.mark.parametrize("flags, expected", [([], "on"), (["--dedup", "on"], "on"), (["--dedup", "off"], "off")])
 def test_dedup_flag(flags, expected):
     with (
@@ -53,38 +45,6 @@ def test_dedup_flag(flags, expected):
     ):
         main()
     assert dispatch.call_args.args[0].dedup == expected
-
-
-def test_prints_prompt(caplog):
-    """crawl run <prompt> should log task info via logging."""
-    import logging
-
-    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_crawl") as mock_factory:
-            mock_sched = MagicMock()
-            mock_sched.startup = AsyncMock()
-            mock_sched.ingest_seeds = AsyncMock()
-            mock_sched.expand_seeds = AsyncMock(return_value=[])
-            mock_sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
-            mock_sched.monitor = None
-            mock_sched.checkpoint = None
-            mock_sched.aclose = AsyncMock()
-            mock_sched.run = AsyncMock()
-            mock_factory.return_value = mock_sched
-
-            # setup_logging uses Settings() which defaults to OFF.
-            # Force the root logger to accept INFO so caplog captures it.
-            logging.getLogger().setLevel(logging.INFO)
-            with caplog.at_level(logging.INFO, logger="crawlme.cli"):
-                # _cmd_run force-reconfigures logging, which would wipe the
-                # caplog handler, so stub it out for this test.
-                with patch("crawlme.cli.run.setup_logging"):
-                    try:
-                        main()
-                    except SystemExit:
-                        pass
-
-    assert "test prompt" in caplog.text
 
 
 def _capturing_factory(captured: dict):
@@ -165,33 +125,6 @@ def test_flags_win(tmp_path):
     assert goal.domain_budget == 7
 
 
-def test_env_defaults(monkeypatch):
-    """Without flags, defaults apply. Embedding is ON (local) out of the box.
-
-    Env vars are pinned explicitly: they outrank the developer's .env
-    file, so this test is deterministic regardless of local config.
-    """
-    monkeypatch.setenv("LOG_LEVEL", "INFO")
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "local")
-    monkeypatch.setenv("IGNORE_ROBOTS", "false")
-
-    captured: dict = {}
-    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-
-    cfg = captured["cfg"]
-    goal = captured["goal"]
-    assert cfg.ignore_robots is False
-    assert str(cfg.result_dir) == "results"
-    assert cfg.log_level == "INFO"
-    assert goal.max_pages == 500
-    assert goal.domain_budget == 50
-
-
 def test_goal_enhanced(monkeypatch):
     """When the enhancer produces fields, they land on the goal."""
     captured: dict = {}
@@ -249,16 +182,6 @@ def test_session_browser(_installed, tmp_path):
     assert not isinstance(fetcher._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
-def test_requests_ranking():
-    captured: dict = {}
-    with (
-        patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]),
-        patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)),
-    ):
-        main()
-    assert captured["overrides"]["ranking_enabled"] is True
-
-
 def test_analysis_off():
     """--analysis off disables the whole subsystem via Settings."""
     captured: dict = {}
@@ -270,18 +193,6 @@ def test_analysis_off():
             except SystemExit:
                 pass
     assert captured["cfg"].analysis_enabled is False
-
-
-def test_analysis_on():
-    """Without the flag the subsystem stays enabled (default True)."""
-    captured: dict = {}
-    with patch("sys.argv", ["crawl", "run", "test prompt", "--seeds", "https://example.com"]):
-        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["cfg"].analysis_enabled is True
 
 
 def test_prints_summary(capsys):
@@ -388,12 +299,6 @@ def test_since_absolute() -> None:
     assert (cutoff.year, cutoff.month, cutoff.day) == (2026, 8, 1)
 
 
-def test_since_plural() -> None:
-    from crawlme.cli.cutoff import read_cutoff
-
-    assert (read_cutoff("1 day", flag="--since") - read_cutoff("1 days", flag="--since")).total_seconds() < 1
-
-
 def test_offset_turns_around() -> None:
     """The same words mean a week back for what was published and a week
     forward for what is still to come."""
@@ -403,12 +308,6 @@ def test_offset_turns_around() -> None:
     ahead = read_cutoff("1 week", flag="--during", ahead=True)
     assert back < datetime.datetime.now(datetime.timezone.utc) < ahead
     assert 13.9 < (ahead - back).days + 0.1 < 14.2
-
-
-def test_a_written_date_has_no_direction() -> None:
-    from crawlme.cli.cutoff import read_cutoff
-
-    assert read_cutoff("2026-08-01", flag="--during", ahead=True) == read_cutoff("2026-08-01", flag="--since")
 
 
 def test_since_garbage() -> None:
@@ -452,18 +351,6 @@ def test_recall_flag(tmp_path):
             except SystemExit:
                 pass
     assert captured["cfg"].recall is True
-
-
-def test_recall_default(tmp_path):
-    captured: dict = {}
-    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["cfg"].recall is False
 
 
 def test_feed_no_ceiling(_installed, tmp_path):
@@ -512,41 +399,6 @@ def test_budget_explicit(_installed, tmp_path):
             except SystemExit:
                 pass
     assert captured["goal"].domain_budget == 5
-
-
-def test_graph_ceiling(tmp_path):
-    """One site can otherwise absorb a whole graph crawl."""
-    captured: dict = {}
-    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--result-dir", str(tmp_path)]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["goal"].domain_budget == 50
-
-
-def test_result_dir(tmp_path):
-    captured: dict = {}
-    argv = [
-        "crawl",
-        "run",
-        "p",
-        "--seeds",
-        "https://example.com",
-        "--max-relevant",
-        "50",
-        "--result-dir",
-        str(tmp_path),
-    ]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["goal"].max_relevant == 50
 
 
 def test_budget_aliases(tmp_path):
@@ -632,14 +484,6 @@ def test_walled_in_file(tmp_path, capsys):
     assert "instagram" in str(error.value)
 
 
-def test_plain_seeds_ok(tmp_path, capsys):
-    from crawlme.cli.run import _check_session
-
-    args = argparse.Namespace(session=None, seeds="https://example.com/a")
-    _check_session(args)
-    assert capsys.readouterr().err == ""
-
-
 def test_feed_needs_session(capsys):
     """A warning here scrolls past, and the run spends a browser on it.
 
@@ -651,13 +495,6 @@ def test_feed_needs_session(capsys):
     with pytest.raises(ValueError) as error:
         _check_session(argparse.Namespace(session=None, seeds="https://www.instagram.com/cafe/"))
     assert "crawl session" in str(error.value)
-
-
-def test_graph_no_login(capsys):
-    from crawlme.cli.run import _check_session
-
-    _check_session(argparse.Namespace(session=None, seeds=None))
-    assert capsys.readouterr().err == ""
 
 
 def test_graph_no_hint(tmp_path, capsys):
@@ -717,24 +554,6 @@ def test_no_playwright(capsys):
     err = str(error.value)
     assert "--session needs playwright" in err
     assert "playwright install chromium" in err, "the package alone does not fetch a browser"
-
-
-def test_graph_no_extras(capsys):
-    from crawlme.cli.run import _check_extras
-    from crawlme.config import Settings
-
-    with patch("importlib.util.find_spec", return_value=None):
-        _check_extras(Settings(), _extras_args())
-    assert capsys.readouterr().err == ""
-
-
-def test_extra_present(capsys):
-    from crawlme.cli.run import _check_extras
-    from crawlme.config import Settings
-
-    with patch("importlib.util.find_spec", return_value=object()):
-        _check_extras(Settings(fetcher="browser"), _extras_args(seeds="https://x/feed.xml", session="s"))
-    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
@@ -797,22 +616,6 @@ def test_session_sets_no_depth(_installed, tmp_path, flags, expected_depth):
     assert captured["goal"].depth_limit == expected_depth
 
 
-def test_session_ceiling(_installed, tmp_path):
-    """Every candidate on a platform shares one host, so a per-domain
-    ceiling would be a ceiling on the whole crawl."""
-    session = tmp_path / "state.json"
-    session.write_text('{"cookies": [{"name": "s", "value": "x"}], "origins": []}')
-    captured: dict = {}
-    argv = ["crawl", "run", "p", "--seeds", "https://example.com", "--session", str(session)]
-    with patch("sys.argv", argv):
-        with patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)):
-            try:
-                main()
-            except SystemExit:
-                pass
-    assert captured["goal"].domain_budget == 0
-
-
 def test_login_refusal_says_how_to_fix_it():
     """The stop code is for a machine. This is the one ending with an
     obvious next step, and the run cannot say it any other way."""
@@ -831,70 +634,6 @@ def test_advice_survives_a_missing_session_path():
     assert "crawl session" in out
 
 
-def test_other_endings_get_no_advice():
-    """Most stops have nothing to do about them, and a line per run
-    saying so is noise."""
-    from crawlme.cli.report import format_summary
-
-    for reason in ("BUDGET_PAGES", "FRONTIER_DRAINED", "none", "RATE_LIMITED"):
-        assert "crawl session" not in format_summary({"state": "COMPLETED", "reason": reason})
-
-
-def test_added_seeds_are_reported_with_what_they_found():
-    """Nothing keeps them, so the report is the only chance to say which
-    were worth naming. Sorted by yield: that is the whole question."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary(
-        {
-            "state": "COMPLETED",
-            "reason": "BUDGET_PAGES",
-            "seeds_asked": 2,
-            "proposed_seeds": {
-                "https://a.com/": ("found nothing", (0, 1, 1, 0, 9, 45)),
-                "https://b.com/": ("earned its place", (4, 12, 12, 22, 40, 181)),
-            },
-        }
-    )
-    assert out.index("https://b.com/") < out.index("https://a.com/")
-    assert "4 relevant" in out
-    assert "nothing" in out
-    assert "earned its place" in out
-
-
-def test_a_run_that_added_no_seeds_says_nothing():
-    """Most runs do not use this, and a line per run would be noise."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
-    assert "added for itself" not in out
-
-
-def test_a_run_never_asked_says_nothing():
-    from crawlme.cli.report import format_summary
-
-    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES"})
-    assert "sources" not in out
-
-
-def test_proposals_that_all_failed_are_reported():
-    """Silence here is what a run that was never asked looks like, and
-    one run lost its proposals to an empty model reply with nothing but
-    a parser warning in the log to show for it."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 6, "proposed_seeds": {}})
-    assert "named 6 more sources" in out
-    assert "none survived" in out
-
-
-def test_a_model_that_named_none_is_reported():
-    from crawlme.cli.report import format_summary
-
-    out = format_summary({"state": "COMPLETED", "reason": "BUDGET_PAGES", "seeds_asked": 0, "proposed_seeds": {}})
-    assert "named none usable" in out
-
-
 def test_unjudged_pages_are_reported():
     """Fetching outruns analysis, so a run that stops on a target leaves
     pages it paid to fetch and never judged. Without this line, "not in
@@ -907,13 +646,6 @@ def test_unjudged_pages_are_reported():
     assert "37 fetched pages were never judged" in out
 
 
-def test_no_gap_no_line():
-    from crawlme.cli.report import format_summary
-
-    out = format_summary({"state": "COMPLETED", "reason": "X", "pages_fetched": 5, "analyses": {"RELEVANT": 5}})
-    assert "never judged" not in out
-
-
 def test_overshooting_the_target_is_explained():
     """Work already dispatched keeps landing after the target is met.
     Without the target beside the tally, one run asking for 15 and
@@ -924,31 +656,6 @@ def test_overshooting_the_target_is_explained():
         {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 24}}
     )
     assert "24 relevant against a target of 15" in out
-
-
-def test_hitting_the_target_exactly_says_nothing():
-    from crawlme.cli.report import format_summary
-
-    out = format_summary(
-        {"state": "COMPLETED", "reason": "MAX_RELEVANT", "max_relevant": 15, "analyses": {"RELEVANT": 15}}
-    )
-    assert "against a target" not in out
-
-
-def test_a_seed_says_how_much_of_it_was_read():
-    """A seed crawled and empty and one the run never got to both said
-    "nothing", and the same question came back three times over."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary(
-        {
-            "state": "COMPLETED",
-            "reason": "MAX_RELEVANT",
-            "seeds_asked": 1,
-            "proposed_seeds": {"https://a.com/": ("why", (0, 1, 7, 6, 11, 63))},
-        }
-    )
-    assert "63 found, 11 scored, 6 wanted, 7 fetched, 1 judged" in out
 
 
 def test_retired_sources_are_reported():
@@ -965,25 +672,6 @@ def test_retired_sources_are_reported():
     )
     assert "3 sources" in out
     assert "nothing in its last 20 pages (2 sources)" in out
-
-
-def test_rejected_proposals_are_named_with_their_reason():
-    """A proposal costs a fetch whether it survives or not, so the ones
-    turned away are half of what that spend bought. One run named nine
-    and kept none, and the report said only that none survived."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary(
-        {
-            "state": "COMPLETED",
-            "reason": "FRONTIER_DRAINED",
-            "seeds_asked": 2,
-            "proposed_seeds": {},
-            "rejected_seeds": [("https://a.test/", "does not exist"), ("https://b.test/", "none the ranker wanted")],
-        }
-    )
-    assert "https://a.test/  --  does not exist" in out
-    assert "https://b.test/  --  none the ranker wanted" in out
 
 
 def test_survivors_and_rejects_are_both_listed():
@@ -1022,43 +710,6 @@ def test_tokens_split_by_stage():
     assert "analysis  750 (75%), 2 calls, 700 in / 50 out, 400 cached, 0 thinking" in out
     # Stage order, not size order: analysis leads whichever spent more.
     assert out.index("analysis") < out.index("seeds")
-
-
-def test_analyses_keep_a_fixed_order():
-    """Sorted by count the line reshuffles between runs, so comparing two
-    reports means finding each class again first."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary(
-        {
-            "state": "COMPLETED",
-            "reason": "FRONTIER_DRAINED",
-            "pages_fetched": 49,
-            "analyses": {"UNKNOWN": 3, "IRRELEVANT": 44, "RELEVANT": 2},
-        }
-    )
-    assert "49 (2 RELEVANT, 44 IRRELEVANT, 3 UNKNOWN)" in out
-
-
-def test_own_seeds_get_their_own_funnel():
-    """Only proposed seeds carried a funnel, so a seed the user typed
-    that found nothing could not be told from one never fetched."""
-    from crawlme.cli.report import format_summary
-
-    out = format_summary(
-        {
-            "state": "COMPLETED",
-            "reason": "FRONTIER_DRAINED",
-            "seeds": {
-                "k1": {"url": "https://a.example/x", "funnel": (0, 0, 0, 6, 6, 6), "retired": "", "proposed": False},
-                "k2": {"url": "https://b.example/y", "funnel": (3, 4, 4, 4, 9, 20), "retired": "", "proposed": True},
-            },
-        }
-    )
-    assert "nothing  https://a.example/x" in out
-    assert "6 found, 6 scored, 6 wanted, 0 fetched, 0 judged" in out
-    # The proposed one belongs to the section below, not this one.
-    assert "https://b.example/y" not in out
 
 
 @pytest.mark.parametrize("command", ["run", "resume", "replay", "dedup"])

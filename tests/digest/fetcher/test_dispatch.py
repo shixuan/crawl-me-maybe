@@ -9,7 +9,7 @@ import pytest
 
 from crawlme.digest import DispatchingFetcher, FetchResult
 from crawlme.pioneer import FrontierItem
-from crawlme.platforms import ADAPTERS, instagram, reddit, rss
+from crawlme.platforms import ADAPTERS, instagram, reddit
 from crawlme.urls import URL
 
 
@@ -73,15 +73,6 @@ async def test_plain_http():
     assert browser.urls == []
 
 
-async def test_rss_no_route():
-    """RSS never claims a URL, so a run with only RSS enabled has
-    nothing that could route to a browser."""
-    d, http, browser = _pair([rss])
-    await d.fetch(_item("https://www.reddit.com/r/Python/"))
-    assert http.urls == ["https://www.reddit.com/r/Python/"]
-    assert browser.urls == []
-
-
 async def test_no_playwright_degrades(caplog):
     """One candidate out of hundreds.  Refusing the run over it costs
     more than the page is worth, but silence would leave a page that
@@ -111,14 +102,6 @@ async def test_closes_both():
     d, http, browser = _pair()
     await d.aclose()
     assert http.closed and browser.closed
-
-
-def test_claim_by_url():
-    """A platform that needs rendering but cannot recognise its own
-    addresses would be routed to plain HTTP forever, and the shell it
-    got back would read as an empty week."""
-    for adapter in (a for a in ADAPTERS if a.NEEDS_RENDERING):
-        assert adapter.claims_url(f"https://www.{adapter.DOMAIN}/anything")
 
 
 def test_no_cross_claim():

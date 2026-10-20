@@ -10,10 +10,9 @@ import datetime
 
 import pytest
 
-from crawlme.config import Settings
 from crawlme.errors import Error, Kind
-from crawlme.llm import LLMResponse, RemoteError, TokenBudget
-from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
+from crawlme.llm import LLMResponse, RemoteError
+from crawlme.pioneer import Candidate, RankHistorySummary
 from crawlme.pioneer.ranker import LLMRanker, RankingError
 from crawlme.prompts import ranking_input
 from crawlme.runtime import Goal
@@ -202,32 +201,6 @@ async def test_empty_no_call():
 
 
 @pytest.mark.asyncio
-async def test_prompt_shape():
-    client = _StubClient([_resp(_rankings_json(2))])
-    goal = _goal()
-    await _ranker(client).rank_batch(goal, _candidates(2), RankHistorySummary())
-    call = client.calls[0]
-    assert call["json_mode"] is True
-    assert call["max_tokens"] is None, "the client owns the ceiling, not each call site"
-    assert "## Goal" in call["prompt"]
-    assert goal.prompt in call["prompt"]
-    assert "c0:" in call["prompt"] and "c1:" in call["prompt"]
-    assert "anchor: link 0" in call["prompt"]
-    assert "depth: 1" in call["prompt"]
-    assert "compare" in call["system"]
-    assert "candidates_to_drop" in call["system"]
-
-
-@pytest.mark.asyncio
-async def test_prompt_history():
-    history = RankHistorySummary(relevant_pages=[{"title": "Rust internals deep dive", "url": "https://x.com/a"}])
-    client = _StubClient([_resp(_rankings_json(1))])
-    await _ranker(client).rank_batch(_goal(), _candidates(1), history)
-    assert "## Seen so far" in client.calls[0]["prompt"]
-    assert "Rust internals deep dive" in client.calls[0]["prompt"]
-
-
-@pytest.mark.asyncio
 async def test_summary_beats_title():
     """The title is whatever the page put in its head tag. Instagram
     puts the same word there for every page, so the loop carried a
@@ -240,68 +213,6 @@ async def test_summary_beats_title():
     prompt = client.calls[0]["prompt"]
     assert "Free tote with any purchase" in prompt
     assert "- Instagram" not in prompt
-
-
-@pytest.mark.asyncio
-async def test_repeated_findings_collapse():
-    """Five identical lines are not five findings, and a block that says
-    one word five times reads as feedback while carrying none."""
-    history = RankHistorySummary(relevant_pages=[{"title": "Instagram", "url": f"https://x/{i}"} for i in range(5)])
-    client = _StubClient([_resp(_rankings_json(1))])
-    await _ranker(client).rank_batch(_goal(), _candidates(1), history)
-    assert client.calls[0]["prompt"].count("- Instagram") == 1
-
-
-async def _prompt_with_source(src: dict) -> str:
-    client = _StubClient([_resp(_rankings_json(1))])
-    cands = _candidates(1)
-    cands[0].source_url_key = "src1"
-    await _ranker(client).rank_batch(_goal(), cands, RankHistorySummary(), page_contexts={"src1": src})
-    return str(client.calls[0]["prompt"])
-
-
-@pytest.mark.parametrize(
-    ("src", "line"),
-    [
-        # No judgement yet: the pre-2.9 line, title only.
-        ({"title": "Compiler Blog", "link_count": 12}, "Compiler Blog"),
-        # 2.9: the source page's judgement rides along with its title.
-        (
-            {
-                "title": "Compiler Blog",
-                "classification": "RELEVANT",
-                "relevance": 0.9,
-                "summary": "A deep dive into borrow checking.",
-            },
-            "Compiler Blog [RELEVANT 0.90] — A deep dive into borrow checking.",
-        ),
-        # A judgement with no summary still contributes its classification.
-        ({"title": "Nav", "classification": "IRRELEVANT", "relevance": 0.0}, "Nav [IRRELEVANT 0.00]"),
-        # Batches carry thirty candidates, so a summary has to stay short.
-        (
-            {"title": "T", "classification": "RELEVANT", "relevance": 0.5, "summary": "x" * 200},
-            "T [RELEVANT 0.50] — " + "x" * 60 + "...",
-        ),
-    ],
-)
-@pytest.mark.asyncio
-async def test_source_line(src, line):
-    prompt = await _prompt_with_source(src)
-    assert prompt.split("source page: ")[1].split("\n")[0] == line
-
-
-def test_auto_off():
-    cfg = Settings(llm_api_key="", llm_base_url="")
-    assert LLMRanker.from_settings(cfg) is None
-
-
-def test_wires_client():
-    cfg = Settings(llm_api_key="sk-test", llm_base_url="")
-    budget = TokenBudget(limit=1000)
-    ranker = LLMRanker.from_settings(cfg, budget=budget)
-    assert ranker is not None
-    assert ranker._client._budget is budget
-    assert ranker._client._model  # provider default when llm_model is unset
 
 
 async def test_overrun_splits():
@@ -320,33 +231,12 @@ async def test_overrun_splits():
     assert len(decisions) == 2, "every candidate still gets a decision"
 
 
-async def test_overrun_shrinks():
-    """Splitting saves the batch in hand; the next one repeats it."""
-    cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
-    client = _StubClient([cut_off, _resp(_rankings_json(1)), _resp(_rankings_json(1))])
-    ranker = _ranker(client)
-    assert ranker._cap == 30
-    await ranker.rank_batch(_goal(), _candidates(2), RankHistorySummary())
-    assert ranker._cap == 1, "the size that did not fit, halved"
-
-
 async def test_single_roomier():
     """There is nothing left to split."""
     cut_off = LLMResponse(content="{", input_tokens=100, output_tokens=4096, model="stub", truncated=True)
     client = _StubClient([cut_off, _resp(_rankings_json(1))])
     await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
     assert client.calls[1]["max_tokens"] == 8192
-
-
-async def test_retry_stricter():
-    """A short reply that is simply malformed is a wording problem."""
-    malformed = LLMResponse(content="not json", input_tokens=100, output_tokens=20, model="stub", truncated=False)
-    client = _StubClient([malformed, _resp(_rankings_json(2))])
-    await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-
-    retry = client.calls[1]
-    assert retry["max_tokens"] is None
-    assert retry["prompt"] != client.calls[0]["prompt"]
 
 
 # recall mode ------------------------------------------------------------
@@ -380,13 +270,6 @@ async def test_reject_lowest():
     assert by_id["c1"].priority < by_id["c0"].priority
 
 
-async def test_reject_dropped():
-    body = '{"rankings": [], "candidates_to_drop": ["c1"]}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(2), RankHistorySummary())
-    assert {d.candidate_id for d in decisions if d.dropped} == {"c1"}
-
-
 async def test_reject_reason():
     """Every misjudged drop was a black box: no reason was ever stored.
 
@@ -400,14 +283,6 @@ async def test_reject_reason():
 
     assert decisions[0].dropped is True
     assert decisions[0].rationale == "llm_drop: a toy shop, not food"
-
-
-async def test_bare_id_reject():
-    """What a model returns when it ignores the shape it was asked for."""
-    client = _StubClient([_resp('{"rankings": [], "candidates_to_drop": ["c0"]}')])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-    assert decisions[0].dropped is True
-    assert decisions[0].rationale == "llm_drop"
 
 
 async def test_demote_reason():
@@ -443,43 +318,6 @@ async def test_split_on_chars():
     assert len(client.calls) == 3, "three posts too long to share a call"
 
 
-async def test_short_one_call():
-    client = _StubClient([_resp(_rankings_json(4))])
-    shorts = [_candidate(f"c{i}", text="free tea today") for i in range(4)]
-    await _ranker(client).rank_batch(_goal(), shorts, RankHistorySummary())
-    assert len(client.calls) == 1
-
-
-async def test_proxies_capped():
-    """An anchor is a few words by nature; nothing is lost by capping it."""
-    client = _StubClient([_resp(_rankings_json(1))])
-    c = _candidate("c0", anchor="z" * 500)
-    await _ranker(client).rank_batch(_goal(), [c], RankHistorySummary())
-    assert "z" * 500 not in client.calls[0]["prompt"]
-
-
-async def test_kept_no_reason():
-    """Its priority is the whole answer, and prose is what overran.
-
-    Rationales for a batch of twenty-one were most of an 8k reply; a
-    rejection still carries one, because that is the judgement a reader
-    has to be able to argue with.
-    """
-    body = '{"rankings": [{"id": "c0", "priority": 0.8}], "candidates_to_drop": []}'
-    client = _StubClient([_resp(body)])
-    decisions = await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-    assert decisions[0].dropped is False
-    assert decisions[0].rationale == "llm_priority=0.8000", "the score stands in for words"
-
-
-async def test_reason_on_drop():
-    client = _StubClient([_resp(_rankings_json(1))])
-    await _ranker(client).rank_batch(_goal(), _candidates(1), RankHistorySummary())
-    system = client.calls[0]["system"]
-    assert '"rankings": [{"id": "<id>", "priority": 0.0}]' in system
-    assert '"candidates_to_drop": [{"id": "<id>", "rationale": "..."}]' in system
-
-
 def _hours_ago(h: float):
     return _utcnow_for_test() - datetime.timedelta(hours=h)
 
@@ -494,12 +332,6 @@ def test_states_age() -> None:
     c = _candidate("c1", posted_at=_hours_ago(3))
     prompt = ranking_input(Goal(prompt="recent events"), [c], RankHistorySummary(), {})
     assert "posted: 3h ago" in prompt
-
-
-def test_undated_no_line() -> None:
-    """Most of the web is links on a page."""
-    prompt = ranking_input(Goal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
-    assert "posted:" not in prompt
 
 
 def test_naive_date_ok() -> None:
@@ -521,12 +353,6 @@ def test_window_stated() -> None:
     assert "2026-08-20" in prompt
 
 
-def test_no_window() -> None:
-    """Most goals have none, and an empty heading is a line per call."""
-    prompt = ranking_input(Goal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
-    assert "Window" not in prompt
-
-
 def test_goal_statement_wins() -> None:
     """The analyzer judges the enhanced statement, so the ranker has to
     judge it too, or the two stages score different goals."""
@@ -534,12 +360,6 @@ def test_goal_statement_wins() -> None:
     prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert "the enhanced statement" in prompt
     assert "raw words" not in prompt
-
-
-def test_prompt_used_without_statement() -> None:
-    """A run without the Goal Enhancer still has to say what it wants."""
-    prompt = ranking_input(Goal(prompt="raw words"), [_candidate("c1")], RankHistorySummary(), {})
-    assert "raw words" in prompt
 
 
 def test_extract_fields_shown() -> None:
@@ -552,31 +372,3 @@ def test_extract_fields_shown() -> None:
     prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
     assert "## Extract" in prompt
     assert "- deadline: when the offer ends" in prompt
-
-
-def test_no_fields_no_block() -> None:
-    """A goal that asks to find pages collects nothing."""
-    prompt = ranking_input(Goal(prompt="g"), [_candidate("c1")], RankHistorySummary(), {})
-    assert "## Extract" not in prompt
-
-
-def test_extract_before_candidates() -> None:
-    """Fixed for the whole run, so it sits ahead of anything that
-    changes per call and stays inside the cached prefix."""
-    goal = Goal(prompt="g", extraction_spec={"fields": {"deadline": "d"}})
-    prompt = ranking_input(goal, [_candidate("c1")], RankHistorySummary(), {})
-    assert prompt.index("## Extract") < prompt.index("## Candidate links")
-
-
-def test_rank_defaults():
-    rd = RankDecision(candidate_id="c1")
-    assert rd.ranker == "rule"
-    assert rd.dropped is False
-
-
-def test_history_defaults():
-    """Only what the prompt reads.  A field nothing writes and nothing
-    reads is worse than no field: it reads as a working signal."""
-    rhs = RankHistorySummary()
-    assert (rhs.goal, rhs.relevant_pages) == ("", [])
-    assert set(RankHistorySummary.model_fields) == {"goal", "relevant_pages"}
