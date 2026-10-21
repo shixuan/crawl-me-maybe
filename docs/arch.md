@@ -218,7 +218,11 @@ Checkpoint recovery creates a new run owner from saved state; see the
 an independently useful answer to the goal, with a summary, score, source quotes,
 tags, declared fields and optional dates. The page itself may be the single item.
 Irrelevant pages return an empty items array and a short rejection reason in `summary`.
-Object attributes and conditions stay together; distinct answers are separate.
+Analyzer distinguishes coherent source content from aggregated entries using the
+content and goal. A coherent source entry stays one item with its details and
+conditions. Aggregated entries are split when they independently answer the goal.
+Page URLs, publishers, names and paragraph boundaries do not determine item count.
+Fields, evidence and dates remain attached to the source entry they describe.
 Each field contains a value and a verbatim evidence span.
 The parser normalizes whitespace and checks evidence against `plain_text`. This
 does not independently verify the value. Fields without matching evidence are omitted.
