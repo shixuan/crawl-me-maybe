@@ -1,6 +1,7 @@
 # Engine execution
 
 Checked against the implementation on 2026-10-16.
+Page execution ownership updated on 2026-10-20.
 
 Engine executes a Pipeline and owns stop supervision, settlement deadlines and
 checkpoint timing. CrawlPipeline owns crawl preparation, stage composition, task
@@ -29,6 +30,7 @@ flowchart TB
     Context -->|execution callbacks| Crawl
     Context -->|execution callbacks| Replay
     Crawl --> Page[PagePipeline]
+    Page -->|updates| PageStates["RunState.page_states<br/>PageState records"]
     Crawl --> Dedup
     Replay --> Dedup
     Replay --> Analysis[AnalysisWorker]
@@ -36,6 +38,8 @@ flowchart TB
     Page --> Workers[Fetch / Persist / Discovery workers]
     Crawl --> Ranking[RankingWorker]
     PF --> CP[Checkpointer]
+    CP -->|dump / restore| RunState[RunState]
+    RunState -->|holds| PageStates
     Crawl -->|bind / restore / save| CP
     Engine -->|injected save callback| Crawl
     CP --> Storage[Storage]
@@ -97,8 +101,12 @@ PagePipeline prunes its own page context after page work and analysis completion
 It subscribes to Frontier's context keys through the existing observer so ranking
 completion and source retirement also release context. Pending dispatched work,
 active pages, retries and unranked/scoring candidates retain their context. Closing
-PagePipeline removes the subscription. CrawlPipeline registers dispatched work
+PagePipeline removes the subscription. CrawlPipeline calls PagePipeline.register
 before creating page tasks, preserving recovery if a task is canceled before it starts.
+RunState owns the page_states dictionary. PagePipeline registers and updates its
+PageState records and exposes pending_items for resumption. It has no checkpoint
+interface. RunState saves and restores the records; Tracker only updates counters
+and history.
 
 ## Startup and crawl lifecycle
 
@@ -141,7 +149,7 @@ pre-run token usage; restore then loads checkpointed execution data.
 
 ## Concurrent crawl execution
 
-CrawlPipeline prepares PagePipeline, dispatches saved `RunState.work` entries,
+CrawlPipeline prepares PagePipeline, dispatches its `pending_items()`,
 asks PagePipeline to start restored retries and launches two pumps. ErrorHandler watches the
 pump group and its abort event. Page-task exceptions and fatal retry failures
 reach the same event. Engine supervises the active crawl task, StopMonitor and the checkpoint timer.
@@ -197,41 +205,41 @@ one pump, and LLMRanker splits a drained batch into sequential calls as needed.
 
 ```mermaid
 flowchart TD
-    Input["PageInput(item, goal, task_id, events)"] --> Work["Retain page context<br/>find or create RunState.work[item_id]"]
-    Work --> Saved{"Saved page in work entry?"}
-    Saved -->|yes| Page["Load Page from restored work"]
+    Input["PageInput(item, goal, task_id, events)"] --> Work["PagePipeline.register(item)<br/>find PageState by item_id"]
+    Work --> Saved{"PageState.page present?"}
+    Saved -->|yes| Page["Use restored Page"]
     Saved -->|no| Fetch["FetchWorker.fetch<br/>robots checks, request slots and cooldown"]
     Fetch --> FetchOK{"FetchResult?"}
-    FetchOK -->|no| Failed["Count robots refusal or fetch error<br/>record SKIPPED / FAILED outcome<br/>remove work entry, return"]
+    FetchOK -->|no| Failed["Count robots refusal or fetch error<br/>record SKIPPED / FAILED outcome<br/>remove page state, return"]
     FetchOK -->|yes| Raw["PersistWorker.save_raw"]
     Raw --> Extract["Extractor.extract in a thread<br/>bounded by extract_timeout"]
-    Extract -->|timeout| Timeout["On timeout: count completed page<br/>record SKIPPED, remove work entry, return"]
+    Extract -->|timeout| Timeout["On timeout: count completed page<br/>record SKIPPED, remove page state, return"]
     Extract -->|success| Store["PersistWorker.save_extracted<br/>save payloads and Page row"]
     Store --> Published["Tracker.published<br/>update source age streak and check retirement"]
-    Published --> Mark["Save page, HTTP status and raw size in work"]
+    Published --> Mark["Set page state, status_code and response_size"]
     Mark --> CP1["Await checkpoint"] --> Page
     Page --> Open["Open PageBook association<br/>page URL to source seed"]
-    Open --> Analyzed{"analysis_done?"}
+    Open --> Analyzed{"analysis_processed?"}
     Analyzed -->|no| Analyze["AnalysisWorker.analyze<br/>wait for slot, then recheck context.can_finish(analysis)"]
     Analyze --> MarkAnalysis["Mark initial attempt done<br/>await checkpoint"] --> Discover
     Analyzed -->|yes| Discover["DiscoveryWorker.discover<br/>harvest saved HTML and payloads in a thread"]
-    Discover --> Tracked{"discovered flag set?"}
-    Tracked -->|no| Track["Tracker.discovered<br/>join listing status with verdict<br/>check source retirement, mark discovered"]
+    Discover --> Tracked{"discovery_recorded?"}
+    Tracked -->|no| Track["Tracker.discovered<br/>join listing status with verdict<br/>PagePipeline checks retirement and marks discovery_recorded"]
     Tracked -->|yes| Seed["Restore seed attribution on harvested candidates"]
     Track --> Filter
     Seed --> Filter["PreFilter each candidate<br/>scope, depth, dedup, robots and date rules"]
     Filter --> Buffer["Allowed candidates to unranked buffer<br/>queue link records in storage"]
-    Buffer --> Next{"next_url present and next_page flag absent?"}
-    Next -->|yes| Pagination["Filter continuation, enforce source pagination cap<br/>enqueue at same depth, priority 0.5<br/>mark next_page handled"] --> Complete
-    Next -->|no| Complete["record_outcome COMPLETED<br/>increment pages_fetched<br/>remove work, release/prune context<br/>await checkpoint"]
+    Buffer --> Next{"next_url present and pagination not processed?"}
+    Next -->|yes| Pagination["Filter continuation, enforce source pagination cap<br/>enqueue at same depth, priority 0.5<br/>mark pagination_processed"] --> Complete
+    Next -->|no| Complete["record_outcome COMPLETED<br/>increment pages_fetched<br/>remove page state, prune context<br/>await checkpoint"]
 
-    Analyze -. successful initial result .-> Apply["AnalysisWorker.apply<br/>stable result IDs, save_analysis, Tracker.analysis<br/>Tracker marks work analysis_done"]
+    Analyze -. successful initial result .-> Apply["AnalysisWorker.apply<br/>stable result IDs, save_analysis, Tracker.analysis"]
     Analyze -. recoverable failure .-> Retry["AnalysisWorker retry queue<br/>page flow continues"]
     Retry -. successful later result .-> Apply
-    Apply --> Feedback["Mark matching work.analysis_done<br/>notify PagePipeline to retire source and prune"]
+    Apply --> Feedback["Notify PagePipeline with page key and seed<br/>mark matching page_state.analysis_processed<br/>retire source and prune"]
 ```
 
-`analysis_done` means the initial stage was handled, not that a valid result exists.
+`analysis_processed` means the initial stage was handled, not that a valid result exists.
 An attempt can be skipped by policy, return no result or schedule a retry. Discovery
 still follows it. Retry results use the same result sink as initial successes.
 

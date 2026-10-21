@@ -80,11 +80,12 @@ async def test_retry_reaches_sink():
         error_handler=ErrorHandler(),
     )
     results = []
-    worker.bind_completion(results.append)
+    worker.bind_completion(lambda url_key, seed: results.append((url_key, seed)))
     try:
         assert await worker.analyze(_page(), Goal(prompt="test"), allowed=lambda: True) is None
         await asyncio.wait_for(worker.drain_pending(), timeout=3)
         assert len(results) == 1
+        assert results[0][0] == "p"
         saved = storage.save_analysis.call_args.args[0]
         assert saved["url_key"] == "p"
         assert saved["classification"] == "RELEVANT"

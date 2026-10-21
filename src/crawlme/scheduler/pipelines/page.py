@@ -20,7 +20,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
-from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Tracker, why_retire
+from crawlme.runtime import EventEmitter, EventType, Goal, PageState, RunState, Tracker, why_retire
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchFailure, FetchWorker, PersistWorker
 from crawlme.urls import Canonicalizer
@@ -80,7 +80,6 @@ class PagePipeline(Pipeline[PageInput, None]):
         self._prefilter = prefilter
         self._canonicalizer = canonicalizer
         self._tracking = tracking
-        self._active: dict[str, set[str]] = {}
         self._prepared = False
         self._unsubscribe: Callable[[], None] | None = None
         analysis.bind_completion(self.analysis_completed)
@@ -89,6 +88,15 @@ class PagePipeline(Pipeline[PageInput, None]):
     @property
     def run_state(self) -> RunState:
         return self._tracking.state
+
+    def register(self, item: FrontierItem) -> None:
+        """Register a page before its processing task starts."""
+        if item.item_id not in self.run_state.page_states:
+            self.run_state.page_states[item.item_id] = PageState(item=item)
+
+    def pending_items(self) -> list[FrontierItem]:
+        """Return the items whose page processing needs resuming."""
+        return [page_state.item for page_state in self.run_state.page_states.values()]
 
     def prepare(self, goal: Goal, task_id: str) -> None:
         """Bind analysis before checkpoint restore, without starting background work."""
@@ -230,41 +238,40 @@ class PagePipeline(Pipeline[PageInput, None]):
         if not self._prepared:
             self.prepare(goal, task_id)
             self.start()
-        work = self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
-        keys = self.retain_page(item)
+        self.register(item)
+        page_state = self.run_state.page_states[item.item_id]
         if events:
             events.emit(EventType.FETCH_STARTED, {"url_key": item.url_key, "depth": item.depth})
         try:
-            if "page" in work:
-                page = Page.model_validate(work["page"])
+            if page_state.page is not None:
+                page = page_state.page
             else:
                 fetched = await self.fetch_and_extract(item, task_id=task_id, events=events)
                 if fetched is None:
-                    self.run_state.work.pop(item.item_id, None)
+                    self.run_state.page_states.pop(item.item_id, None)
                     return
                 page = fetched.page
-                work["page"] = page.model_dump(mode="json")
-                work["status"] = fetched.result.status_code
-                work["size"] = len(fetched.result.raw)
+                page_state.page = page
+                page_state.status_code = fetched.result.status_code
+                page_state.response_size = len(fetched.result.raw)
                 await context.checkpoint()
-            keys.add(page.url_key)
 
             self.run_state.pages.open(
                 page.url_key,
                 page.url.canonical,
                 self.run_state.pages.seed_of(item.url_key, item.seed_url_key or item.url_key),
             )
-            if not work.get("analysis_done"):
+            if not page_state.analysis_processed:
                 if is_stale(page.published_at, goal.since):
                     logger.debug("analysis.skipped url_key=%s reason=stale", page.url_key)
                 else:
                     await self._analysis.analyze(page, goal, allowed=lambda: context.can_finish("analysis"))
-                work["analysis_done"] = True
+                page_state.analysis_processed = True
                 await context.checkpoint()
             if events:
                 events.emit(
                     EventType.FETCH_COMPLETED,
-                    {"url_key": item.url_key, "status": work["status"], "size": work["size"]},
+                    {"url_key": item.url_key, "status": page_state.status_code, "size": page_state.response_size},
                 )
                 events.emit(
                     EventType.PAGE_EXTRACTED,
@@ -277,9 +284,9 @@ class PagePipeline(Pipeline[PageInput, None]):
                 # Missing format dependencies stop the run rather than producing empty listings.
                 logger.error("fetch.adapter_dependency url_key=%s: %s", item.url_key, e)
                 raise
-            if not work.get("discovered"):
+            if not page_state.discovery_recorded:
                 self.discovered(page, item, harvest)
-                work["discovered"] = True
+                page_state.discovery_recorded = True
             else:
                 for candidate in harvest.candidates:
                     candidate.seed_url_key = item.seed_url_key or item.url_key
@@ -312,9 +319,9 @@ class PagePipeline(Pipeline[PageInput, None]):
                 n_allowed,
                 n_filtered,
             )
-            if harvest.next_url and not work.get("next_page"):
+            if harvest.next_url and not page_state.pagination_processed:
                 await self.enqueue_next_page(harvest.next_url, item, ctx, seed, goal)
-                work["next_page"] = True
+                page_state.pagination_processed = True
             if events and n_allowed > 0:
                 events.emit(
                     EventType.URL_DISCOVERED,
@@ -335,8 +342,7 @@ class PagePipeline(Pipeline[PageInput, None]):
                 (time.monotonic() - self.run_state.progress.started_at),
             )
 
-            self.run_state.work.pop(item.item_id, None)
-            self.release_page(item.item_id)
+            self.run_state.page_states.pop(item.item_id, None)
             self._prune()
             await context.checkpoint()
 
@@ -346,30 +352,23 @@ class PagePipeline(Pipeline[PageInput, None]):
             await self._frontier.record_outcome(item, "FAILED")
             raise
         finally:
-            self.release_page(item.item_id)
             self._prune()
 
-    def analysis_completed(self, seed: str | None) -> None:
+    def analysis_completed(self, url_key: str, seed: str | None) -> None:
+        for page_state in self.run_state.page_states.values():
+            if page_state.page is not None and page_state.page.url_key == url_key:
+                page_state.analysis_processed = True
         self.retire(seed)
         self._prune()
 
-    def retain_page(self, item: FrontierItem) -> set[str]:
-        keys = self._active.setdefault(item.item_id, {item.url_key})
-        keys.add(self.run_state.work.get(item.item_id, {}).get("page", {}).get("url_key", item.url_key))
-        return keys
-
-    def release_page(self, item_id: str) -> None:
-        self._active.pop(item_id, None)
-
     def _prune(self) -> None:
         if self._prepared:
-            active = set().union(*self._active.values())
-            # Dispatched tasks may not have entered run() yet. Their checkpoint
-            # entries also protect restored page context while other pages finish.
-            for work in self.run_state.work.values():
-                active.add(work["item"]["url_key"])
-                if "page" in work:
-                    active.add(work["page"]["url_key"])
+            active = {page_state.item.url_key for page_state in self.run_state.page_states.values()}
+            active.update(
+                page_state.page.url_key
+                for page_state in self.run_state.page_states.values()
+                if page_state.page is not None
+            )
             self._tracking.retain(active | self._analysis.pending_keys | self._frontier.context_keys())
 
     def discovered(self, page: Page, item: FrontierItem, harvest: Harvest) -> None:

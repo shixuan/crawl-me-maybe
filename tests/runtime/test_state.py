@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
-from crawlme.runtime import Goal, Limits, Progress, RunState, SeedState, Stats
+import json
+from copy import deepcopy
+
+from crawlme.digest import Page
+from crawlme.pioneer import FrontierItem
+from crawlme.runtime import Goal, Limits, PageState, Progress, RunState, SeedState, Stats
+from crawlme.urls import URL
 
 
 def _ctx() -> RunState:
     return RunState(limits=Limits(), progress=Progress(), stats=Stats())
+
+
+def _page_state() -> PageState:
+    url = URL(raw="https://example.com/p", canonical="https://example.com/p", url_key="p")
+    return PageState(item=FrontierItem(url=url, url_key="p"))
 
 
 def test_reset_counters():
@@ -45,6 +56,8 @@ def test_reset_keeps_prepared_seeds():
     state.pages.open("page", "https://example.com/page", "seed")
     state.page_contexts["page"] = {"title": "previous"}
     state.relevant_pages.append({"url": "https://example.com/page"})
+    page_state = _page_state()
+    state.page_states[page_state.item.item_id] = page_state
 
     state.reset(goal=Goal(prompt="test"))
 
@@ -53,6 +66,7 @@ def test_reset_keeps_prepared_seeds():
     assert state.pages.by_url("https://example.com/page") is None
     assert not state.page_contexts
     assert not state.relevant_pages
+    assert not state.page_states
     assert state.seeds_asked == 2
     assert state.proposed_seeds == {"seed": ("https://example.com/", "relevant source")}
     assert state.rejected_seeds == [("https://missing.example/", "unavailable")]
@@ -66,9 +80,34 @@ def test_states_do_not_share_data():
     first.relevant_pages.append({"url": "https://example.com/p"})
     first.proposed_seeds["seed"] = ("https://example.com/", "why")
     first.rejected_seeds.append(("https://missing.example/", "unavailable"))
+    page_state = _page_state()
+    first.page_states[page_state.item.item_id] = page_state
     assert not second.seeds
     assert second.pages.by_url("https://example.com/p") is None
     assert not second.page_contexts
     assert not second.relevant_pages
     assert not second.proposed_seeds
     assert not second.rejected_seeds
+    assert not second.page_states
+
+
+def test_page_progress_roundtrip():
+    state = _ctx()
+    pending = _page_state()
+    fetched = _page_state()
+    fetched.page = Page(url=fetched.item.url, url_key=fetched.item.url_key, plain_text="content")
+    fetched.status_code = 200
+    fetched.response_size = 100
+    fetched.analysis_processed = True
+    fetched.discovery_recorded = True
+    fetched.pagination_processed = True
+    state.page_states = {entry.item.item_id: entry for entry in (pending, fetched)}
+    snapshot = json.loads(json.dumps(state.dump()))
+    original = deepcopy(snapshot)
+
+    restored = _ctx()
+    restored.restore(snapshot)
+
+    assert restored.page_states == state.page_states
+    assert restored.page_states[fetched.item.item_id].page == fetched.page
+    assert snapshot == original

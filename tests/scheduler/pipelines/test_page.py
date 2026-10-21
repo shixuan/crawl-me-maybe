@@ -496,7 +496,7 @@ async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed
     worker._discovery.discover.assert_awaited_once_with(page, item.depth)
     worker._frontier.record_outcome.assert_awaited_once_with(item, "COMPLETED")
     assert worker.run_state.progress.pages_fetched == 1
-    assert not worker.run_state.work
+    assert not worker.pending_items()
 
 
 @pytest.mark.parametrize("finish_retry", [True, False])
@@ -573,7 +573,7 @@ async def test_page_releases_ranked_context():
         batch = await frontier.take_for_ranking(20)
         state = pipeline.run_state
         state.page_contexts = {"ranked-source": {"summary": "old"}, item.url_key: {"summary": "pending"}}
-        state.work[item.item_id] = {"item": item.model_dump(mode="json")}
+        pipeline.register(item)
         frontier.finish_ranking(batch)
         assert state.page_contexts == {item.url_key: {"summary": "pending"}}
         await pipeline.aclose()

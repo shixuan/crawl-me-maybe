@@ -125,7 +125,7 @@ class ReplayPipeline(Pipeline[ReplayInput, ReplayResult]):
 
         published = 0
 
-        def completed(seed: str | None) -> None:
+        def completed(url_key: str, seed: str | None) -> None:
             nonlocal published
             published += 1
 

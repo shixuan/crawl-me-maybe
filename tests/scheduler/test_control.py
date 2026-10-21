@@ -235,8 +235,8 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop):
         await asyncio.wait_for(entered.wait(), 2)
         await wait_until(
             lambda: (
-                len(scheduler.pipeline.run_state.work) == 2
-                and all("page" in work for work in scheduler.pipeline.run_state.work.values())
+                len(scheduler.pipeline._page.pending_items()) == 2
+                and all(state.page is not None for state in scheduler.pipeline.run_state.page_states.values())
             )
         )
         if stop == "tokens":

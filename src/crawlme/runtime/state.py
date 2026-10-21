@@ -1,4 +1,4 @@
-"""Run-scoped limits, progress and reporting state, reset in place by the scheduler."""
+"""Run-scoped execution progress and reporting state."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import time
 from typing import Any
 
 from crawlme.checkpoint import Checkpointable
+from crawlme.digest import Page
+from crawlme.pioneer import FrontierItem
 from crawlme.runtime.goal import Goal
 from crawlme.util import notify
 
@@ -180,13 +182,25 @@ class Stats:
 
 
 @dataclasses.dataclass
+class PageState:
+    item: FrontierItem
+    page: Page | None = None
+    status_code: int = 0
+    response_size: int = 0
+    # The initial analysis was handled or skipped. Retries belong to AnalysisWorker.
+    analysis_processed: bool = False
+    discovery_recorded: bool = False
+    pagination_processed: bool = False
+
+
+@dataclasses.dataclass
 class RunState(Checkpointable):
     """Run data shared by the engine, tracker and reporting; workers receive narrower inputs."""
 
     limits: Limits
     progress: Progress
     stats: Stats
-    work: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
+    page_states: dict[str, PageState] = dataclasses.field(default_factory=dict)
     pages: PageBook = dataclasses.field(default_factory=PageBook)
     seeds: dict[str, SeedState] = dataclasses.field(default_factory=lambda: collections.defaultdict(SeedState))
     page_contexts: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
@@ -247,7 +261,7 @@ class RunState(Checkpointable):
         )
         self.progress = Progress(started_at=time.monotonic())
         self.stats.reset()
-        self.work.clear()
+        self.page_states.clear()
         self.pages = PageBook()
         self.page_contexts.clear()
         self.relevant_pages.clear()
@@ -259,8 +273,17 @@ class RunState(Checkpointable):
         progress = dataclasses.asdict(self.progress)
         progress["started_at"] = max(0, time.monotonic() - self.progress.started_at)
         progress["in_flight"] = 0
+        page_states = []
+        for state in self.page_states.values():
+            entry = dataclasses.asdict(state)
+            entry["item"] = state.item.model_dump(mode="json", exclude_none=True)
+            if state.page is None:
+                entry.pop("page")
+            else:
+                entry["page"] = state.page.model_dump(mode="json", exclude_none=True)
+            page_states.append(entry)
         return {
-            "work": list(self.work.values()),
+            "page_states": page_states,
             "progress": progress,
             "stats": dataclasses.asdict(self.stats),
             "seeds": {k: {**dataclasses.asdict(v), "window": list(v.window)} for k, v in self.seeds.items()},
@@ -274,7 +297,14 @@ class RunState(Checkpointable):
 
     @notify
     def restore(self, data: dict[str, Any]) -> None:
-        self.work = {entry["item"]["item_id"]: entry for entry in data["work"]}
+        page_states = []
+        for raw in data["page_states"]:
+            entry = dict(raw)
+            entry["item"] = FrontierItem.model_validate(entry["item"])
+            if "page" in entry:
+                entry["page"] = Page.model_validate(entry["page"])
+            page_states.append(PageState(**entry))
+        self.page_states = {state.item.item_id: state for state in page_states}
         progress = dict(data["progress"])
         progress.pop("tokens_used", None)  # Older snapshots duplicated the budget total.
         self.progress = Progress(**progress)

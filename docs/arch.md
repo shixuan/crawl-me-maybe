@@ -18,11 +18,13 @@ Stage modules own model calls, retries and response validation.
 | `discovery/models.py` | Harvest results |
 | `platforms/models.py` | Feed entries, listings and content problems |
 | `dedup/models.py` | Validated groups and grouping responses |
+| `runtime/state.py` | RunState and typed PageState records for unfinished pages |
 
 Component-specific types stay beside their component. Ranking decisions and history
 live in `pioneer/ranker.py`; frontier snapshots live in `pioneer/frontier.py`.
-Run state stays in `runtime/state.py`. ID helpers live in `util/ids.py` and date
-helpers in `util/dates.py`.
+RunState and PageState live in `runtime/state.py`. RunState holds the page execution
+records, and PagePipeline updates their fetched pages and stage progress. ID helpers
+live in `util/ids.py` and date helpers in `util/dates.py`.
 
 Packages export their public types through `__init__.py`. Where loading an
 implementation would create an import cycle, the package loads that export when it
@@ -322,6 +324,7 @@ CrawlPipeline exposes `run_state`. `RunState` owns run-wide data:
 - `Limits` holds immutable run budgets and goal constraints.
 - `Progress` holds runtime-owned counters used by stopping policies. TokenBudget owns token usage.
 - `Stats` holds reporting statistics.
+- `page_states` holds unfinished pages and their execution progress.
 - `seeds` holds per-source counters, retirement history and pagination counts.
 - `pages`, `page_contexts` and `relevant_pages` hold page associations and ranking feedback.
 - Seed expansion metadata records proposed and rejected sources.
@@ -348,7 +351,7 @@ record contributes one relevance vote to its seed. PagePipeline retains page rec
 contexts while page tasks, analysis retries or waiting/active ranking batches need
 them, then releases them. PagePipeline observes Frontier context-key changes to
 release completed ranking inputs without a cleanup call from CrawlPipeline. Dispatched
-work entries protect pages that have not started yet. Bounded relevant-page summaries
+PageState records protect pages that have not started yet. Bounded relevant-page summaries
 remain separate.
 
 The frontier owns both the scored queue and unranked buffer. CrawlPipeline waits for ranking
@@ -439,13 +442,18 @@ Ctrl+C cancels page, ranking and retry tasks immediately, then closes local reso
 It does not wait for model responses or run dedup. The task becomes `INTERRUPTED`;
 a hard-killed task can still say `RUNNING`, but the OS releases its lock. A second
 Ctrl+C exits immediately. Recovery does not depend on a final checkpoint during exit.
-The old in-memory pause/resume API has been removed. Frontier-only legacy snapshots
-are not sufficient for recovery and are rejected by the resume command.
 
 The factory assembles `Checkpointer` with explicit dependencies. Each participant
 inherits `Checkpointable` and implements `dump()` and `restore()`. The analyzer's
-goal is bound before startup and recovery. `RunState` saves in-flight page stages
-and PageBook, while Frontier saves its queue and buffer.
+goal is bound before startup and recovery. `RunState` holds the `page_states`
+dictionary of typed `PageState` records alongside counters, source history and
+PageBook. PagePipeline registers and updates each page’s execution progress; Tracker
+updates statistics and history. PagePipeline does not implement `Checkpointable`.
+RunState saves and restores its page records with the rest of its state. Frontier
+saves its queue and buffer. Checkpoints store page progress at `state.page_states`,
+using the PageState field names directly.
+Snapshots carry format version 2. CLI resume and Checkpointer reject missing or
+different versions before reading recovery state. No older formats are converted.
 
 Engine owns checkpoint timing and execution controls. CrawlPipeline owns recovery and crawl task records. Checkpointer
 captures component state before awaiting, removes page text from snapshots, restores

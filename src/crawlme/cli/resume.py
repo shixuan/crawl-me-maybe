@@ -33,9 +33,12 @@ async def cmd_resume(args: argparse.Namespace) -> Report:
         if task_row is None or task_row["state"] not in {"RUNNING", "INTERRUPTED", "FAILED"}:
             raise ValueError("only interrupted or failed runs can be resumed")
         row = await storage.get_checkpoint(f"{args.task_id}-latest")
-        payload = json.loads(row["checkpoint_json"]) if row else {}
-        if payload.get("version") != VERSION:
-            raise ValueError("no supported recovery checkpoint; start a new crawl")
+        if row is None:
+            raise ValueError("no recovery checkpoint; start a new crawl")
+        payload = json.loads(row["checkpoint_json"])
+        version = payload.get("version")
+        if type(version) is not int or version != VERSION:
+            raise ValueError(f"unsupported checkpoint version {version!r}; expected {VERSION}; cannot resume this run")
         cfg = Settings(**{**cfg.model_dump(), **payload["settings"], "result_dir": root})
         if args.log_level:
             cfg.log_level = args.log_level

@@ -261,8 +261,8 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
 
     async def _crawl(self) -> None:
         self.error_handler.check()
-        for work in list(self.run_state.work.values()):
-            self._dispatch_page(FrontierItem.model_validate(work["item"]))
+        for item in self._page.pending_items():
+            self._dispatch_page(item)
         self._page.start()
         self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
         await self.error_handler.watch(asyncio.gather(*self._pump_tasks))
@@ -468,7 +468,7 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
             self._dispatch_page(item)
 
     def _dispatch_page(self, item: FrontierItem) -> None:
-        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
+        self._page.register(item)
         self.run_state.work_started()
         task = asyncio.create_task(self._run_page(item))
         self._inflight.add(task)

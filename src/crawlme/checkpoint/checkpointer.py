@@ -13,7 +13,7 @@ from crawlme.config import Settings
 from crawlme.persist import Storage
 from crawlme.runtime import Goal, Task
 
-VERSION = 1
+VERSION = 2
 
 
 class Checkpointer:
@@ -51,7 +51,6 @@ class Checkpointer:
             frontier = self.frontier.dump()
             frontier["task_id"] = self._task.task_id
             runtime = self.runtime.dump()
-            work = runtime.pop("work")
             payload = {
                 "version": VERSION,
                 "frontier": frontier,
@@ -61,12 +60,11 @@ class Checkpointer:
                 **self._features,
                 "robots": self.robots.dump(),
                 "state": runtime,
-                "work": work,
                 "retries": self.analysis.dump()["entries"] if self.analysis is not None else [],
                 "budget": self.budget.dump() if self.budget is not None else None,
             }
             payload = json.loads(json.dumps(payload))
-            for entry in [*payload["work"], *payload["retries"]]:
+            for entry in [*payload["state"]["page_states"], *payload["retries"]]:
                 if "page" in entry:
                     entry["page"].pop("plain_text", None)
                     entry["page"].pop("markdown", None)
@@ -81,21 +79,23 @@ class Checkpointer:
             await self.storage.flush()
 
     async def restore(self, payload: dict[str, Any]) -> None:
-        if payload.get("version") != VERSION:
-            raise ValueError("unsupported checkpoint version")
+        version = payload.get("version")
+        if type(version) is not int or version != VERSION:
+            raise ValueError(f"unsupported checkpoint version {version!r}; expected {VERSION}; cannot resume this run")
         if payload["retries"] and self.analysis is None:
             raise ValueError("checkpoint needs an analyzer; configure LLM credentials before resuming")
         payload = copy.deepcopy(payload)
-        for entry in [*payload["work"], *payload["retries"]]:
+        for entry in [*payload["state"]["page_states"], *payload["retries"]]:
             if "page" in entry:
                 row = await self.storage.get_page(entry["page"]["page_id"])
                 if row is None:
                     raise ValueError("checkpoint references a missing page")
                 entry["page"].update(plain_text=row["plain_text"], markdown=row["markdown"])
-        self.runtime.restore({**payload["state"], "work": payload["work"]})
-        self.frontier.restore(payload["frontier"])
+        self.runtime.restore(payload["state"])
         self.robots.restore(payload["robots"])
         if self.analysis is not None:
             self.analysis.restore({"entries": payload["retries"]})
+        # Restore retry ownership before Frontier notifications can prune page context.
+        self.frontier.restore(payload["frontier"])
         if self.budget is not None and payload["budget"] is not None:
             self.budget.restore(payload["budget"])

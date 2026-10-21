@@ -1,4 +1,4 @@
-"""Recover real stored work in a fresh scheduler without draining on cancel."""
+"""Recover stored page states in a fresh scheduler without draining on cancel."""
 
 import asyncio
 import copy
@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.analysis import Analyzer
+from crawlme.checkpoint import VERSION, Checkpointer
+from crawlme.config import Settings
 from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError, TokenBudget
 from crawlme.persist import Lock, Storage
@@ -30,7 +32,28 @@ def reopen(scheduler):
     return Storage(scheduler.pipeline._storage.db_path, str(scheduler.pipeline._storage.raw_dir))
 
 
-@pytest.mark.parametrize("stage", ["fetch", "analysis", "discovery", "ranking", "retry"])
+@pytest.mark.parametrize("version", [None, VERSION - 1, VERSION + 1, str(VERSION), float(VERSION), True])
+async def test_restore_rejects_version_before_accessing_state(version):
+    storage = MagicMock()
+    runtime = MagicMock()
+    checkpointer = Checkpointer(
+        storage=storage,
+        settings=Settings(),
+        frontier=MagicMock(),
+        runtime=runtime,
+        analysis=None,
+        budget=None,
+        robots=MagicMock(),
+        features={},
+    )
+    payload = {} if version is None else {"version": version}
+    with pytest.raises(ValueError, match="unsupported checkpoint version"):
+        await checkpointer.restore(payload)
+    runtime.restore.assert_not_called()
+    storage.get_page.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["dispatch", "fetch", "analysis", "applied", "discovery", "ranking", "retry"])
 async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     monkeypatch.setattr("crawlme.scheduler.engine.engine._CHECKPOINT_INTERVAL", 0.01)
     entered = asyncio.Event()
@@ -54,8 +77,18 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
         entered.set()
         await asyncio.Event().wait()
 
+    if stage == "dispatch":
+        scheduler.pipeline._page.run = blocked
     if stage == "fetch":
         scheduler.pipeline._page._fetch.fetcher.fetch = blocked
+    if stage == "applied":
+        analyze = scheduler.pipeline._page._analysis.analyze
+
+        async def after_apply(*args, **kwargs):
+            await analyze(*args, **kwargs)
+            await blocked()
+
+        scheduler.pipeline._page._analysis.analyze = after_apply
     if stage == "discovery":
         scheduler.pipeline._page._discovery.discover = blocked
     if stage == "ranking":
@@ -64,17 +97,30 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     else:
         await scheduler.pipeline.ingest_seeds(goal, [candidate("seed")])
     run = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
-    await asyncio.wait_for(entered.wait(), 3)
-    await scheduler.engine._checkpoint()
-    saved = snapshot(scheduler)
-    assert saved["version"] == 1
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        await scheduler.engine._checkpoint()
+        saved = snapshot(scheduler)
+        pending = scheduler.pipeline._page.pending_items()
+        before = len(calls)
+    finally:
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, 1)
+    assert saved["version"] == VERSION
+    assert "work" not in saved
     assert "llm_api_key" not in saved["settings"]
-    for work in [*saved["work"], *saved["retries"]]:
-        assert "plain_text" not in work.get("page", {})
-    before = len(calls)
-    run.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(run, 1)
+    assert "page_states" in scheduler.pipeline.run_state.dump()
+    assert "page_states" not in saved
+    assert "work" not in saved["state"]
+    if stage not in {"ranking", "retry"}:
+        assert len(saved["state"]["page_states"]) == len(pending) == 1
+        assert bool(saved["state"]["page_states"][0].get("analysis_processed")) == (stage in {"applied", "discovery"})
+    if stage == "retry":
+        assert len(saved["retries"]) == 1
+        assert all(entry["analysis_processed"] for entry in saved["state"]["page_states"])
+    for entry in [*saved["state"]["page_states"], *saved["retries"]]:
+        assert "plain_text" not in entry.get("page", {})
     assert len(calls) == before
     assert task.state == "INTERRUPTED"
 
@@ -101,9 +147,13 @@ async def test_resume_interrupted_stage(tmp_path, monkeypatch, stage):
     assert restored_task.state == "COMPLETED"
     assert fresh.pipeline.run_state.progress.pages_fetched == 1
     assert fresh.pipeline.run_state.stats.analyses_by_class == {"RELEVANT": 1}
-    assert len(resumed_calls) == (0 if stage == "discovery" else 1)
-    assert len(fetched) == (1 if stage in {"fetch", "ranking"} else 0)
-    assert fresh.pipeline._checkpointer.budget.used == (3 if stage == "discovery" else 0)
+    assert len(resumed_calls) == (0 if stage in {"applied", "discovery"} else 1)
+    assert len(fetched) == (1 if stage in {"dispatch", "fetch", "ranking"} else 0)
+    assert fresh.pipeline._checkpointer.budget.used == (3 if stage in {"applied", "discovery"} else 0)
+    assert not fresh.pipeline._page.pending_items()
+    latest = snapshot(fresh)
+    assert latest["version"] == VERSION
+    assert "page_states" in latest["state"] and "work" not in latest["state"]
 
 
 async def test_resume_older_snapshot(tmp_path):
@@ -264,7 +314,7 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
     )
     assert len(calls) == expected_calls
     saved = snapshot(scheduler)
-    # Cleanup must not replace recoverable work with the emptied retry queue.
+    # Cleanup must not replace recoverable state with the emptied retry queue.
     assert not saved["state"]["progress"]["fatal_error"]
     if stage == "retry":
         assert len(saved["retries"]) == 1
@@ -272,7 +322,9 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
         assert task.state == "FAILED"
     if stage == "analysis":
         if status == 402:
-            assert len(saved["work"]) == 1 and not saved["work"][0].get("analysis_done")
+            assert len(saved["state"]["page_states"]) == 1 and not saved["state"]["page_states"][0].get(
+                "analysis_processed"
+            )
         else:
             assert len(saved["retries"]) == 1
 

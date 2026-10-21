@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from crawlme.checkpoint import VERSION
+
 
 @pytest.mark.parametrize("legacy", [False, True], ids=["current-db", "legacy-db"])
 @pytest.mark.parametrize("interrupt", [signal.SIGINT, signal.SIGKILL, None], ids=["sigint", "sigkill", "remote-error"])
@@ -180,13 +182,15 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             first_analysis = db.execute("SELECT analysis_id, structured_data FROM analyses").fetchone()
         assert first_analysis is not None
+        assert saved["version"] == VERSION
+        assert "work" not in saved
         assert saved["state"]["progress"]["pages_fetched"] == 1
         assert saved["budget"]["used"] == 45
         assert saved["budget"]["by_stage"]["analysis"]["calls"] == 1
         assert saved["goal"]["max_tokens"] == 300
-        assert len(saved["work"]) == 1
-        assert saved["work"][0]["page"]["url"]["canonical"] == site + "/second"
-        assert not saved["work"][0].get("analysis_done")
+        assert len(saved["state"]["page_states"]) == 1
+        assert saved["state"]["page_states"][0]["page"]["url"]["canonical"] == site + "/second"
+        assert not saved["state"]["page_states"][0].get("analysis_processed")
         assert saved["ranking"] and saved["analysis"]
         before = list(calls)
 
@@ -242,6 +246,9 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         assert calls.count("dedup") == 1
         assert len(list(root.glob("*/db/crawl.db"))) == 1
         with sqlite3.connect(db_path) as db:
+            checkpoint = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
+            assert checkpoint["version"] == VERSION
+            assert "page_states" in checkpoint["state"] and "work" not in checkpoint["state"]
             tasks = db.execute("SELECT task_id, goal_id, state, counters FROM crawl_tasks").fetchall()
             assert len(tasks) == 1
             restored_id, restored_goal, state, counters = tasks[0]
