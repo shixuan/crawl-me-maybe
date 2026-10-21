@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from enum import Enum, auto
 
 from crawlme.analysis import Analyzer
 from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.dedup import Grouper
-from crawlme.digest import TrafExtractor
+from crawlme.digest import Extractor, TrafExtractor
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.discovery import Harvester
 from crawlme.errors import ErrorHandler
@@ -41,6 +41,10 @@ from crawlme.urls import Canonicalizer
 logger = logging.getLogger(__name__)
 
 
+class _Default(Enum):
+    AUTO = auto()
+
+
 def create_crawl(
     settings: Settings,
     goal: Goal | None = None,
@@ -52,125 +56,141 @@ def create_crawl(
     tracking: Tracker | None = None,
     dedup_enabled: bool = True,
     ranking_enabled: bool = False,
-    **overrides: Any,
+    storage: Storage | None = None,
+    run_state: RunState | None = None,
+    error_handler: ErrorHandler | None = None,
+    canonicalizer: Canonicalizer | None = None,
+    fetcher: Fetcher | None = None,
+    extractor: Extractor | None = None,
+    robots: RobotsPolicy | None = None,
+    harvester: Harvester | None = None,
+    prefilter: PreFilter | None = None,
+    fetch: FetchWorker | None = None,
+    persist: PersistWorker | None = None,
+    discovery: DiscoveryWorker | None = None,
+    analysis: AnalysisWorker | None = None,
+    ranker: Ranker | _Default | None = _Default.AUTO,
+    seed_expander: SeedExpander | _Default | None = _Default.AUTO,
+    grouper: Grouper | _Default | None = _Default.AUTO,
+    goal_enhancer: GoalEnhancer | None = None,
+    dedup: DedupPipeline | None = None,
 ) -> CrawlPipeline:
-    """Assemble crawl components with optional test overrides.
-
-    A missing analyzer is built from settings when enabled and configured.
-    The supplied token budget is shared with that analyzer."""
+    """Assemble crawl dependencies; explicit None disables ranker, seed_expander and grouper."""
+    if tracking is not None and run_state is not None and tracking.state is not run_state:
+        raise ValueError("run_state must be tracking.state when both are supplied")
     budget = budget if budget is not None else TokenBudget(goal.max_tokens if goal else 0)
-    state = overrides.pop("run_state", None)
     if tracking is None:
-        state = state if state is not None else RunState(limits=Limits(), progress=Progress(), stats=Stats())
-        tracking = Tracker(state)
+        run_state = (
+            run_state if run_state is not None else RunState(limits=Limits(), progress=Progress(), stats=Stats())
+        )
+        tracking = Tracker(run_state)
     if frontier is None:
         frontier = Frontier(
             domain_budget=goal.domain_budget if goal else 50,
             buffer=RoundRobinBuffer(capacity=settings.candidate_buffer_size),
         )
-    storage = overrides.pop("storage") if "storage" in overrides else Storage.create(settings.result_dir)
-    canonicalizer = overrides.pop("canonicalizer", None) or Canonicalizer()
-    fetcher = overrides.pop("fetcher") if "fetcher" in overrides else _build_fetcher(settings)
-    extractor = overrides.pop("extractor", None) or TrafExtractor(adapters=adapters_for(settings))
-    robots = overrides.pop("robots", None) or RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots)
-    harvester = overrides.pop("harvester") if "harvester" in overrides else _build_harvester(settings, canonicalizer)
-    if ranking_enabled and llm_ranker is None:
-        llm_ranker = LLMRanker.from_settings(settings, budget=budget)
-    ranker = overrides.pop("ranker") if "ranker" in overrides else _build_ranker(settings, llm=llm_ranker)
+    if storage is None:
+        storage = Storage.create(settings.result_dir)
+    if canonicalizer is None:
+        canonicalizer = Canonicalizer()
+    if robots is None:
+        robots = RobotsPolicy(agent=_agent_name(settings), ignore=settings.ignore_robots)
+    if prefilter is None:
+        prefilter = PreFilter()
+    if error_handler is None:
+        error_handler = ErrorHandler()
+    if isinstance(ranker, _Default):
+        if ranking_enabled and llm_ranker is None:
+            llm_ranker = LLMRanker.from_settings(settings, budget=budget)
+        ranker = _build_ranker(settings, llm=llm_ranker)
     if ranker is not None:
         logger.info("ranking with the LLM")
-    if "seed_expander" in overrides:
-        seed_expander = overrides.pop("seed_expander")
-    elif settings.expand_seeds:
-        seed_expander = SeedExpander.from_settings(settings, budget=budget)
-    else:
-        seed_expander = None
-    if analyzer is None and settings.analysis_enabled:
-        analyzer = Analyzer.from_settings(settings, budget=budget)
-    error_handler = overrides.pop("error_handler", None) or ErrorHandler()
-    dedup = create_dedup(
-        settings,
-        storage=storage,
-        budget=budget,
-        enabled=dedup_enabled and settings.analysis_enabled,
-        **({"grouper": overrides.pop("grouper")} if "grouper" in overrides else {}),
-        error_handler=error_handler,
-    )
-
-    fetch = overrides.pop("fetch", None) or FetchWorker(
-        fetcher,
-        robots,
-        storage,
-        concurrency=settings.fetch_concurrency,
-        error_handler=error_handler,
-        max_attempts=settings.fetch_max_retries,
-    )
-    persist = overrides.pop("persist", None) or PersistWorker(storage)
-    discovery = overrides.pop("discovery", None) or DiscoveryWorker(
-        harvester, timeout=settings.extract_timeout, error_handler=error_handler
-    )
-
-    kwargs: dict[str, Any] = {
-        "settings": settings,
-        "error_handler": error_handler,
-        "goal_enhancer": GoalEnhancer.from_settings(settings, budget=budget),
-        "storage": storage,
-        "frontier": frontier,
-        "fetch": fetch,
-        "persist": persist,
-        "extractor": extractor,
-        "discovery": discovery,
-        "robots": robots,
-        "prefilter": PreFilter(),
-        "canonicalizer": canonicalizer,
-        "tracking": tracking,
-        "dedup": dedup,
-        "seed_expander": seed_expander,
-    }
-    kwargs.update(overrides)
-    if "analysis" not in kwargs:
-        kwargs["analysis"] = AnalysisWorker(
+    if isinstance(seed_expander, _Default):
+        seed_expander = SeedExpander.from_settings(settings, budget=budget) if settings.expand_seeds else None
+    if goal_enhancer is None:
+        goal_enhancer = GoalEnhancer.from_settings(settings, budget=budget)
+    if dedup is None:
+        dedup = create_dedup(
+            settings,
+            storage=storage,
+            budget=budget,
+            enabled=dedup_enabled and settings.analysis_enabled,
+            grouper=grouper,
+            error_handler=error_handler,
+        )
+    if fetch is None:
+        if fetcher is None:
+            fetcher = _build_fetcher(settings)
+        fetch = FetchWorker(
+            fetcher,
+            robots,
+            storage,
+            concurrency=settings.fetch_concurrency,
+            error_handler=error_handler,
+            max_attempts=settings.fetch_max_retries,
+        )
+    if persist is None:
+        persist = PersistWorker(storage)
+    if extractor is None:
+        extractor = TrafExtractor(adapters=adapters_for(settings))
+    if discovery is None:
+        if harvester is None:
+            harvester = _build_harvester(settings, canonicalizer)
+        discovery = DiscoveryWorker(harvester, timeout=settings.extract_timeout, error_handler=error_handler)
+    if analysis is None:
+        if analyzer is None and settings.analysis_enabled:
+            analyzer = Analyzer.from_settings(settings, budget=budget)
+        analysis = AnalysisWorker(
             analyzer,
             concurrency=settings.llm_concurrency,
             storage=storage,
-            tracking=kwargs["tracking"],
+            tracking=tracking,
             error_handler=error_handler,
         )
-    analysis = kwargs.pop("analysis")
-    kwargs["ranking"] = RankingWorker(
-        ranker, storage=storage, frontier=kwargs["frontier"], tracking=kwargs["tracking"], error_handler=error_handler
-    )
-    kwargs["page"] = PagePipeline(
+    ranking = RankingWorker(ranker, storage=storage, frontier=frontier, tracking=tracking, error_handler=error_handler)
+    page = PagePipeline(
         settings=settings,
         storage=storage,
-        frontier=kwargs["frontier"],
-        fetch=kwargs.pop("fetch"),
-        persist=kwargs.pop("persist"),
-        extractor=kwargs.pop("extractor"),
+        frontier=frontier,
+        fetch=fetch,
+        persist=persist,
+        extractor=extractor,
         analysis=analysis,
-        discovery=kwargs.pop("discovery"),
+        discovery=discovery,
         robots=robots,
-        prefilter=kwargs["prefilter"],
+        prefilter=prefilter,
         canonicalizer=canonicalizer,
-        tracking=kwargs["tracking"],
+        tracking=tracking,
     )
     checkpointer = Checkpointer(
-        storage=kwargs["storage"],
+        storage=storage,
         settings=settings,
-        frontier=kwargs["frontier"],
-        runtime=kwargs["tracking"].state,
+        frontier=frontier,
+        runtime=tracking.state,
         analysis=analysis,
         budget=budget,
-        robots=kwargs["robots"],
+        robots=robots,
         features={
-            "dedup": kwargs["dedup"].grouper is not None,
-            "ranking": kwargs["ranking"].ranker is not None,
+            "dedup": dedup.grouper is not None,
+            "ranking": ranking.ranker is not None,
             "analysis": analysis.analyzer is not None,
         },
     )
     return CrawlPipeline(
-        **kwargs,
+        settings=settings,
+        storage=storage,
+        frontier=frontier,
+        tracking=tracking,
         budget=budget,
+        error_handler=error_handler,
+        goal_enhancer=goal_enhancer,
+        ranking=ranking,
+        robots=robots,
+        prefilter=prefilter,
+        canonicalizer=canonicalizer,
+        dedup=dedup,
+        page=page,
+        seed_expander=seed_expander,
         checkpointer=checkpointer,
     )
 
@@ -183,12 +203,10 @@ def create_dedup(
     error_handler: ErrorHandler | None = None,
     enabled: bool = True,
     required: bool = False,
-    **overrides: Any,
+    grouper: Grouper | _Default | None = _Default.AUTO,
 ) -> DedupPipeline:
     """Assemble grouping with the caller's storage, budget and error policy."""
-    if "grouper" in overrides:
-        grouper = overrides.pop("grouper")
-    else:
+    if isinstance(grouper, _Default):
         grouper = Grouper.from_settings(settings, budget=budget) if enabled else None
     if required and grouper is None:
         raise ValueError("dedup needs LLM_API_KEY or LLM_BASE_URL")

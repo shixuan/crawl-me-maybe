@@ -66,6 +66,12 @@ hold it. CLI commands create a pipeline, call the Engine factory and run the bou
 Engine. They neither select queue implementations nor instantiate concrete sources.
 Source selection and seed-file parsing belong to `pioneer.sources`.
 
+Crawl and dedup factories declare typed dependency parameters and pass shared
+instances directly to component constructors. Unspecified dependencies use their
+configured defaults. For ranker, seed_expander and grouper, explicit None disables
+the component. Supplying a worker skips constructing its default backend. A supplied
+RunState must be the same instance as tracking.state when both are provided.
+
 Engine and its factory live in `scheduler/engine/`, exported as `Engine` and
 `create_engine`. There is no intermediate scheduler assembly entrypoint.
 
