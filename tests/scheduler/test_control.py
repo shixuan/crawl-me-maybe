@@ -97,7 +97,7 @@ async def test_failure_stops_both(tmp_path, stage):
     ranker.aclose.assert_awaited_once()
     scheduler.pipeline._page._fetch.fetcher.aclose.assert_awaited_once()
     with closing(sqlite3.connect(scheduler.pipeline._storage.db_path)) as db:
-        assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
+        assert db.execute("SELECT state FROM tasks").fetchone()[0] == "FAILED"
 
 
 async def test_cancel_releases_workers(tmp_path, monkeypatch):
@@ -130,7 +130,7 @@ async def test_cleanup_continues_on_error(tmp_path):
     assert task.stopping_reason == "FATAL"
     scheduler.pipeline._page._fetch.fetcher.aclose.assert_awaited_once()
     with closing(sqlite3.connect(scheduler.pipeline._storage.db_path)) as db:
-        assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
+        assert db.execute("SELECT state FROM tasks").fetchone()[0] == "FAILED"
 
 
 async def test_page_retention_tracks_work(tmp_path):

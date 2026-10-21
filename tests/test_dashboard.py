@@ -20,24 +20,26 @@ def _run_db(root: Path, *, dates: bool) -> Path:
     db.parent.mkdir(parents=True)
     con = sqlite3.connect(db)
     con.executescript(
-        "CREATE TABLE crawl_goals (goal_id TEXT, prompt TEXT, extraction_spec TEXT, created_at TEXT);"
-        "CREATE TABLE crawl_tasks (task_id TEXT, goal_id TEXT, start_at TEXT);"
+        "CREATE TABLE goals (goal_id TEXT, prompt TEXT, extraction_spec TEXT, created_at TEXT);"
+        "CREATE TABLE tasks (task_id TEXT, goal_id TEXT, start_at TEXT);"
         "CREATE TABLE pages (url_key TEXT, url_json TEXT, title TEXT, plain_text TEXT, "
         "markdown TEXT, published_at TEXT);"
-        "CREATE TABLE analyses (url_key TEXT, goal_id TEXT, classification TEXT, "
+        "CREATE TABLE page_analyses (url_key TEXT, goal_id TEXT, classification TEXT, "
         f"relevance_score REAL, {WITH_DATES if dates else ''} summary TEXT, "
         "tags_json TEXT, extracted_json TEXT, model TEXT, analyzed_at TEXT);"
     )
-    con.execute("INSERT INTO crawl_goals VALUES ('g1', 'find things', '{}', '2026-01-01')")
-    con.execute("INSERT INTO crawl_tasks VALUES ('t1', 'g1', '2026-01-01')")
+    con.execute("INSERT INTO goals VALUES ('g1', 'find things', '{}', '2026-01-01')")
+    con.execute("INSERT INTO tasks VALUES ('t1', 'g1', '2026-01-01')")
     con.execute("INSERT INTO pages VALUES ('k1', '{\"canonical\": \"https://x/1\"}', 'One', '', '', '')")
     if dates:
         con.execute(
-            "INSERT INTO analyses VALUES ('k1', 'g1', 'RELEVANT', 0.9, '', '2099-01-01', "
+            "INSERT INTO page_analyses VALUES ('k1', 'g1', 'RELEVANT', 0.9, '', '2099-01-01', "
             "'s', '[]', '{}', 'm', '2026-01-01')"
         )
     else:
-        con.execute("INSERT INTO analyses VALUES ('k1', 'g1', 'RELEVANT', 0.9, 's', '[]', '{}', 'm', '2026-01-01')")
+        con.execute(
+            "INSERT INTO page_analyses VALUES ('k1', 'g1', 'RELEVANT', 0.9, 's', '[]', '{}', 'm', '2026-01-01')"
+        )
     con.commit()
     con.close()
     return db
@@ -72,7 +74,7 @@ def test_replay_replaces_display(tmp_path, same_time):
     db = _run_db(tmp_path, dates=True)
     with sqlite3.connect(db) as con:
         con.execute(
-            "INSERT INTO analyses VALUES ('k1', 'g1', 'RELEVANT', 0.2, '', '2020-01-01', "
+            "INSERT INTO page_analyses VALUES ('k1', 'g1', 'RELEVANT', 0.2, '', '2020-01-01', "
             "'new dates', '[]', '{}', 'm', ?)",
             ("2026-01-01" if same_time else "2026-01-02",),
         )
@@ -81,4 +83,4 @@ def test_replay_replaces_display(tmp_path, same_time):
     assert rows[0]["when"] == "over"
     assert rows[0]["summary"] == "new dates"
     with sqlite3.connect(db) as con:
-        assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 2
+        assert con.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == 2

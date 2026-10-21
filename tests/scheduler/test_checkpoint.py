@@ -187,7 +187,7 @@ async def test_resume_older_snapshot(tmp_path):
     )
     await fresh.engine.run(CrawlInput(goal, Task.model_validate(saved["task"]), checkpoint=saved))
     with sqlite3.connect(first.pipeline._storage.db_path) as db:
-        assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM page_analyses").fetchone()[0] == 1
     assert fresh.pipeline.run_state.stats.analyses_by_class == {"RELEVANT": 1}
 
 

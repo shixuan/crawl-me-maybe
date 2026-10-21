@@ -225,8 +225,8 @@ does not independently verify the value. Fields without matching evidence are om
 Failed analyses enter a retry queue with a limit on attempts per page. Successful
 results reach the scheduler through a sink, including successes from delayed retries.
 
-`analysis_items` stores application-assigned IDs linked to their parent analysis.
-Parent and item writes are atomic. A null `analyses.item_count` denotes a legacy
+`result_items` stores application-assigned IDs linked to their parent analysis.
+Parent and item writes are atomic. A null `page_analyses.item_count` denotes a legacy
 single-result record; zero denotes a new analysis with no items. Readers select the
 latest page analysis before expanding its items, so an empty replay supersedes old
 results. Legacy analyses remain single rows until replayed. Relevant-page limits
@@ -482,6 +482,8 @@ flowchart LR
 
 ## Persistence and inspection
 
+Task records are stored in `tasks`, and goal definitions in `goals`.
+
 At run completion, the scheduler settles pending Analyzer retries independently
 of dedup. Page limits and frontier exhaustion allow already-fetched pages to finish
 analysis. Token/time limits, the result target, user stop and run failures cancel
@@ -500,10 +502,10 @@ existing results unchanged. Inputs
 over the configured character limit are not submitted. Failure preserves original
 results. Grouping decisions do not affect source retirement or crawl stop conditions.
 
-Storage atomically publishes `dedup_runs` (input fingerprint and model),
-`result_groups` (overview), and `result_item_members` (item IDs). Legacy snapshots
-retain `result_members` (analysis IDs). Original
-analyses remain intact. The dashboard reads the latest matching snapshot. A replay
+Storage atomically publishes `dedup_snapshots` (input fingerprint and model),
+`dedup_groups` (overview), and `dedup_group_members` (item IDs). Original
+analyses remain intact. Legacy groups whose members are whole page analyses are
+not read. The dashboard reads the latest matching snapshot. A replay
 that changes the inputs invalidates it. Replay regroups the selected goal after analysis unless `--dedup off` is set.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
 Semantic grouping remains open (reviewed 2026-10-06). Model responses can still
@@ -542,8 +544,10 @@ results/<timestamp>/
   log
 ```
 
-SQLite stores goals, tasks, pages, links, rank decisions, analyses, frontier
-snapshots, events, errors and robots cache entries. Most writes use an async queue.
+SQLite stores `goals`, `tasks`, `pages`, `url_candidates`, `rank_decisions`,
+`page_analyses`, `result_items`, `dedup_snapshots`, `dedup_groups`,
+`dedup_group_members`, `checkpoints`, `events`, `errors`, and `robots_cache`.
+Most writes use an async queue.
 Grouping snapshots use an explicit transaction. Reads use the connection directly.
 Events provide an audit trail. Checkpoints restore the frontier.
 

@@ -168,7 +168,7 @@ def test_cli_clean_exit(site: str, tmp_path: Path) -> None:
         f"titles fell back to URLs: {[p[1] for p in pages]}"
     )
 
-    links = asyncio.run(_rows(db, "SELECT status, count(*) FROM links GROUP BY status"))
+    links = asyncio.run(_rows(db, "SELECT status, count(*) FROM url_candidates GROUP BY status"))
     assert dict(links).get("BUFFERED", 0) > 0, f"no candidate survived the prefilter: {links}"
 
     decisions = asyncio.run(_rows(db, "SELECT ranker, count(*) FROM rank_decisions GROUP BY ranker"))
@@ -180,7 +180,7 @@ def test_cli_clean_exit(site: str, tmp_path: Path) -> None:
     events = {e[0] for e in asyncio.run(_rows(db, "SELECT DISTINCT type FROM events"))}
     assert {"FETCH_STARTED", "FETCH_COMPLETED", "PAGE_EXTRACTED"} <= events, events
 
-    reason = asyncio.run(_rows(db, "SELECT state, stopping_reason FROM crawl_tasks"))[0]
+    reason = asyncio.run(_rows(db, "SELECT state, stopping_reason FROM tasks"))[0]
     assert reason[0] == "COMPLETED", reason
     assert reason[1], "the task recorded no stopping reason"
 

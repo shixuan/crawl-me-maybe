@@ -508,5 +508,5 @@ async def test_replay_groups_after_retries(tmp_path, monkeypatch, enabled):
     assert result.dedup["status"] == ("complete" if enabled else "disabled")
     assert result.usage["used"] == (16 if enabled else 0)
     with sqlite3.connect(run_dir / "db" / "crawl.db") as db:
-        assert db.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == int(enabled)
-        assert db.execute("SELECT count(*) FROM analyses").fetchone()[0] == 2
+        assert db.execute("SELECT count(*) FROM dedup_snapshots").fetchone()[0] == int(enabled)
+        assert db.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == 2

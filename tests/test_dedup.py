@@ -127,9 +127,9 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
                     [{"members": ids + ids, "overview": "bad"}],
                     model="test",
                 )
-            assert con.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == 1
-            assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 2
-            con.execute("UPDATE analyses SET summary = 'changed after replay'")
+            assert con.execute("SELECT count(*) FROM dedup_snapshots").fetchone()[0] == 1
+            assert con.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == 2
+            con.execute("UPDATE page_analyses SET summary = 'changed after replay'")
             con.commit()
             assert serve._groups(con, goal.goal_id) == []
     finally:
@@ -190,13 +190,13 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
             assert observed[-1] == rows
             assert serve._groups(reader, "other") == []
             with closing(sqlite3.connect(storage.db_path)) as writer:
-                writer.execute("UPDATE analyses SET summary = 'unrelated edit' WHERE goal_id = 'other'")
+                writer.execute("UPDATE page_analyses SET summary = 'unrelated edit' WHERE goal_id = 'other'")
                 writer.commit()
                 assert serve._groups(reader, "chosen")
-                writer.execute("UPDATE analyses SET summary = 'old revision edit' WHERE analysis_id = 'b'")
+                writer.execute("UPDATE page_analyses SET summary = 'old revision edit' WHERE analysis_id = 'b'")
                 writer.commit()
                 assert serve._groups(reader, "chosen")
-                writer.execute("UPDATE analyses SET extracted_json = '{}' WHERE analysis_id = 'a'")
+                writer.execute("UPDATE page_analyses SET extracted_json = '{}' WHERE analysis_id = 'a'")
                 writer.commit()
             assert serve._groups(reader, "chosen") == []
     finally:

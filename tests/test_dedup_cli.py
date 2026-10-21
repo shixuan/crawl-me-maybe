@@ -74,9 +74,9 @@ async def test_existing_results_command(tmp_path, monkeypatch, capsys, fail):
     assert "10 in / 5 out" in out
     assert out.strip() in (tmp_path / storage.raw_dir.parent.name / "log").read_text()
     with sqlite3.connect(storage.db_path) as con:
-        assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 1
-        assert con.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == (1 if fail else 2)
-        assert con.execute("SELECT goal_id FROM crawl_tasks").fetchone()[0] == other.goal_id
+        assert con.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == 1
+        assert con.execute("SELECT count(*) FROM dedup_snapshots").fetchone()[0] == (1 if fail else 2)
+        assert con.execute("SELECT goal_id FROM tasks").fetchone()[0] == other.goal_id
 
 
 async def test_missing_task_returns_failure_without_llm(tmp_path, monkeypatch, capsys):

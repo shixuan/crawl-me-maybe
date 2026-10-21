@@ -38,9 +38,7 @@ class Results:
 
 
 def has_items(con: sqlite3.Connection) -> bool:
-    return (
-        con.execute("SELECT 1 FROM sqlite_master WHERE name='analysis_items' AND type='table'").fetchone() is not None
-    )
+    return con.execute("SELECT 1 FROM sqlite_master WHERE name='result_items' AND type='table'").fetchone() is not None
 
 
 def read_items(con: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -71,11 +69,11 @@ async def find_run_dir(result_dir: Path, task_id: str) -> tuple[Path, dict[str, 
         try:
             async with aiosqlite.connect(readonly_uri(db_path), uri=True) as conn:
                 conn.row_factory = aiosqlite.Row
-                cur = await conn.execute("SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,))
+                cur = await conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
                 row = await cur.fetchone()
                 if row is not None:
                     return db_path.parent.parent, dict(row)
-                cur = await conn.execute("SELECT task_id FROM crawl_tasks")
+                cur = await conn.execute("SELECT task_id FROM tasks")
                 for r in await cur.fetchall():
                     seen[r["task_id"]] = db_path.parent.parent.name
         except sqlite3.Error:

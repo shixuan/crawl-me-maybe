@@ -68,9 +68,11 @@ async def test_gate_allows():
     pop_mock.assert_called()
 
 
-def test_summary_stats():
+def test_summary_stats(tmp_path):
     """summary() reads counters and stats straight from the context."""
     sched = _make_sched()
+    sched.pipeline._storage.db_path = str(tmp_path / "db" / "crawl.db")
+    sched.pipeline._goal = _goal()
     _set_context(sched, pages_fetched=12, tokens_used=5000, started_at=100.0)
     sched.pipeline.run_state.stats.links_discovered = 123
     sched.pipeline.run_state.stats.candidates_ranked = 45
@@ -79,6 +81,9 @@ def test_summary_stats():
 
     summary = sched.pipeline.summary()
 
+    assert summary["run_dir"] == str(tmp_path)
+    assert summary["task_id"] == sched.pipeline._task.task_id
+    assert summary["goal_id"] == sched.pipeline._goal.goal_id
     assert summary["pages_fetched"] == 12
     assert summary["tokens_used"] == 5000
     assert summary["candidates_discovered"] == 123

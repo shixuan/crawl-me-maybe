@@ -197,5 +197,5 @@ async def test_item_write_is_atomic(tmp_path):
     storage.save_analysis(data)
     await storage.close()
     with sqlite3.connect(storage.db_path) as con:
-        assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 0
-        assert con.execute("SELECT count(*) FROM analysis_items").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM result_items").fetchone()[0] == 0

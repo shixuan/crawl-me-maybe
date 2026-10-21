@@ -48,13 +48,13 @@ class Row:
 def load(run: Path) -> tuple[CrawlGoal, list[Row]]:
     """The candidates the run both ranked and later judged.
 
-    One row per candidate, not per discovery: links records every time a
+    One row per candidate, not per discovery: url_candidates records every time a
     candidate was found, and scoring a candidate four times because four
     pages linked to it measures the crawl's shape, not the ranker.
     """
     con = sqlite3.connect(f"file:{run / 'db' / 'crawl.db'}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    g = con.execute("SELECT prompt, goal_statement, keywords FROM crawl_goals LIMIT 1").fetchone()
+    g = con.execute("SELECT prompt, goal_statement, keywords FROM goals LIMIT 1").fetchone()
     goal = CrawlGoal(
         prompt=g["prompt"],
         goal_statement=g["goal_statement"] or "",
@@ -69,7 +69,7 @@ def load(run: Path) -> tuple[CrawlGoal, list[Row]]:
         )
         for r in con.execute(
             "SELECT l.url_json, l.text, l.anchor, a.classification "
-            "FROM links l JOIN analyses a ON a.url_key = l.url_key GROUP BY l.url_key"
+            "FROM url_candidates l JOIN page_analyses a ON a.url_key = l.url_key GROUP BY l.url_key"
         )
     ]
     con.close()

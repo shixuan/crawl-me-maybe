@@ -5,19 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-GOALS = "SELECT * FROM crawl_goals ORDER BY created_at"
+GOALS = "SELECT * FROM goals ORDER BY created_at"
 PAGES = "SELECT * FROM pages ORDER BY extracted_at, page_id"
-ANALYSES = "SELECT * FROM analyses ORDER BY analyzed_at"
+ANALYSES = "SELECT * FROM page_analyses ORDER BY analyzed_at"
 # Replay appends revisions; readers select one result before filtering verdicts or dates.
 LATEST_ANALYSES = (
-    "SELECT a.* FROM analyses a WHERE a.rowid = ("
-    "SELECT n.rowid FROM analyses n WHERE n.goal_id = a.goal_id AND n.url_key = a.url_key "
+    "SELECT a.* FROM page_analyses a WHERE a.rowid = ("
+    "SELECT n.rowid FROM page_analyses n WHERE n.goal_id = a.goal_id AND n.url_key = a.url_key "
     "ORDER BY n.analyzed_at DESC, n.rowid DESC LIMIT 1)"
-)
-DEDUP_INPUTS = (
-    f"SELECT a.*, p.url_json, p.published_at FROM ({LATEST_ANALYSES}) a "  # noqa: S608 — static SQL only
-    "JOIN pages p ON p.page_id = a.page_id WHERE a.goal_id = ? "
-    "AND a.classification = 'RELEVANT' ORDER BY a.analysis_id"
 )
 
 
@@ -31,7 +26,7 @@ def items_query(*, modern: bool = True) -> str:
         "i.relevance_score, i.starts_on, i.ends_on, i.summary, a.structured_data, "
         "i.extracted_json, i.tags_json, a.feedback_json, a.model, a.prompt_version, "
         "a.spec_version, a.tokens_used, a.analyzed_at, a.item_count, i.item_id, i.evidence_json "
-        f"FROM ({LATEST_ANALYSES}) a JOIN analysis_items i ON i.analysis_id = a.analysis_id "
+        f"FROM ({LATEST_ANALYSES}) a JOIN result_items i ON i.analysis_id = a.analysis_id "
         "WHERE a.classification = 'RELEVANT' UNION ALL "
         + legacy
         + " WHERE a.item_count IS NULL OR a.classification != 'RELEVANT'"

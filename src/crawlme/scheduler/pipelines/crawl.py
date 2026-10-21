@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from crawlme.checkpoint import Checkpointer
@@ -309,6 +310,9 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
     def summary(self) -> dict[str, Any]:
         return {
             **summary(self.run_state, tokens_used=self._budget.used),
+            "run_dir": str(Path(self._storage.db_path).parent.parent),
+            "task_id": self._task.task_id if self._task else None,
+            "goal_id": self._goal.goal_id if self._goal else None,
             "state": self._task.state if self._task else "CREATED",
             "reason": self._task.stopping_reason if self._task else None,
             "usage": self._budget.dump(),

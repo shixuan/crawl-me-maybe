@@ -86,7 +86,7 @@ def test_cli_resume_process(tmp_path, interrupt):
         deadline = time.monotonic() + 5
         while True:
             with sqlite3.connect(db_path) as db:
-                task_id = db.execute("SELECT task_id FROM crawl_tasks").fetchone()[0]
+                task_id = db.execute("SELECT task_id FROM tasks").fetchone()[0]
                 payload = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             if payload["state"]["progress"]["pages_fetched"] == 1:
                 break
@@ -119,7 +119,7 @@ def test_cli_resume_process(tmp_path, interrupt):
         assert requests.count("/first") == 1
         assert requests.count("/second") == 2
         with sqlite3.connect(db_path) as db:
-            state, counters = db.execute("SELECT state, counters FROM crawl_tasks").fetchone()
+            state, counters = db.execute("SELECT state, counters FROM tasks").fetchone()
             assert state == "COMPLETED"
             assert json.loads(counters)["pages_fetched"] == 2
         again = subprocess.run(

@@ -202,10 +202,10 @@ def completed_run(tmp_path_factory):
         dbs = list((root / "results").glob("*/db/crawl.db"))
         assert len(dbs) == 1
         with sqlite3.connect(dbs[0]) as db:
-            task, state = db.execute("SELECT task_id, state FROM crawl_tasks").fetchone()
+            task, state = db.execute("SELECT task_id, state FROM tasks").fetchone()
             assert state == "COMPLETED"
-            assert db.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == 1
-            assert db.execute("SELECT count(*) FROM analyses WHERE classification='IRRELEVANT'").fetchone()[0] >= 1
+            assert db.execute("SELECT count(*) FROM dedup_snapshots").fetchone()[0] == 1
+            assert db.execute("SELECT count(*) FROM page_analyses WHERE classification='IRRELEVANT'").fetchone()[0] >= 1
         inspect_env = {**env, "RESULT_DIR": str(root / "results")}
         exported = subprocess.run(  # noqa: S603
             [sys.executable, "-c", "from crawlme.cli import main; main()", "inspect", task, "--export", "json"],

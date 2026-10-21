@@ -178,9 +178,9 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             pytest.fail(f"Crawl did not reach the second page analysis:\n{output}")
         db_path = next(root.glob("*/db/crawl.db"))
         with sqlite3.connect(db_path) as db:
-            task_id, goal_id = db.execute("SELECT task_id, goal_id FROM crawl_tasks").fetchone()
+            task_id, goal_id = db.execute("SELECT task_id, goal_id FROM tasks").fetchone()
             saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
-            first_analysis = db.execute("SELECT analysis_id, structured_data FROM analyses").fetchone()
+            first_analysis = db.execute("SELECT analysis_id, structured_data FROM page_analyses").fetchone()
         assert first_analysis is not None
         assert saved["version"] == VERSION
         assert "work" not in saved
@@ -210,10 +210,10 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             assert "503" in output
             assert f"crawl resume {task_id}" in output
             with sqlite3.connect(db_path) as db:
-                assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
+                assert db.execute("SELECT state FROM tasks").fetchone()[0] == "FAILED"
         if interrupt == signal.SIGINT:
             with sqlite3.connect(db_path) as db:
-                assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "INTERRUPTED"
+                assert db.execute("SELECT state FROM tasks").fetchone()[0] == "INTERRUPTED"
 
         if legacy:
             with sqlite3.connect(db_path) as db:
@@ -249,18 +249,18 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             checkpoint = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             assert checkpoint["version"] == VERSION
             assert "page_states" in checkpoint["state"] and "work" not in checkpoint["state"]
-            tasks = db.execute("SELECT task_id, goal_id, state, counters FROM crawl_tasks").fetchall()
+            tasks = db.execute("SELECT task_id, goal_id, state, counters FROM tasks").fetchall()
             assert len(tasks) == 1
             restored_id, restored_goal, state, counters = tasks[0]
             assert (restored_id, restored_goal, state) == (task_id, goal_id, "COMPLETED")
             assert json.loads(counters) == {"pages_fetched": 2, "tokens_used": 75}
             assert db.execute("SELECT COUNT(*) FROM pages").fetchone()[0] == 2
-            assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 2
-            assert db.execute("SELECT COUNT(*) FROM result_groups").fetchone()[0] == 1
-            assert db.execute("SELECT COUNT(*) FROM result_item_members").fetchone()[0] == 2
+            assert db.execute("SELECT COUNT(*) FROM page_analyses").fetchone()[0] == 2
+            assert db.execute("SELECT COUNT(*) FROM dedup_groups").fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM dedup_group_members").fetchone()[0] == 2
             assert (
                 db.execute(
-                    "SELECT analysis_id, structured_data FROM analyses WHERE analysis_id = ?", (first_analysis[0],)
+                    "SELECT analysis_id, structured_data FROM page_analyses WHERE analysis_id = ?", (first_analysis[0],)
                 ).fetchone()
                 == first_analysis
             )

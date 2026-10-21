@@ -61,7 +61,7 @@ class _RejectionCounter(logging.Handler):
 def load(run: Path, limit: int) -> tuple[CrawlGoal, list[Page]]:
     con = sqlite3.connect(f"file:{run / 'db' / 'crawl.db'}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
-    g = con.execute("SELECT prompt, goal_statement, keywords, extraction_spec FROM crawl_goals LIMIT 1").fetchone()
+    g = con.execute("SELECT prompt, goal_statement, keywords, extraction_spec FROM goals LIMIT 1").fetchone()
     goal = CrawlGoal(
         prompt=g["prompt"],
         goal_statement=g["goal_statement"] or "",
