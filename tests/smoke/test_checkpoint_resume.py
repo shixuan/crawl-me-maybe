@@ -234,9 +234,11 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             timeout=20,
         )
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
-        header = "crawl finished: COMPLETED (FRONTIER_DRAINED)"
+        header = f"crawl finished: {task_id} (FRONTIER_DRAINED)"
         assert resumed.stdout.count(header) == 1
         report = resumed.stdout[resumed.stdout.index(header) :].strip()
+        assert "(state=COMPLETED)" in report
+        assert f"  task:       {task_id}" in report
         saved_log = (db_path.parent.parent / "log").read_text()
         assert report in saved_log
         assert saved_log.count(header) == 1
