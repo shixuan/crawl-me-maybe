@@ -193,7 +193,7 @@ def completed_run(tmp_path_factory):
         )
         assert not failures, failures
         assert proc.returncode == 0, proc.stdout + proc.stderr
-        assert "COMPLETED (FRONTIER_DRAINED)" in proc.stdout, proc.stdout
+        assert "(state=COMPLETED)" in proc.stdout, proc.stdout
         assert "dedup" in proc.stdout
         assert {"goal", "seeds", "ranking", "dedup", "/a", "/b", "/expired", "/unrelated", "/extra"} <= set(calls), (
             calls
@@ -206,6 +206,8 @@ def completed_run(tmp_path_factory):
         assert len(dbs) == 1
         with sqlite3.connect(dbs[0]) as db:
             task, state = db.execute("SELECT task_id, state FROM tasks").fetchone()
+            assert f"crawl finished: {task} (FRONTIER_DRAINED)" in proc.stdout, proc.stdout
+            assert f"  task:       {task}" in proc.stdout, proc.stdout
             assert state == "COMPLETED"
             assert db.execute("SELECT count(*) FROM dedup_snapshots").fetchone()[0] == 1
             assert db.execute("SELECT count(*) FROM page_analyses WHERE classification='IRRELEVANT'").fetchone()[0] >= 1
