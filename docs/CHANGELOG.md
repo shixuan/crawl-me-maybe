@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.3](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.2...v0.7.3) (2026-11-09)
+
+
+### Fixes
+
+* **analysis:** require time outcomes ([2eddae9](https://github.com/shixuan/crawl-me-maybe/commit/2eddae94da87424df11176173d60d852266e0ad4))
+* **dedup:** retain sources and validate refs ([596de5f](https://github.com/shixuan/crawl-me-maybe/commit/596de5f749efb57981324616248796efef17b9a1))
+* **prompts:** preserve item boundaries ([345ea99](https://github.com/shixuan/crawl-me-maybe/commit/345ea99d66bc5f4d8ee35b12e1a8ec0698b005d8))
+
+
+### Changed
+
+* clarify runtime state and result grouping ([5a64849](https://github.com/shixuan/crawl-me-maybe/commit/5a6484959ff07143f6a9d7e5847691073c0a1e09))
+* clarify storage and reports ([b338ea3](https://github.com/shixuan/crawl-me-maybe/commit/b338ea3fa70f91b620460bb56f3c3767007fe3ee))
+* declare factory dependencies ([ae81c4f](https://github.com/shixuan/crawl-me-maybe/commit/ae81c4f1796dacee9e04f585b5a4b901e47408ce))
+* type page state in runtime ([6a9e404](https://github.com/shixuan/crawl-me-maybe/commit/6a9e404fb8fb415ce0c36d629176e2bc82c7d951))
+
 ## [0.7.2](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.1...v0.7.2) (2026-10-17)
 
 
