@@ -39,6 +39,20 @@ class FetchResult(BaseModel):
 ExtractionStatus = Literal["OK", "DEGRADED", "FAILED"]
 
 
+class Source(BaseModel):
+    """The original location and attribution of a passage."""
+
+    url: str
+    author: str = ""
+    published_at: datetime.datetime | None = None
+
+
+class PageSource(Source):
+    """One separately attributable passage within a fetched page."""
+
+    text: str
+
+
 class Page(BaseModel):
     page_id: str = Field(default_factory=_new_id)
     url_key: str
@@ -49,6 +63,7 @@ class Page(BaseModel):
     title: str | None = None
     markdown: str | None = None
     plain_text: str | None = None
+    sources: list[PageSource] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
     text_hash: str = ""
     text_len: int = 0

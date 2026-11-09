@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS result_items (
     extracted_json TEXT NOT NULL,
     tags_json TEXT NOT NULL,
     starts_on TEXT NOT NULL,
-    ends_on TEXT NOT NULL
+    ends_on TEXT NOT NULL,
+    sources_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS result_items_parent ON result_items(analysis_id);
 CREATE TABLE IF NOT EXISTS dedup_group_members (
@@ -237,6 +238,9 @@ class Storage:
         columns = await self._conn.execute("PRAGMA table_info(page_analyses)")
         if "item_count" not in {r[1] for r in await columns.fetchall()}:
             await self._conn.execute("ALTER TABLE page_analyses ADD COLUMN item_count INTEGER")
+        columns = await self._conn.execute("PRAGMA table_info(result_items)")
+        if "sources_json" not in {r[1] for r in await columns.fetchall()}:
+            await self._conn.execute("ALTER TABLE result_items ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'")
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
         self._writer_task = asyncio.create_task(self._write_loop())
@@ -448,7 +452,7 @@ class Storage:
                 page.title,
                 page.markdown,
                 page.plain_text,
-                json.dumps(page.metadata),
+                json.dumps({**page.metadata, "sources": [source.model_dump(mode="json") for source in page.sources]}),
                 page.text_hash,
                 page.text_len,
                 page.published_at.isoformat() if page.published_at else "",
@@ -573,7 +577,11 @@ class Storage:
         for item in items or []:
             statements.append(
                 (
-                    "INSERT INTO result_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "INSERT INTO result_items (item_id, analysis_id, summary, relevance_score, evidence_json, "
+                        "extracted_json, tags_json, starts_on, ends_on, sources_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    ),
                     (
                         item["item_id"],
                         analysis_json["analysis_id"],
@@ -584,6 +592,7 @@ class Storage:
                         json.dumps(item.get("tags", [])),
                         item.get("starts_on") or "",
                         item.get("ends_on") or "",
+                        json.dumps(item.get("sources", [])),
                     ),
                 )
             )

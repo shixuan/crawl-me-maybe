@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from crawlme.digest import Page
+from crawlme.digest import FetchResult, Page
 from crawlme.platforms import PageProblem, reddit
 from crawlme.urls import URL
 
@@ -26,6 +26,24 @@ _LISTING_URL = "https://www.reddit.com/r/Python/top/"
 
 def _page(url: str) -> Page:
     return Page(url_key="k", url=URL(raw=url, canonical=url, url_key="k", reg_domain="reddit.com"))
+
+
+def test_sources_keep_nested_comments_separate():
+    raw = b"""<shreddit-post id="t3_post" permalink="/r/Python/comments/post/title/" author="Alice" post-title="Report">
+    <div id="t3_post-post-rtjson-content">Alice measured 30 units.</div></shreddit-post>
+    <shreddit-comment thingid="t1_parent" permalink="/r/Python/comments/post/comment/parent/" author="Bob">
+    <div id="t1_parent-comment-rtjson-content">Bob measured 40 units.</div>
+    <shreddit-comment thingid="t1_child" permalink="/r/Python/comments/post/comment/child/" author="Carol">
+    <div id="t1_child-comment-rtjson-content">Carol measured 50 units.</div>
+    </shreddit-comment></shreddit-comment>"""
+    result = FetchResult(item_id="i", url_key="k", url=_page(_POST_URL).url, raw=raw)
+    sources = reddit.extract_sources(result)
+    assert [s.author for s in sources] == ["Alice", "Bob", "Carol"]
+    assert sources[1].text == "Bob measured 40 units."
+    assert sources[2].text == "Carol measured 50 units."
+    assert sources[0].url.endswith("/comments/post/title/")
+    listing = result.model_copy(update={"url": _page(_LISTING_URL).url})
+    assert reddit.extract_sources(listing) == sources[:1]
 
 
 @pytest.mark.parametrize(

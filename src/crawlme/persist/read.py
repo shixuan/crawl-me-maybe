@@ -47,7 +47,11 @@ def read_items(con: sqlite3.Connection) -> list[dict[str, Any]]:
             {**dict(row), "item_id": dict(row).get("analysis_id", row["url_key"]), "evidence_json": "[]"}
             for row in con.execute(queries.LATEST_ANALYSES)
         ]
-    return [dict(row) for row in con.execute(queries.items_query(modern=has_items(con)))]
+    return [dict(row) for row in con.execute(queries.items_query(sources=has_sources(con)))]
+
+
+def has_sources(con: sqlite3.Connection) -> bool:
+    return "sources_json" in {row[1] for row in con.execute("PRAGMA table_info(result_items)")}
 
 
 def read_results(db: Path) -> Results:
@@ -112,6 +116,8 @@ def task_from_row(row: dict[str, Any]) -> Task:
 
 def page_from_row(row: dict[str, Any]) -> Page:
     """Rebuild a Page from a stored row (the frozen corpus)."""
+    metadata = json.loads(row.get("metadata_json") or "{}")
+    sources = metadata.pop("sources", [])
     return Page(
         page_id=row["page_id"],
         url_key=row["url_key"],
@@ -120,7 +126,8 @@ def page_from_row(row: dict[str, Any]) -> Page:
         title=row.get("title"),
         markdown=row.get("markdown"),
         plain_text=row.get("plain_text"),
-        metadata=json.loads(row.get("metadata_json") or "{}"),
+        metadata=metadata,
+        sources=sources,
         text_hash=row.get("text_hash", ""),
         text_len=row.get("text_len", 0),
         published_at=_parse_optional_ts(row.get("published_at")),

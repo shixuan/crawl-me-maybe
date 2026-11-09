@@ -54,7 +54,10 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             elif prompt.startswith("{"):
                 calls.append("dedup")
                 rows = json.loads(prompt)["results"]
-                body = {"groups": [{"members": [r["item_id"] for r in rows], "overview": "Compiler design"}]}
+                body = {
+                    "groups": [{"members": [r["ref"] for r in rows], "overview": "Compiler design"}],
+                    "singletons": [],
+                }
             elif "## Page\n" in prompt:
                 page = prompt.split("## Page\n", 1)[1].splitlines()[0]
                 path = urlsplit(page).path

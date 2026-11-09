@@ -18,18 +18,23 @@ from crawlme.scheduler.engine import create_engine
 from crawlme.urls import URL
 
 
-def client_response(groups, *, truncated=False):
+def client_response(groups, *, singletons=(), truncated=False):
     client = MagicMock()
-    client.chat = AsyncMock(return_value=LLMResponse(json.dumps({"groups": groups}), 100, 20, "test", truncated))
+    client.chat = AsyncMock(
+        return_value=LLMResponse(
+            json.dumps({"groups": groups, "singletons": list(singletons)}), 100, 20, "test", truncated
+        )
+    )
     return client
 
 
 @pytest.mark.parametrize(
     "groups",
     [
-        [{"members": ["a", "a", "b"], "overview": "duplicate"}],
-        [{"members": ["a", "b", "invented"], "overview": "unknown"}],
+        [{"members": ["1", "1", "2"], "overview": "duplicate"}],
+        [{"members": ["1", "2", "invented"], "overview": "unknown"}],
         [{"members": [], "overview": "empty"}],
+        [{"members": ["1"], "overview": "singleton in groups"}],
     ],
 )
 async def test_invalid_partition_rejected(groups):
@@ -38,21 +43,24 @@ async def test_invalid_partition_rejected(groups):
         await grouper.group(Goal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}])
     assert isinstance(caught.value, Error)
     assert caught.value.source == "dedup" and caught.value.kind == Kind.INVALID_OUTPUT
-    if not groups[0]["members"]:
+    if len(groups[0]["members"]) < 2:
         assert caught.value.code == "invalid_groups" and isinstance(caught.value.__cause__, ValueError)
     else:
         assert caught.value.code == "invalid_members"
 
 
 async def test_group_preserves_evidence_and_does_not_output_a_score():
-    client = client_response([{"members": ["a", "b"], "overview": "Same offer; terms differ."}])
+    client = client_response([{"members": ["1", "2"], "overview": "Same offer; terms differ."}])
     rows = [
         {"analysis_id": "a", "extracted": {"condition": {"value": "two large", "evidence": "two large"}}},
         {"analysis_id": "b", "extracted": {"condition": {"value": "any two", "evidence": "any two"}}},
     ]
     result = await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), rows)
     assert result[0].members == ["a", "b"]
-    assert json.loads(client.chat.call_args.args[0])["results"] == rows
+    assert json.loads(client.chat.call_args.args[0])["results"] == [
+        {"ref": "1", "extracted": rows[0]["extracted"]},
+        {"ref": "2", "extracted": rows[1]["extracted"]},
+    ]
     assert set(result[0].model_dump()) == {"members", "overview"}
 
 
@@ -64,7 +72,7 @@ async def test_no_truncation_or_call_for_oversized_input():
 
 
 async def test_truncated_output_rejected():
-    client = client_response([{"members": ["a", "b"], "overview": "offer"}], truncated=True)
+    client = client_response([{"members": ["1", "2"], "overview": "offer"}], truncated=True)
     with pytest.raises(DedupError, match="truncated"):
         await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}])
 
@@ -78,10 +86,72 @@ async def test_singleton_needs_no_llm():
     client.chat.assert_not_called()
 
 
-async def test_omitted_ids_are_preserved_as_singletons():
+async def test_explicit_singletons_reuse_original_summaries():
     rows = [{"analysis_id": "a", "summary": "one"}, {"analysis_id": "b", "summary": "two"}]
-    groups = await Grouper(client_response([]), max_chars=10000).group(Goal(prompt="gifts"), rows)
+    groups = await Grouper(client_response([], singletons=["1", "2"]), max_chars=10000).group(
+        Goal(prompt="gifts"), rows
+    )
     assert [g.members for g in groups] == [["a"], ["b"]]
+    assert [g.overview for g in groups] == ["one", "two"]
+
+
+@pytest.mark.parametrize("singletons", [[], ["1"]])
+async def test_missing_references_rejected(singletons):
+    client = client_response([], singletons=singletons)
+    with pytest.raises(DedupError) as caught:
+        await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "b"}])
+    assert caught.value.code == "invalid_members"
+    assert "2" in caught.value.details["missing"]
+    assert client.chat.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("groups", "singletons", "error"),
+    [
+        ([{"members": ["1", "2"], "overview": "same"}], ["2"], "duplicates"),
+        ([], ["1", "1", "2"], "duplicates"),
+        ([], ["1", "2", "3"], "unknown"),
+    ],
+)
+async def test_references_checked_across_groups_and_singletons(groups, singletons, error):
+    client = client_response(groups, singletons=singletons)
+    with pytest.raises(DedupError) as caught:
+        await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "b"}])
+    assert caught.value.code == "invalid_members"
+    assert caught.value.details[error]
+
+
+async def test_references_are_stable_and_do_not_replace_storage_ids():
+    rows = [
+        {"item_id": "z-real", "analysis_id": "parent-z", "summary": "unique"},
+        {"item_id": "b-real", "analysis_id": "parent-b", "summary": "second"},
+        {"item_id": "a-real", "analysis_id": "parent-a", "summary": "first"},
+    ]
+    before = json.dumps(rows)
+    before_fingerprint = fingerprint(rows)
+    client = client_response([{"members": ["1", "2"], "overview": "same"}], singletons=["3"])
+    grouper = Grouper(client, max_chars=10000)
+    groups = await grouper.group(Goal(prompt="gifts"), rows)
+    first_prompt = client.chat.call_args.args[0]
+    again = await grouper.group(Goal(prompt="gifts"), list(reversed(rows)))
+    assert client.chat.call_args.args[0] == first_prompt
+    assert json.loads(first_prompt)["results"] == [
+        {"ref": "1", "summary": "first"},
+        {"ref": "2", "summary": "second"},
+        {"ref": "3", "summary": "unique"},
+    ]
+    assert [g.members for g in groups] == [["a-real", "b-real"], ["z-real"]]
+    assert groups == again
+    assert json.dumps(rows) == before
+    assert fingerprint(rows) == before_fingerprint
+
+
+async def test_duplicate_input_ids_rejected_before_call():
+    client = client_response([], singletons=["1", "2"])
+    with pytest.raises(DedupError) as caught:
+        await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "a"}])
+    assert caught.value.kind == Kind.INVALID_INPUT
+    client.chat.assert_not_called()
 
 
 async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
@@ -219,14 +289,18 @@ async def test_grouping_failure_retains_results():
     "bad",
     [
         "not json",
-        '{"groups":[{"members":["a","b"],"overview":"x"},{"members":["b"],"overview":"y"}]}',
-        '{"groups":[{"members":["a","invented"],"overview":"x"}]}',
-        '{"groups":[{"members":[],"overview":"x"}]}',
+        '{"groups":[{"members":["1","2"],"overview":"x"}],"singletons":["2"]}',
+        '{"groups":[{"members":["1","invented"],"overview":"x"}],"singletons":[]}',
+        '{"groups":[{"members":[],"overview":"x"}],"singletons":["1","2"]}',
+        '{"groups":[],"singletons":["1"]}',
+        '{"groups":[]}',
+        '{"singletons":["1","2"]}',
+        '{"groups":[],"singletons":[1,2]}',
     ],
 )
 async def test_invalid_reply_retried(bad, caplog):
     caplog.set_level("WARNING", logger="crawlme.dedup.grouper")
-    client = client_response([{"members": ["a", "b"], "overview": "offer"}])
+    client = client_response([{"members": ["1", "2"], "overview": "offer"}])
     good = client.chat.return_value
     client.chat.side_effect = [LLMResponse(bad, 1, 1, "test"), good]
     groups = await Grouper(client, max_chars=10000).group(
@@ -241,8 +315,8 @@ async def test_invalid_reply_retried(bad, caplog):
 
 
 async def test_invalid_retry_stops(caplog):
-    client = client_response([{"members": ["a", "a", "unknown"], "overview": "offer"}])
-    with pytest.raises(DedupError, match=r"duplicate IDs.*a.*unknown IDs.*unknown"):
+    client = client_response([{"members": ["1", "1", "unknown"], "overview": "offer"}])
+    with pytest.raises(DedupError, match=r"duplicate refs.*1.*unknown refs.*unknown.*missing refs.*2"):
         await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}])
     assert client.chat.await_count == 2
 
@@ -306,10 +380,14 @@ async def test_compact_input_boundary():
 
     goal = Goal(prompt="offers")
     rows = [{"analysis_id": "a", "summary": "A café offer"}, {"analysis_id": "b"}]
-    payload = {"goal": goal.prompt, "spec": goal.extraction_spec, "results": rows}
+    payload = {
+        "goal": goal.prompt,
+        "spec": goal.extraction_spec,
+        "results": [{"summary": "A café offer", "ref": "1"}, {"ref": "2"}],
+    }
     compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     limit = len(compact) + len(prompts.DEDUP_SYSTEM)
-    client = client_response([])
+    client = client_response([], singletons=["1", "2"])
     await Grouper(client, max_chars=limit).group(goal, rows)
     assert client.chat.call_args.args[0] == compact
     client.chat.reset_mock()

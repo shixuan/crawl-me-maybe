@@ -100,9 +100,12 @@ def completed_run(tmp_path_factory):
                 elif prompt.startswith("{"):
                     calls.append("dedup")
                     rows = json.loads(prompt)["results"]
-                    duplicates = [r["item_id"] for r in rows if urlsplit(r["url"]).path in {"/a", "/b"}]
+                    duplicates = [r["ref"] for r in rows if urlsplit(r["url"]).path in {"/a", "/b"}]
                     assert len(duplicates) == 2
-                    answer = {"groups": [{"members": duplicates, "overview": "Open workshop"}]}
+                    answer = {
+                        "groups": [{"members": duplicates, "overview": "Open workshop"}],
+                        "singletons": [r["ref"] for r in rows if r["ref"] not in duplicates],
+                    }
                 else:
                     assert "goal_statement" in system
                     calls.append("goal")

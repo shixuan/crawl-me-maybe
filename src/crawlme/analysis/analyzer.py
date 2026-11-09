@@ -13,6 +13,7 @@ from crawlme import prompts
 from crawlme.analysis.models import AnalysisResult, AnalyzerFeedback, Classification, ExtractedField, ResultItem
 from crawlme.config import Settings
 from crawlme.digest import Page
+from crawlme.digest.models import Source
 from crawlme.errors import Error, Kind
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
@@ -58,30 +59,46 @@ class Analyzer:
 
     @activity("analyze")
     async def analyze(self, page: Page, goal: Goal) -> AnalysisResult | None:
+        if page.sources:
+            remaining = self._max_page_chars
+            sources = []
+            for source in page.sources:
+                if remaining <= 0:
+                    break
+                sources.append(source.model_copy(update={"text": source.text[:remaining]}))
+                remaining -= len(source.text)
+            page = page.model_copy(update={"sources": sources, "plain_text": "\n\n".join(s.text for s in sources)})
         text = _page_text(page)
         if not text:
             return None
         prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)
         resp = await self._client.chat(prompt, system=prompts.analysis_system(goal), json_mode=True)
-        if resp.truncated:
-            raise AnalysisError(
-                f"analysis response truncated for {page.url_key}; incomplete items rejected",
-                code="response_truncated",
-                details={"url_key": page.url_key},
+        try:
+            if resp.truncated:
+                raise AnalysisError(
+                    f"analysis response truncated for {page.url_key}; incomplete items rejected",
+                    code="response_truncated",
+                    details={"url_key": page.url_key},
+                )
+            data = parse_json_response(resp.content)
+            if data is None:
+                raise AnalysisError(
+                    f"unparseable JSON for {page.url_key}", code="invalid_json", details={"url_key": page.url_key}
+                )
+            tokens = resp.input_tokens + resp.output_tokens
+            entries = _item_entries(data)
+            if goal.time_policy and data.get("classification") == "RELEVANT":
+                for entry in entries:
+                    corrected, used = await self._correct_time(entry, page, goal, prompt)
+                    entry.update(corrected)
+                    tokens += used
+            result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
+        except AnalysisError as exc:
+            logger.warning("analysis.invalid url_key=%s code=%s error=%s", page.url_key, exc.code, exc)
+            logger.warning(
+                "analysis.response url_key=%s content=%s", page.url_key, resp.content, extra={"file_only": True}
             )
-        data = parse_json_response(resp.content)
-        if data is None:
-            raise AnalysisError(
-                f"unparseable JSON for {page.url_key}", code="invalid_json", details={"url_key": page.url_key}
-            )
-        tokens = resp.input_tokens + resp.output_tokens
-        entries = _item_entries(data)
-        if goal.time_policy and data.get("classification") == "RELEVANT":
-            for entry in entries:
-                corrected, used = await self._correct_time(entry, page, goal, prompt)
-                entry.update(corrected)
-                tokens += used
-        result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
+            raise
         logger.info(
             "judged %s: %s (%.2f), %d items",
             where(page.url.canonical),
@@ -227,6 +244,25 @@ def _item_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
 def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
     summary = data.get("summary")
     evidence = data.get("evidence")
+    sources = []
+    if page.sources:
+        refs = data.get("sources")
+        available = {str(i): source for i, source in enumerate(page.sources, 1)}
+        if (
+            not isinstance(refs, list)
+            or not refs
+            or any(not isinstance(ref, str) or ref not in available for ref in refs)
+            or len(set(refs)) != len(refs)
+        ):
+            raise AnalysisError(
+                f"item sources must be distinct string refs from {list(available)}; received {refs!r}",
+                code="invalid_sources",
+                details={"url_key": page.url_key, "summary": summary},
+            )
+        sources = [available[ref] for ref in refs]
+        page = page.model_copy(update={"plain_text": "\n\n".join(source.text for source in sources), "markdown": None})
+    elif data.get("sources"):
+        raise AnalysisError("source refs were not supplied for this page", code="invalid_sources")
     if not isinstance(summary, str) or not summary.strip():
         raise AnalysisError("each item requires a summary", code="missing_summary", details={"url_key": page.url_key})
     if (
@@ -236,6 +272,10 @@ def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
             not isinstance(quote, str) or not quote.strip() or _normalize(quote) not in _normalize(_page_text(page))
             for quote in evidence
         )
+        or (
+            sources
+            and any(not any(_normalize(quote) in _normalize(source.text) for source in sources) for quote in evidence)
+        )
     ):
         raise AnalysisError(
             "each item requires nonempty verbatim source evidence",
@@ -243,11 +283,14 @@ def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
             details={"url_key": page.url_key},
         )
     extracted = _parse_extracted(data, page, goal)
+    if any(not any(_normalize(quote) in _normalize(source.text) for quote in evidence) for source in sources):
+        raise AnalysisError("each cited source needs supporting item evidence", code="unsupported_evidence")
     dates = _policy_dates(data, page) if goal.time_policy else _dates_from(extracted, page, goal)
     return ResultItem(
         summary=summary.strip(),
         relevance_score=_clamp01(data.get("relevance_score")),
         evidence=evidence,
+        sources=[Source(url=source.url, author=source.author, published_at=source.published_at) for source in sources],
         extracted=extracted,
         tags=_str_list(data.get("tags"), _MAX_TAGS),
         **dates,
@@ -279,6 +322,8 @@ def _parse_analysis(
     tags = _str_list(data.get("tags"), _MAX_TAGS)
     extracted = _parse_extracted(data, page, goal)
     entries = _item_entries(data)
+    if page.sources and classification == "RELEVANT" and "items" not in data:
+        raise AnalysisError("sourced pages require items with source refs", code="invalid_items")
     items = [_parse_item(entry, page, goal) for entry in entries] if "items" in data else None
 
     return AnalysisResult(

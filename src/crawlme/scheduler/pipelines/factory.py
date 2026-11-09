@@ -237,6 +237,7 @@ def create_replay(
     error_handler = ErrorHandler()
     return ReplayPipeline(
         settings,
+        extractor=TrafExtractor(adapters=adapters_for(settings)),
         storage=storage,
         budget=budget,
         analysis=AnalysisWorker(

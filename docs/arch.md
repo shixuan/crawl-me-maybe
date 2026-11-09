@@ -194,13 +194,16 @@ candidate URLs, which return to the unranked buffer through the pre-filter.
 Adapters parse saved inputs and perform no network requests. Adding a platform
 requires implementing `FeedAdapter` and registering it in `platforms/__init__.py`.
 
-The extractor also asks the first URL-matching adapter for page text through
-`extract_text(FetchResult)`. Instagram matches the requested post in captured payloads
-or inline JSON and merges its caption with distinct carousel captions. Other adapters
-return `None`, keeping generic HTML extraction. Missing target text also falls back
-to HTML. This reads fetched detail-page data, not `Candidate.text` from ranking.
+The extractor asks the first URL-matching adapter for attributed passages through
+`extract_sources(FetchResult)`. Reddit keeps listing cards, post bodies and individual
+comments with their original permalink, author and publication time. Nested replies
+are separate passages. When no passages are available, `extract_text(FetchResult)`
+provides page text. Instagram matches the requested post in captured payloads or inline
+JSON and merges its caption with distinct carousel captions. Missing adapter text falls
+back to generic HTML extraction. This reads fetched data, not `Candidate.text` from ranking.
 The selected text is saved in `Page.plain_text` and `markdown`. Adapter text records
 its platform in `metadata.text_source`. Analysis still applies its character limit.
+`Page.sources` retains passage text and attribution, persisted inside page metadata.
 
 ### Ranking and analysis
 
@@ -218,6 +221,14 @@ Checkpoint recovery creates a new run owner from saved state; see the
 an independently useful answer to the goal, with a summary, score, source quotes,
 tags, declared fields and optional dates. The page itself may be the single item.
 Irrelevant pages return an empty items array and a short rejection reason in `summary`.
+Attributed passages receive request-local string references. Each item cites its
+supporting passages; unknown, duplicate or unsupported references are rejected.
+Quotes and extracted fields are checked against the cited passage text visible to
+the model. Valid references are resolved to original URLs, authors and publication
+times in `ResultItem.sources`, stored in `result_items.sources_json` and passed to
+dedup. A passage author may quote several independent reports, so a shared source
+reference does not establish one answer identity. That distinction remains a semantic
+judgement by the model.
 Analyzer distinguishes coherent source content from aggregated entries using the
 content and goal. A coherent source entry stays one item with its details and
 conditions. Aggregated entries are split when they independently answer the goal.
@@ -495,8 +506,18 @@ remaining retries. Page and analysis settlement share one 120-second
 shutdown deadline. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
 When dedup is enabled, the scheduler passes relevant items and source evidence to `dedup/grouper.py`.
-One LLM call proposes duplicate groups. Unassigned analyses become singletons.
-Duplicate or unknown member IDs invalidate the response and are reported separately.
+The grouper sorts inputs by item ID and gives them request-local string references
+(`"1"`, `"2"`, ...). The model receives these references instead of storage IDs and
+returns duplicate `groups` plus explicit `singletons`. Each duplicate group must
+have at least two members. Every input reference must appear exactly once across
+both arrays. Duplicate, unknown or missing references invalidate the response and
+are reported separately. Only a validated response is mapped back to storage IDs;
+singletons reuse their original summaries. The input fingerprint still covers the
+original rows and IDs.
+The client currently requests JSON mode, not a server-enforced schema. The configured
+DeepSeek Chat Completions API documents `text` and `json_object` response formats;
+local validation enforces the grouping contract. See the
+[provider reference](https://api-docs.deepseek.com/api/create-chat-completion/).
 Malformed JSON, schema errors and invalid members trigger at most one correction
 request, with the original inputs, failed response and validation feedback. Each
 request obeys the token budget and input-size limit. Failed responses are recorded
@@ -568,7 +589,9 @@ read-only. The dashboard uses the same read-only connection helper and filters
 results in the browser.
 
 `crawl replay` uses Engine and ReplayPipeline to analyze stored page text without
-refetching or re-extracting HTML. ReplayPipeline reuses AnalysisWorker for concurrency,
+refetching. With `--reextract`, it first extracts saved HTML again, preserves page IDs,
+and re-analyzes even when an earlier analysis exists. Missing saved HTML is an error.
+ReplayPipeline reuses AnalysisWorker for concurrency,
 error policy, retries and publishing, then calls DedupPipeline with the same token budget.
 CLI commands use one report formatter, which renders the available statistics, and
 return report text and an exit code. The shared dispatcher closes
@@ -578,5 +601,6 @@ recovery input to the same CrawlPipeline. Run lookup and stored-model decoding l
 It skips matching `(url_key, goal_id, spec_version, model)` analyses
 unless forced. A new goal prompt creates or reuses its content-derived goal ID.
 After editing analyzer instructions, use `--force` to reanalyze existing results.
+After changing extraction, use `--reextract` to apply it to the saved corpus.
 Storage includes a targeted migration for `time_policy`, but no general migration
 scheme that guarantees compatibility across versions.

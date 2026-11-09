@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from crawlme.config import Settings
+from crawlme.digest import Extractor, FetchResult
 from crawlme.errors import Error, Kind, Skipped
 from crawlme.llm import TokenBudget, TokenBudgetError
 from crawlme.persist import Storage
@@ -37,6 +38,7 @@ class ReplayInput:
     prompt: str | None = None
     limit: int | None = None
     force: bool = False
+    reextract: bool = False
 
 
 @dataclass
@@ -69,6 +71,7 @@ class ReplayPipeline(Pipeline[ReplayInput, ReplayResult]):
         enhancer: GoalEnhancer,
         budget: TokenBudget,
         dedup: DedupPipeline,
+        extractor: Extractor,
     ) -> None:
         self._settings = settings
         self._storage = storage
@@ -76,6 +79,7 @@ class ReplayPipeline(Pipeline[ReplayInput, ReplayResult]):
         self._enhancer = enhancer
         self._budget = budget
         self._dedup = dedup
+        self._extractor = extractor
 
     async def run(self, input: ReplayInput, context: PipelineContext) -> ReplayResult:
         settings, storage, worker = self._settings, self._storage, self._analysis
@@ -145,12 +149,25 @@ class ReplayPipeline(Pipeline[ReplayInput, ReplayResult]):
                 if exhausted:
                     return
                 page = page_from_row(row)
+                if input.reextract:
+                    raw_path = Path(page.raw_html_path)
+                    if not raw_path.is_file():
+                        raise ReplayError(f"stored HTML missing for {page.url_key}", code="raw_missing")
+                    fresh = await asyncio.to_thread(
+                        self._extractor.extract,
+                        FetchResult(
+                            item_id=page.page_id, url_key=page.url_key, url=page.url, raw=raw_path.read_bytes()
+                        ),
+                        page.raw_html_path,
+                    )
+                    page = fresh.model_copy(update={"page_id": page.page_id, "payload_paths": page.payload_paths})
+                    storage.save_page(page)
                 # Mirrors the analyzer's own empty-text skip, so the
                 # report can tell "no text" apart from "parked".
                 if not ((page.plain_text or "").strip() or (page.markdown or "").strip()):
                     empty += 1
                     continue
-                if not force and await storage.has_analysis(
+                if not (force or input.reextract) and await storage.has_analysis(
                     page.url_key,
                     goal.goal_id,
                     settings.llm_model,

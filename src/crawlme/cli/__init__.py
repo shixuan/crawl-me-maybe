@@ -137,6 +137,7 @@ def main() -> None:
     # replay ---------------------------------------------------------
     replay_p = sub.add_parser("replay", help="Re-analyze a completed task's pages")
     replay_p.add_argument("task_id", help="Task ID")
+    replay_p.add_argument("--reextract", action="store_true", help="Re-extract saved HTML before re-analysis")
     replay_p.add_argument("--dedup", choices=["on", "off"], default="on", help="Group results after replay")
     replay_p.add_argument("--prompt", help="New goal statement; analyses are stored under a new goal row")
     replay_p.add_argument("--limit", type=int, help="Re-analyze at most N pages (default: all)")

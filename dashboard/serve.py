@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 from crawlme.analysis import CLASSIFICATIONS
 from crawlme.dedup.grouper import fingerprint
 from crawlme.persist import queries
-from crawlme.persist.read import connect, has_items, read_items
+from crawlme.persist.read import connect, has_items, has_sources, read_items
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
@@ -149,7 +149,7 @@ def _groups(con: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]]:
     ).fetchone()
     if run is None or run["version"] != "items":
         return []
-    query = queries.item_dedup_query(modern=has_items(con))
+    query = queries.item_dedup_query(modern=has_items(con), sources=has_sources(con))
     inputs = [queries.dedup_input(dict(row)) for row in con.execute(query, (goal_id,))]
     if fingerprint(inputs) != run["fingerprint"]:
         return []
