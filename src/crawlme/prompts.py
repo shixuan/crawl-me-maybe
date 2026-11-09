@@ -217,7 +217,7 @@ _ANALYSIS_SYSTEM = (
     "For a page that answers the goal, reply "
     '{"classification": "RELEVANT", "relevance_score": 0.0, "summary": "...", '
     '"tags": ["..."], "items": [{"summary": "...", "relevance_score": 0.0, '
-    '"sources": ["1"], "evidence": ["verbatim source quote"], "tags": ["..."]}]}. '
+    '"sources": ["1"], "evidence": ["verbatim source quote"], "tags": ["..."]__ITEM_TIME__}]}. '
     'Copy source refs supplied with the page into each item\'s "sources" array as strings. '
     'If the page has no numbered sources, use "sources": []. '
     "An item is one independently useful answer to the user's goal. First distinguish "
@@ -256,11 +256,21 @@ _ANALYSIS_EXTRACT_SYSTEM = (
 def analysis_system(goal: Goal) -> str:
     """The contract, widened when the goal declares fields to collect."""
     system = _ANALYSIS_SYSTEM + _ANALYSIS_EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _ANALYSIS_SYSTEM
+    system = system.replace(
+        "__ITEM_TIME__",
+        ', "time": {"status": "extracted", "ends_on": {"value": "date as written", "evidence": ["verbatim quote"]}}'
+        if goal.time_policy
+        else "",
+    )
     if goal.time_policy:
         system += (
-            ' Within each item also return "time": {"starts_on": {"value": "date as written", '
+            ' Within each item also return "time": {"status": "extracted", "starts_on": {"value": "date as written", '
             '"evidence": ["verbatim quote"]}, "ends_on": {"value": "date as written", '
             '"evidence": ["verbatim quote"]}} following the time policy. '
+            "Every item must include time. Use status extracted when at least one validity endpoint is "
+            "supported. Otherwise use status not_stated when the source provides no validity dates, or "
+            "ambiguous when their meaning cannot be determined; include a nonempty reason and no endpoints. "
+            "Do not omit time or return an empty object. "
             "Return time independently of the requested extracted fields; a deadline in extracted "
             "does not replace time. Omit unknown endpoints. "
             "For a single-day event use that date for both endpoints. "
@@ -271,7 +281,7 @@ def analysis_system(goal: Goal) -> str:
             "appear separately, include both passages; for a single-day event include its date "
             "and the passage establishing that it lasts one day. Never use "
             "publication dates, historical mentions or unrelated dates as validity dates. "
-            "Do not guess missing dates; omit time for ambiguous or multiple incompatible windows."
+            "Do not guess missing dates; report ambiguous for multiple incompatible windows."
         )
     return system
 

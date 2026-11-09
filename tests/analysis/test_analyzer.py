@@ -10,7 +10,7 @@ import datetime
 
 import pytest
 
-from crawlme.analysis import Analyzer
+from crawlme.analysis import AnalysisError, Analyzer
 from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
 from crawlme.digest import Page
 from crawlme.errors import Kind
@@ -341,7 +341,10 @@ def test_time_policy_is_independent_of_requested_fields(policy):
     text = "Offer ends August 16, 2027."
     goal = Goal(prompt="find offers", time_policy=policy)
     result = _parse_analysis(
-        {"classification": "RELEVANT", "time": {"ends_on": {"value": "August 16, 2027", "evidence": text}}},
+        {
+            "classification": "RELEVANT",
+            "time": {"status": "extracted", "ends_on": {"value": "August 16, 2027", "evidence": text}},
+        },
         _page(text),
         goal,
         model="stub",
@@ -359,32 +362,36 @@ def test_time_policy_is_independent_of_requested_fields(policy):
     ],
 )
 def test_time_requires_date_inside_source_evidence(value, evidence):
-    result = _parse_analysis(
-        {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
-        _page("Offer ends August 16, 2027."),
-        Goal(prompt="offers", time_policy="offer validity"),
-        model="stub",
-        tokens_used=0,
-    )
-    assert result.ends_on is None
-
-
-def test_inverted_time_window_is_unknown():
-    text = "Starts August 20, 2027. Ends August 16, 2027."
-    result = _parse_analysis(
-        {
-            "classification": "RELEVANT",
-            "time": {
-                "starts_on": {"value": "August 20, 2027", "evidence": text},
-                "ends_on": {"value": "August 16, 2027", "evidence": text},
+    with pytest.raises(AnalysisError):
+        _parse_analysis(
+            {
+                "classification": "RELEVANT",
+                "time": {"status": "extracted", "ends_on": {"value": value, "evidence": evidence}},
             },
-        },
-        _page(text),
-        Goal(prompt="offers", time_policy="offer validity"),
-        model="stub",
-        tokens_used=0,
-    )
-    assert result.starts_on is None and result.ends_on is None
+            _page("Offer ends August 16, 2027."),
+            Goal(prompt="offers", time_policy="offer validity"),
+            model="stub",
+            tokens_used=0,
+        )
+
+
+def test_inverted_time_window_rejected():
+    text = "Starts August 20, 2027. Ends August 16, 2027."
+    with pytest.raises(AnalysisError):
+        _parse_analysis(
+            {
+                "classification": "RELEVANT",
+                "time": {
+                    "status": "extracted",
+                    "starts_on": {"value": "August 20, 2027", "evidence": text},
+                    "ends_on": {"value": "August 16, 2027", "evidence": text},
+                },
+            },
+            _page(text),
+            Goal(prompt="offers", time_policy="offer validity"),
+            model="stub",
+            tokens_used=0,
+        )
 
 
 @pytest.mark.parametrize(
@@ -405,7 +412,10 @@ def test_time_range_evidence(value, evidence, endpoint, expected):
     page = _page(evidence)
     page.published_at = datetime.datetime(2026, 9, 24, tzinfo=datetime.timezone.utc)
     result = _parse_analysis(
-        {"classification": "RELEVANT", "time": {endpoint: {"value": value, "evidence": evidence}}},
+        {
+            "classification": "RELEVANT",
+            "time": {"status": "extracted", endpoint: {"value": value, "evidence": evidence}},
+        },
         page,
         Goal(prompt="offers", time_policy="offer validity"),
         model="stub",
@@ -417,14 +427,17 @@ def test_time_range_evidence(value, evidence, endpoint, expected):
 @pytest.mark.parametrize("value", ["September 26, 2026", "September 27, 2027", "October 27, 2026"])
 def test_time_rejects_unsupported(value):
     evidence = "Valid September 25\u201327, 2026."
-    result = _parse_analysis(
-        {"classification": "RELEVANT", "time": {"ends_on": {"value": value, "evidence": evidence}}},
-        _page(evidence),
-        Goal(prompt="offers", time_policy="offer validity"),
-        model="stub",
-        tokens_used=0,
-    )
-    assert result.ends_on is None
+    with pytest.raises(AnalysisError):
+        _parse_analysis(
+            {
+                "classification": "RELEVANT",
+                "time": {"status": "extracted", "ends_on": {"value": value, "evidence": evidence}},
+            },
+            _page(evidence),
+            Goal(prompt="offers", time_policy="offer validity"),
+            model="stub",
+            tokens_used=0,
+        )
 
 
 def _time_reply(evidence):
@@ -435,6 +448,7 @@ def _time_reply(evidence):
             "classification": "RELEVANT",
             "summary": "A one-day event.",
             "time": {
+                "status": "extracted",
                 "starts_on": {"value": "May 12, 2027", "evidence": "May 12, 2027"},
                 "ends_on": {"value": "May 12, 2027", "evidence": evidence},
             },
@@ -488,17 +502,23 @@ async def test_time_correction_fails(failure, caplog):
             )
         assert len(client.calls) == 2
         return
-    result = await _analyzer(client).analyze(
-        _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
-    )
-    assert result.classification == "RELEVANT"
-    assert result.ends_on is None
+    with pytest.raises(AnalysisError):
+        await _analyzer(client).analyze(
+            _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
+        )
     assert len(client.calls) == 2
     assert "analysis.time" in caplog.text
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("time", [{}, {"starts_on": {"value": "May 12, 2027", "evidence": ["May 12, 2027"]}}])
+@pytest.mark.parametrize(
+    "time",
+    [
+        {"status": "not_stated", "reason": "No validity date is stated."},
+        {"status": "ambiguous", "reason": "The date's role is unclear."},
+        {"status": "extracted", "starts_on": {"value": "May 12, 2027", "evidence": ["May 12, 2027"]}},
+    ],
+)
 async def test_unknown_time_no_retry(time):
     import json
 
@@ -513,7 +533,10 @@ async def test_correction_keeps_analysis():
     client = _StubClient(
         [
             _resp(_time_reply("One day only.")),
-            _resp('{"classification": "IRRELEVANT", "summary": "Changed", "time": {}}'),
+            _resp(
+                '{"classification": "IRRELEVANT", "summary": "Changed", '
+                '"time": {"status":"ambiguous","reason":"Date role unclear"}}'
+            ),
         ]
     )
     result = await _analyzer(client).analyze(
@@ -523,3 +546,53 @@ async def test_correction_keeps_analysis():
     assert result.summary == "A one-day event."
     assert result.starts_on is None and result.ends_on is None
     assert result.tokens_used == 720
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "time",
+    [
+        None,
+        {},
+        {"status": "extracted"},
+        {"status": "not_stated"},
+        {"status": "ambiguous", "reason": "Unclear", "ends_on": {"value": "May 12, 2027"}},
+    ],
+)
+async def test_missing_time_corrected(time):
+    import json
+
+    item = {
+        "summary": "Event",
+        "evidence": ["May 12, 2027"],
+        "extracted": {"deadline": {"value": "May 12, 2027", "evidence": "May 12, 2027"}},
+    }
+    if time is not None:
+        item["time"] = time
+    client = _StubClient(
+        [
+            _resp(json.dumps({"classification": "RELEVANT", "items": [item]})),
+            _resp(_time_reply("May 12, 2027")),
+        ]
+    )
+    result = await _analyzer(client).analyze(_page("May 12, 2027"), Goal(prompt="events", time_policy="event dates"))
+    assert result.items[0].ends_on == datetime.date(2027, 5, 12)
+    assert result.structured_data["items"][0]["extracted"] == item["extracted"]
+    assert len(client.calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("truncated", [False, True])
+async def test_missing_time_fails(truncated):
+    correction = LLMResponse(
+        content=_time_reply("May 12, 2027") if truncated else '{"time": {}}',
+        input_tokens=300,
+        output_tokens=60,
+        model="stub",
+        truncated=truncated,
+    )
+    client = _StubClient([_resp('{"classification": "RELEVANT"}'), correction])
+    with pytest.raises(AnalysisError) as error:
+        await _analyzer(client).analyze(_page("May 12, 2027"), Goal(prompt="events", time_policy="event dates"))
+    assert error.value.code == "invalid_dates"
+    assert len(client.calls) == 2

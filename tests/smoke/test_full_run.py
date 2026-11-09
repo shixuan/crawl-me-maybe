@@ -86,7 +86,7 @@ def completed_run(tmp_path_factory):
                                     "relevance_score": 0.9,
                                     "evidence": [body],
                                     "extracted": {"offer": {"value": body.split(".")[0], "evidence": body}},
-                                    "time": {"ends_on": {"value": date, "evidence": [body]}},
+                                    "time": {"status": "extracted", "ends_on": {"value": date, "evidence": [body]}},
                                 }
                             ],
                         }

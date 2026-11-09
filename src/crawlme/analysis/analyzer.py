@@ -141,10 +141,12 @@ class Analyzer:
                         correction,
                         system=prompts.analysis_system(goal)
                         + ' For this correction return only {"time": {...}}; omit all other analysis fields. '
-                        + 'If no endpoint is supported, return {"time": {}}.',
+                        + "Always include time.status; explain not_stated or ambiguous with time.reason.",
                         json_mode=True,
                     )
                     tokens += fixed.input_tokens + fixed.output_tokens
+                    if fixed.truncated:
+                        raise AnalysisError("time correction truncated", code="invalid_dates")
                     corrected = parse_json_response(fixed.content)
                     if corrected is None or not isinstance(corrected.get("time"), dict):
                         raise AnalysisError("time correction must return a time object", code="invalid_dates")
@@ -157,6 +159,7 @@ class Analyzer:
                     data = {**data, "time": corrected["time"]}
                 except AnalysisError as exc:
                     logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
+                    raise
         return data, tokens
 
 
@@ -339,7 +342,7 @@ def _parse_analysis(
         spec_version=spec_version(goal.extraction_spec, goal.time_policy),
         **(
             _policy_dates(data, page)
-            if goal.time_policy and classification == "RELEVANT"
+            if goal.time_policy and classification == "RELEVANT" and items is None
             else _dates_from(extracted, page, goal)
             if not goal.time_policy
             else {}
@@ -359,11 +362,30 @@ def _parse_analysis(
 
 def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None = None) -> dict[str, Any]:
     errors = issues if issues is not None else []
+
+    def invalid(message: str) -> None:
+        if issues is None:
+            raise AnalysisError(message, code="invalid_dates", details={"url_key": page.url_key})
+        errors.append(message)
+
     raw = data.get("time")
-    if raw is None:
-        return {}
     if not isinstance(raw, dict):
-        errors.append("time must be an object")
+        invalid("time must be an object")
+        return {}
+    status = raw.get("status")
+    if status not in ("extracted", "not_stated", "ambiguous"):
+        invalid("time.status must be extracted, not_stated or ambiguous")
+        return {}
+    endpoints = [key for key in ("starts_on", "ends_on") if raw.get(key) is not None]
+    if status != "extracted":
+        if endpoints:
+            invalid("unknown time must not contain date endpoints")
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            invalid("not_stated or ambiguous time requires a nonempty reason")
+        return {}
+    if not endpoints:
+        invalid("extracted time requires at least one supported endpoint")
         return {}
     dates = {}
     text = _normalize(unicodedata.normalize("NFKC", _page_text(page)))
@@ -372,31 +394,31 @@ def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None 
         if entry is None:
             continue
         if not isinstance(entry, dict):
-            errors.append(f"{endpoint}: expected a date value and evidence")
+            invalid(f"{endpoint}: expected a date value and evidence")
             continue
         value, evidence = entry.get("value"), entry.get("evidence")
         quotes = [evidence] if isinstance(evidence, str) else evidence
         if not isinstance(value, str) or not value.strip() or not isinstance(quotes, list) or not quotes:
-            errors.append(f"{endpoint}: provide a date value and nonempty evidence quotes")
+            invalid(f"{endpoint}: provide a date value and nonempty evidence quotes")
             continue
         if any(not isinstance(q, str) or not q.strip() for q in quotes):
-            errors.append(f"{endpoint}: evidence quotes must be nonempty strings")
+            invalid(f"{endpoint}: evidence quotes must be nonempty strings")
             continue
         if any(_normalize(unicodedata.normalize("NFKC", q)) not in text for q in quotes):
-            errors.append(f"{endpoint}: each evidence quote must occur in the page")
+            invalid(f"{endpoint}: each evidence quote must occur in the page")
             continue
         found = read_range(value, kind="on", said_on=page.published_at)
         supported = [read_range(q, kind="on", said_on=page.published_at) for q in quotes]
         date = (found.start if endpoint == "starts_on" else found.end) if found else None
         if date is None or not any(span and date in (span.start, span.end) for span in supported):
-            errors.append(f"{endpoint}: evidence must include the stated date, including compressed ranges")
+            invalid(f"{endpoint}: evidence must include the stated date, including compressed ranges")
             continue
         dates[endpoint] = date
     start, end = dates.get("starts_on"), dates.get("ends_on")
     if start is not None and end is not None and start > end:
-        errors.append("time: starts_on must not be after ends_on")
+        invalid("time: starts_on must not be after ends_on")
         return {}
-    return dates
+    return {} if errors else dates
 
 
 def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: Goal) -> dict[str, Any]:
