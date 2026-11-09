@@ -37,6 +37,7 @@ async def cmd_replay(args: argparse.Namespace) -> Report:
         limit=args.limit,
         max_tokens=args.max_tokens,
         force=args.force,
+        reextract=args.reextract,
         dedup_enabled=args.dedup == "on",
     )
     return make_report({"command": "replay", **asdict(report)})
@@ -50,6 +51,7 @@ async def run_replay(
     limit: int | None = None,
     max_tokens: int | None = None,
     force: bool = False,
+    reextract: bool = False,
     analyzer: Analyzer | None = None,
     dedup_enabled: bool = True,
 ) -> ReplayResult:
@@ -68,5 +70,5 @@ async def run_replay(
         dedup_enabled=dedup_enabled,
     )
     return await create_engine(pipeline).run(
-        ReplayInput(task_from_row(task_row), run_dir, prompt=prompt, limit=limit, force=force)
+        ReplayInput(task_from_row(task_row), run_dir, prompt=prompt, limit=limit, force=force, reextract=reextract)
     )

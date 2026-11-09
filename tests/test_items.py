@@ -13,6 +13,7 @@ from crawlme.analysis import AnalysisError, AnalysisResult, Analyzer
 from crawlme.analysis.analyzer import _parse_analysis
 from crawlme.dedup.grouper import Grouper
 from crawlme.digest import Page
+from crawlme.digest.models import PageSource
 from crawlme.errors import Error, ErrorHandler, Kind
 from crawlme.llm import LLMResponse
 from crawlme.persist import Storage, read_results
@@ -45,6 +46,40 @@ def response(entries):
             for text in entries
         ],
     }
+
+
+@pytest.mark.parametrize("refs", [None, [], ["9"], [1], ["1", "1"], ["2"], ["1", "2"]])
+def test_sources_reject_unknown_or_unrelated_passages(refs):
+    p = page("Alice measured 30. Bob measured 40.")
+    p.sources = [
+        PageSource(url="https://example.com/a", author="Alice", text="Alice measured 30."),
+        PageSource(url="https://example.com/b", author="Bob", text="Bob measured 40."),
+    ]
+    raw = response(["Alice measured 30."])
+    raw["items"][0]["sources"] = refs
+    with pytest.raises(AnalysisError):
+        _parse_analysis(raw, p, Goal(prompt="measurements"), model="test", tokens_used=0)
+
+
+async def test_item_sources_survive_storage_and_dedup_input(tmp_path):
+    p = page("Alice measured 30.")
+    p.sources = [PageSource(url="https://example.com/a", author="Alice", text=p.plain_text)]
+    raw = response([p.plain_text])
+    raw["items"][0]["sources"] = ["1"]
+    goal = Goal(prompt="measurements")
+    result = _parse_analysis(raw, p, goal, model="test", tokens_used=0)
+    storage = Storage.create(tmp_path)
+    await storage.start()
+    try:
+        storage.save_page(p)
+        storage.save_analysis(result.model_dump(mode="json"))
+        rows = await storage.dedup_inputs(goal.goal_id)
+        assert rows[0]["sources"] == [{"url": "https://example.com/a", "author": "Alice", "published_at": None}]
+        from crawlme.persist.read import page_from_row
+
+        assert page_from_row((await storage.list_pages())[0]).sources == p.sources
+    finally:
+        await storage.close()
 
 
 @pytest.mark.parametrize(
@@ -83,14 +118,22 @@ def test_invalid_items_rejected(items):
 async def test_item_time_correction():
     entries = ["Aster ends May 12, 2027.", "Birch ends June 9, 2027."]
     raw = response(entries)
-    raw["items"][0]["time"] = {"ends_on": {"value": "May 12, 2027", "evidence": [entries[0]]}}
-    raw["items"][1]["time"] = {"ends_on": {"value": "June 9, 2027", "evidence": ["Missing quote"]}}
+    raw["items"][0]["time"] = {"status": "extracted", "ends_on": {"value": "May 12, 2027", "evidence": [entries[0]]}}
+    raw["items"][1]["time"] = {
+        "status": "extracted",
+        "ends_on": {"value": "June 9, 2027", "evidence": ["Missing quote"]},
+    }
     client = MagicMock()
     client.chat = AsyncMock(
         side_effect=[
             LLMResponse(json.dumps(raw), 100, 50, "test"),
             LLMResponse(
-                json.dumps({"time": {"ends_on": {"value": "June 9, 2027", "evidence": [entries[1]]}}}), 100, 50, "test"
+                json.dumps(
+                    {"time": {"status": "extracted", "ends_on": {"value": "June 9, 2027", "evidence": [entries[1]]}}}
+                ),
+                100,
+                50,
+                "test",
             ),
         ]
     )
@@ -122,7 +165,7 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         assert {row["item_id"] for row in rows} == {i.item_id for i in result.items}
         assert len({row["url"] for row in rows}) == 1
         client = MagicMock()
-        client.chat = AsyncMock(return_value=LLMResponse('{"groups": []}', 20, 10, "test"))
+        client.chat = AsyncMock(return_value=LLMResponse('{"groups": [], "singletons": ["1", "2"]}', 20, 10, "test"))
         report = await create_engine(
             DedupPipeline(Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler())
         ).run(goal)
@@ -140,8 +183,17 @@ async def test_items_replay_and_groups(tmp_path, capsys):
         storage.save_page(other)
         storage.save_analysis(duplicate.model_dump(mode="json"))
         pair = [result.items[0].item_id, duplicate.items[0].item_id]
+        refs = {row["item_id"]: str(index) for index, row in enumerate(await storage.dedup_inputs(goal.goal_id), 1)}
         client.chat.return_value = LLMResponse(
-            json.dumps({"groups": [{"members": pair, "overview": "Aster camera"}]}), 20, 10, "test"
+            json.dumps(
+                {
+                    "groups": [{"members": [refs[item_id] for item_id in pair], "overview": "Aster camera"}],
+                    "singletons": [ref for item_id, ref in refs.items() if item_id not in pair],
+                }
+            ),
+            20,
+            10,
+            "test",
         )
         report = await create_engine(
             DedupPipeline(Grouper(client, max_chars=10000), storage=storage, model="test", error_handler=ErrorHandler())
@@ -197,5 +249,5 @@ async def test_item_write_is_atomic(tmp_path):
     storage.save_analysis(data)
     await storage.close()
     with sqlite3.connect(storage.db_path) as con:
-        assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == 0
-        assert con.execute("SELECT count(*) FROM analysis_items").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM result_items").fetchone()[0] == 0

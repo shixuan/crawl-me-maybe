@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from crawlme.checkpoint import VERSION
+
 
 @pytest.mark.parametrize("legacy", [False, True], ids=["current-db", "legacy-db"])
 @pytest.mark.parametrize("interrupt", [signal.SIGINT, signal.SIGKILL, None], ids=["sigint", "sigkill", "remote-error"])
@@ -52,7 +54,10 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             elif prompt.startswith("{"):
                 calls.append("dedup")
                 rows = json.loads(prompt)["results"]
-                body = {"groups": [{"members": [r["item_id"] for r in rows], "overview": "Compiler design"}]}
+                body = {
+                    "groups": [{"members": [r["ref"] for r in rows], "overview": "Compiler design"}],
+                    "singletons": [],
+                }
             elif "## Page\n" in prompt:
                 page = prompt.split("## Page\n", 1)[1].splitlines()[0]
                 path = urlsplit(page).path
@@ -176,17 +181,19 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             pytest.fail(f"Crawl did not reach the second page analysis:\n{output}")
         db_path = next(root.glob("*/db/crawl.db"))
         with sqlite3.connect(db_path) as db:
-            task_id, goal_id = db.execute("SELECT task_id, goal_id FROM crawl_tasks").fetchone()
+            task_id, goal_id = db.execute("SELECT task_id, goal_id FROM tasks").fetchone()
             saved = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
-            first_analysis = db.execute("SELECT analysis_id, structured_data FROM analyses").fetchone()
+            first_analysis = db.execute("SELECT analysis_id, structured_data FROM page_analyses").fetchone()
         assert first_analysis is not None
+        assert saved["version"] == VERSION
+        assert "work" not in saved
         assert saved["state"]["progress"]["pages_fetched"] == 1
         assert saved["budget"]["used"] == 45
         assert saved["budget"]["by_stage"]["analysis"]["calls"] == 1
         assert saved["goal"]["max_tokens"] == 300
-        assert len(saved["work"]) == 1
-        assert saved["work"][0]["page"]["url"]["canonical"] == site + "/second"
-        assert not saved["work"][0].get("analysis_done")
+        assert len(saved["state"]["page_states"]) == 1
+        assert saved["state"]["page_states"][0]["page"]["url"]["canonical"] == site + "/second"
+        assert not saved["state"]["page_states"][0].get("analysis_processed")
         assert saved["ranking"] and saved["analysis"]
         before = list(calls)
 
@@ -206,10 +213,10 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             assert "503" in output
             assert f"crawl resume {task_id}" in output
             with sqlite3.connect(db_path) as db:
-                assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
+                assert db.execute("SELECT state FROM tasks").fetchone()[0] == "FAILED"
         if interrupt == signal.SIGINT:
             with sqlite3.connect(db_path) as db:
-                assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "INTERRUPTED"
+                assert db.execute("SELECT state FROM tasks").fetchone()[0] == "INTERRUPTED"
 
         if legacy:
             with sqlite3.connect(db_path) as db:
@@ -227,9 +234,11 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
             timeout=20,
         )
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
-        header = "crawl finished: COMPLETED (FRONTIER_DRAINED)"
+        header = f"crawl finished: {task_id} (FRONTIER_DRAINED)"
         assert resumed.stdout.count(header) == 1
         report = resumed.stdout[resumed.stdout.index(header) :].strip()
+        assert "(state=COMPLETED)" in report
+        assert f"  task:       {task_id}" in report
         saved_log = (db_path.parent.parent / "log").read_text()
         assert report in saved_log
         assert saved_log.count(header) == 1
@@ -242,18 +251,21 @@ def test_checkpoint_resume(tmp_path, interrupt, legacy):
         assert calls.count("dedup") == 1
         assert len(list(root.glob("*/db/crawl.db"))) == 1
         with sqlite3.connect(db_path) as db:
-            tasks = db.execute("SELECT task_id, goal_id, state, counters FROM crawl_tasks").fetchall()
+            checkpoint = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
+            assert checkpoint["version"] == VERSION
+            assert "page_states" in checkpoint["state"] and "work" not in checkpoint["state"]
+            tasks = db.execute("SELECT task_id, goal_id, state, counters FROM tasks").fetchall()
             assert len(tasks) == 1
             restored_id, restored_goal, state, counters = tasks[0]
             assert (restored_id, restored_goal, state) == (task_id, goal_id, "COMPLETED")
             assert json.loads(counters) == {"pages_fetched": 2, "tokens_used": 75}
             assert db.execute("SELECT COUNT(*) FROM pages").fetchone()[0] == 2
-            assert db.execute("SELECT COUNT(*) FROM analyses").fetchone()[0] == 2
-            assert db.execute("SELECT COUNT(*) FROM result_groups").fetchone()[0] == 1
-            assert db.execute("SELECT COUNT(*) FROM result_item_members").fetchone()[0] == 2
+            assert db.execute("SELECT COUNT(*) FROM page_analyses").fetchone()[0] == 2
+            assert db.execute("SELECT COUNT(*) FROM dedup_groups").fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM dedup_group_members").fetchone()[0] == 2
             assert (
                 db.execute(
-                    "SELECT analysis_id, structured_data FROM analyses WHERE analysis_id = ?", (first_analysis[0],)
+                    "SELECT analysis_id, structured_data FROM page_analyses WHERE analysis_id = ?", (first_analysis[0],)
                 ).fetchone()
                 == first_analysis
             )

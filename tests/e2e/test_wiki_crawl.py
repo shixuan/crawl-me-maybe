@@ -52,10 +52,10 @@ def test_wiki_crawl(tmp_path):
     dbs = list((tmp_path / "results").glob("*/db/crawl.db"))
     assert len(dbs) == 1
     with sqlite3.connect(dbs[0]) as db:
-        assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "COMPLETED"
+        assert db.execute("SELECT state FROM tasks").fetchone()[0] == "COMPLETED"
         pages = db.execute("SELECT title, plain_text, extraction_status FROM pages").fetchall()
         assert len(pages) == 1
         title, text, status = pages[0]
         assert "compiler" in title.lower() and "compiler" in text.lower()
         assert status == "OK"
-        assert db.execute("SELECT count(*) FROM links").fetchone()[0] > 0
+        assert db.execute("SELECT count(*) FROM url_candidates").fetchone()[0] > 0

@@ -165,6 +165,8 @@ def format_summary(s: dict[str, Any]) -> str:
     if s.get("run_dir"):
         state = f" (state={s['state']})" if s.get("state") else ""
         lines.append(f"  run:        {s['run_dir']}{state}")
+    if task_id := s.get("task_id"):
+        lines.append(f"  task:       {task_id}")
     if s.get("goal_id"):
         suffix = " (new prompt)" if s.get("new_goal") else ""
         lines.append(f"  goal:       {s['goal_id']}{suffix}")

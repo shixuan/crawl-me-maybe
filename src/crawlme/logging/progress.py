@@ -27,7 +27,7 @@ class ProgressHandler(_StreamHandler):
     def __init__(self, stream: Any, *, color: bool = False) -> None:
         super().__init__(stream)
         self.console = Console(file=stream, no_color=not color, highlight=False)
-        self._style = "#e07ea4" if color else ""
+        self._style = "#00ab90" if color else ""
         self.active: dict[object, tuple[str, float]] = {}
         self._spinners: dict[str, Spinner] = {}
         self.live = Live(

@@ -18,11 +18,13 @@ Stage modules own model calls, retries and response validation.
 | `discovery/models.py` | Harvest results |
 | `platforms/models.py` | Feed entries, listings and content problems |
 | `dedup/models.py` | Validated groups and grouping responses |
+| `runtime/state.py` | RunState and typed PageState records for unfinished pages |
 
 Component-specific types stay beside their component. Ranking decisions and history
 live in `pioneer/ranker.py`; frontier snapshots live in `pioneer/frontier.py`.
-Run state stays in `runtime/state.py`. ID helpers live in `util/ids.py` and date
-helpers in `util/dates.py`.
+RunState and PageState live in `runtime/state.py`. RunState holds the page execution
+records, and PagePipeline updates their fetched pages and stage progress. ID helpers
+live in `util/ids.py` and date helpers in `util/dates.py`.
 
 Packages export their public types through `__init__.py`. Where loading an
 implementation would create an import cycle, the package loads that export when it
@@ -192,13 +194,16 @@ candidate URLs, which return to the unranked buffer through the pre-filter.
 Adapters parse saved inputs and perform no network requests. Adding a platform
 requires implementing `FeedAdapter` and registering it in `platforms/__init__.py`.
 
-The extractor also asks the first URL-matching adapter for page text through
-`extract_text(FetchResult)`. Instagram matches the requested post in captured payloads
-or inline JSON and merges its caption with distinct carousel captions. Other adapters
-return `None`, keeping generic HTML extraction. Missing target text also falls back
-to HTML. This reads fetched detail-page data, not `Candidate.text` from ranking.
+The extractor asks the first URL-matching adapter for attributed passages through
+`extract_sources(FetchResult)`. Reddit keeps listing cards, post bodies and individual
+comments with their original permalink, author and publication time. Nested replies
+are separate passages. When no passages are available, `extract_text(FetchResult)`
+provides page text. Instagram matches the requested post in captured payloads or inline
+JSON and merges its caption with distinct carousel captions. Missing adapter text falls
+back to generic HTML extraction. This reads fetched data, not `Candidate.text` from ranking.
 The selected text is saved in `Page.plain_text` and `markdown`. Adapter text records
 its platform in `metadata.text_source`. Analysis still applies its character limit.
+`Page.sources` retains passage text and attribution, persisted inside page metadata.
 
 ### Ranking and analysis
 
@@ -216,15 +221,27 @@ Checkpoint recovery creates a new run owner from saved state; see the
 an independently useful answer to the goal, with a summary, score, source quotes,
 tags, declared fields and optional dates. The page itself may be the single item.
 Irrelevant pages return an empty items array and a short rejection reason in `summary`.
-Object attributes and conditions stay together; distinct answers are separate.
+Attributed passages receive request-local string references. Each item cites its
+supporting passages; unknown, duplicate or unsupported references are rejected.
+Quotes and extracted fields are checked against the cited passage text visible to
+the model. Valid references are resolved to original URLs, authors and publication
+times in `ResultItem.sources`, stored in `result_items.sources_json` and passed to
+dedup. A passage author may quote several independent reports, so a shared source
+reference does not establish one answer identity. That distinction remains a semantic
+judgement by the model.
+Analyzer distinguishes coherent source content from aggregated entries using the
+content and goal. A coherent source entry stays one item with its details and
+conditions. Aggregated entries are split when they independently answer the goal.
+Page URLs, publishers, names and paragraph boundaries do not determine item count.
+Fields, evidence and dates remain attached to the source entry they describe.
 Each field contains a value and a verbatim evidence span.
 The parser normalizes whitespace and checks evidence against `plain_text`. This
 does not independently verify the value. Fields without matching evidence are omitted.
 Failed analyses enter a retry queue with a limit on attempts per page. Successful
 results reach the scheduler through a sink, including successes from delayed retries.
 
-`analysis_items` stores application-assigned IDs linked to their parent analysis.
-Parent and item writes are atomic. A null `analyses.item_count` denotes a legacy
+`result_items` stores application-assigned IDs linked to their parent analysis.
+Parent and item writes are atomic. A null `page_analyses.item_count` denotes a legacy
 single-result record; zero denotes a new analysis with no items. Readers select the
 latest page analysis before expanding its items, so an empty replay supersedes old
 results. Legacy analyses remain single rows until replayed. Relevant-page limits
@@ -322,6 +339,7 @@ CrawlPipeline exposes `run_state`. `RunState` owns run-wide data:
 - `Limits` holds immutable run budgets and goal constraints.
 - `Progress` holds runtime-owned counters used by stopping policies. TokenBudget owns token usage.
 - `Stats` holds reporting statistics.
+- `page_states` holds unfinished pages and their execution progress.
 - `seeds` holds per-source counters, retirement history and pagination counts.
 - `pages`, `page_contexts` and `relevant_pages` hold page associations and ranking feedback.
 - Seed expansion metadata records proposed and rejected sources.
@@ -348,7 +366,7 @@ record contributes one relevance vote to its seed. PagePipeline retains page rec
 contexts while page tasks, analysis retries or waiting/active ranking batches need
 them, then releases them. PagePipeline observes Frontier context-key changes to
 release completed ranking inputs without a cleanup call from CrawlPipeline. Dispatched
-work entries protect pages that have not started yet. Bounded relevant-page summaries
+PageState records protect pages that have not started yet. Bounded relevant-page summaries
 remain separate.
 
 The frontier owns both the scored queue and unranked buffer. CrawlPipeline waits for ranking
@@ -439,13 +457,18 @@ Ctrl+C cancels page, ranking and retry tasks immediately, then closes local reso
 It does not wait for model responses or run dedup. The task becomes `INTERRUPTED`;
 a hard-killed task can still say `RUNNING`, but the OS releases its lock. A second
 Ctrl+C exits immediately. Recovery does not depend on a final checkpoint during exit.
-The old in-memory pause/resume API has been removed. Frontier-only legacy snapshots
-are not sufficient for recovery and are rejected by the resume command.
 
 The factory assembles `Checkpointer` with explicit dependencies. Each participant
 inherits `Checkpointable` and implements `dump()` and `restore()`. The analyzer's
-goal is bound before startup and recovery. `RunState` saves in-flight page stages
-and PageBook, while Frontier saves its queue and buffer.
+goal is bound before startup and recovery. `RunState` holds the `page_states`
+dictionary of typed `PageState` records alongside counters, source history and
+PageBook. PagePipeline registers and updates each page’s execution progress; Tracker
+updates statistics and history. PagePipeline does not implement `Checkpointable`.
+RunState saves and restores its page records with the rest of its state. Frontier
+saves its queue and buffer. Checkpoints store page progress at `state.page_states`,
+using the PageState field names directly.
+Snapshots carry format version 2. CLI resume and Checkpointer reject missing or
+different versions before reading recovery state. No older formats are converted.
 
 Engine owns checkpoint timing and execution controls. CrawlPipeline owns recovery and crawl task records. Checkpointer
 captures component state before awaiting, removes page text from snapshots, restores
@@ -474,6 +497,8 @@ flowchart LR
 
 ## Persistence and inspection
 
+Task records are stored in `tasks`, and goal definitions in `goals`.
+
 At run completion, the scheduler settles pending Analyzer retries independently
 of dedup. Page limits and frontier exhaustion allow already-fetched pages to finish
 analysis. Token/time limits, the result target, user stop and run failures cancel
@@ -481,8 +506,18 @@ remaining retries. Page and analysis settlement share one 120-second
 shutdown deadline. Analysis closes before
 optional grouping, so grouping sees a stable set of results.
 When dedup is enabled, the scheduler passes relevant items and source evidence to `dedup/grouper.py`.
-One LLM call proposes duplicate groups. Unassigned analyses become singletons.
-Duplicate or unknown member IDs invalidate the response and are reported separately.
+The grouper sorts inputs by item ID and gives them request-local string references
+(`"1"`, `"2"`, ...). The model receives these references instead of storage IDs and
+returns duplicate `groups` plus explicit `singletons`. Each duplicate group must
+have at least two members. Every input reference must appear exactly once across
+both arrays. Duplicate, unknown or missing references invalidate the response and
+are reported separately. Only a validated response is mapped back to storage IDs;
+singletons reuse their original summaries. The input fingerprint still covers the
+original rows and IDs.
+The client currently requests JSON mode, not a server-enforced schema. The configured
+DeepSeek Chat Completions API documents `text` and `json_object` response formats;
+local validation enforces the grouping contract. See the
+[provider reference](https://api-docs.deepseek.com/api/create-chat-completion/).
 Malformed JSON, schema errors and invalid members trigger at most one correction
 request, with the original inputs, failed response and validation feedback. Each
 request obeys the token budget and input-size limit. Failed responses are recorded
@@ -492,10 +527,10 @@ existing results unchanged. Inputs
 over the configured character limit are not submitted. Failure preserves original
 results. Grouping decisions do not affect source retirement or crawl stop conditions.
 
-Storage atomically publishes `dedup_runs` (input fingerprint and model),
-`result_groups` (overview), and `result_item_members` (item IDs). Legacy snapshots
-retain `result_members` (analysis IDs). Original
-analyses remain intact. The dashboard reads the latest matching snapshot. A replay
+Storage atomically publishes `dedup_snapshots` (input fingerprint and model),
+`dedup_groups` (overview), and `dedup_group_members` (item IDs). Original
+analyses remain intact. Legacy groups whose members are whole page analyses are
+not read. The dashboard reads the latest matching snapshot. A replay
 that changes the inputs invalidates it. Replay regroups the selected goal after analysis unless `--dedup off` is set.
 `crawl dedup <task-id> --goal <goal-id>` regenerates groups from stored analyses.
 Semantic grouping remains open (reviewed 2026-10-06). Model responses can still
@@ -534,8 +569,10 @@ results/<timestamp>/
   log
 ```
 
-SQLite stores goals, tasks, pages, links, rank decisions, analyses, frontier
-snapshots, events, errors and robots cache entries. Most writes use an async queue.
+SQLite stores `goals`, `tasks`, `pages`, `url_candidates`, `rank_decisions`,
+`page_analyses`, `result_items`, `dedup_snapshots`, `dedup_groups`,
+`dedup_group_members`, `checkpoints`, `events`, `errors`, and `robots_cache`.
+Most writes use an async queue.
 Grouping snapshots use an explicit transaction. Reads use the connection directly.
 Events provide an audit trail. Checkpoints restore the frontier.
 
@@ -552,7 +589,9 @@ read-only. The dashboard uses the same read-only connection helper and filters
 results in the browser.
 
 `crawl replay` uses Engine and ReplayPipeline to analyze stored page text without
-refetching or re-extracting HTML. ReplayPipeline reuses AnalysisWorker for concurrency,
+refetching. With `--reextract`, it first extracts saved HTML again, preserves page IDs,
+and re-analyzes even when an earlier analysis exists. Missing saved HTML is an error.
+ReplayPipeline reuses AnalysisWorker for concurrency,
 error policy, retries and publishing, then calls DedupPipeline with the same token budget.
 CLI commands use one report formatter, which renders the available statistics, and
 return report text and an exit code. The shared dispatcher closes
@@ -562,5 +601,6 @@ recovery input to the same CrawlPipeline. Run lookup and stored-model decoding l
 It skips matching `(url_key, goal_id, spec_version, model)` analyses
 unless forced. A new goal prompt creates or reuses its content-derived goal ID.
 After editing analyzer instructions, use `--force` to reanalyze existing results.
+After changing extraction, use `--reextract` to apply it to the saved corpus.
 Storage includes a targeted migration for `time_policy`, but no general migration
 scheme that guarantees compatibility across versions.

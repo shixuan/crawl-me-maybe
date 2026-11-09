@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from crawlme.digest import FetchResult, Page, Payload
+from crawlme.digest.models import PageSource
 from crawlme.platforms.base import FeedDependencyError
 from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
@@ -143,3 +144,7 @@ def _published(entry: Any) -> datetime.datetime | None:
 def extract_text(result: FetchResult) -> str | None:
     """Use generic HTML extraction for this platform."""
     return None
+
+
+def extract_sources(result: FetchResult) -> list[PageSource]:
+    return []

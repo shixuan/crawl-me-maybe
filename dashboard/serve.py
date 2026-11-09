@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 from crawlme.analysis import CLASSIFICATIONS
 from crawlme.dedup.grouper import fingerprint
 from crawlme.persist import queries
-from crawlme.persist.read import connect, has_items, read_items
+from crawlme.persist.read import connect, has_items, has_sources, read_items
 from crawlme.util.dates import group_of
 
 HERE = Path(__file__).parent
@@ -33,11 +33,11 @@ def _runs(results_dir: Path) -> list[dict[str, Any]]:
         except sqlite3.Error:
             continue
         try:
-            task = con.execute("SELECT * FROM crawl_tasks ORDER BY start_at DESC LIMIT 1").fetchone()
+            task = con.execute("SELECT * FROM tasks ORDER BY start_at DESC LIMIT 1").fetchone()
             if task is None:
                 continue
-            goal = con.execute("SELECT * FROM crawl_goals WHERE goal_id = ?", (task["goal_id"],)).fetchone()
-            counts = dict(con.execute("SELECT classification, COUNT(*) FROM analyses GROUP BY 1").fetchall())
+            goal = con.execute("SELECT * FROM goals WHERE goal_id = ?", (task["goal_id"],)).fetchone()
+            counts = dict(con.execute("SELECT classification, COUNT(*) FROM page_analyses GROUP BY 1").fetchall())
             counters = json.loads(task["counters"] or "{}")
             out.append(
                 {
@@ -81,7 +81,7 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
     try:
         con.execute("BEGIN")
         goals = [dict(g) for g in con.execute(queries.GOALS)]
-        task = con.execute("SELECT * FROM crawl_tasks ORDER BY start_at DESC LIMIT 1").fetchone()
+        task = con.execute("SELECT * FROM tasks ORDER BY start_at DESC LIMIT 1").fetchone()
         chosen = goal_id or (task["goal_id"] if task else "")
         page_rows = [dict(p) for p in con.execute("SELECT * FROM pages")]
         pages = {p["url_key"]: p for p in page_rows}
@@ -142,29 +142,20 @@ def _results(results_dir: Path, run: str, goal_id: str | None = None) -> dict[st
 
 def _groups(con: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]]:
     """Read persisted groups only when the complete relevant input still matches."""
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dedup_runs'").fetchone():
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dedup_snapshots'").fetchone():
         return []
     run = con.execute(
-        "SELECT * FROM dedup_runs WHERE goal_id = ? ORDER BY created_at DESC LIMIT 1", (goal_id,)
+        "SELECT * FROM dedup_snapshots WHERE goal_id = ? ORDER BY created_at DESC LIMIT 1", (goal_id,)
     ).fetchone()
-    if run is None:
+    if run is None or run["version"] != "items":
         return []
-    modern = run["version"] == "items"
-    query = queries.item_dedup_query(modern=has_items(con)) if modern else queries.DEDUP_INPUTS
+    query = queries.item_dedup_query(modern=has_items(con), sources=has_sources(con))
     inputs = [queries.dedup_input(dict(row)) for row in con.execute(query, (goal_id,))]
-    if not modern:
-        for entry in inputs:
-            entry["analysis_id"] = entry.pop("item_id")
-            entry.pop("evidence")
     if fingerprint(inputs) != run["fingerprint"]:
         return []
     groups = []
-    for group in con.execute("SELECT * FROM result_groups WHERE dedup_id = ? ORDER BY rowid", (run["dedup_id"],)):
-        membership = (
-            "SELECT item_id FROM result_item_members WHERE group_id = ? ORDER BY rowid"
-            if modern
-            else "SELECT analysis_id FROM result_members WHERE group_id = ? ORDER BY rowid"
-        )
+    for group in con.execute("SELECT * FROM dedup_groups WHERE dedup_id = ? ORDER BY rowid", (run["dedup_id"],)):
+        membership = "SELECT item_id FROM dedup_group_members WHERE group_id = ? ORDER BY rowid"
         members = [r[0] for r in con.execute(membership, (group["group_id"],))]
         groups.append({"group_id": group["group_id"], "overview": group["overview"], "members": members})
     return groups

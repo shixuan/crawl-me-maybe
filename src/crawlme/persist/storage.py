@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 DDL = """
-CREATE TABLE IF NOT EXISTS crawl_goals (
+CREATE TABLE IF NOT EXISTS goals (
     goal_id    TEXT PRIMARY KEY,
     prompt     TEXT NOT NULL,
     goal_statement TEXT DEFAULT '',
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS crawl_goals (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS crawl_tasks (
+CREATE TABLE IF NOT EXISTS tasks (
     task_id      TEXT PRIMARY KEY,
     goal_id      TEXT NOT NULL,
     state        TEXT DEFAULT 'CREATED',
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS pages (
     extraction_status TEXT DEFAULT 'OK'
 );
 
-CREATE TABLE IF NOT EXISTS links (
+CREATE TABLE IF NOT EXISTS url_candidates (
     link_id         TEXT PRIMARY KEY,
     url_key         TEXT NOT NULL,
     url_json        TEXT NOT NULL,
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS rank_decisions (
     decided_at     TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS analyses (
+CREATE TABLE IF NOT EXISTS page_analyses (
     analysis_id     TEXT PRIMARY KEY,
     page_id         TEXT DEFAULT '',
     url_key         TEXT DEFAULT '',
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     analyzed_at     TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS dedup_runs (
+CREATE TABLE IF NOT EXISTS dedup_snapshots (
     dedup_id TEXT PRIMARY KEY,
     goal_id TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS dedup_runs (
     model TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS analysis_items (
+CREATE TABLE IF NOT EXISTS result_items (
     item_id TEXT PRIMARY KEY,
     analysis_id TEXT NOT NULL,
     summary TEXT NOT NULL,
@@ -132,25 +132,20 @@ CREATE TABLE IF NOT EXISTS analysis_items (
     extracted_json TEXT NOT NULL,
     tags_json TEXT NOT NULL,
     starts_on TEXT NOT NULL,
-    ends_on TEXT NOT NULL
+    ends_on TEXT NOT NULL,
+    sources_json TEXT NOT NULL DEFAULT '[]'
 );
-CREATE INDEX IF NOT EXISTS analysis_items_parent ON analysis_items(analysis_id);
-CREATE TABLE IF NOT EXISTS result_item_members (
+CREATE INDEX IF NOT EXISTS result_items_parent ON result_items(analysis_id);
+CREATE TABLE IF NOT EXISTS dedup_group_members (
     group_id TEXT NOT NULL,
     item_id TEXT NOT NULL,
     PRIMARY KEY (group_id, item_id)
 );
-CREATE TABLE IF NOT EXISTS result_groups (
+CREATE TABLE IF NOT EXISTS dedup_groups (
     group_id TEXT PRIMARY KEY,
     dedup_id TEXT NOT NULL,
     overview TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS result_members (
-    group_id TEXT NOT NULL,
-    analysis_id TEXT NOT NULL,
-    PRIMARY KEY (group_id, analysis_id)
-);
-
 CREATE TABLE IF NOT EXISTS checkpoints (
     checkpoint_id   TEXT PRIMARY KEY,
     task_id         TEXT DEFAULT '',
@@ -237,12 +232,15 @@ class Storage:
                 "SELECT snapshot_id, task_id, snapshot_json, created_at FROM frontier_snapshots"
             )
             await self._conn.execute("DROP TABLE frontier_snapshots")
-        columns = await self._conn.execute("PRAGMA table_info(crawl_goals)")
+        columns = await self._conn.execute("PRAGMA table_info(goals)")
         if "time_policy" not in {r[1] for r in await columns.fetchall()}:
-            await self._conn.execute("ALTER TABLE crawl_goals ADD COLUMN time_policy TEXT")
-        columns = await self._conn.execute("PRAGMA table_info(analyses)")
+            await self._conn.execute("ALTER TABLE goals ADD COLUMN time_policy TEXT")
+        columns = await self._conn.execute("PRAGMA table_info(page_analyses)")
         if "item_count" not in {r[1] for r in await columns.fetchall()}:
-            await self._conn.execute("ALTER TABLE analyses ADD COLUMN item_count INTEGER")
+            await self._conn.execute("ALTER TABLE page_analyses ADD COLUMN item_count INTEGER")
+        columns = await self._conn.execute("PRAGMA table_info(result_items)")
+        if "sources_json" not in {r[1] for r in await columns.fetchall()}:
+            await self._conn.execute("ALTER TABLE result_items ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'")
         await self._conn.commit()
         self._conn.row_factory = aiosqlite.Row
         self._writer_task = asyncio.create_task(self._write_loop())
@@ -339,12 +337,12 @@ class Storage:
         try:
             await self._conn.execute("BEGIN")
             await self._conn.execute(
-                "INSERT INTO dedup_runs VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO dedup_snapshots VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     dedup_id,
                     goal_id,
                     fingerprint,
-                    "items",  # Identifies the item membership table, not a prompt revision.
+                    "items",  # Group members are result item IDs.
                     model,
                     datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 ),
@@ -352,10 +350,10 @@ class Storage:
             for group in groups:
                 group_id = uuid.uuid4().hex
                 await self._conn.execute(
-                    "INSERT INTO result_groups VALUES (?, ?, ?)", (group_id, dedup_id, group["overview"])
+                    "INSERT INTO dedup_groups VALUES (?, ?, ?)", (group_id, dedup_id, group["overview"])
                 )
                 await self._conn.executemany(
-                    "INSERT INTO result_item_members VALUES (?, ?)",
+                    "INSERT INTO dedup_group_members VALUES (?, ?)",
                     [(group_id, member) for member in group["members"]],
                 )
             await self._conn.commit()
@@ -384,11 +382,11 @@ class Storage:
         path.write_bytes(content)
         return str(path)
 
-    # crawl_goals --------------------------------------------------------
+    # goals --------------------------------------------------------
 
     def save_goal(self, goal_json: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO crawl_goals(goal_id, prompt, goal_statement, keywords, since, "
+            "INSERT OR REPLACE INTO goals(goal_id, prompt, goal_statement, keywords, since, "
             "max_pages, max_tokens, max_duration_sec, "
             "relevance_threshold, depth_limit, domain_budget, extraction_spec, time_policy, created_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -411,15 +409,15 @@ class Storage:
         )
 
     async def get_goal(self, goal_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM crawl_goals WHERE goal_id = ?", (goal_id,))
+        cur = await self._execute_now("SELECT * FROM goals WHERE goal_id = ?", (goal_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    # crawl_tasks --------------------------------------------------------
+    # tasks --------------------------------------------------------
 
     def save_task(self, task_json: dict[str, Any]) -> None:
         self._enqueue_write(
-            "INSERT OR REPLACE INTO crawl_tasks(task_id, goal_id, state, counters, "
+            "INSERT OR REPLACE INTO tasks(task_id, goal_id, state, counters, "
             "start_at, end_at, stopping_reason) "
             "VALUES(?, ?, ?, ?, ?, ?, ?)",
             (
@@ -434,7 +432,7 @@ class Storage:
         )
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM crawl_tasks WHERE task_id = ?", (task_id,))
+        cur = await self._execute_now("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
@@ -454,7 +452,7 @@ class Storage:
                 page.title,
                 page.markdown,
                 page.plain_text,
-                json.dumps(page.metadata),
+                json.dumps({**page.metadata, "sources": [source.model_dump(mode="json") for source in page.sources]}),
                 page.text_hash,
                 page.text_len,
                 page.published_at.isoformat() if page.published_at else "",
@@ -477,12 +475,12 @@ class Storage:
         cur = await self._execute_now(queries.PAGES)
         return [dict(r) for r in await cur.fetchall()]
 
-    # links --------------------------------------------------------------
+    # url_candidates -----------------------------------------------------
 
     def save_link(self, candidate: Candidate) -> None:
         """Persist one discovered link (the pre-fetch business card)."""
         self._enqueue_write(
-            "INSERT OR REPLACE INTO links(link_id, url_key, url_json, "
+            "INSERT OR REPLACE INTO url_candidates(link_id, url_key, url_json, "
             "anchor, snippet, parent_heading, position, "
             "source_url_key, depth, text, posted_at, signals_json, status, discovered_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -505,7 +503,7 @@ class Storage:
         )
 
     async def get_link(self, link_id: str) -> dict[str, Any] | None:
-        cur = await self._execute_now("SELECT * FROM links WHERE link_id = ?", (link_id,))
+        cur = await self._execute_now("SELECT * FROM url_candidates WHERE link_id = ?", (link_id,))
         row = await cur.fetchone()
         return dict(row) if row else None
 
@@ -537,14 +535,14 @@ class Storage:
         cur = await self._execute_now("SELECT * FROM rank_decisions WHERE url_key = ? ORDER BY decided_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
-    # analyses -----------------------------------------------------------
+    # page_analyses ------------------------------------------------------
 
     def save_analysis(self, analysis_json: dict[str, Any]) -> None:
         items = analysis_json.get("items")
         statements: list[tuple[str, tuple[Any, ...]]] = [
             (
                 (
-                    "INSERT OR REPLACE INTO analyses(analysis_id, page_id, url_key, goal_id, "
+                    "INSERT OR REPLACE INTO page_analyses(analysis_id, page_id, url_key, goal_id, "
                     "classification, relevance_score, starts_on, ends_on, summary, structured_data, "
                     "extracted_json, tags_json, feedback_json, model, prompt_version, spec_version, "
                     "tokens_used, analyzed_at, item_count) "
@@ -575,11 +573,15 @@ class Storage:
                 ),
             )
         ]
-        statements.append(("DELETE FROM analysis_items WHERE analysis_id = ?", (analysis_json["analysis_id"],)))
+        statements.append(("DELETE FROM result_items WHERE analysis_id = ?", (analysis_json["analysis_id"],)))
         for item in items or []:
             statements.append(
                 (
-                    "INSERT INTO analysis_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "INSERT INTO result_items (item_id, analysis_id, summary, relevance_score, evidence_json, "
+                        "extracted_json, tags_json, starts_on, ends_on, sources_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    ),
                     (
                         item["item_id"],
                         analysis_json["analysis_id"],
@@ -590,13 +592,14 @@ class Storage:
                         json.dumps(item.get("tags", [])),
                         item.get("starts_on") or "",
                         item.get("ends_on") or "",
+                        json.dumps(item.get("sources", [])),
                     ),
                 )
             )
         self._write_queue.put_nowait(statements)
 
     async def get_analyses_by_url_key(self, url_key: str) -> list[dict[str, Any]]:
-        cur = await self._execute_now("SELECT * FROM analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
+        cur = await self._execute_now("SELECT * FROM page_analyses WHERE url_key = ? ORDER BY analyzed_at", (url_key,))
         return [dict(r) for r in await cur.fetchall()]
 
     async def has_analysis(
@@ -608,7 +611,7 @@ class Storage:
     ) -> bool:
         """Check (url_key, goal_id, spec_version, model). An empty model matches any."""
         cur = await self._execute_now(
-            "SELECT model FROM analyses WHERE url_key = ? AND goal_id = ? AND spec_version = ?",
+            "SELECT model FROM page_analyses WHERE url_key = ? AND goal_id = ? AND spec_version = ?",
             (url_key, goal_id, spec_version),
         )
         rows = [dict(r) for r in await cur.fetchall()]
@@ -624,7 +627,9 @@ class Storage:
     async def list_analyses(self, goal_id: str = "") -> list[dict[str, Any]]:
         """Analyses of the run, optionally filtered to one goal (inspect)."""
         if goal_id:
-            cur = await self._execute_now("SELECT * FROM analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,))
+            cur = await self._execute_now(
+                "SELECT * FROM page_analyses WHERE goal_id = ? ORDER BY analyzed_at", (goal_id,)
+            )
         else:
             cur = await self._execute_now(queries.ANALYSES)
         return [dict(r) for r in await cur.fetchall()]

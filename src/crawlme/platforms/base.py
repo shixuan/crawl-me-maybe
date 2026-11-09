@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from crawlme.digest import FetchResult, Page, Payload
+from crawlme.digest.models import PageSource
 from crawlme.errors import Error, Kind, Scope
 from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
@@ -66,4 +67,8 @@ class FeedAdapter(Protocol):
 
     def extract_text(self, result: FetchResult) -> str | None:
         """Return target-page text from fetched data, or None for generic HTML extraction."""
+        ...
+
+    def extract_sources(self, result: FetchResult) -> list[PageSource]:
+        """Return independently attributed passages when the markup identifies them."""
         ...

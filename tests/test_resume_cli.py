@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from crawlme.checkpoint import VERSION
 from crawlme.cli import _dispatch
 from crawlme.persist import Storage
 
@@ -85,7 +86,7 @@ def test_cli_resume_process(tmp_path, interrupt):
         deadline = time.monotonic() + 5
         while True:
             with sqlite3.connect(db_path) as db:
-                task_id = db.execute("SELECT task_id FROM crawl_tasks").fetchone()[0]
+                task_id = db.execute("SELECT task_id FROM tasks").fetchone()[0]
                 payload = json.loads(db.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0])
             if payload["state"]["progress"]["pages_fetched"] == 1:
                 break
@@ -118,7 +119,7 @@ def test_cli_resume_process(tmp_path, interrupt):
         assert requests.count("/first") == 1
         assert requests.count("/second") == 2
         with sqlite3.connect(db_path) as db:
-            state, counters = db.execute("SELECT state, counters FROM crawl_tasks").fetchone()
+            state, counters = db.execute("SELECT state, counters FROM tasks").fetchone()
             assert state == "COMPLETED"
             assert json.loads(counters)["pages_fetched"] == 2
         again = subprocess.run(
@@ -141,8 +142,10 @@ def test_cli_resume_process(tmp_path, interrupt):
         thread.join(timeout=5)
 
 
-@pytest.mark.parametrize("payload", [None, {"ordering": {}}, {"version": 99}])
-async def test_reject_old_checkpoint(tmp_path, capsys, monkeypatch, payload):
+@pytest.mark.parametrize(
+    "payload", [None, {}, {"version": VERSION - 1}, {"version": VERSION + 1}, {"version": str(VERSION)}]
+)
+async def test_reject_checkpoint(tmp_path, capsys, monkeypatch, payload):
     storage = Storage.create(tmp_path)
     await storage.start()
     storage.save_task({"task_id": "test", "state": "INTERRUPTED"})
@@ -151,10 +154,11 @@ async def test_reject_old_checkpoint(tmp_path, capsys, monkeypatch, payload):
     await storage.close()
 
     def fail(*args, **kwargs):
-        raise AssertionError("workers must not be created for an unsupported checkpoint")
+        raise AssertionError("workers must not be created without a supported checkpoint")
 
     monkeypatch.setattr("crawlme.cli.resume.create_crawl", fail)
     with pytest.raises(SystemExit) as error:
         await _dispatch(argparse.Namespace(command="resume", task_id="test", result_dir=str(tmp_path), log_level=None))
     assert error.value.code == 1
-    assert "no supported recovery checkpoint" in capsys.readouterr().err
+    message = "no recovery checkpoint" if payload is None else "unsupported checkpoint version"
+    assert message in capsys.readouterr().err

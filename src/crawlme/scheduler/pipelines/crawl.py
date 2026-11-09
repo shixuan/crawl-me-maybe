@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from crawlme.checkpoint import Checkpointer
@@ -261,8 +262,8 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
 
     async def _crawl(self) -> None:
         self.error_handler.check()
-        for work in list(self.run_state.work.values()):
-            self._dispatch_page(FrontierItem.model_validate(work["item"]))
+        for item in self._page.pending_items():
+            self._dispatch_page(item)
         self._page.start()
         self._pump_tasks = [asyncio.create_task(self._fetch_pump()), asyncio.create_task(self._rank_pump())]
         await self.error_handler.watch(asyncio.gather(*self._pump_tasks))
@@ -309,6 +310,9 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
     def summary(self) -> dict[str, Any]:
         return {
             **summary(self.run_state, tokens_used=self._budget.used),
+            "run_dir": str(Path(self._storage.db_path).parent.parent),
+            "task_id": self._task.task_id if self._task else None,
+            "goal_id": self._goal.goal_id if self._goal else None,
             "state": self._task.state if self._task else "CREATED",
             "reason": self._task.stopping_reason if self._task else None,
             "usage": self._budget.dump(),
@@ -468,7 +472,7 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
             self._dispatch_page(item)
 
     def _dispatch_page(self, item: FrontierItem) -> None:
-        self.run_state.work.setdefault(item.item_id, {"item": item.model_dump(mode="json")})
+        self._page.register(item)
         self.run_state.work_started()
         task = asyncio.create_task(self._run_page(item))
         self._inflight.add(task)

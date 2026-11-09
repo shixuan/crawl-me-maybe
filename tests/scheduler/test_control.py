@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from contextlib import closing
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -97,7 +98,7 @@ async def test_failure_stops_both(tmp_path, stage):
     ranker.aclose.assert_awaited_once()
     scheduler.pipeline._page._fetch.fetcher.aclose.assert_awaited_once()
     with closing(sqlite3.connect(scheduler.pipeline._storage.db_path)) as db:
-        assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
+        assert db.execute("SELECT state FROM tasks").fetchone()[0] == "FAILED"
 
 
 async def test_cancel_releases_workers(tmp_path, monkeypatch):
@@ -130,7 +131,7 @@ async def test_cleanup_continues_on_error(tmp_path):
     assert task.stopping_reason == "FATAL"
     scheduler.pipeline._page._fetch.fetcher.aclose.assert_awaited_once()
     with closing(sqlite3.connect(scheduler.pipeline._storage.db_path)) as db:
-        assert db.execute("SELECT state FROM crawl_tasks").fetchone()[0] == "FAILED"
+        assert db.execute("SELECT state FROM tasks").fetchone()[0] == "FAILED"
 
 
 async def test_page_retention_tracks_work(tmp_path):
@@ -213,7 +214,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
 
 
 @pytest.mark.parametrize("stop", ["tokens", "time", "user"])
-async def test_waiting_analysis_obeys_stop(tmp_path, stop):
+async def test_waiting_analysis_obeys_stop(tmp_path, stop, monkeypatch):
     """A waiting page must recheck engine policy after receiving an analysis slot."""
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
@@ -235,14 +236,15 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop):
         await asyncio.wait_for(entered.wait(), 2)
         await wait_until(
             lambda: (
-                len(scheduler.pipeline.run_state.work) == 2
-                and all("page" in work for work in scheduler.pipeline.run_state.work.values())
+                len(scheduler.pipeline._page.pending_items()) == 2
+                and all(state.page is not None for state in scheduler.pipeline.run_state.page_states.values())
             )
         )
         if stop == "tokens":
             scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
         elif stop == "time":
-            scheduler.pipeline.run_state.progress.started_at -= 61
+            expired_at = scheduler.pipeline.run_state.progress.started_at + 61
+            monkeypatch.setattr("crawlme.scheduler.stop_conds.time", SimpleNamespace(monotonic=lambda: expired_at))
             scheduler.engine._monitor._notify()
         else:
             run.cancel()

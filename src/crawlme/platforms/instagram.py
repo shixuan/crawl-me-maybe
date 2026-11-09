@@ -13,9 +13,11 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 
 from crawlme.digest import FetchResult, Page, Payload
+from crawlme.digest.models import PageSource
 from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
 logger = logging.getLogger(__name__)
+
 
 PLATFORM = "instagram"
 DOMAIN = "instagram.com"
@@ -88,6 +90,10 @@ def next_page(html: str, url: str) -> str:
 def keeps_payload(url: str, content_type: str) -> bool:
     """Keep GraphQL responses regardless of content type; grids may use text/javascript."""
     return urlsplit(url).path.rstrip("/") in {"/graphql/query", "/api/graphql"}
+
+
+def extract_sources(result: FetchResult) -> list[PageSource]:
+    return []
 
 
 def extract_text(result: FetchResult) -> str | None:

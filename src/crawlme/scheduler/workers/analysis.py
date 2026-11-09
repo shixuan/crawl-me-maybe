@@ -32,7 +32,7 @@ class AnalysisWorker(Checkpointable):
         self._tracking = tracking
         self._goal: Goal | None = None
         self._task_id: str | None = None
-        self._completed: Callable[[str | None], None] | None = None
+        self._completed: Callable[[str, str | None], None] | None = None
         self._pending: asyncio.Queue[tuple[Page, Goal, int, float]] = asyncio.Queue()
         self._retry_entries: dict[str, tuple[Page, int]] = {}
         self._drain_task: asyncio.Task[None] | None = None
@@ -58,7 +58,7 @@ class AnalysisWorker(Checkpointable):
             self._retry_entries[page.url_key] = (page, attempts)
             self._pending.put_nowait((page, self._goal, attempts, 0))
 
-    def bind_completion(self, completed: Callable[[str | None], None]) -> None:
+    def bind_completion(self, completed: Callable[[str, str | None], None]) -> None:
         self._completed = completed
 
     def apply(self, result: AnalysisResult) -> None:
@@ -69,7 +69,7 @@ class AnalysisWorker(Checkpointable):
         self._storage.save_analysis(result.model_dump(mode="json"))
         seed = self._tracking.analysis(result) if self._tracking is not None else None
         if self._completed is not None:
-            self._completed(seed)
+            self._completed(result.url_key, seed)
 
     async def analyze(
         self,

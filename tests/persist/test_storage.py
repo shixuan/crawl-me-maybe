@@ -283,12 +283,14 @@ async def test_bad_sql_no_hang(tmp_path, caplog):
 async def test_checkpoint_write_failure(tmp_path):
     db = Storage.create(tmp_path)
     await db.start()
-    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"version": 1}})
+    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"pages_fetched": 1}})
     await db.flush()
     db._enqueue_write("INSERT INTO pages(no_such_column) VALUES(?)", ("bad",))
-    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"version": 2}})
+    db.save_checkpoint({"checkpoint_id": "latest", "checkpoint_json": {"pages_fetched": 2}})
     with pytest.raises(RuntimeError, match="checkpoint was not saved"):
         await db.flush()
     await db.close()
     with sqlite3.connect(db.db_path) as connection:
-        assert json.loads(connection.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0]) == {"version": 1}
+        assert json.loads(connection.execute("SELECT checkpoint_json FROM checkpoints").fetchone()[0]) == {
+            "pages_fetched": 1
+        }

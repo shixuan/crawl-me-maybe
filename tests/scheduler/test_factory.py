@@ -207,3 +207,110 @@ def test_replay_shared_dependencies(tmp_path, monkeypatch):
     assert pipeline._analysis.error_handler is pipeline._dedup.error_handler
     assert pipeline._analysis._storage is storage
     assert pipeline._dedup._storage is storage
+
+
+@pytest.mark.parametrize("name", ["create_crawl", "create_dedup"])
+def test_unknown_dependency(tmp_path, monkeypatch, name):
+    from crawlme.llm import TokenBudget
+    from crawlme.scheduler.pipelines import factory
+
+    storage_builder = MagicMock()
+    grouper_builder = MagicMock()
+    monkeypatch.setattr(factory.Storage, "create", storage_builder)
+    monkeypatch.setattr(factory.Grouper, "from_settings", grouper_builder)
+    kwargs = {"storage": MagicMock(), "budget": TokenBudget(100)} if name == "create_dedup" else {}
+    with pytest.raises(TypeError, match="groupr"):
+        getattr(factory, name)(Settings(result_dir=tmp_path), groupr=MagicMock(), **kwargs)
+    storage_builder.assert_not_called()
+    grouper_builder.assert_not_called()
+
+
+@pytest.mark.parametrize("component", ["ranker", "seed_expander", "grouper"])
+@pytest.mark.parametrize("selection", ["default", "disabled", "injected"])
+def test_optional_dependency(tmp_path, monkeypatch, component, selection):
+    from crawlme.llm import TokenBudget
+    from crawlme.scheduler.pipelines import factory
+
+    cfg = Settings(_env_file=None, result_dir=tmp_path, expand_seeds=True, llm_api_key="", llm_base_url="")
+    budget = TokenBudget(100)
+    components = {"ranker": factory.LLMRanker, "seed_expander": factory.SeedExpander, "grouper": factory.Grouper}
+    builders = {}
+    for name, cls in components.items():
+        builder = MagicMock(return_value=MagicMock(spec=cls))
+        monkeypatch.setattr(cls, "from_settings", builder)
+        builders[name] = builder
+    injected = MagicMock(spec=components[component])
+    kwargs = {} if selection == "default" else {component: None if selection == "disabled" else injected}
+    pipeline = factory.create_crawl(cfg, budget=budget, storage=MagicMock(), ranking_enabled=True, **kwargs)
+    actual = {
+        "ranker": pipeline._ranking.ranker,
+        "seed_expander": pipeline._seed_expander,
+        "grouper": pipeline._dedup.grouper,
+    }[component]
+    if selection == "default":
+        assert actual is builders[component].return_value
+        builders[component].assert_called_once_with(cfg, budget=budget)
+    else:
+        assert actual is (None if selection == "disabled" else injected)
+        builders[component].assert_not_called()
+
+
+def test_injected_workers(tmp_path, monkeypatch):
+    from crawlme.scheduler.pipelines import factory
+
+    builders = []
+    for owner, name in (
+        (factory, "_build_fetcher"),
+        (factory, "_build_harvester"),
+        (factory, "create_dedup"),
+        (factory.Analyzer, "from_settings"),
+        (factory.GoalEnhancer, "from_settings"),
+    ):
+        builder = MagicMock()
+        monkeypatch.setattr(owner, name, builder)
+        builders.append(builder)
+    fetch = MagicMock(spec=factory.FetchWorker)
+    discovery = MagicMock(spec=factory.DiscoveryWorker)
+    analysis = MagicMock(spec=factory.AnalysisWorker, analyzer=None)
+    enhancer = MagicMock(spec=factory.GoalEnhancer)
+    dedup = MagicMock(spec=factory.DedupPipeline, grouper=None)
+    pipeline = factory.create_crawl(
+        Settings(result_dir=tmp_path),
+        storage=MagicMock(),
+        fetch=fetch,
+        discovery=discovery,
+        analysis=analysis,
+        goal_enhancer=enhancer,
+        dedup=dedup,
+        ranker=None,
+        seed_expander=None,
+    )
+    assert pipeline._page._fetch is fetch
+    assert pipeline._page._discovery is discovery
+    assert pipeline._page._analysis is pipeline._checkpointer.analysis is analysis
+    assert pipeline._goal_enhancer is enhancer
+    assert pipeline._dedup is dedup
+    for builder in builders:
+        builder.assert_not_called()
+
+
+@pytest.mark.parametrize("matching", [True, False])
+def test_tracker_state_identity(tmp_path, monkeypatch, matching):
+    from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
+    from crawlme.scheduler.pipelines import factory
+
+    state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
+    other = state if matching else RunState(limits=Limits(), progress=Progress(), stats=Stats())
+    tracker = Tracker(other)
+    storage_builder = MagicMock()
+    monkeypatch.setattr(factory.Storage, "create", storage_builder)
+    if matching:
+        pipeline = factory.create_crawl(Settings(result_dir=tmp_path), tracking=tracker, run_state=state)
+        assert pipeline.run_state is state
+        assert pipeline._page._tracking is tracker
+        assert pipeline._checkpointer.runtime is state
+        storage_builder.assert_called_once()
+    else:
+        with pytest.raises(ValueError, match=r"run_state must be tracking\.state"):
+            factory.create_crawl(Settings(result_dir=tmp_path), tracking=tracker, run_state=state)
+        storage_builder.assert_not_called()

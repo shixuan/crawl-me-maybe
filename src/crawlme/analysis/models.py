@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from crawlme.digest.models import Source
 from crawlme.util.dates import _utcnow
 from crawlme.util.ids import _new_id
 
@@ -39,6 +40,7 @@ class ResultItem(BaseModel):
     summary: str
     relevance_score: float = 0.0
     evidence: list[str] = Field(default_factory=list)
+    sources: list[Source] = Field(default_factory=list)
     extracted: dict[str, ExtractedField] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
     starts_on: datetime.date | None = None

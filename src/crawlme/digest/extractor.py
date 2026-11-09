@@ -44,12 +44,14 @@ class TrafExtractor(Extractor):
         title, published_at = _extract_head_meta(html_str)
         markdown = None
         plain_text = None
+        sources = []
         metadata: dict[str, str] = {}
         status: ExtractionStatus = "OK"
 
         for adapter in self._adapters:
             if adapter.claims_url(fetch_result.url.canonical):
-                text = adapter.extract_text(fetch_result)
+                sources = adapter.extract_sources(fetch_result)
+                text = "\n\n".join(source.text for source in sources) if sources else adapter.extract_text(fetch_result)
                 if text and text.strip():
                     plain_text = text
                     markdown = text
@@ -117,6 +119,7 @@ class TrafExtractor(Extractor):
             title=title,
             markdown=markdown,
             plain_text=plain_text,
+            sources=sources,
             metadata=metadata,
             text_hash=text_hash,
             text_len=text_len,

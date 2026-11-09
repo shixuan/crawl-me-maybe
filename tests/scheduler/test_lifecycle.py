@@ -99,7 +99,7 @@ async def test_retries_ignore_dedup(tmp_path, monkeypatch, dedup, stop):
         await asyncio.gather(run, return_exceptions=True)
         await scheduler.aclose()
     with sqlite3.connect(next(tmp_path.glob("*/db/crawl.db"))) as con:
-        assert con.execute("SELECT count(*) FROM analyses").fetchone()[0] == int(stop is None)
+        assert con.execute("SELECT count(*) FROM page_analyses").fetchone()[0] == int(stop is None)
     assert calls == 2
     assert len(grouped) == int(dedup and stop is None)
     assert scheduler.pipeline._page._analysis._drain_task is None

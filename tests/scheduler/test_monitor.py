@@ -33,6 +33,15 @@ async def test_idle_then_token_wakeup(tmp_path):
         return await wait(pending, **kwargs)
 
     scheduler.engine._wait_for_stop = counted
+    stopping = asyncio.Event()
+    halt = scheduler.pipeline.halt
+
+    async def held_halt():
+        stopping.set()
+        await release.wait()
+        await halt()
+
+    scheduler.pipeline.halt = held_halt
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
     running = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
@@ -47,7 +56,8 @@ async def test_idle_then_token_wakeup(tmp_path):
         await asyncio.sleep(0.4)
         assert len(waits) == before
         scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
-        await wait_until(lambda: task.state == "STOPPING")
+        await asyncio.wait_for(stopping.wait(), 2)
+        assert task.state == "STOPPING"
         assert task.stopping_reason == "BUDGET_TOKENS"
         release.set()
         await asyncio.wait_for(running, 2)
@@ -100,10 +110,20 @@ async def test_target_before_page_end(tmp_path):
         return Harvest([])
 
     scheduler.pipeline._page._discovery.discover = discover
+    stopping = asyncio.Event()
+    halt = scheduler.pipeline.halt
+
+    async def held_halt():
+        stopping.set()
+        await release.wait()
+        await halt()
+
+    scheduler.pipeline.halt = held_halt
     await scheduler.pipeline.ingest_seeds(goal, [candidate()])
     running = asyncio.create_task(scheduler.engine.run(CrawlInput(goal, task)))
     try:
-        await wait_until(lambda: task.state == "STOPPING")
+        await asyncio.wait_for(stopping.wait(), 2)
+        assert task.state == "STOPPING"
         assert task.stopping_reason == "MAX_RELEVANT"
         assert scheduler.pipeline.run_state.progress.in_flight == 1
         release.set()

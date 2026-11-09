@@ -176,6 +176,7 @@ Analyzes stored page text without fetching pages, then groups equivalent results
 | `--dedup` | `on` | Group results after replay (`on` or `off`) |
 | `--analyzer-max-chars` | `3000` | Maximum page-text characters per analysis |
 | `--force` | off | Re-analyze pages even when matching analyses exist |
+| `--reextract` | off | Re-extract saved HTML and re-analyze it, preserving page IDs; requires saved HTML |
 | `--log-level` | `INFO` | Logging level |
 
 ## How it works

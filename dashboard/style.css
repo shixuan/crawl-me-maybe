@@ -360,6 +360,7 @@ body {
   box-shadow: var(--shadow);
   padding: 20px 22px;
   margin-bottom: 16px;
+  overflow-wrap: anywhere;
   transition: box-shadow .16s ease, transform .16s ease;
 }
 

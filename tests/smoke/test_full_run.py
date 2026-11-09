@@ -86,7 +86,7 @@ def completed_run(tmp_path_factory):
                                     "relevance_score": 0.9,
                                     "evidence": [body],
                                     "extracted": {"offer": {"value": body.split(".")[0], "evidence": body}},
-                                    "time": {"ends_on": {"value": date, "evidence": [body]}},
+                                    "time": {"status": "extracted", "ends_on": {"value": date, "evidence": [body]}},
                                 }
                             ],
                         }
@@ -100,9 +100,12 @@ def completed_run(tmp_path_factory):
                 elif prompt.startswith("{"):
                     calls.append("dedup")
                     rows = json.loads(prompt)["results"]
-                    duplicates = [r["item_id"] for r in rows if urlsplit(r["url"]).path in {"/a", "/b"}]
+                    duplicates = [r["ref"] for r in rows if urlsplit(r["url"]).path in {"/a", "/b"}]
                     assert len(duplicates) == 2
-                    answer = {"groups": [{"members": duplicates, "overview": "Open workshop"}]}
+                    answer = {
+                        "groups": [{"members": duplicates, "overview": "Open workshop"}],
+                        "singletons": [r["ref"] for r in rows if r["ref"] not in duplicates],
+                    }
                 else:
                     assert "goal_statement" in system
                     calls.append("goal")
@@ -190,7 +193,7 @@ def completed_run(tmp_path_factory):
         )
         assert not failures, failures
         assert proc.returncode == 0, proc.stdout + proc.stderr
-        assert "COMPLETED (FRONTIER_DRAINED)" in proc.stdout, proc.stdout
+        assert "(state=COMPLETED)" in proc.stdout, proc.stdout
         assert "dedup" in proc.stdout
         assert {"goal", "seeds", "ranking", "dedup", "/a", "/b", "/expired", "/unrelated", "/extra"} <= set(calls), (
             calls
@@ -202,10 +205,12 @@ def completed_run(tmp_path_factory):
         dbs = list((root / "results").glob("*/db/crawl.db"))
         assert len(dbs) == 1
         with sqlite3.connect(dbs[0]) as db:
-            task, state = db.execute("SELECT task_id, state FROM crawl_tasks").fetchone()
+            task, state = db.execute("SELECT task_id, state FROM tasks").fetchone()
+            assert f"crawl finished: {task} (FRONTIER_DRAINED)" in proc.stdout, proc.stdout
+            assert f"  task:       {task}" in proc.stdout, proc.stdout
             assert state == "COMPLETED"
-            assert db.execute("SELECT count(*) FROM dedup_runs").fetchone()[0] == 1
-            assert db.execute("SELECT count(*) FROM analyses WHERE classification='IRRELEVANT'").fetchone()[0] >= 1
+            assert db.execute("SELECT count(*) FROM dedup_snapshots").fetchone()[0] == 1
+            assert db.execute("SELECT count(*) FROM page_analyses WHERE classification='IRRELEVANT'").fetchone()[0] >= 1
         inspect_env = {**env, "RESULT_DIR": str(root / "results")}
         exported = subprocess.run(  # noqa: S603
             [sys.executable, "-c", "from crawlme.cli import main; main()", "inspect", task, "--export", "json"],

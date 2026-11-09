@@ -122,8 +122,8 @@ async def test_inspect_preserves_run(tmp_path, unknown_goal):
             handler.close()
     (run / "log").unlink()
     with sqlite3.connect(run / "db" / "crawl.db") as con:
-        con.execute("ALTER TABLE crawl_goals DROP COLUMN time_policy")
-        con.execute("DROP TABLE dedup_runs")
+        con.execute("ALTER TABLE goals DROP COLUMN time_policy")
+        con.execute("DROP TABLE dedup_snapshots")
 
     def files():
         return {p.relative_to(run): (p.read_bytes(), p.stat().st_mtime_ns) for p in run.rglob("*") if p.is_file()}
@@ -313,8 +313,8 @@ async def test_replay_uses_latest_dates(tmp_path, capsys, same_time):
 
     run = await _write_run(tmp_path, "20260101_000001")
     with sqlite3.connect(run / "db" / "crawl.db") as con:
-        goal = con.execute("SELECT goal_id FROM crawl_tasks WHERE task_id='task1'").fetchone()[0]
-        con.execute("UPDATE analyses SET ends_on='2099-01-01' WHERE goal_id=?", (goal,))
+        goal = con.execute("SELECT goal_id FROM tasks WHERE task_id='task1'").fetchone()[0]
+        con.execute("UPDATE page_analyses SET ends_on='2099-01-01' WHERE goal_id=?", (goal,))
     storage = Storage(str(run / "db" / "crawl.db"), str(run / "raw"))
     await storage.start()
     for key, classification in [("a", "RELEVANT"), ("b", "IRRELEVANT")]:
@@ -335,4 +335,4 @@ async def test_replay_uses_latest_dates(tmp_path, capsys, same_time):
     out = capsys.readouterr().out
     assert "Past (1)" in out and "Ongoing (" not in out
     with sqlite3.connect(run / "db" / "crawl.db") as con:
-        assert con.execute("SELECT count(*) FROM analyses WHERE goal_id=?", (goal,)).fetchone()[0] == 5
+        assert con.execute("SELECT count(*) FROM page_analyses WHERE goal_id=?", (goal,)).fetchone()[0] == 5

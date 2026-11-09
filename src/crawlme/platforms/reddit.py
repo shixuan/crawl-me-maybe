@@ -6,9 +6,12 @@ import datetime
 import html as html_mod
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+from bs4 import BeautifulSoup
 
 from crawlme.digest import FetchResult, Page, Payload
+from crawlme.digest.models import PageSource
 from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
 logger = logging.getLogger(__name__)
@@ -159,3 +162,47 @@ def _timestamp(raw: str | None) -> datetime.datetime | None:
 def extract_text(result: FetchResult) -> str | None:
     """Use generic HTML extraction for this platform."""
     return None
+
+
+def extract_sources(result: FetchResult) -> list[PageSource]:
+    """Keep post bodies and individual comments with their own permalinks."""
+    soup = BeautifulSoup(result.raw, "lxml")
+    sources: dict[str, PageSource] = {}
+    for post in soup.find_all("shreddit-post"):
+        link = str(post.get("permalink", ""))
+        if not _POST_URL.search(link):
+            continue
+        body = post.find(id=f"{post.get('id', '')}-post-rtjson-content")
+        title = _unescape(str(post.get("post-title", "")))
+        text = "\n".join(part for part in (title, body.get_text("\n", strip=True) if body else "") if part)
+        if text:
+            url = urljoin(result.url.canonical, link)
+            sources.setdefault(
+                url,
+                PageSource(
+                    url=url,
+                    author=str(post.get("author", "")),
+                    published_at=_timestamp(str(post.get("created-timestamp") or "")),
+                    text=text,
+                ),
+            )
+    if _POST_URL.search(result.url.canonical):
+        for comment in soup.find_all("shreddit-comment"):
+            body = comment.find(id=f"{comment.get('thingid', '')}-comment-rtjson-content")
+            link = str(comment.get("permalink", ""))
+            if body is None or not link:
+                continue
+            text = body.get_text("\n", strip=True)
+            if text:
+                url = urljoin(result.url.canonical, link)
+                sources.setdefault(
+                    url,
+                    PageSource(
+                        url=url,
+                        author=str(comment.get("author", "")),
+                        published_at=_timestamp(str(comment.get("created") or "")),
+                        text=text,
+                    ),
+                )
+    soup.decompose()
+    return list(sources.values())

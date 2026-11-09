@@ -13,6 +13,7 @@ from crawlme import prompts
 from crawlme.analysis.models import AnalysisResult, AnalyzerFeedback, Classification, ExtractedField, ResultItem
 from crawlme.config import Settings
 from crawlme.digest import Page
+from crawlme.digest.models import Source
 from crawlme.errors import Error, Kind
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
@@ -58,30 +59,46 @@ class Analyzer:
 
     @activity("analyze")
     async def analyze(self, page: Page, goal: Goal) -> AnalysisResult | None:
+        if page.sources:
+            remaining = self._max_page_chars
+            sources = []
+            for source in page.sources:
+                if remaining <= 0:
+                    break
+                sources.append(source.model_copy(update={"text": source.text[:remaining]}))
+                remaining -= len(source.text)
+            page = page.model_copy(update={"sources": sources, "plain_text": "\n\n".join(s.text for s in sources)})
         text = _page_text(page)
         if not text:
             return None
         prompt = prompts.analysis_input(goal, page, text, self._max_page_chars)
         resp = await self._client.chat(prompt, system=prompts.analysis_system(goal), json_mode=True)
-        if resp.truncated:
-            raise AnalysisError(
-                f"analysis response truncated for {page.url_key}; incomplete items rejected",
-                code="response_truncated",
-                details={"url_key": page.url_key},
+        try:
+            if resp.truncated:
+                raise AnalysisError(
+                    f"analysis response truncated for {page.url_key}; incomplete items rejected",
+                    code="response_truncated",
+                    details={"url_key": page.url_key},
+                )
+            data = parse_json_response(resp.content)
+            if data is None:
+                raise AnalysisError(
+                    f"unparseable JSON for {page.url_key}", code="invalid_json", details={"url_key": page.url_key}
+                )
+            tokens = resp.input_tokens + resp.output_tokens
+            entries = _item_entries(data)
+            if goal.time_policy and data.get("classification") == "RELEVANT":
+                for entry in entries:
+                    corrected, used = await self._correct_time(entry, page, goal, prompt)
+                    entry.update(corrected)
+                    tokens += used
+            result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
+        except AnalysisError as exc:
+            logger.warning("analysis.invalid url_key=%s code=%s error=%s", page.url_key, exc.code, exc)
+            logger.warning(
+                "analysis.response url_key=%s content=%s", page.url_key, resp.content, extra={"file_only": True}
             )
-        data = parse_json_response(resp.content)
-        if data is None:
-            raise AnalysisError(
-                f"unparseable JSON for {page.url_key}", code="invalid_json", details={"url_key": page.url_key}
-            )
-        tokens = resp.input_tokens + resp.output_tokens
-        entries = _item_entries(data)
-        if goal.time_policy and data.get("classification") == "RELEVANT":
-            for entry in entries:
-                corrected, used = await self._correct_time(entry, page, goal, prompt)
-                entry.update(corrected)
-                tokens += used
-        result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
+            raise
         logger.info(
             "judged %s: %s (%.2f), %d items",
             where(page.url.canonical),
@@ -124,10 +141,12 @@ class Analyzer:
                         correction,
                         system=prompts.analysis_system(goal)
                         + ' For this correction return only {"time": {...}}; omit all other analysis fields. '
-                        + 'If no endpoint is supported, return {"time": {}}.',
+                        + "Always include time.status; explain not_stated or ambiguous with time.reason.",
                         json_mode=True,
                     )
                     tokens += fixed.input_tokens + fixed.output_tokens
+                    if fixed.truncated:
+                        raise AnalysisError("time correction truncated", code="invalid_dates")
                     corrected = parse_json_response(fixed.content)
                     if corrected is None or not isinstance(corrected.get("time"), dict):
                         raise AnalysisError("time correction must return a time object", code="invalid_dates")
@@ -140,6 +159,7 @@ class Analyzer:
                     data = {**data, "time": corrected["time"]}
                 except AnalysisError as exc:
                     logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
+                    raise
         return data, tokens
 
 
@@ -227,6 +247,25 @@ def _item_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
 def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
     summary = data.get("summary")
     evidence = data.get("evidence")
+    sources = []
+    if page.sources:
+        refs = data.get("sources")
+        available = {str(i): source for i, source in enumerate(page.sources, 1)}
+        if (
+            not isinstance(refs, list)
+            or not refs
+            or any(not isinstance(ref, str) or ref not in available for ref in refs)
+            or len(set(refs)) != len(refs)
+        ):
+            raise AnalysisError(
+                f"item sources must be distinct string refs from {list(available)}; received {refs!r}",
+                code="invalid_sources",
+                details={"url_key": page.url_key, "summary": summary},
+            )
+        sources = [available[ref] for ref in refs]
+        page = page.model_copy(update={"plain_text": "\n\n".join(source.text for source in sources), "markdown": None})
+    elif data.get("sources"):
+        raise AnalysisError("source refs were not supplied for this page", code="invalid_sources")
     if not isinstance(summary, str) or not summary.strip():
         raise AnalysisError("each item requires a summary", code="missing_summary", details={"url_key": page.url_key})
     if (
@@ -236,6 +275,10 @@ def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
             not isinstance(quote, str) or not quote.strip() or _normalize(quote) not in _normalize(_page_text(page))
             for quote in evidence
         )
+        or (
+            sources
+            and any(not any(_normalize(quote) in _normalize(source.text) for source in sources) for quote in evidence)
+        )
     ):
         raise AnalysisError(
             "each item requires nonempty verbatim source evidence",
@@ -243,11 +286,14 @@ def _parse_item(data: dict[str, Any], page: Page, goal: Goal) -> ResultItem:
             details={"url_key": page.url_key},
         )
     extracted = _parse_extracted(data, page, goal)
+    if any(not any(_normalize(quote) in _normalize(source.text) for quote in evidence) for source in sources):
+        raise AnalysisError("each cited source needs supporting item evidence", code="unsupported_evidence")
     dates = _policy_dates(data, page) if goal.time_policy else _dates_from(extracted, page, goal)
     return ResultItem(
         summary=summary.strip(),
         relevance_score=_clamp01(data.get("relevance_score")),
         evidence=evidence,
+        sources=[Source(url=source.url, author=source.author, published_at=source.published_at) for source in sources],
         extracted=extracted,
         tags=_str_list(data.get("tags"), _MAX_TAGS),
         **dates,
@@ -279,6 +325,8 @@ def _parse_analysis(
     tags = _str_list(data.get("tags"), _MAX_TAGS)
     extracted = _parse_extracted(data, page, goal)
     entries = _item_entries(data)
+    if page.sources and classification == "RELEVANT" and "items" not in data:
+        raise AnalysisError("sourced pages require items with source refs", code="invalid_items")
     items = [_parse_item(entry, page, goal) for entry in entries] if "items" in data else None
 
     return AnalysisResult(
@@ -294,7 +342,7 @@ def _parse_analysis(
         spec_version=spec_version(goal.extraction_spec, goal.time_policy),
         **(
             _policy_dates(data, page)
-            if goal.time_policy and classification == "RELEVANT"
+            if goal.time_policy and classification == "RELEVANT" and items is None
             else _dates_from(extracted, page, goal)
             if not goal.time_policy
             else {}
@@ -314,11 +362,30 @@ def _parse_analysis(
 
 def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None = None) -> dict[str, Any]:
     errors = issues if issues is not None else []
+
+    def invalid(message: str) -> None:
+        if issues is None:
+            raise AnalysisError(message, code="invalid_dates", details={"url_key": page.url_key})
+        errors.append(message)
+
     raw = data.get("time")
-    if raw is None:
-        return {}
     if not isinstance(raw, dict):
-        errors.append("time must be an object")
+        invalid("time must be an object")
+        return {}
+    status = raw.get("status")
+    if status not in ("extracted", "not_stated", "ambiguous"):
+        invalid("time.status must be extracted, not_stated or ambiguous")
+        return {}
+    endpoints = [key for key in ("starts_on", "ends_on") if raw.get(key) is not None]
+    if status != "extracted":
+        if endpoints:
+            invalid("unknown time must not contain date endpoints")
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            invalid("not_stated or ambiguous time requires a nonempty reason")
+        return {}
+    if not endpoints:
+        invalid("extracted time requires at least one supported endpoint")
         return {}
     dates = {}
     text = _normalize(unicodedata.normalize("NFKC", _page_text(page)))
@@ -327,31 +394,31 @@ def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None 
         if entry is None:
             continue
         if not isinstance(entry, dict):
-            errors.append(f"{endpoint}: expected a date value and evidence")
+            invalid(f"{endpoint}: expected a date value and evidence")
             continue
         value, evidence = entry.get("value"), entry.get("evidence")
         quotes = [evidence] if isinstance(evidence, str) else evidence
         if not isinstance(value, str) or not value.strip() or not isinstance(quotes, list) or not quotes:
-            errors.append(f"{endpoint}: provide a date value and nonempty evidence quotes")
+            invalid(f"{endpoint}: provide a date value and nonempty evidence quotes")
             continue
         if any(not isinstance(q, str) or not q.strip() for q in quotes):
-            errors.append(f"{endpoint}: evidence quotes must be nonempty strings")
+            invalid(f"{endpoint}: evidence quotes must be nonempty strings")
             continue
         if any(_normalize(unicodedata.normalize("NFKC", q)) not in text for q in quotes):
-            errors.append(f"{endpoint}: each evidence quote must occur in the page")
+            invalid(f"{endpoint}: each evidence quote must occur in the page")
             continue
         found = read_range(value, kind="on", said_on=page.published_at)
         supported = [read_range(q, kind="on", said_on=page.published_at) for q in quotes]
         date = (found.start if endpoint == "starts_on" else found.end) if found else None
         if date is None or not any(span and date in (span.start, span.end) for span in supported):
-            errors.append(f"{endpoint}: evidence must include the stated date, including compressed ranges")
+            invalid(f"{endpoint}: evidence must include the stated date, including compressed ranges")
             continue
         dates[endpoint] = date
     start, end = dates.get("starts_on"), dates.get("ends_on")
     if start is not None and end is not None and start > end:
-        errors.append("time: starts_on must not be after ends_on")
+        invalid("time: starts_on must not be after ends_on")
         return {}
-    return dates
+    return {} if errors else dates
 
 
 def _dates_from(extracted: dict[str, ExtractedField], page: Page, goal: Goal) -> dict[str, Any]:
