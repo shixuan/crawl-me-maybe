@@ -111,9 +111,8 @@ def _own_seed_lines(s: dict[str, Any]) -> list[str]:
     for seed in seeds:
         found, judged, fetched, wanted, scored, discovered = seed["funnel"]
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {seed['url']}")
-        out.append(
-            f"{_INDENT}  {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
-        )
+        out.append(f"{_INDENT}  {fetched} fetched, {judged} analyzed")
+        out.append(f"{_INDENT}  stats: {discovered} found, {scored} ranked, {wanted} wanted")
         if seed.get("retired"):
             out.append(f"{_INDENT}  stopped reading it: {seed['retired']}")
     return out
@@ -141,10 +140,8 @@ def _proposed_seed_lines(s: dict[str, Any]) -> list[str]:
     for url, (why, funnel) in sorted(proposed.items(), key=lambda kv: -kv[1][1][0]):
         found, judged, fetched, wanted, scored, discovered = funnel
         out.append(f"  {f'{found} relevant' if found else 'nothing':>12}  {url}")
-        # Report each stage separately to distinguish unread work from rejected pages.
-        out.append(
-            f"                {discovered} found, {scored} scored, {wanted} wanted, {fetched} fetched, {judged} judged"
-        )
+        out.append(f"                {fetched} fetched, {judged} analyzed")
+        out.append(f"                stats: {discovered} found, {scored} ranked, {wanted} wanted")
         if why:
             out.append(f"                {why}")
     if turned_away:

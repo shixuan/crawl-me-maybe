@@ -61,6 +61,24 @@ SEEDS_SYSTEM = (
 )
 
 
+SEED_QUERIES_SYSTEM = (
+    "Generate at most three short, complementary platform search queries that cover the user's request. "
+    "The original request defines the scope. Use the enhanced goal only to clarify wording, "
+    "never to introduce requirements absent from the original request. "
+    "Cover distinct alternatives before adding narrower variations. Do not combine alternatives "
+    "joined by 'or' into conditions that every query must satisfy. Keep a condition attached "
+    "to its own alternative rather than applying it to all alternatives. "
+    "Examples introduced by phrases such as 'such as' or 'for example' are optional search expansions, "
+    "not required terms. Prefer broad coverage; use specific examples only when query slots remain. "
+    "Use concise subject and location terms, not a compressed list of every word in the goal. "
+    "Avoid near-duplicate queries that merely swap synonyms. Leave detailed eligibility checks "
+    "to later analysis; omit extraction instructions and output fields. "
+    "Preserve the user's language when useful. "
+    "Do not invent dates or add a year unless the original request requires it. "
+    'Return JSON only: {"queries": ["short query", "another query"]}.'
+)
+
+
 def seeds_input(goal: Goal, seeds: list[str], want: int) -> str:
     return (
         f"## Goal\n{goal.goal_statement or goal.prompt}\n\n"

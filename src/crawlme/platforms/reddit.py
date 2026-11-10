@@ -6,7 +6,7 @@ import datetime
 import html as html_mod
 import logging
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -48,6 +48,31 @@ _POST_BODY = re.compile(r'<div[^>]*\bid="t3_[^"]*-post-rtjson-content"[^>]*>(.*?
 
 # Attribute pairs off one element's opening tag.
 _ATTR = re.compile(r'([\w-]+)="([^"]*)"')
+
+
+def seed_contains(seed: str, post: FeedItem) -> bool:
+    """Community and user seeds cover their own posts."""
+    if not claims_url(seed):
+        return False
+    parts = urlparse(seed).path.strip("/").casefold().split("/")
+    if len(parts) != 2:
+        return False
+    kind, name = parts
+    if kind in {"user", "u"}:
+        return bool(post.author) and post.author.casefold() == name
+    if kind == "r":
+        return urlparse(post.permalink).path.casefold().startswith(f"/r/{name}/comments/")
+    return False
+
+
+def search_url(query: str) -> str:
+    """Build a native post search URL."""
+    return "https://www.reddit.com/search/?" + urlencode({"q": query, "type": "posts", "sort": "new"})
+
+
+def parse_search(html: str, url: str, payloads: list[Payload]) -> list[FeedItem]:
+    """Read posts from a rendered search page."""
+    return parse_listing(html, url, payloads).all
 
 
 def claims_url(url: str) -> bool:

@@ -21,7 +21,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import SeedExpander, how_many, verify
+from crawlme.pioneer.seed_expander import SeedExpander, how_many
 from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Task, Tracker, spec_fields
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
@@ -369,32 +369,26 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
         if expander is None or not seeds:
             return []
         want = how_many(len(seeds), self._cfg.expand_seeds_min, self._cfg.expand_seeds_max)
-        proposals = await self.error_handler.call(
+        result = await self.error_handler.call(
             "seeds",
-            lambda: expander.propose(goal, [c.url.raw for c in seeds], want),
+            lambda: expander.expand(
+                goal,
+                [c.url.raw for c in seeds],
+                want,
+                probe=self._page.probe,
+                canonicalizer=self._canonicalizer,
+            ),
             optional=True,
             repeatable=True,
         )
-        if isinstance(proposals, Skipped):
+        if isinstance(result, Skipped):
             return []
-        if not proposals:
-            self.run_state.seeds_asked = 0
-            self.run_state.rejected_seeds = []
-            return []
-        logger.info("the model named %d more source%s to try", len(proposals), "" if len(proposals) == 1 else "s")
-        proposed, rejected = await verify(
-            proposals,
-            probe=self._page.probe,
-            canonicalizer=self._canonicalizer,
-        )
-        logger.info("%d of the %d it named answered", len(proposed), len(proposals))
-        self.run_state.seeds_asked = len(proposals)
-        self.run_state.rejected_seeds = rejected
-        for c in proposed:
-            # url_key, the shape the page book counts under.
-            key = self._canonicalizer.canonicalize(c.url.raw, c.url.raw).url_key
-            self.run_state.proposed_seeds[key] = (c.url.canonical, str(c.signals.get("why", "")))
-        return proposed
+        self.run_state.seeds_asked = result.asked
+        self.run_state.rejected_seeds = result.rejected
+        for candidate in result.candidates:
+            key = self._canonicalizer.canonicalize(candidate.url.raw, candidate.url.raw).url_key
+            self.run_state.proposed_seeds[key] = (candidate.url.canonical, str(candidate.signals.get("why", "")))
+        return result.candidates
 
     async def ingest_seeds(
         self,

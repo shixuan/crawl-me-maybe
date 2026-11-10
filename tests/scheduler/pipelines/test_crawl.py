@@ -175,7 +175,11 @@ async def test_expanded_seeds_are_marked():
     """The buffer reads this to give them the smaller share."""
 
     url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
-    expander = MagicMock(propose=AsyncMock(return_value=[(url.raw, "source")]))
+    from crawlme.pioneer.seed_expander import SeedExpander
+
+    expander = SeedExpander(None)
+    expander.search = AsyncMock(return_value=[])
+    expander.propose = AsyncMock(return_value=[(url.raw, "source")])
     canonicalizer = MagicMock(canonicalize=MagicMock(return_value=url))
     sched = _make_sched(settings=Settings(expand_seeds=True), seed_expander=expander, canonicalizer=canonicalizer)
     sched.pipeline._page.probe = AsyncMock(return_value=Harvest([Candidate(url=url)]))
@@ -221,3 +225,24 @@ async def test_a_cancelled_pump_is_not_a_failure():
     sched.pipeline._pump_tasks.append(task)
     await sched.pipeline.halt()
     assert not sched.pipeline.run_state.progress.fatal_error
+
+
+async def test_searched_posts_skip_source_verification():
+    from crawlme.urls import Canonicalizer
+
+    canonicalizer = Canonicalizer()
+    url = canonicalizer.canonicalize("https://www.instagram.com/shop/p/NEW/", "https://www.instagram.com/")
+    post = Candidate(url=url, seed_ext=True, signals={"why": "instagram search"})
+    from crawlme.pioneer.seed_expander import SeedExpander
+
+    expander = SeedExpander(None)
+    expander.search = AsyncMock(return_value=[post])
+    expander.propose = AsyncMock()
+    sched = _make_sched(settings=Settings(expand_seeds=True), seed_expander=expander, canonicalizer=canonicalizer)
+    sched.pipeline._page.probe = AsyncMock()
+    result = await sched.pipeline.expand_seeds(_goal(), [Candidate(url=url)])
+    assert result == [post]
+    expander.propose.assert_not_awaited()
+    sched.pipeline._page.probe.assert_not_awaited()
+    assert sched.pipeline.run_state.proposed_seeds[url.url_key] == (url.canonical, "instagram search")
+    assert sched.pipeline.run_state.seeds_asked == 1
