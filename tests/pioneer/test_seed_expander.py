@@ -12,7 +12,7 @@ from crawlme.discovery import Harvest
 from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
-from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
+from crawlme.pioneer.seed_expander import SeedExpander, _parse
 from crawlme.runtime import Goal
 from crawlme.urls import URL
 
@@ -29,24 +29,6 @@ def _expander(content: str) -> SeedExpander:
 
 def _goal() -> Goal:
     return Goal(prompt="new drinks in Toronto")
-
-
-# how many ----------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("given", "want"),
-    [(1, 4), (2, 6), (4, 8), (8, 10), (16, 12), (64, 12)],
-)
-def test_count_grows_slowly(given, want):
-    """Doubling the seeds adds two. Past a point the user's own coverage
-    is the better guide, and every proposal costs a fetch."""
-    assert how_many(given, 4, 12) == want
-
-
-def test_bounds_come_from_settings():
-    assert how_many(64, 1, 3) == 3
-    assert how_many(1, 7, 12) == 7
 
 
 # propose -----------------------------------------------------------------
@@ -384,3 +366,40 @@ async def test_search_allocates_after_excluding_seed_accounts_and_duplicates():
     ]
     assert len({c.url.url_key for c in result}) == 4
     assert all(c.signals["account"] != "torontodiscounts" for c in result)
+
+
+@pytest.mark.parametrize(
+    "seeds, expected",
+    [([], "reddit"), (["https://www.instagram.com/example/"], "instagram")],
+)
+async def test_search_uses_platform_only_without_seeds(seeds, expected):
+    from crawlme.platforms import instagram, reddit
+    from crawlme.platforms.models import FeedItem
+
+    adapters = []
+    for platform in (instagram, reddit):
+        adapter = MagicMock(wraps=platform)
+        adapter.PLATFORM = platform.PLATFORM
+        adapter.parse_search.return_value = [FeedItem("https://example.com/post", platform.PLATFORM, text="a post")]
+        adapters.append(adapter)
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"<html></html>", payloads=[])
+    expander = _expander('{"queries": ["query"]}')
+    expander._adapters = tuple(adapters)
+    expander._platforms = ("reddit",)
+    expander._fetcher_factory = lambda: fetcher
+
+    result = await expander.search(_goal(), seeds, 4)
+
+    assert len(result) == 1
+    assert result[0].signals["why"] == f"{expected} search: query"
+    for adapter in adapters:
+        assert adapter.parse_search.call_count == int(adapter.PLATFORM == expected)
+
+
+async def test_seedless_proposals_stay_on_requested_platform():
+    expander = _expander(_reply(("https://www.reddit.com/r/toronto/", "local"), ("https://example.com/", "other")))
+    expander._platforms = ("reddit",)
+    result = await expander.propose(_goal(), [], 4)
+    assert result == [("https://www.reddit.com/r/toronto/", "local")]
+    assert "Only propose sources on these platforms\nreddit" in expander._client.chat.call_args.args[0]

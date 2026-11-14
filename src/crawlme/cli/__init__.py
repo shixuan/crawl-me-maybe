@@ -110,6 +110,11 @@ def main() -> None:
         action="store_true",
         help="Let the model name more sources of the same kind, verified before use",
     )
+    run_p.add_argument(
+        "--platform",
+        help="Comma-separated platforms to search without seeds (instagram, reddit). "
+        "Enables seed expansion; supplied seeds take precedence",
+    )
     run_p.add_argument("--enhance-seeds", dest="expand_seeds", action="store_true", help=argparse.SUPPRESS)
     run_p.add_argument("--ignore-robots", action="store_true", help="Bypass robots.txt checks")
     run_p.add_argument("--domain-budget", type=int, help="Max pages per domain")

@@ -21,7 +21,7 @@ from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import SeedExpander, how_many
+from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Task, Tracker, spec_fields
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
@@ -366,9 +366,9 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
     async def expand_seeds(self, goal: Goal, seeds: list[Candidate]) -> list[Candidate]:
         """Propose and verify additional seeds when enabled."""
         expander = self._seed_expander
-        if expander is None or not seeds:
+        if expander is None:
             return []
-        want = how_many(len(seeds), self._cfg.expand_seeds_min, self._cfg.expand_seeds_max)
+        want = self._cfg.expand_seeds_count
         result = await self.error_handler.call(
             "seeds",
             lambda: expander.expand(

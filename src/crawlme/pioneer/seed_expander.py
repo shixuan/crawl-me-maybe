@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import re
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,13 +38,6 @@ _MAX_WHY = 80
 _VERIFY_TIMEOUT = 60.0
 
 
-def how_many(given: int, low: int, high: int) -> int:
-    """Return zero without seeds; otherwise scale logarithmically within configured bounds."""
-    if given <= 0:
-        return 0
-    return max(low, min(high, round(4 + 2 * math.log2(given))))
-
-
 @dataclass
 class Expansion:
     candidates: list[Candidate]
@@ -60,10 +53,12 @@ class SeedExpander:
         client: Client | None,
         *,
         adapters: tuple[SearchAdapter, ...] = (),
+        platforms: tuple[str, ...] = (),
         fetcher_factory: Callable[[], Fetcher] | None = None,
     ) -> None:
         self._client = client
         self._adapters = adapters
+        self._platforms = platforms
         self._fetcher_factory = fetcher_factory
 
     @classmethod
@@ -76,7 +71,17 @@ class SeedExpander:
         adapters = tuple(a for a in FEEDS.values() if not a.NEEDS_SESSION or has_session)
         for adapter in FEEDS.values():
             if adapter.NEEDS_SESSION and not has_session:
-                logger.info("seeds.search_unavailable platform=%s reason=no_session", adapter.PLATFORM)
+                path = shlex.quote(settings.browser_storage_state or f"./{adapter.PLATFORM}-session.json")
+                logger.warning(
+                    "%s search unavailable: no session file found. "
+                    "Create one with: crawl session %s --feed %s\n"
+                    "Log in in the browser, then rerun with --session %s. "
+                    "Continuing without this platform's search; source proposals remain available as fallback.",
+                    adapter.PLATFORM,
+                    path,
+                    adapter.PLATFORM,
+                    path,
+                )
         return cls(
             Client.from_settings_if_configured(
                 settings,
@@ -85,6 +90,7 @@ class SeedExpander:
                 stage=Stage.SEEDS,
             ),
             adapters=adapters,
+            platforms=tuple(settings.search_platforms),
             fetcher_factory=lambda: PlaywrightFetcher(
                 storage_state=settings.browser_storage_state if has_session else None,
                 timeout=settings.fetch_timeout_read,
@@ -105,7 +111,7 @@ class SeedExpander:
         canonicalizer: Canonicalizer,
     ) -> Expansion:
         """Prefer searched posts, otherwise propose and verify additional sources."""
-        if not seeds or want <= 0:
+        if want <= 0:
             return Expansion([], 0, [])
         logger.info("expanding %d starting sources, looking for up to %d additional seeds", len(seeds), want)
         searched = await self.search(goal, seeds, want)
@@ -127,7 +133,11 @@ class SeedExpander:
         if self._fetcher_factory is None or self._client is None or want <= 0:
             logger.info("platform search unavailable: search dependencies are not configured")
             return []
-        adapters = [a for a in self._adapters if any(a.claims_url(seed) for seed in seeds)]
+        adapters = [
+            a
+            for a in self._adapters
+            if (any(a.claims_url(seed) for seed in seeds) if seeds else a.PLATFORM in self._platforms)
+        ]
         if not adapters:
             logger.info("platform search unavailable: no searchable seed platforms with the required session")
             return []
@@ -247,13 +257,19 @@ class SeedExpander:
 
     async def propose(self, goal: Goal, seeds: list[str], want: int) -> list[tuple[str, str]]:
         """Ask for more sources. Pairs of url and the reason given."""
-        if self._client is None or want <= 0 or not seeds:
+        if self._client is None or want <= 0:
             return []
         prompt = prompts.seeds_input(goal, seeds, want)
+        if not seeds and self._platforms:
+            prompt += "\n\n## Only propose sources on these platforms\n" + ", ".join(self._platforms)
         # Log before awaiting the proposal so startup progress is visible.
         logger.info("asking the model for up to %d more sources to try", want)
         resp = await self._client.chat(prompt, system=prompts.SEEDS_SYSTEM, json_mode=True)
         got = _parse(resp.content, known=set(seeds), want=want)
+        if not seeds and self._platforms:
+            from crawlme.platforms import FEEDS
+
+            got = [(url, why) for url, why in got if any(FEEDS[name].claims_url(url) for name in self._platforms)]
         if not got and resp.truncated:
             # Kept apart from a parser problem. This is a budget to
             # raise, not a prompt to fix.

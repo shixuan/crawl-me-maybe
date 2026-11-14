@@ -66,10 +66,9 @@ class Settings(BaseSettings):
     # --- Frontier ---
     candidate_buffer_size: int = 2_000
 
-    # Proposal count is clamped between these bounds.
     expand_seeds: bool = Field(default=False, validation_alias=AliasChoices("expand_seeds", "enhance_seeds"))
-    expand_seeds_min: int = Field(default=4, validation_alias=AliasChoices("expand_seeds_min", "enhance_seeds_min"))
-    expand_seeds_max: int = Field(default=12, validation_alias=AliasChoices("expand_seeds_max", "enhance_seeds_max"))
+    expand_seeds_count: int = Field(default=12, ge=0)
+    search_platforms: list[str] = []
 
     # --- Logging ---
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
