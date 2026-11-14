@@ -296,3 +296,24 @@ def test_graphql_paths(path, ctype):
 @pytest.mark.parametrize("path", ["/api/graphql/schema", "/static/bundle.js?next=/api/graphql", "/api/v1/feed/"])
 def test_other_paths_not_kept(path):
     assert not ig.keeps_payload(f"https://www.instagram.com{path}", "application/json")
+
+
+def test_search_excludes_background_feed_and_viewer_posts():
+    def post(code):
+        return {"code": code, "caption": {"text": "A gift"}, "user": {"username": "shop"}, "taken_at": 1780000000}
+
+    payload = Payload(
+        body=json.dumps(
+            {
+                "data": {
+                    "xdt_fbsearch__top_serp_graphql": {"items": [post("SEARCH")]},
+                    "xdt_viewer": post("VIEWER"),
+                    "xdt_api__v1__feed__timeline__connection": {"items": [post("FEED")]},
+                }
+            }
+        ).encode()
+    )
+    items = ig.parse_search("", "", [Payload(body=b"not json"), payload])
+    assert [item.item_id for item in items] == ["SEARCH"]
+    assert items[0].permalink == "https://www.instagram.com/shop/p/SEARCH/"
+    assert items[0].published_at is not None

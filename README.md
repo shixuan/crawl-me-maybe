@@ -74,6 +74,16 @@ crawl run "recent funding news for AI startups" \
   --max-relevant 40 --page-budget 200
 ```
 
+**Start without seeds** by choosing platforms to search. `--platform` enables seed expansion and requires the `browser` extra. Instagram also needs a saved session.
+
+```bash
+crawl run "Toronto merchants giving away free samples" \
+  --platform instagram,reddit --session ./ig-session.json \
+  --since "2 weeks" --page-budget 100
+```
+
+With `--seeds`, expansion uses the platforms inferred from those URLs. A conflicting `--platform` is ignored with a warning. Search falls back to verified model-proposed sources if it returns no usable posts; without seeds, those proposals stay on the requested platforms.
+
 **Read results** using the task ID printed by the run:
 
 ```bash
@@ -98,7 +108,8 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”. 
 |---|---|---|
 | `--seeds` | none | Comma-separated URLs or a JSON file containing a URL list or `{"seeds": [...], "allowed_domains": [...]}` |
 | `--allowed-domains` | none | Comma-separated domain scope overriding the seeds file |
-| `--expand-seeds` | off | Propose additional sources and fetch them to verify they yield candidates |
+| `--expand-seeds` | off | Search seed platforms for posts, falling back to verified source proposals if no usable posts are found |
+| `--platform` | none | Comma-separated search platforms (`instagram,reddit`) for runs without seeds. Enables expansion; supplied seeds take precedence, with a warning on conflict |
 | `--depth-limit` | `5` | Maximum candidate depth, starting at `0` for seeds |
 | `--since` | none | Publication cutoff, e.g. `"2 weeks"` or `2026-08-01`, overriding any cutoff inferred from the prompt |
 | `--draining` | off | Disable the page limit. Other budgets and stop conditions still apply |
@@ -201,6 +212,8 @@ See [Architecture](docs/arch.md) for component boundaries and [Changelog](docs/C
 ## Configuration and limitations
 
 Copy [`.env.example`](.env.example) to `.env` for credentials and model settings. See [Settings](src/crawlme/config.py) for all options. Precedence is defaults → `.env` → environment → CLI.
+
+Set `EXPAND_SEEDS_COUNT` in `.env` to the target number of extra seeds (default `12`, `0` disables expansion). `EXPAND_SEARCH_COUNT` sets the maximum number of search queries (default `3`, positive integer). The same queries are used on each selected platform. Search results share the `EXPAND_SEEDS_COUNT` total in proportion to each query’s unique eligible candidates. Fewer candidates may be returned when results or verified proposals are insufficient.
 
 Set `NO_COLOR=1` to disable terminal logging colors. File logs, JSON and redirected output stay plain.
 

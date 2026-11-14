@@ -138,7 +138,7 @@ frontier and budget; the monitor factory uses those same instances through publi
 properties. Commands do not construct buffers or concrete monitors. Source selection and seed-file parsing stay in `pioneer.sources`.
 CrawlPipeline retains Checkpointer binding and restoration; Engine receives its save
 callback and controls checkpoint timing and shutdown.
-CLI commands pass settings and feature switches rather than constructing LLM components. CrawlPipeline runs seed expansion;
+CLI commands pass settings and feature switches rather than constructing LLM components. CrawlPipeline calls SeedExpander, which owns platform search and fallback to source proposals. Platform adapters build search URLs and parse results; the expander coordinates browser fetching.
 PagePipeline provides verification using the same FetchWorker, PersistWorker
 and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
 and payloads, and discovers candidates without publishing an unextracted Page row.
@@ -151,8 +151,13 @@ and payloads, and discovers candidates without publishing an unextracted Page ro
    a goal, task, crawl pipeline and shared `TokenBudget`.
 2. `GoalEnhancer` derives the goal statement, fields and optional publication
    cutoff. An explicit `--since` overrides the inferred cutoff.
-3. Optional seed expansion proposes URLs and verifies that fetched pages yield
-   candidates. Accepted proposals receive a smaller share of candidate rotation.
+3. Optional seed expansion searches platforms inferred from seeds, or those selected
+   by `--platform` when seeds are absent. Seeds take precedence over conflicting
+   platform flags, with a warning. `EXPAND_SEEDS_COUNT` sets the total target;
+   unique eligible search results share it proportionally across queries. If search
+   returns no usable posts, SeedExpander proposes source URLs and verifies that
+   fetched pages yield candidates. Without seeds, proposals are restricted to the
+   selected platforms. Accepted expansion seeds receive a smaller share of candidate rotation.
 4. Seeds are canonicalized, filtered and queued at priority `1.0`, depth `0`.
 5. CrawlPipeline runs `fetch_pump` and `rank_pump` concurrently. Engine enforces admission
    and stopping decisions supplied by StopMonitor. The monitor reads queues, limits,

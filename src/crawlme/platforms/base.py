@@ -72,3 +72,17 @@ class FeedAdapter(Protocol):
     def extract_sources(self, result: FetchResult) -> list[PageSource]:
         """Return independently attributed passages when the markup identifies them."""
         ...
+
+
+class SearchAdapter(FeedAdapter, Protocol):
+    def seed_contains(self, seed: str, post: FeedItem) -> bool:
+        """Whether a source seed already covers this post."""
+        ...
+
+    def search_url(self, query: str) -> str:
+        """Build the platform's search URL."""
+        ...
+
+    def parse_search(self, html: str, url: str, payloads: list[Payload]) -> list[FeedItem]:
+        """Read posts from search results without performing requests."""
+        ...

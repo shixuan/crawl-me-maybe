@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,7 +12,7 @@ from crawlme.discovery import Harvest
 from crawlme.errors import Kind
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
-from crawlme.pioneer.seed_expander import SeedExpander, _parse, how_many
+from crawlme.pioneer.seed_expander import SeedExpander, _parse
 from crawlme.runtime import Goal
 from crawlme.urls import URL
 
@@ -28,24 +29,6 @@ def _expander(content: str) -> SeedExpander:
 
 def _goal() -> Goal:
     return Goal(prompt="new drinks in Toronto")
-
-
-# how many ----------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("given", "want"),
-    [(1, 4), (2, 6), (4, 8), (8, 10), (16, 12), (64, 12)],
-)
-def test_count_grows_slowly(given, want):
-    """Doubling the seeds adds two. Past a point the user's own coverage
-    is the better guide, and every proposal costs a fetch."""
-    assert how_many(given, 4, 12) == want
-
-
-def test_bounds_come_from_settings():
-    assert how_many(64, 1, 3) == 3
-    assert how_many(1, 7, 12) == 7
 
 
 # propose -----------------------------------------------------------------
@@ -200,3 +183,253 @@ async def test_verification_preserves_unexpected_failures():
     with pytest.raises(OSError) as caught:
         await verify([("https://a.com/", "why")], probe=probe, canonicalizer=canonicalizer)
     assert caught.value is failure
+
+
+async def test_search_filters_old_undated_and_known_posts():
+    import datetime
+
+    from crawlme.platforms.models import FeedItem
+
+    since = datetime.datetime(2026, 11, 2, tzinfo=datetime.timezone.utc)
+    recent = since + datetime.timedelta(days=1)
+    posts = [
+        FeedItem(
+            "https://www.instagram.com/shop/p/OLD/",
+            "instagram",
+            text="Old",
+            published_at=since - datetime.timedelta(days=365),
+        ),
+        FeedItem("https://www.instagram.com/shop/p/UNKNOWN/", "instagram", text="Unknown"),
+        FeedItem("https://www.instagram.com/shop/p/KNOWN/", "instagram", text="Known", published_at=recent),
+        FeedItem("https://www.instagram.com/shop/p/NEW/", "instagram", text="New", published_at=recent),
+    ]
+    search = MagicMock(
+        claims_url=MagicMock(return_value=True),
+        PLATFORM="instagram",
+        search_url=MagicMock(return_value="https://www.instagram.com/explore/search/keyword/?q=gifts"),
+        problem=MagicMock(return_value=None),
+        parse_search=MagicMock(return_value=posts + posts),
+        seed_contains=MagicMock(return_value=False),
+    )
+    expander = _expander('{"queries": ["Toronto gifts", "Toronto gifts"]}')
+    expander._adapters = (search,)
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"<html></html>", payloads=[])
+    expander._fetcher_factory = lambda: fetcher
+    result = await expander.search(Goal(prompt="gifts", since=since), [posts[2].permalink], 4)
+    assert [c.url.raw for c in result] == [posts[3].permalink]
+    assert result[0].posted_at == recent
+    assert result[0].seed_ext
+    search.search_url.assert_called_once_with("Toronto gifts")
+    search.parse_search.assert_called_once()
+    fetcher.aclose.assert_awaited_once()
+
+
+async def test_search_unavailable_does_not_spend_tokens():
+    search = MagicMock(claims_url=MagicMock(return_value=False), PLATFORM="instagram")
+    expander = _expander('{"queries": ["gifts"]}')
+    expander._adapters = (search,)
+    expander._fetcher_factory = lambda: AsyncMock()
+    assert await expander.search(_goal(), ["https://www.instagram.com/shop/"], 4) == []
+    expander._client.chat.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reply", ["{}", '{"queries": "bad"}', "not json", '{"queries": [null, 3, ""]}'])
+async def test_invalid_search_queries_allow_fallback(reply):
+    search = MagicMock(claims_url=MagicMock(return_value=True), PLATFORM="instagram")
+    expander = _expander(reply)
+    expander._adapters = (search,)
+    expander._fetcher_factory = lambda: AsyncMock()
+    assert await expander.search(_goal(), ["https://www.instagram.com/shop/"], 4) == []
+    search.search_url.assert_not_called()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_search_failure_cleanup(cancelled):
+    import asyncio
+
+    failure = asyncio.CancelledError() if cancelled else OSError("browser unavailable")
+    adapter = MagicMock(
+        PLATFORM="example",
+        claims_url=MagicMock(return_value=True),
+        search_url=MagicMock(return_value="https://example.com/search?q=gifts"),
+    )
+    fetcher = AsyncMock()
+    fetcher.fetch.side_effect = failure
+    expander = _expander('{"queries": ["gifts", "freebies"]}')
+    expander._adapters = (adapter,)
+    expander._fetcher_factory = lambda: fetcher
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await expander.search(_goal(), ["https://example.com"], 4)
+    else:
+        assert await expander.search(_goal(), ["https://example.com"], 4) == []
+    adapter.search_url.assert_called_once_with("gifts")
+    fetcher.fetch.assert_awaited_once()
+    fetcher.aclose.assert_awaited_once()
+
+
+def test_missing_session_excludes_instagram_search(tmp_path):
+    from crawlme.config import Settings
+
+    expander = SeedExpander.from_settings(Settings(browser_storage_state=str(tmp_path / "missing.json")))
+    assert "instagram" not in [a.PLATFORM for a in expander._adapters]
+    assert "reddit" in [a.PLATFORM for a in expander._adapters]
+
+
+async def test_search_refusal_skips_parsing_and_closes_fetcher():
+    from crawlme.platforms import reddit
+
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"You've been blocked by network security.", payloads=[])
+    adapter = MagicMock(wraps=reddit)
+    adapter.PLATFORM = reddit.PLATFORM
+    expander = _expander('{"queries": ["gifts", "freebies"]}')
+    expander._adapters = (adapter,)
+    expander._fetcher_factory = lambda: fetcher
+    assert await expander.search(_goal(), ["https://www.reddit.com/r/test/"], 4) == []
+    adapter.parse_search.assert_not_called()
+    fetcher.fetch.assert_awaited_once()
+    fetcher.aclose.assert_awaited_once()
+
+
+async def test_expand_fallback_reports_rejected_sources():
+    from crawlme.urls import Canonicalizer
+
+    expander = SeedExpander(None)
+    expander.search = AsyncMock(return_value=[])
+    expander.propose = AsyncMock(return_value=[("https://example.com/empty", "source")])
+    probe = AsyncMock(return_value=Harvest([]))
+    result = await expander.expand(_goal(), ["https://example.com/"], 4, probe=probe, canonicalizer=Canonicalizer())
+    assert result.candidates == []
+    assert result.asked == 1
+    assert result.rejected == [("https://example.com/empty", "held nothing to follow")]
+    probe.assert_awaited_once()
+
+
+async def test_expand_cancellation_does_not_fall_back():
+    import asyncio
+
+    from crawlme.urls import Canonicalizer
+
+    expander = SeedExpander(None)
+    expander.search = AsyncMock(side_effect=asyncio.CancelledError())
+    expander.propose = AsyncMock()
+    with pytest.raises(asyncio.CancelledError):
+        await expander.expand(_goal(), ["https://example.com/"], 4, probe=AsyncMock(), canonicalizer=Canonicalizer())
+    expander.propose.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("counts", "limit", "expected"),
+    [
+        ([19, 11, 39], 11, [3, 2, 6]),
+        ([0, 3, 1], 10, [0, 3, 1]),
+        ([0, 0], 4, [0, 0]),
+        ([1, 1, 1], 2, [1, 1, 0]),
+        ([5, 5], 0, [0, 0]),
+    ],
+)
+def test_weighted_search_allocation(counts, limit, expected):
+    from crawlme.pioneer.seed_expander import _allocate
+
+    assert _allocate(counts, limit) == expected
+
+
+async def test_search_allocates_after_excluding_seed_accounts_and_duplicates():
+    from crawlme.platforms import instagram
+    from crawlme.platforms.models import FeedItem
+
+    def post(code, author="other"):
+        return FeedItem(f"https://www.instagram.com/{author}/p/{code}/", "instagram", author=author, text=code)
+
+    shared = post("shared")
+    groups = [
+        [post("covered", "torontodiscounts"), shared, post("a")],
+        [shared, post("b")],
+        [post("c"), post("d"), post("e")],
+    ]
+    adapter = MagicMock(wraps=instagram)
+    adapter.PLATFORM = "instagram"
+    adapter.parse_search.side_effect = groups
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"<html></html>", payloads=[])
+    expander = _expander('{"queries": ["first", "second", "third"]}')
+    expander._adapters = (adapter,)
+    expander._fetcher_factory = lambda: fetcher
+    result = await expander.search(_goal(), ["https://www.instagram.com/torontodiscounts/"], 4)
+    assert [c.signals["why"] for c in result] == [
+        "instagram search: first",
+        "instagram search: second",
+        "instagram search: third",
+        "instagram search: third",
+    ]
+    assert len({c.url.url_key for c in result}) == 4
+    assert all(c.signals["account"] != "torontodiscounts" for c in result)
+
+
+@pytest.mark.parametrize(
+    "seeds, expected",
+    [([], "reddit"), (["https://www.instagram.com/example/"], "instagram")],
+)
+async def test_search_uses_platform_only_without_seeds(seeds, expected):
+    from crawlme.platforms import instagram, reddit
+    from crawlme.platforms.models import FeedItem
+
+    adapters = []
+    for platform in (instagram, reddit):
+        adapter = MagicMock(wraps=platform)
+        adapter.PLATFORM = platform.PLATFORM
+        adapter.parse_search.return_value = [FeedItem("https://example.com/post", platform.PLATFORM, text="a post")]
+        adapters.append(adapter)
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"<html></html>", payloads=[])
+    expander = _expander('{"queries": ["query"]}')
+    expander._adapters = tuple(adapters)
+    expander._platforms = ("reddit",)
+    expander._fetcher_factory = lambda: fetcher
+
+    result = await expander.search(_goal(), seeds, 4)
+
+    assert len(result) == 1
+    assert result[0].signals["why"] == f"{expected} search: query"
+    for adapter in adapters:
+        assert adapter.parse_search.call_count == int(adapter.PLATFORM == expected)
+
+
+async def test_seedless_proposals_stay_on_requested_platform():
+    expander = _expander(_reply(("https://www.reddit.com/r/toronto/", "local"), ("https://example.com/", "other")))
+    expander._platforms = ("reddit",)
+    result = await expander.propose(_goal(), [], 4)
+    assert result == [("https://www.reddit.com/r/toronto/", "local")]
+    assert "Only propose sources on these platforms\nreddit" in expander._client.chat.call_args.args[0]
+
+
+@pytest.mark.parametrize("count", [1, 5])
+async def test_search_count_controls_prompt_and_requests(count):
+    from crawlme.config import Settings
+    from crawlme.llm import Client
+
+    client = MagicMock()
+    client.chat = AsyncMock(
+        return_value=SimpleNamespace(content=json.dumps({"queries": [f"query {i}" for i in range(6)]}), truncated=False)
+    )
+    with patch.object(Client, "from_settings_if_configured", return_value=client):
+        expander = SeedExpander.from_settings(Settings(expand_search_count=count))
+    adapter = MagicMock(
+        PLATFORM="reddit",
+        claims_url=MagicMock(return_value=True),
+        search_url=MagicMock(return_value="https://www.reddit.com/search/?q=test"),
+        problem=MagicMock(return_value=None),
+        parse_search=MagicMock(return_value=[]),
+    )
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"<html></html>", payloads=[])
+    expander._adapters = (adapter,)
+    expander._fetcher_factory = lambda: fetcher
+
+    await expander.search(_goal(), ["https://www.reddit.com/r/toronto/"], 12)
+
+    assert f"Generate at most {count} queries." in client.chat.call_args.kwargs["system"]
+    assert [call.args[0] for call in adapter.search_url.call_args_list] == [f"query {i}" for i in range(count)]
+    assert fetcher.fetch.await_count == count
