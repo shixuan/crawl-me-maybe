@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -403,3 +403,33 @@ async def test_seedless_proposals_stay_on_requested_platform():
     result = await expander.propose(_goal(), [], 4)
     assert result == [("https://www.reddit.com/r/toronto/", "local")]
     assert "Only propose sources on these platforms\nreddit" in expander._client.chat.call_args.args[0]
+
+
+@pytest.mark.parametrize("count", [1, 5])
+async def test_search_count_controls_prompt_and_requests(count):
+    from crawlme.config import Settings
+    from crawlme.llm import Client
+
+    client = MagicMock()
+    client.chat = AsyncMock(
+        return_value=SimpleNamespace(content=json.dumps({"queries": [f"query {i}" for i in range(6)]}), truncated=False)
+    )
+    with patch.object(Client, "from_settings_if_configured", return_value=client):
+        expander = SeedExpander.from_settings(Settings(expand_search_count=count))
+    adapter = MagicMock(
+        PLATFORM="reddit",
+        claims_url=MagicMock(return_value=True),
+        search_url=MagicMock(return_value="https://www.reddit.com/search/?q=test"),
+        problem=MagicMock(return_value=None),
+        parse_search=MagicMock(return_value=[]),
+    )
+    fetcher = AsyncMock()
+    fetcher.fetch.return_value = SimpleNamespace(raw=b"<html></html>", payloads=[])
+    expander._adapters = (adapter,)
+    expander._fetcher_factory = lambda: fetcher
+
+    await expander.search(_goal(), ["https://www.reddit.com/r/toronto/"], 12)
+
+    assert f"Generate at most {count} queries." in client.chat.call_args.kwargs["system"]
+    assert [call.args[0] for call in adapter.search_url.call_args_list] == [f"query {i}" for i in range(count)]
+    assert fetcher.fetch.await_count == count

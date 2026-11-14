@@ -13,7 +13,8 @@ def test_seed_expansion_settings(prefix, source, tmp_path, monkeypatch):
     for name in ("EXPAND", "ENHANCE"):
         for suffix in ("", "_COUNT"):
             monkeypatch.delenv(f"{name}_SEEDS{suffix}", raising=False)
-    values = {f"{prefix}_SEEDS": "true", "EXPAND_SEEDS_COUNT": "7"}
+    monkeypatch.delenv("EXPAND_SEARCH_COUNT", raising=False)
+    values = {f"{prefix}_SEEDS": "true", "EXPAND_SEEDS_COUNT": "7", "EXPAND_SEARCH_COUNT": "5"}
     env_file = tmp_path / ".env"
     if source == "env":
         for key, value in values.items():
@@ -23,6 +24,7 @@ def test_seed_expansion_settings(prefix, source, tmp_path, monkeypatch):
     cfg = Settings(_env_file=env_file, llm_api_key="", llm_base_url="", llm_model="")
     assert cfg.expand_seeds is True
     assert cfg.expand_seeds_count == 7
+    assert cfg.expand_search_count == 5
 
 
 def test_new_seed_setting_wins(monkeypatch):

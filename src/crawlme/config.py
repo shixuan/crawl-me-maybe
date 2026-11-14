@@ -68,6 +68,7 @@ class Settings(BaseSettings):
 
     expand_seeds: bool = Field(default=False, validation_alias=AliasChoices("expand_seeds", "enhance_seeds"))
     expand_seeds_count: int = Field(default=12, ge=0)
+    expand_search_count: int = Field(default=3, ge=1)
     search_platforms: list[str] = []
 
     # --- Logging ---

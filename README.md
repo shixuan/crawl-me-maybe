@@ -213,7 +213,7 @@ See [Architecture](docs/arch.md) for component boundaries and [Changelog](docs/C
 
 Copy [`.env.example`](.env.example) to `.env` for credentials and model settings. See [Settings](src/crawlme/config.py) for all options. Precedence is defaults → `.env` → environment → CLI.
 
-Set `EXPAND_SEEDS_COUNT` in `.env` to the target number of extra seeds (default `12`, `0` disables expansion). Search results share that total in proportion to each query’s unique eligible candidates. Fewer candidates may be returned when results or verified proposals are insufficient.
+Set `EXPAND_SEEDS_COUNT` in `.env` to the target number of extra seeds (default `12`, `0` disables expansion). `EXPAND_SEARCH_COUNT` sets the maximum number of search queries (default `3`, positive integer). The same queries are used on each selected platform. Search results share the `EXPAND_SEEDS_COUNT` total in proportion to each query’s unique eligible candidates. Fewer candidates may be returned when results or verified proposals are insufficient.
 
 Set `NO_COLOR=1` to disable terminal logging colors. File logs, JSON and redirected output stay plain.
 

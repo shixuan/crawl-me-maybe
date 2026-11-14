@@ -62,7 +62,7 @@ SEEDS_SYSTEM = (
 
 
 SEED_QUERIES_SYSTEM = (
-    "Generate at most three short, complementary platform search queries that cover the user's request. "
+    "Generate short, complementary platform search queries that cover the user's request. "
     "The original request defines the scope. Use the enhanced goal only to clarify wording, "
     "never to introduce requirements absent from the original request. "
     "Cover distinct alternatives before adding narrower variations. Do not combine alternatives "

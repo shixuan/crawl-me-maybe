@@ -54,11 +54,13 @@ class SeedExpander:
         *,
         adapters: tuple[SearchAdapter, ...] = (),
         platforms: tuple[str, ...] = (),
+        search_count: int = 3,
         fetcher_factory: Callable[[], Fetcher] | None = None,
     ) -> None:
         self._client = client
         self._adapters = adapters
         self._platforms = platforms
+        self._search_count = search_count
         self._fetcher_factory = fetcher_factory
 
     @classmethod
@@ -91,6 +93,7 @@ class SeedExpander:
             ),
             adapters=adapters,
             platforms=tuple(settings.search_platforms),
+            search_count=settings.expand_search_count,
             fetcher_factory=lambda: PlaywrightFetcher(
                 storage_state=settings.browser_storage_state if has_session else None,
                 timeout=settings.fetch_timeout_read,
@@ -150,13 +153,15 @@ class SeedExpander:
             response = await self._client.chat(
                 f"## Original request\n{goal.prompt}\n\n"
                 f"## Enhanced goal (wording aid only)\n{goal.goal_statement or goal.prompt}",
-                system=prompts.SEED_QUERIES_SYSTEM,
+                system=f"Generate at most {self._search_count} queries. " + prompts.SEED_QUERIES_SYSTEM,
                 json_mode=True,
             )
             data = json.loads(response.content)
             raw = data.get("queries", []) if isinstance(data, dict) else []
             queries = (
-                list(dict.fromkeys(q.strip() for q in raw if isinstance(q, str) and 0 < len(q.strip()) <= 160))[:3]
+                list(dict.fromkeys(q.strip() for q in raw if isinstance(q, str) and 0 < len(q.strip()) <= 160))[
+                    : self._search_count
+                ]
                 if isinstance(raw, list)
                 else []
             )
