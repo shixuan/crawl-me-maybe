@@ -8,8 +8,9 @@ import aiosqlite
 import pytest
 
 from crawlme.digest import FetchResult
+from crawlme.goals import Goal
 from crawlme.pioneer import FrontierItem
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
 from tests.scheduler.helpers import create_crawl

@@ -247,8 +247,8 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
     import httpx
 
     from crawlme.dedup import Grouper
+    from crawlme.goals.enhancer import GoalEnhancer
     from crawlme.llm import Client
-    from crawlme.pioneer.goal_enhancer import GoalEnhancer
     from crawlme.pioneer.ranker import LLMRanker
     from crawlme.pioneer.seed_expander import SeedExpander
 

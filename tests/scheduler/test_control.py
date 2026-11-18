@@ -15,9 +15,10 @@ from crawlme.config import Settings
 from crawlme.digest import FetchResult, Page
 from crawlme.discovery import Harvest
 from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.urls import Canonicalizer
 from tests.scheduler.helpers import create_crawl

@@ -15,7 +15,7 @@ _STAGES = (
     ("crawlme.scheduler.workers.ranking", "\033[94m"),
     ("crawlme.analysis", "\033[32m"),
     ("crawlme.scheduler.workers.analysis", "\033[32m"),
-    ("crawlme.pioneer.goal_enhancer", "\033[35m"),
+    ("crawlme.goals.enhancer", "\033[35m"),
     ("crawlme.pioneer.seed_expander", "\033[35m"),
     ("crawlme.dedup", "\033[35m"),
     ("crawlme.llm", "\033[35m"),

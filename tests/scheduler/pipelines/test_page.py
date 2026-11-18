@@ -465,7 +465,7 @@ async def test_the_target_holds_under_a_queue():
 async def test_analysis_publication_cutoff(tmp_path, published, cutoff, analyzed):
     import datetime
 
-    from crawlme.runtime import Goal
+    from crawlme.goals import Goal
     from crawlme.scheduler.pipelines import PipelineContext
     from crawlme.scheduler.pipelines.page import PageInput
 

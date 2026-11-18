@@ -16,10 +16,11 @@ from crawlme.cli.replay import run_replay
 from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind
+from crawlme.goals import Goal
 from crawlme.llm import RemoteError, TokenBudgetError
 from crawlme.persist import Storage
 from crawlme.persist.read import find_run_dir
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines.replay import ReplayError
 from crawlme.urls import URL
 

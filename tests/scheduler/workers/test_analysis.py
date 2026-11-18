@@ -8,8 +8,9 @@ import pytest
 from crawlme.analysis import AnalysisResult, Analyzer
 from crawlme.digest import Page
 from crawlme.errors import ErrorHandler, Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, RemoteError
-from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.workers import AnalysisWorker
 from crawlme.urls import URL
 

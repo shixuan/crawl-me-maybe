@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from crawlme.errors import ErrorHandler, Skipped
+from crawlme.goals import Goal
 from crawlme.logging.progress import activity
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.ranker import Ranker
-from crawlme.runtime import EventEmitter, EventType, Goal, Tracker
+from crawlme.runtime import EventEmitter, EventType, Tracker
 from crawlme.urls import URL
 
 logger = logging.getLogger(__name__)

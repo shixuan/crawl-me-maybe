@@ -11,10 +11,11 @@ from crawlme.config import Settings
 from crawlme.digest import FetchResult, Page
 from crawlme.discovery import Harvester
 from crawlme.errors import ErrorHandler, ErrorPolicy
+from crawlme.goals import Goal
 from crawlme.llm import TokenBudget
 from crawlme.pioneer import FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Task
+from crawlme.runtime import Limits, Progress, RunState, Stats, Task
 from crawlme.scheduler.engine import Engine, create_engine
 from crawlme.scheduler.monitor import StopMonitor, create_monitor
 from crawlme.scheduler.pipelines import factory as pipelines

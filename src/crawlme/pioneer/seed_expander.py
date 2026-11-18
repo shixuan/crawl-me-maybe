@@ -20,10 +20,10 @@ if TYPE_CHECKING:
     from crawlme.config import Settings
     from crawlme.digest.fetcher.base import Fetcher
     from crawlme.discovery import Harvest
+    from crawlme.goals import Goal
     from crawlme.llm import TokenBudget
     from crawlme.pioneer.models import Candidate, FrontierItem
     from crawlme.platforms.base import SearchAdapter
-    from crawlme.runtime import Goal
     from crawlme.urls import Canonicalizer
 
 SeedProbe = Callable[["FrontierItem"], Awaitable["Harvest"]]

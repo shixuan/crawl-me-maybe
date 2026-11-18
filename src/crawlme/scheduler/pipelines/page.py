@@ -14,13 +14,14 @@ from crawlme.digest import Extractor, FetchResult, Page
 from crawlme.digest.fetcher.base import FetchError
 from crawlme.discovery import Harvest
 from crawlme.errors import Kind
+from crawlme.goals import Goal
 from crawlme.persist import Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter, PreFilterContext
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.platforms.base import FeedDependencyError
-from crawlme.runtime import EventEmitter, EventType, Goal, PageState, RunState, Tracker, why_retire
+from crawlme.runtime import EventEmitter, EventType, PageState, RunState, Tracker, why_retire
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.workers import AnalysisWorker, DiscoveryWorker, FetchFailure, FetchWorker, PersistWorker
 from crawlme.urls import Canonicalizer

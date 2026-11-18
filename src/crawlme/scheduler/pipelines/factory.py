@@ -14,17 +14,18 @@ from crawlme.digest import Extractor, TrafExtractor
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.discovery import Harvester
 from crawlme.errors import ErrorHandler
+from crawlme.goals import Goal
+from crawlme.goals.enhancer import GoalEnhancer
 from crawlme.llm import TokenBudget
 from crawlme.persist import Storage
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import LLMRanker, Ranker
 from crawlme.pioneer.robots import RobotsPolicy
 from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.platforms import ADAPTERS, FeedAdapter
-from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PagePipeline

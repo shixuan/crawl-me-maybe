@@ -8,8 +8,8 @@ import pytest
 
 from crawlme.analysis import AnalysisResult, AnalyzerFeedback
 from crawlme.errors import ErrorHandler
+from crawlme.goals import Goal
 from crawlme.pioneer import Candidate, RankDecision, RankHistorySummary
-from crawlme.runtime import Goal
 from crawlme.scheduler.workers.ranking import RankingWorker
 from crawlme.urls import URL
 from tests.scheduler.helpers import (

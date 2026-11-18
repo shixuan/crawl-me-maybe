@@ -10,8 +10,9 @@ from typing import Any
 
 from crawlme.checkpoint.checkpointable import Checkpointable
 from crawlme.config import Settings
+from crawlme.goals import Goal
 from crawlme.persist import Storage
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 
 VERSION = 2
 

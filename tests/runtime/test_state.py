@@ -6,8 +6,9 @@ import json
 from copy import deepcopy
 
 from crawlme.digest import Page
+from crawlme.goals import Goal
 from crawlme.pioneer import FrontierItem
-from crawlme.runtime import Goal, Limits, PageState, Progress, RunState, SeedState, Stats
+from crawlme.runtime import Limits, PageState, Progress, RunState, SeedState, Stats
 from crawlme.urls import URL
 
 

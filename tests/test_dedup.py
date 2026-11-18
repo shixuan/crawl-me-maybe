@@ -11,9 +11,9 @@ from crawlme.analysis import AnalysisResult
 from crawlme.dedup.grouper import DedupError, Grouper, fingerprint
 from crawlme.digest import Page
 from crawlme.errors import Error, ErrorHandler, Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, TokenBudget
 from crawlme.persist import Storage
-from crawlme.runtime import Goal
 from crawlme.scheduler.engine import create_engine
 from crawlme.urls import URL
 

@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 from typing import Protocol
 
+from crawlme.goals import Goal
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 

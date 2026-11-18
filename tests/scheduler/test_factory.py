@@ -38,9 +38,9 @@ def test_sched_run_state(tmp_path: Path):
 
 @pytest.mark.parametrize("injected", [True, False])
 async def test_expander_created_once(tmp_path, monkeypatch, injected):
+    from crawlme.goals import Goal
     from crawlme.pioneer import Candidate
     from crawlme.pioneer.seed_expander import SeedExpander
-    from crawlme.runtime import Goal
     from crawlme.urls import URL
 
     expander = SeedExpander(None)
@@ -71,9 +71,9 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     import sqlite3
 
     from crawlme.digest import FetchResult, Payload
+    from crawlme.goals import Goal
     from crawlme.pioneer.seed_expander import SeedExpander
     from crawlme.pioneer.sources import ManualSource
-    from crawlme.runtime import Goal
 
     url = "https://example.com/source"
     calls = []
@@ -123,9 +123,10 @@ async def test_seed_failure(tmp_path, monkeypatch):
 
     import httpx
 
+    from crawlme.goals import Goal
     from crawlme.llm import Client
     from crawlme.pioneer.sources import ManualSource
-    from crawlme.runtime import Goal, Task
+    from crawlme.runtime import Task
 
     calls = []
 

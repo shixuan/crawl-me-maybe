@@ -12,9 +12,9 @@ from typing import Any
 
 from crawlme import prompts
 from crawlme.config import Settings
+from crawlme.goals import Goal
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.runtime import Goal
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,16 @@ class EnhancedGoal:
     # of them, and the analyzer keeps its existing shape.
     extraction_spec: dict[str, Any] | None = None
     time_policy: str | None = None
+
+
+def apply_enhancement(goal: Goal, enhanced: EnhancedGoal, *, preserve_since: bool = False) -> None:
+    """Apply inferred fields while preserving an explicitly supplied publication cutoff."""
+    goal.goal_statement = enhanced.statement
+    goal.keywords = enhanced.keywords
+    if not preserve_since:
+        goal.since = enhanced.since
+    goal.extraction_spec = enhanced.extraction_spec
+    goal.time_policy = enhanced.time_policy
 
 
 class GoalEnhancer:

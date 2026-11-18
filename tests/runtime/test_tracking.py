@@ -5,8 +5,9 @@ import pytest
 from crawlme.analysis import AnalysisResult, AnalyzerFeedback, ResultItem
 from crawlme.digest import Page
 from crawlme.discovery import Harvest
+from crawlme.goals import Goal
 from crawlme.pioneer import Candidate, FrontierItem
-from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker, why_retire
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker, why_retire
 from crawlme.urls import URL
 
 

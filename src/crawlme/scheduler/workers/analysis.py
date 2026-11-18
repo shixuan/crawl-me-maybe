@@ -10,8 +10,9 @@ from crawlme.analysis import AnalysisResult, Analyzer
 from crawlme.checkpoint import Checkpointable
 from crawlme.digest import Page
 from crawlme.errors import Action, ErrorContext, ErrorHandler, Skipped
+from crawlme.goals import Goal
 from crawlme.persist import Storage
-from crawlme.runtime import Goal, Tracker
+from crawlme.runtime import Tracker
 from crawlme.util.ids import _content_id
 
 

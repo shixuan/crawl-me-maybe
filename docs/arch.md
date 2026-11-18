@@ -2,16 +2,20 @@
 
 `crawlme` separates discovery, page processing, analysis and scheduling.
 Data models live in their owning packages and are exported through `__init__.py`.
-Goals and task records live in `runtime/`; run-wide data lives in `runtime/state.py`.
+Goals and extraction specifications live in `goals/`; task records and run-wide data live in `runtime/`.
 `prompts.py` holds LLM instructions and input formatting.
 Stage modules own model calls, retries and response validation.
+`goals/enhancer.py` owns goal enhancement and `apply_enhancement`, shared by crawl and replay.
+The caller decides whether to preserve an explicit publication cutoff. Importing
+`goals` exposes models and specification helpers without loading the enhancer or LLM clients.
 
 ## Data ownership
 
 | Location | Types |
 |---|---|
 | `urls/models.py` | URL identity and raw links |
-| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task records |
+| `goals/models.py`, `goals/spec.py` | Goals and extraction specifications |
+| `runtime/task.py` | Task records |
 | `pioneer/models.py` | Candidates and frontier entries |
 | `digest/models.py` | Fetch results, pages and retained payloads |
 | `analysis/models.py` | Analyses, result items, extracted fields and feedback |
@@ -100,7 +104,8 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Evaluate run stopping conditions |
 | `urls/` | URL identity, raw links and canonicalization |
-| `pioneer/` | Filter, buffer and rank candidate URLs, and enhance goals and expand seeds |
+| `pioneer/` | Filter, buffer and rank candidate URLs, and expand seeds |
+| `goals/` | Define goals and extraction specifications, enhance goals and apply inferred fields |
 | `digest/` | Fetch pages and extract text and metadata |
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
 | `platforms/` | Platform recognition, parsing, rendering and session requirements |
@@ -108,7 +113,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts, provide ranking feedback and define source retirement rules |
-| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task lifecycle records |
+| `runtime/task.py` | Task lifecycle records |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `persist/storage.py` | Storage implementation using SQLite and raw files |

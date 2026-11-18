@@ -9,8 +9,9 @@ from crawlme.cli import _dispatch
 from crawlme.config import Settings
 from crawlme.dedup import Group
 from crawlme.digest import Page
+from crawlme.goals import Goal
 from crawlme.persist import Storage
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.urls import URL
 
 

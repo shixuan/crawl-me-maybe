@@ -10,8 +10,8 @@ from typing import Any
 
 from crawlme.checkpoint import Checkpointable
 from crawlme.digest import Page
+from crawlme.goals import Goal
 from crawlme.pioneer import FrontierItem
-from crawlme.runtime.goal import Goal
 from crawlme.util import notify
 
 # How many of a source's own analyzed pages its window keeps.

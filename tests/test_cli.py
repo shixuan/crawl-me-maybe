@@ -8,7 +8,7 @@ import pytest
 
 from crawlme.cli import main
 from crawlme.errors import ErrorHandler
-from crawlme.pioneer.goal_enhancer import EnhancedGoal, GoalEnhancer
+from crawlme.goals.enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker import LLMRanker
 from crawlme.pioneer.sources import create_source
 from crawlme.runtime import Limits, Progress, RunState, Stats
@@ -720,8 +720,9 @@ async def test_dispatch_cleanup_and_report(monkeypatch, capsys, outcome, command
 
     from crawlme.cli import _dispatch
     from crawlme.cli.report import make_report
+    from crawlme.goals import Goal
     from crawlme.llm import TokenBudget
-    from crawlme.runtime import Goal, Task
+    from crawlme.runtime import Task
     from crawlme.scheduler.pipelines import Pipeline
     from crawlme.scheduler.pipelines.crawl import CrawlInput
 

@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from crawlme.goals import Goal
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import Goal
 from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)

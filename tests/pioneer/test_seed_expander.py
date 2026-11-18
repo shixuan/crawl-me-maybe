@@ -10,10 +10,10 @@ import pytest
 
 from crawlme.discovery import Harvest
 from crawlme.errors import Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate
 from crawlme.pioneer.seed_expander import SeedExpander, _parse
-from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 

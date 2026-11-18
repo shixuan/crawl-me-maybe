@@ -14,8 +14,9 @@ import aiosqlite
 
 from crawlme.digest import Page
 from crawlme.errors import Error, Kind
+from crawlme.goals import Goal
 from crawlme.persist import queries
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.urls import URL
 
 

@@ -11,11 +11,12 @@ from typing import Any
 from crawlme.config import Settings
 from crawlme.digest import Extractor, FetchResult
 from crawlme.errors import Error, Kind, Skipped
+from crawlme.goals import Goal, spec_version
+from crawlme.goals.enhancer import GoalEnhancer, apply_enhancement
 from crawlme.llm import TokenBudget, TokenBudgetError
 from crawlme.persist import Storage
 from crawlme.persist.read import goal_from_row, page_from_row
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.runtime import Goal, Task, spec_version
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.workers import AnalysisWorker
@@ -108,11 +109,7 @@ class ReplayPipeline(Pipeline[ReplayInput, ReplayResult]):
                     "goal", lambda: enhancer.enhance(goal), optional=True, repeatable=True
                 )
                 if enhanced is not None and not isinstance(enhanced, Skipped):
-                    goal.goal_statement = enhanced.statement
-                    goal.keywords = enhanced.keywords
-                    goal.since = enhanced.since
-                    goal.extraction_spec = enhanced.extraction_spec
-                    goal.time_policy = enhanced.time_policy
+                    apply_enhancement(goal, enhanced)
                 storage.save_goal(goal.model_dump(mode="json"))
             else:
                 if existing.get("prompt") != prompt:

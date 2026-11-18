@@ -5,10 +5,10 @@ import pytest
 from crawlme.analysis import Analyzer
 from crawlme.digest import FetchError, HttpFetcher, Page
 from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind, Skipped
+from crawlme.goals import Goal
+from crawlme.goals.enhancer import GoalEnhancer
 from crawlme.pioneer import FrontierItem
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.seed_expander import SeedExpander
-from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 
