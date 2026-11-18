@@ -38,15 +38,15 @@ def test_sched_run_state(tmp_path: Path):
 
 @pytest.mark.parametrize("injected", [True, False])
 async def test_expander_created_once(tmp_path, monkeypatch, injected):
+    from crawlme.goals import Goal
     from crawlme.pioneer import Candidate
-    from crawlme.pioneer.seed_expander import SeedExpander
-    from crawlme.runtime import Goal
+    from crawlme.seeds import SeedExpander, SeedProposer, SeedSearch
     from crawlme.urls import URL
 
-    expander = SeedExpander(None)
-    expander.propose = AsyncMock(return_value=[])
+    expander = SeedExpander(SeedSearch(None), SeedProposer(None))
+    expander._proposer.propose = AsyncMock(return_value=[])
     builder = MagicMock(return_value=expander)
-    monkeypatch.setattr(SeedExpander, "from_settings", builder)
+    monkeypatch.setattr("crawlme.scheduler.pipelines.factory._build_seed_expander", builder)
     cfg = Settings(
         _env_file=None, result_dir=tmp_path, analysis_enabled=False, expand_seeds=True, llm_api_key="", llm_base_url=""
     )
@@ -56,7 +56,7 @@ async def test_expander_created_once(tmp_path, monkeypatch, injected):
     try:
         for _ in range(2):
             assert await scheduler.pipeline.expand_seeds(goal, [Candidate(url=url)]) == []
-        assert expander.propose.await_count == 2
+        assert expander._proposer.propose.await_count == 2
         if injected:
             builder.assert_not_called()
         else:
@@ -71,9 +71,9 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
     import sqlite3
 
     from crawlme.digest import FetchResult, Payload
-    from crawlme.pioneer.seed_expander import SeedExpander
-    from crawlme.pioneer.sources import ManualSource
-    from crawlme.runtime import Goal
+    from crawlme.goals import Goal
+    from crawlme.seeds import SeedProposer
+    from crawlme.seeds.sources import ManualSource
 
     url = "https://example.com/source"
     calls = []
@@ -88,7 +88,7 @@ async def test_seed_verification_robots(tmp_path, monkeypatch, disallow, ignore)
             payloads = []
         return FetchResult(item_id="f", url=item.url, url_key=item.url_key, status_code=200, raw=raw, payloads=payloads)
 
-    monkeypatch.setattr(SeedExpander, "propose", AsyncMock(return_value=[(url, "source")]))
+    monkeypatch.setattr(SeedProposer, "propose", AsyncMock(return_value=[(url, "source")]))
     cfg = Settings(
         _env_file=None,
         result_dir=tmp_path,
@@ -123,9 +123,10 @@ async def test_seed_failure(tmp_path, monkeypatch):
 
     import httpx
 
+    from crawlme.goals import Goal
     from crawlme.llm import Client
-    from crawlme.pioneer.sources import ManualSource
-    from crawlme.runtime import Goal, Task
+    from crawlme.runtime import Task
+    from crawlme.seeds.sources import ManualSource
 
     calls = []
 
@@ -237,7 +238,10 @@ def test_optional_dependency(tmp_path, monkeypatch, component, selection):
     builders = {}
     for name, cls in components.items():
         builder = MagicMock(return_value=MagicMock(spec=cls))
-        monkeypatch.setattr(cls, "from_settings", builder)
+        if name == "seed_expander":
+            monkeypatch.setattr(factory, "_build_seed_expander", builder)
+        else:
+            monkeypatch.setattr(cls, "from_settings", builder)
         builders[name] = builder
     injected = MagicMock(spec=components[component])
     kwargs = {} if selection == "default" else {component: None if selection == "disabled" else injected}
@@ -314,3 +318,41 @@ def test_tracker_state_identity(tmp_path, monkeypatch, matching):
         with pytest.raises(ValueError, match=r"run_state must be tracking\.state"):
             factory.create_crawl(Settings(result_dir=tmp_path), tracking=tracker, run_state=state)
         storage_builder.assert_not_called()
+
+
+@pytest.mark.parametrize("has_session", [False, True])
+def test_seed_search_wiring(tmp_path, monkeypatch, has_session):
+    from crawlme.llm import Client, Stage, TokenBudget
+    from crawlme.scheduler.pipelines.factory import _build_seed_expander
+
+    session = tmp_path / "session.json"
+    if has_session:
+        session.write_text("{}")
+    settings = Settings(
+        _env_file=None,
+        browser_storage_state=str(session),
+        search_platforms=["reddit"],
+        feed_scrolls=8,
+        llm_api_key="",
+        llm_base_url="",
+    )
+    budget = TokenBudget(100)
+    client = MagicMock()
+    client_builder = MagicMock(return_value=client)
+    fetcher_builder = MagicMock()
+    monkeypatch.setattr(Client, "from_settings_if_configured", client_builder)
+    monkeypatch.setattr("crawlme.digest.fetcher.PlaywrightFetcher", fetcher_builder)
+    expander = _build_seed_expander(settings, budget=budget)
+    client_builder.assert_called_once_with(
+        settings, budget=budget, reasoning_effort=settings.llm_seeds_reasoning_effort, stage=Stage.SEEDS
+    )
+    assert expander._search._client is expander._proposer._client is client
+    assert expander._search._platforms == expander._proposer._platforms == ("reddit",)
+    assert expander._search._missing_session == (None if has_session else str(session))
+    fetcher_builder.assert_not_called()
+    expander._search._fetcher_factory()
+    options = fetcher_builder.call_args.kwargs
+    assert options["storage_state"] == (str(session) if has_session else None)
+    assert options["scrolls"] == 2
+    assert options["timeout"] == settings.fetch_timeout_read
+    assert options["max_payload_bytes"] == settings.browser_max_payload_bytes

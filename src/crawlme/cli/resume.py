@@ -9,10 +9,11 @@ from pathlib import Path
 from crawlme.checkpoint import VERSION
 from crawlme.cli.report import Report, make_report
 from crawlme.config import Settings
+from crawlme.goals import Goal
 from crawlme.logging import setup_logging
 from crawlme.persist import Lock, Storage
 from crawlme.persist.read import find_run_dir
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.monitor import create_monitor
 from crawlme.scheduler.pipelines.crawl import CrawlInput

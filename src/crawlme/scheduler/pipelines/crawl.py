@@ -12,22 +12,23 @@ from typing import Any
 from crawlme.checkpoint import Checkpointer
 from crawlme.config import Settings
 from crawlme.errors import ErrorHandler, Skipped
+from crawlme.goals import Goal, spec_fields
+from crawlme.goals.enhancer import GoalEnhancer, apply_enhancement
 from crawlme.llm import TokenBudget
 from crawlme.logging import setup_logging
 from crawlme.logging.progress import activity
 from crawlme.persist import Lock, Storage
 from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import SeedExpander
-from crawlme.runtime import EventEmitter, EventType, Goal, RunState, Task, Tracker, spec_fields
+from crawlme.runtime import EventEmitter, EventType, RunState, Task, Tracker
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.workers import RankingWorker
+from crawlme.seeds.expander import SeedExpander
 from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
@@ -114,13 +115,7 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
                 repeatable=True,
             )
             if enhanced is not None and not isinstance(enhanced, Skipped):
-                goal.goal_statement = enhanced.statement
-                goal.keywords = enhanced.keywords
-                # The explicit publication cutoff overrides the inferred one.
-                if not preserve_since:
-                    goal.since = enhanced.since
-                goal.extraction_spec = enhanced.extraction_spec
-                goal.time_policy = enhanced.time_policy
+                apply_enhancement(goal, enhanced, preserve_since=preserve_since)
                 logger.debug(
                     "goal.enhanced statement_len=%d keywords=%d fields=%s",
                     len(enhanced.statement),

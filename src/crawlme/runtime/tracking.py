@@ -9,10 +9,10 @@ from typing import Any
 from crawlme.analysis import AnalysisResult
 from crawlme.digest import Page
 from crawlme.discovery import Harvest
+from crawlme.goals import Goal
 from crawlme.logging import where
 from crawlme.pioneer import Candidate, FrontierItem, RankDecision, RankHistorySummary
 from crawlme.platforms import PageProblem
-from crawlme.runtime.goal import Goal
 from crawlme.runtime.state import RELEVANCE_WINDOW, RunState
 
 logger = logging.getLogger(__name__)

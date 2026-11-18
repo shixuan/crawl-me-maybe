@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from crawlme.goals import Goal
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import Goal
 from crawlme.util.dates import is_stale
 
 logger = logging.getLogger(__name__)
@@ -44,11 +44,12 @@ class Decision(Enum):
 class PreFilterContext:
     visited: set[str] = field(default_factory=set)
     frontier_keys: set[str] = field(default_factory=set)
-    domain_counters: dict[str, int] = field(default_factory=dict)
+    domain_exhausted: Callable[[str], bool] | None = None
     allow_fetch: Callable[[str], bool] | None = None
     allowed_domains: set[str] | None = None
 
-    def is_visited_or_queued(self, url_key: str) -> bool:
+    def contains(self, url_key: str) -> bool:
+        """Query visited and scored queue keys captured in this context."""
         return url_key in self.visited or url_key in self.frontier_keys
 
 
@@ -95,7 +96,7 @@ def scope_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decisi
 
 
 def dedup_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
-    if ctx.is_visited_or_queued(c.url.url_key):
+    if ctx.contains(c.url.url_key):
         return Decision.DROP, "dedup"
     return None
 
@@ -135,9 +136,8 @@ def depth_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decisi
     return None
 
 
-def domain_budget_check(c: Candidate, goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
-    used = ctx.domain_counters.get(c.url.reg_domain, 0)
-    if goal.domain_budget > 0 and used >= goal.domain_budget:
+def domain_budget_check(c: Candidate, _goal: Goal, ctx: PreFilterContext) -> tuple[Decision, str] | None:
+    if ctx.domain_exhausted is not None and ctx.domain_exhausted(c.url.reg_domain):
         return Decision.DROP, "domain_budget"
     return None
 

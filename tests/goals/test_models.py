@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from crawlme.runtime import Goal
+from crawlme.goals import Goal
 
 
 def test_goal_id_hashed():

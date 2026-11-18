@@ -114,7 +114,9 @@ async def test_snapshot_pending(frontier):
     f2 = Frontier()
     f2.restore(snap)
     assert f2.size == 1, "an item waiting on a cooldown survived the round trip"
-    assert f2.get_prefilter_context().is_visited_or_queued("k1")
+    assert f2.get_prefilter_context().contains("k1")
+    assert f2.contains("k1")
+    assert f2.has_seen("k1")
 
 
 @pytest.mark.asyncio
@@ -147,7 +149,7 @@ async def test_inflight_once():
 
     await f.push_batch([_item("dup", priority=0.9)])
     assert f.size == 0, "the same page came back while it was in flight"
-    assert f.get_prefilter_context().is_visited_or_queued("dup")
+    assert f.get_prefilter_context().contains("dup")
 
 
 @pytest.mark.asyncio
@@ -232,6 +234,9 @@ async def test_retiring_empties_both_halves():
     assert f.size == 0
     assert f.waiting_size == 0
     assert f.is_retired("dead")
+    assert f.has_seen("a")
+    assert not f.contains("a")
+    assert not f.contains("b")
 
 
 @pytest.mark.asyncio
@@ -373,3 +378,90 @@ async def test_partial_add_notifies(monkeypatch, cancel, request):
         await running
     assert frontier.waiting_size == 1
     assert notices == [1]
+
+
+@pytest.mark.parametrize("ranked", [False, True])
+async def test_candidate_query_states(ranked):
+    frontier = Frontier()
+    assert not frontier.has_seen("state")
+    await frontier.push_candidates([_candidate("state")])
+    assert frontier.has_seen("state")
+    assert not frontier.contains("state")
+    batch = await frontier.take_for_ranking(1)
+    assert frontier.has_seen("state")
+    assert not frontier.contains("state")
+    if ranked:
+        await frontier.push_batch([_item("state")])
+    frontier.finish_ranking(batch)
+    assert frontier.has_seen("state")
+    assert frontier.contains("state") is ranked
+    await frontier.push_candidates([_candidate("state")])
+    assert frontier.waiting_size == 0
+    if ranked:
+        item = await frontier.pop_next()
+        assert item is not None
+        assert frontier.contains("state")
+        await frontier.record_outcome(item, "COMPLETED")
+        assert frontier.contains("state")
+    restored = Frontier()
+    restored.restore(json.loads(json.dumps(frontier.dump())))
+    assert restored.has_seen("state")
+    assert restored.contains("state") is ranked
+    await restored.push_candidates([_candidate("state")])
+    assert restored.waiting_size == 0
+
+
+async def test_ranking_return_dedup():
+    frontier = Frontier()
+    await frontier.push_candidates([_candidate("return")])
+    batch = await frontier.take_for_ranking(1)
+    await frontier.return_for_ranking(batch)
+    frontier.finish_ranking(batch)
+    await frontier.push_candidates([_candidate("return")])
+    assert frontier.has_seen("return")
+    assert not frontier.contains("return")
+    assert (await frontier.take_for_ranking(2)) == batch
+
+
+@pytest.mark.parametrize("limit, goal_limit", [(1, 0), (0, 1)])
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED"])
+async def test_shared_domain_budget(limit, goal_limit, status):
+    from crawlme.goals import Goal
+    from crawlme.pioneer.prefilter import Decision, PreFilter
+
+    frontier = Frontier(domain_budget=limit)
+    goal = Goal(prompt="test", domain_budget=goal_limit)
+    candidate = _candidate("later")
+    ctx = frontier.get_prefilter_context()
+    pf = PreFilter()
+    assert pf.check(candidate, goal, ctx)[0] is Decision.ALLOW
+    await frontier.push_batch([_item("first"), _item("later", 0.1)])
+    first = await frontier.pop_next()
+    assert first.url_key == "first"
+    assert not frontier.domain_exhausted("example.com")
+    await frontier.record_outcome(first, status)
+    await frontier.record_outcome(first, status)
+    exhausted = limit > 0 and status == "COMPLETED"
+    expected = (Decision.DROP, "domain_budget") if exhausted else (Decision.ALLOW, "")
+    assert frontier.domain_exhausted("example.com") is exhausted
+    assert not frontier.domain_exhausted("other.com")
+    assert pf.check(candidate, goal, ctx) == expected
+    restored = Frontier(domain_budget=limit)
+    restored_ctx = restored.get_prefilter_context()
+    restored.restore(json.loads(json.dumps(frontier.dump())))
+    # Use a different URL so restored queue dedup does not mask the budget rule.
+    assert pf.check(_candidate("new"), goal, restored_ctx) == expected
+    for owner in (frontier, restored):
+        item = await owner.pop_next()
+        assert (item is None) is exhausted
+        assert owner.blocked_by_domain_budget == int(exhausted)
+
+
+def test_prefilter_context_inputs():
+    frontier = Frontier()
+    allowed = {"example.com"}
+    ctx = frontier.get_prefilter_context(allow_fetch=lambda _: False, allowed_domains=allowed)
+    assert ctx.allowed_domains == allowed
+    assert ctx.allow_fetch("https://example.com") is False
+    with pytest.raises(TypeError):
+        frontier.get_prefilter_context(visited={"injected"})

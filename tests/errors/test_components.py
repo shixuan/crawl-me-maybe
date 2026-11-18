@@ -5,10 +5,10 @@ import pytest
 from crawlme.analysis import Analyzer
 from crawlme.digest import FetchError, HttpFetcher, Page
 from crawlme.errors import Error, ErrorHandler, ErrorPolicy, Kind, Skipped
+from crawlme.goals import Goal
+from crawlme.goals.enhancer import GoalEnhancer
 from crawlme.pioneer import FrontierItem
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.pioneer.seed_expander import SeedExpander
-from crawlme.runtime import Goal
+from crawlme.seeds.proposals import SeedProposer
 from crawlme.urls import URL
 
 
@@ -31,7 +31,7 @@ async def test_foreign_error_propagates(component):
             await GoalEnhancer(client).enhance(goal)
     else:
         with pytest.raises(Error) as caught:
-            await SeedExpander(client).propose(goal, ["https://example.test"], 2)
+            await SeedProposer(client).propose(goal, ["https://example.test"], 2)
     assert caught.value is error
     assert client.chat.await_count == 1
 

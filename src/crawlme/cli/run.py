@@ -10,14 +10,15 @@ from pathlib import Path
 from crawlme.cli.cutoff import read_cutoff
 from crawlme.cli.report import Report, make_report
 from crawlme.config import Settings
+from crawlme.goals import Goal
 from crawlme.logging import setup_logging
-from crawlme.pioneer.sources import create_source, declared_seeds
 from crawlme.platforms import ADAPTERS, FEEDS
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.monitor import create_monitor
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.scheduler.pipelines.factory import create_crawl
+from crawlme.seeds.sources import create_source, declared_seeds
 
 logger = logging.getLogger(__name__)
 

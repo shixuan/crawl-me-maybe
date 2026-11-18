@@ -13,9 +13,9 @@ from unittest.mock import patch
 import pytest
 
 from crawlme.errors import Kind
+from crawlme.goals import Goal
+from crawlme.goals.enhancer import GoalEnhancer
 from crawlme.llm import LLMResponse, RemoteError, TokenBudgetError
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
-from crawlme.runtime import Goal
 
 
 class _StubClient:
@@ -202,3 +202,29 @@ async def test_empty_reported(caplog):
         assert await enhancer.enhance(_goal()) is None
     assert "empty content" in caplog.text
     assert "unparseable" not in caplog.text
+
+
+@pytest.mark.parametrize("preserve_since", [False, True])
+@pytest.mark.parametrize("explicit_since", [None, datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc)])
+def test_apply_cutoff(preserve_since, explicit_since):
+    from crawlme.goals.enhancer import EnhancedGoal, apply_enhancement
+
+    goal = Goal(prompt="find events", since=explicit_since, max_pages=17, recall=True)
+    before = goal.model_dump()
+    inferred = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
+    enhanced = EnhancedGoal(
+        statement="Find upcoming events",
+        keywords=["events"],
+        since=inferred,
+        extraction_spec={"fields": {"date": "event date"}},
+        time_policy="event occurrence",
+    )
+    apply_enhancement(goal, enhanced, preserve_since=preserve_since)
+    expected = before | {
+        "goal_statement": enhanced.statement,
+        "keywords": enhanced.keywords,
+        "since": explicit_since if preserve_since else inferred,
+        "extraction_spec": enhanced.extraction_spec,
+        "time_policy": enhanced.time_policy,
+    }
+    assert goal.model_dump() == expected

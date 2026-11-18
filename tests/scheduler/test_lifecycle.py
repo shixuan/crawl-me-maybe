@@ -10,11 +10,12 @@ from crawlme.analysis import Analyzer
 from crawlme.config import Settings
 from crawlme.digest import FetchResult
 from crawlme.errors import ErrorHandler, ErrorPolicy, Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, RemoteError
-from crawlme.pioneer.sources import ManualSource
-from crawlme.runtime import Goal, Task
+from crawlme.runtime import Task
 from crawlme.scheduler.pipelines.crawl import CrawlInput
 from crawlme.scheduler.workers import AnalysisWorker
+from crawlme.seeds.sources import ManualSource
 from tests.scheduler.helpers import create_crawl
 
 

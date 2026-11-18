@@ -247,10 +247,10 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
     import httpx
 
     from crawlme.dedup import Grouper
+    from crawlme.goals.enhancer import GoalEnhancer
     from crawlme.llm import Client
-    from crawlme.pioneer.goal_enhancer import GoalEnhancer
     from crawlme.pioneer.ranker import LLMRanker
-    from crawlme.pioneer.seed_expander import SeedExpander
+    from crawlme.seeds import SeedExpander, SeedProposer, SeedSearch
 
     calls = []
     message = "Insufficient credits" if status == 402 else "Service is too busy"
@@ -303,7 +303,9 @@ async def test_remote_resume(tmp_path, monkeypatch, stage, status):
     client = Client("provider/model", stage=stage)
     if stage in {"goal", "seeds"}:
         scheduler.pipeline._goal_enhancer = GoalEnhancer(client) if stage == "goal" else GoalEnhancer(None)
-        scheduler.pipeline._seed_expander = SeedExpander(client) if stage == "seeds" else None
+        scheduler.pipeline._seed_expander = (
+            SeedExpander(SeedSearch(None), SeedProposer(client)) if stage == "seeds" else None
+        )
         await scheduler.pipeline.startup(goal, [candidate()])
     await asyncio.wait_for(scheduler.engine.run(CrawlInput(goal, task)), 2)
     assert task.state == "FAILED" and task.stopping_reason == "FATAL"

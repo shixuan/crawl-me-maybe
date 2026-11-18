@@ -26,8 +26,8 @@ class Buffer(Checkpointable, Protocol):
 
     def retire(self, seed_url_key: str) -> None: ...
 
-    def contains(self, url_key: str) -> bool:
-        """Report whether the URL is waiting in this buffer."""
+    def has_seen(self, url_key: str) -> bool:
+        """Whether the URL was recorded, including drained, evicted or capacity-rejected candidates."""
         ...
 
     async def drain(self, n: int | None = None) -> list[Candidate]: ...
@@ -180,7 +180,8 @@ class RoundRobinBuffer(Buffer):
 
     # properties -------------------------------------------------------
 
-    def contains(self, url_key: str) -> bool:
+    def has_seen(self, url_key: str) -> bool:
+        """Query deduplication history, not current buffer membership."""
         return url_key in self._seen
 
     def dump(self) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from enum import Enum, auto
+from pathlib import Path
 
 from crawlme.analysis import Analyzer
 from crawlme.checkpoint import Checkpointer
@@ -14,17 +15,17 @@ from crawlme.digest import Extractor, TrafExtractor
 from crawlme.digest.fetcher import DispatchingFetcher, Fetcher, HttpFetcher
 from crawlme.discovery import Harvester
 from crawlme.errors import ErrorHandler
-from crawlme.llm import TokenBudget
+from crawlme.goals import Goal
+from crawlme.goals.enhancer import GoalEnhancer
+from crawlme.llm import Client, Stage, TokenBudget
 from crawlme.persist import Storage
 from crawlme.pioneer.buffer import RoundRobinBuffer
 from crawlme.pioneer.frontier import Frontier
-from crawlme.pioneer.goal_enhancer import GoalEnhancer
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.ranker import LLMRanker, Ranker
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.platforms import ADAPTERS, FeedAdapter
-from crawlme.runtime import Goal, Limits, Progress, RunState, Stats, Tracker
+from crawlme.runtime import Limits, Progress, RunState, Stats, Tracker
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PagePipeline
@@ -36,6 +37,7 @@ from crawlme.scheduler.workers import (
     PersistWorker,
     RankingWorker,
 )
+from crawlme.seeds import SeedExpander, SeedProposer, SeedSearch
 from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
@@ -106,7 +108,7 @@ def create_crawl(
     if ranker is not None:
         logger.info("ranking with the LLM")
     if isinstance(seed_expander, _Default):
-        seed_expander = SeedExpander.from_settings(settings, budget=budget) if settings.expand_seeds else None
+        seed_expander = _build_seed_expander(settings, budget=budget) if settings.expand_seeds else None
     if goal_enhancer is None:
         goal_enhancer = GoalEnhancer.from_settings(settings, budget=budget)
     if dedup is None:
@@ -323,3 +325,35 @@ def _build_browser_fetcher(settings: Settings) -> Fetcher:
 def _build_ranker(settings: Settings, llm: Ranker | None = None) -> Ranker | None:
     """Return the supplied ranker, or None for unranked crawling."""
     return llm
+
+
+def _build_seed_expander(settings: Settings, *, budget: TokenBudget | None = None) -> SeedExpander:
+    """Assemble search and proposals with a shared seeds-stage client."""
+    from crawlme.digest.fetcher import PlaywrightFetcher
+    from crawlme.platforms import FEEDS
+
+    has_session = bool(settings.browser_storage_state and Path(settings.browser_storage_state).is_file())
+    adapters = tuple(FEEDS.values())
+    platforms = tuple(settings.search_platforms)
+    client = Client.from_settings_if_configured(
+        settings,
+        budget=budget,
+        reasoning_effort=settings.llm_seeds_reasoning_effort,
+        stage=Stage.SEEDS,
+    )
+    search = SeedSearch(
+        client,
+        adapters=adapters,
+        platforms=platforms,
+        search_count=settings.expand_search_count,
+        missing_session=None if has_session else settings.browser_storage_state or "",
+        fetcher_factory=lambda: PlaywrightFetcher(
+            storage_state=settings.browser_storage_state if has_session else None,
+            timeout=settings.fetch_timeout_read,
+            user_agents=list(settings.user_agents),
+            keep_payload=lambda url, content_type: any(a.keeps_payload(url, content_type) for a in adapters),
+            max_payload_bytes=settings.browser_max_payload_bytes,
+            scrolls=min(settings.feed_scrolls, 2),
+        ),
+    )
+    return SeedExpander(search, SeedProposer(client, platforms=platforms))

@@ -15,10 +15,10 @@ from crawlme.config import Settings
 from crawlme.digest import Page
 from crawlme.digest.models import Source
 from crawlme.errors import Error, Kind
+from crawlme.goals import Goal, spec_fields, spec_time_field, spec_version
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.logging.progress import activity
-from crawlme.runtime import Goal, spec_fields, spec_time_field, spec_version
 from crawlme.util.dates import read_range
 
 logger = logging.getLogger(__name__)

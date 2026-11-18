@@ -14,11 +14,11 @@ from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.dedup.models import Group, Grouping
 from crawlme.errors import Error, Kind
+from crawlme.goals import Goal
 from crawlme.llm import Stage, TokenBudget
 from crawlme.llm.client import Client
 from crawlme.llm.parsing import parse_json_response
 from crawlme.logging.progress import activity
-from crawlme.runtime import Goal
 
 logger = logging.getLogger(__name__)
 

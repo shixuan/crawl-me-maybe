@@ -2,16 +2,20 @@
 
 `crawlme` separates discovery, page processing, analysis and scheduling.
 Data models live in their owning packages and are exported through `__init__.py`.
-Goals and task records live in `runtime/`; run-wide data lives in `runtime/state.py`.
+Goals and extraction specifications live in `goals/`; task records and run-wide data live in `runtime/`.
 `prompts.py` holds LLM instructions and input formatting.
 Stage modules own model calls, retries and response validation.
+`goals/enhancer.py` owns goal enhancement and `apply_enhancement`, shared by crawl and replay.
+The caller decides whether to preserve an explicit publication cutoff. Importing
+`goals` exposes models and specification helpers without loading the enhancer or LLM clients.
 
 ## Data ownership
 
 | Location | Types |
 |---|---|
 | `urls/models.py` | URL identity and raw links |
-| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task records |
+| `goals/models.py`, `goals/spec.py` | Goals and extraction specifications |
+| `runtime/task.py` | Task records |
 | `pioneer/models.py` | Candidates and frontier entries |
 | `digest/models.py` | Fetch results, pages and retained payloads |
 | `analysis/models.py` | Analyses, result items, extracted fields and feedback |
@@ -100,7 +104,9 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `scheduler/reporting.py` | Read RunState to build the CLI report |
 | `scheduler/stop_conds.py` | Evaluate run stopping conditions |
 | `urls/` | URL identity, raw links and canonicalization |
-| `pioneer/` | Filter, buffer and rank candidate URLs, and enhance goals and expand seeds |
+| `pioneer/` | Filter, buffer and rank candidate URLs |
+| `seeds/` | Read initial sources and expand them through platform search or verified proposals |
+| `goals/` | Define goals and extraction specifications, enhance goals and apply inferred fields |
 | `digest/` | Fetch pages and extract text and metadata |
 | `discovery/` | Discover candidates and pagination through adapters or ordinary links |
 | `platforms/` | Platform recognition, parsing, rendering and session requirements |
@@ -108,7 +114,7 @@ saved page inputs. Dashed arrows show delayed work or candidates for a later pas
 | `dedup/` | Group equivalent relevant analyses and describe their shared topic without fusing source fields |
 | `llm/` | Provider calls, retries, JSON parsing and shared token accounting |
 | `runtime/tracking.py` | Update RunState, join page verdicts, provide ranking feedback and define source retirement rules |
-| `runtime/goal.py`, `runtime/task.py` | Goals, extraction specifications and task lifecycle records |
+| `runtime/task.py` | Task lifecycle records |
 | `runtime/state.py` | Own run limits, counters, page/source history and seed expansion metadata |
 | `runtime/events.py` | Persist crawl events |
 | `persist/storage.py` | Storage implementation using SQLite and raw files |
@@ -135,10 +141,28 @@ binds the supplied pipeline, and returns it for `engine.run(input)`. It has no
 business-specific branches. CLI commands create their pipeline, pass it to
 `create_engine`, then call `run`. The pipeline factory creates shared crawl state,
 frontier and budget; the monitor factory uses those same instances through public
-properties. Commands do not construct buffers or concrete monitors. Source selection and seed-file parsing stay in `pioneer.sources`.
+properties. Commands do not construct buffers or concrete monitors. Source selection and seed-file parsing stay in `seeds.sources`.
 CrawlPipeline retains Checkpointer binding and restoration; Engine receives its save
 callback and controls checkpoint timing and shutdown.
-CLI commands pass settings and feature switches rather than constructing LLM components. CrawlPipeline calls SeedExpander, which owns platform search and fallback to source proposals. Platform adapters build search URLs and parse results; the expander coordinates browser fetching.
+CLI commands pass settings and feature switches rather than constructing LLM components.
+The pipeline factory assembles SeedSearch and SeedProposer with one seeds-stage client
+and the shared token budget. SeedExpander chooses searched posts first and falls back
+to verified proposals only when search returns no usable posts. A partial search
+result is not topped up with proposals.
+SeedSearch owns query generation, platform selection, filtering, allocation and the
+search fetcher's lifetime. Session warnings apply only to selected platforms.
+Platform adapters build search URLs and parse results. SeedProposer owns proposal
+parsing and verification through the supplied probe; it defines Expansion and SeedProbe.
+
+```mermaid
+flowchart LR
+    factory["scheduler factory"] --> search["seeds/search.py · SeedSearch"]
+    factory --> proposals["seeds/proposals.py · SeedProposer"]
+    crawl["CrawlPipeline"] --> expander["seeds/expander.py · SeedExpander"]
+    expander -->|search first| search
+    expander -->|no usable posts| proposals
+    proposals -->|probe| page["PagePipeline"]
+```
 PagePipeline provides verification using the same FetchWorker, PersistWorker
 and DiscoveryWorker as crawling. It obeys robots rules and cooldowns, saves HTML
 and payloads, and discovers candidates without publishing an unextracted Page row.
@@ -380,12 +404,23 @@ are public, and the buffer stays private. Scored work is gated
 by domain budgets and cooldowns. Ranking in progress and cooling items count as
 remaining work, so an empty immediate pop does not imply a drained frontier.
 
-Buffer seen keys record admission history, including drained and evicted candidates.
+`Buffer.has_seen` queries recorded history, including drained, evicted and
+capacity-rejected candidates. `Frontier.has_seen` combines that history
+with visited and queued URLs. `Frontier.contains` covers settled outcomes
+and scored work, including cooling and fetching URLs; it excludes buffer history.
 Frontier visited keys record settled outcomes; duplicate outcome delivery does not
 charge budgets twice. Queue membership includes waiting, cooling and in-flight URLs.
 These histories prevent repeat admission and grow with distinct URLs. Retirement
 blocks late ranking results as well as new candidates. Snapshots retain retired
 sources and unfinished ranking batches; restored batches return to waiting.
+
+Frontier owns the domain limit and completed-page counts. Both prefilter admission
+and queue dispatch use `Frontier.domain_exhausted`. The prefilter context keeps a
+live callback to this policy instead of copying counters and reading a second limit
+from Goal. Its deduplication sets remain snapshots. `get_prefilter_context` accepts
+only `allow_fetch` and `allowed_domains` as explicit keyword arguments. A zero domain
+limit disables the cap. Failed outcomes do not spend it, and in-flight work does not
+reserve capacity.
 
 PagePipeline bounds the combined fetch, extraction and persistence work with page slots.
 FetchWorker also bounds network fetching. Analysis has separate slots and does not

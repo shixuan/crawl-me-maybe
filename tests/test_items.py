@@ -15,9 +15,9 @@ from crawlme.dedup.grouper import Grouper
 from crawlme.digest import Page
 from crawlme.digest.models import PageSource
 from crawlme.errors import Error, ErrorHandler, Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse
 from crawlme.persist import Storage, read_results
-from crawlme.runtime import Goal
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.urls import URL

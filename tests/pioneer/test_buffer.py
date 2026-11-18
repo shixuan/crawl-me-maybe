@@ -273,3 +273,19 @@ async def test_a_retired_seed_takes_no_turn():
     buf.retire("dead")
     got = await buf.drain(6)
     assert {c.seed_url_key for c in got} == {"live"}
+
+
+async def test_seen_outlives_waiting():
+    buffer = RoundRobinBuffer(capacity=1)
+    low = _candidate("low", depth=2)
+    high = _candidate("high", depth=0)
+    refused = _candidate("refused", depth=3)
+    await buffer.add([low, high, refused])
+    assert buffer.size == 1
+    assert all(buffer.has_seen(key) for key in ("low", "high", "refused"))
+    assert await buffer.drain() == [high]
+    restored = RoundRobinBuffer(capacity=1)
+    restored.restore(buffer.dump())
+    await restored.add([low, high, refused])
+    assert restored.size == 0
+    assert all(restored.has_seen(key) for key in ("low", "high", "refused"))

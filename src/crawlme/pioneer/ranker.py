@@ -14,10 +14,10 @@ from pydantic import BaseModel, Field
 from crawlme import prompts
 from crawlme.config import Settings
 from crawlme.errors import Error, Kind
+from crawlme.goals import Goal
 from crawlme.llm import Client, Stage, TokenBudget, parse_json_response
 from crawlme.logging import where
 from crawlme.pioneer.models import Candidate
-from crawlme.runtime import Goal
 
 logger = logging.getLogger(__name__)
 

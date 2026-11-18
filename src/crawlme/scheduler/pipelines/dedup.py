@@ -7,8 +7,8 @@ from typing import Any
 
 from crawlme.dedup.grouper import Grouper, fingerprint
 from crawlme.errors import ErrorHandler, Skipped
+from crawlme.goals import Goal
 from crawlme.persist import Storage
-from crawlme.runtime import Goal
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 
 logger = logging.getLogger(__name__)

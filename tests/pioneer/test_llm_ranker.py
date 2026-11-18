@@ -11,11 +11,11 @@ import datetime
 import pytest
 
 from crawlme.errors import Error, Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, RemoteError
 from crawlme.pioneer import Candidate, RankHistorySummary
 from crawlme.pioneer.ranker import LLMRanker, RankingError
 from crawlme.prompts import ranking_input
-from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 

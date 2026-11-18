@@ -14,9 +14,9 @@ from crawlme.analysis import AnalysisError, Analyzer
 from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
 from crawlme.digest import Page
 from crawlme.errors import Kind
+from crawlme.goals import Goal
 from crawlme.llm import LLMResponse, RemoteError, TokenBudgetError
 from crawlme.prompts import analysis_input
-from crawlme.runtime import Goal
 from crawlme.urls import URL
 
 

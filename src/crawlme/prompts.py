@@ -11,8 +11,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from crawlme.digest import Page
+from crawlme.goals import Goal, spec_fields
 from crawlme.pioneer import Candidate
-from crawlme.runtime import Goal, spec_fields
 
 if TYPE_CHECKING:
     from crawlme.pioneer import RankHistorySummary

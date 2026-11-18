@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-_PACKAGES = ("urls", "runtime", "pioneer", "digest", "analysis", "discovery", "platforms", "dedup")
+_PACKAGES = ("urls", "goals", "seeds", "runtime", "pioneer", "digest", "analysis", "discovery", "platforms", "dedup")
 
 
 @pytest.mark.parametrize("first", ("config", *_PACKAGES))
@@ -23,5 +23,33 @@ for package in packages:
 """
     result = subprocess.run(  # noqa: S603
         [sys.executable, "-c", script, first, *_PACKAGES], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_goals_import_is_light():
+    script = """
+import sys
+from crawlme.goals import Goal, spec_fields
+assert Goal(prompt="find events").prompt == "find events"
+assert spec_fields(None) == {}
+assert "crawlme.goals.enhancer" not in sys.modules
+assert "crawlme.llm" not in sys.modules
+"""
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_seed_input_import_is_light():
+    script = """
+import sys
+from crawlme.seeds.sources import ManualSource
+assert "crawlme.seeds.search" not in sys.modules
+assert "crawlme.llm" not in sys.modules
+"""
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
     )
     assert result.returncode == 0, result.stderr
