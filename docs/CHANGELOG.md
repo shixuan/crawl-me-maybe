@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.3...v0.8.0) (2026-11-18)
+
+
+### Features
+
+* expand through platform search ([74cfe66](https://github.com/shixuan/crawl-me-maybe/commit/74cfe66ef7c1b853f3ad4399e1a36f13c6cbd700))
+* **seeds:** configure search query count ([697f525](https://github.com/shixuan/crawl-me-maybe/commit/697f52561b6d7b195c829d84bdf459577085dc29))
+* **seeds:** expand without initial seeds ([477af35](https://github.com/shixuan/crawl-me-maybe/commit/477af35620c2c2415f3df1e325577304ca65f422))
+
+
+### Fixes
+
+* **session:** scope warnings and allow reddit ([f46e9e9](https://github.com/shixuan/crawl-me-maybe/commit/f46e9e9e97970affeb36405fd4d55744107cd1cb))
+
 ## [0.7.3](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.2...v0.7.3) (2026-11-09)
 
 
