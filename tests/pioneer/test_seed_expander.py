@@ -269,12 +269,33 @@ async def test_search_failure_cleanup(cancelled):
     fetcher.aclose.assert_awaited_once()
 
 
-def test_missing_session_excludes_instagram_search(tmp_path):
+@pytest.mark.parametrize(
+    "seeds, platforms, warns",
+    [
+        (["https://www.reddit.com/r/toronto/"], ["instagram"], False),
+        ([], ["reddit"], False),
+        ([], ["instagram"], True),
+        (["https://www.instagram.com/shop/"], ["reddit"], True),
+        (["https://www.reddit.com/r/toronto/", "https://www.instagram.com/shop/"], [], True),
+    ],
+)
+async def test_missing_session_warns_only_for_selected_platforms(tmp_path, caplog, seeds, platforms, warns):
     from crawlme.config import Settings
+    from crawlme.llm import Client
 
-    expander = SeedExpander.from_settings(Settings(browser_storage_state=str(tmp_path / "missing.json")))
-    assert "instagram" not in [a.PLATFORM for a in expander._adapters]
-    assert "reddit" in [a.PLATFORM for a in expander._adapters]
+    client = MagicMock()
+    client.chat = AsyncMock(return_value=SimpleNamespace(content='{"queries": []}', truncated=False))
+    path = str(tmp_path / "missing.json")
+    with patch.object(Client, "from_settings_if_configured", return_value=client):
+        expander = SeedExpander.from_settings(Settings(browser_storage_state=path, search_platforms=platforms))
+    assert not caplog.records
+    await expander.search(_goal(), seeds, 4)
+    warnings = [record.getMessage() for record in caplog.records if "no session file found" in record.getMessage()]
+    assert len(warnings) == int(warns)
+    if warns:
+        assert f"crawl session {path} --feed instagram" in warnings[0]
+    if not seeds and platforms == ["instagram"]:
+        client.chat.assert_not_awaited()
 
 
 async def test_search_refusal_skips_parsing_and_closes_fetcher():
@@ -418,6 +439,7 @@ async def test_search_count_controls_prompt_and_requests(count):
         expander = SeedExpander.from_settings(Settings(expand_search_count=count))
     adapter = MagicMock(
         PLATFORM="reddit",
+        NEEDS_SESSION=False,
         claims_url=MagicMock(return_value=True),
         search_url=MagicMock(return_value="https://www.reddit.com/search/?q=test"),
         problem=MagicMock(return_value=None),

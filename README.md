@@ -157,7 +157,7 @@ Opens a browser for manual login and saves its session state. Requires a desktop
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--feed` | `instagram` | Platform to log into |
+| `--feed` | `instagram` | Platform to log into (`instagram` or `reddit`) |
 | `--force` | off | Replace an existing session file |
 | `--timeout` | `600` | Login timeout in seconds |
 

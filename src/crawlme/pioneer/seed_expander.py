@@ -55,12 +55,14 @@ class SeedExpander:
         adapters: tuple[SearchAdapter, ...] = (),
         platforms: tuple[str, ...] = (),
         search_count: int = 3,
+        missing_session: str | None = None,
         fetcher_factory: Callable[[], Fetcher] | None = None,
     ) -> None:
         self._client = client
         self._adapters = adapters
         self._platforms = platforms
         self._search_count = search_count
+        self._missing_session = missing_session
         self._fetcher_factory = fetcher_factory
 
     @classmethod
@@ -70,20 +72,7 @@ class SeedExpander:
         from crawlme.platforms import FEEDS
 
         has_session = bool(settings.browser_storage_state and Path(settings.browser_storage_state).is_file())
-        adapters = tuple(a for a in FEEDS.values() if not a.NEEDS_SESSION or has_session)
-        for adapter in FEEDS.values():
-            if adapter.NEEDS_SESSION and not has_session:
-                path = shlex.quote(settings.browser_storage_state or f"./{adapter.PLATFORM}-session.json")
-                logger.warning(
-                    "%s search unavailable: no session file found. "
-                    "Create one with: crawl session %s --feed %s\n"
-                    "Log in in the browser, then rerun with --session %s. "
-                    "Continuing without this platform's search; source proposals remain available as fallback.",
-                    adapter.PLATFORM,
-                    path,
-                    adapter.PLATFORM,
-                    path,
-                )
+        adapters = tuple(FEEDS.values())
         return cls(
             Client.from_settings_if_configured(
                 settings,
@@ -94,6 +83,7 @@ class SeedExpander:
             adapters=adapters,
             platforms=tuple(settings.search_platforms),
             search_count=settings.expand_search_count,
+            missing_session=None if has_session else settings.browser_storage_state or "",
             fetcher_factory=lambda: PlaywrightFetcher(
                 storage_state=settings.browser_storage_state if has_session else None,
                 timeout=settings.fetch_timeout_read,
@@ -141,6 +131,24 @@ class SeedExpander:
             for a in self._adapters
             if (any(a.claims_url(seed) for seed in seeds) if seeds else a.PLATFORM in self._platforms)
         ]
+        if self._missing_session is not None:
+            available = []
+            for adapter in adapters:
+                if not adapter.NEEDS_SESSION:
+                    available.append(adapter)
+                    continue
+                path = shlex.quote(self._missing_session or f"./{adapter.PLATFORM}-session.json")
+                logger.warning(
+                    "%s search unavailable: no session file found. "
+                    "Create one with: crawl session %s --feed %s\n"
+                    "Log in in the browser, then rerun with --session %s. "
+                    "Continuing without this platform's search; source proposals remain available as fallback.",
+                    adapter.PLATFORM,
+                    path,
+                    adapter.PLATFORM,
+                    path,
+                )
+            adapters = available
         if not adapters:
             logger.info("platform search unavailable: no searchable seed platforms with the required session")
             return []

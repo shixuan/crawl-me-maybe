@@ -210,3 +210,21 @@ def test_nothing_waiting_is_not_a_keypress(monkeypatch):
 
     monkeypatch.setattr("select.select", lambda *_a: ([], [], []))
     assert _typed_enter() is False
+
+
+@pytest.mark.parametrize("platform", ["instagram", "reddit"])
+def test_session_platform_selection(platform):
+    from crawlme.cli.session import _login_url, add_arguments
+
+    parser = argparse.ArgumentParser()
+    add_arguments(parser.add_subparsers())
+    args = parser.parse_args(["session", "session.json", "--feed", platform])
+    assert args.feed == platform
+    assert _login_url(args.feed) == f"https://www.{platform}.com/"
+
+
+def test_unknown_session_platform():
+    from crawlme.cli.session import _login_url
+
+    with pytest.raises(SessionError, match="Unknown session platform"):
+        _login_url("unknown")

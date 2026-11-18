@@ -30,8 +30,8 @@ class SessionError(Error):
 def _login_url(feed: str) -> str:
     """Return the platform homepage used for manual login."""
     adapter = FEEDS.get(feed)
-    if adapter is None or not adapter.NEEDS_SESSION:
-        raise SessionError(f"{feed} needs no session, so there is nothing to log in to", code="session_not_required")
+    if adapter is None:
+        raise SessionError(f"Unknown session platform: {feed}", code="unknown_platform")
     return f"https://www.{adapter.DOMAIN}/"
 
 
@@ -173,7 +173,7 @@ def add_arguments(sub: Any) -> None:
     """Register the session subcommand on the top-level parser."""
     p = sub.add_parser("session", help="Log in through a browser and save the session for later runs")
     p.add_argument("path", help="Where to write the session file, e.g. ./session.json")
-    walled = sorted(n for n, a in FEEDS.items() if a.NEEDS_SESSION)
-    p.add_argument("--feed", choices=walled, default=walled[0], help="Which platform")
+    platforms = sorted(FEEDS)
+    p.add_argument("--feed", choices=platforms, default=platforms[0], help="Which platform")
     p.add_argument("--force", action="store_true", help="Replace an existing session file")
     p.add_argument("--timeout", type=int, default=600, help="Seconds to wait for the login (default: 600)")
