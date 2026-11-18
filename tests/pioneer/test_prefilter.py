@@ -143,7 +143,7 @@ def test_drop_too_deep(pf):
 
 
 def test_drop_exhausted(pf):
-    ctx = _ctx(domain_counters={"example.com": 50})
+    ctx = _ctx(domain_exhausted=lambda domain: domain == "example.com")
     goal = Goal(prompt="test", domain_budget=50)
     decision, reason = pf.check(_candidate(), goal, ctx)
     assert decision == Decision.DROP
@@ -151,7 +151,7 @@ def test_drop_exhausted(pf):
 
 
 def test_allow_budget(pf):
-    ctx = _ctx(domain_counters={"example.com": 30})
+    ctx = _ctx(domain_exhausted=lambda _: False)
     _allow(pf, _candidate(), ctx)
 
 
@@ -187,11 +187,14 @@ def test_window_off():
     )
 
 
-def test_zero_no_cap():
+async def test_zero_no_cap():
     """Every post on a platform shares its domain, so a per-domain cap
     becomes a total one wearing the wrong name."""
     goal = Goal(prompt="test", domain_budget=0)
-    ctx = PreFilterContext(domain_counters={"instagram.com": 500})
+    from crawlme.pioneer import Frontier, FrontierItem
+
+    frontier = Frontier(domain_budget=0)
+    ctx = frontier.get_prefilter_context()
     c = Candidate(
         url=URL(
             raw="https://www.instagram.com/a/p/X/",
@@ -201,6 +204,9 @@ def test_zero_no_cap():
         ),
         depth=1,
     )
+    previous = FrontierItem(url=c.url, url_key="previous", reg_domain="instagram.com")
+    await frontier.push_batch([previous])
+    await frontier.record_outcome(await frontier.pop_next(), "COMPLETED")
     assert PreFilter().check(c, goal, ctx)[0] is Decision.ALLOW
 
 

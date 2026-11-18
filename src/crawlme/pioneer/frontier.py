@@ -94,7 +94,7 @@ class Frontier(Checkpointable):
     @notify
     async def push_candidates(self, candidates: list[Candidate]) -> None:
         """Buffer candidates that have not been visited, queued or retired."""
-        fresh = [c for c in candidates if not self.holds(c.url.url_key)]
+        fresh = [c for c in candidates if not self.has_seen(c.url.url_key)]
         await self._waiting.add(fresh)
 
     @notify
@@ -112,7 +112,7 @@ class Frontier(Checkpointable):
 
     @notify
     async def return_for_ranking(self, batch: list[Candidate]) -> None:
-        fresh = [c for c in batch if c.url.url_key not in self._visited and not self._source.contains(c.url.url_key)]
+        fresh = [c for c in batch if not self.contains(c.url.url_key)]
         await self._waiting.return_batch(fresh)
 
     def context_keys(self) -> set[str]:
@@ -145,18 +145,12 @@ class Frontier(Checkpointable):
     async def push_batch(self, items: list[FrontierItem]) -> None:
         async with self._lock:
             # Candidates leave the buffer before ranking; dedup against visited and queued items here.
-            fresh = [
-                i
-                for i in items
-                if i.seed_url_key not in self._retired
-                and i.url_key not in self._visited
-                and not self._source.contains(i.url_key)
-            ]
+            fresh = [i for i in items if i.seed_url_key not in self._retired and not self.contains(i.url_key)]
             await self._source.add(fresh)
 
-    def holds(self, url_key: str) -> bool:
-        """Whether this URL is already spoken for, anywhere."""
-        return url_key in self._visited or self._source.contains(url_key) or self._waiting.contains(url_key)
+    def has_seen(self, url_key: str) -> bool:
+        """Include visited or queued URLs and the buffer's persistent deduplication history."""
+        return self.contains(url_key) or self._waiting.has_seen(url_key)
 
     @notify
     async def pop_next(
@@ -192,12 +186,11 @@ class Frontier(Checkpointable):
                 if allowed_at > now:
                     item.next_available_at = allowed_at
                     return Gate.DEFER
-            used = self._domain_counters.get(item.reg_domain, 0)
-            if self._domain_budget > 0 and used >= self._domain_budget:
+            if self.domain_exhausted(item.reg_domain):
                 logger.warning(
                     "frontier.domain_budget domain=%s used=%d/%d",
                     item.reg_domain,
-                    used,
+                    self._domain_counters.get(item.reg_domain, 0),
                     self._domain_budget,
                 )
                 self._blocked_by_domain_budget += 1
@@ -225,21 +218,27 @@ class Frontier(Checkpointable):
             self._visited.add(url_key)
 
     def contains(self, url_key: str) -> bool:
+        """Include visited, queued, cooling and fetching URLs, but not unranked history."""
         return url_key in self._visited or self._source.contains(url_key)
 
-    def get_prefilter_context(self, **overrides: Any) -> PreFilterContext:
-        """Expose the state PreFilter needs without handing out internals.
+    def domain_exhausted(self, domain: str) -> bool:
+        """Only completed pages spend the domain budget; zero disables the limit."""
+        return self._domain_budget > 0 and self._domain_counters.get(domain, 0) >= self._domain_budget
 
-        allow_fetch and allowed_domains are owned by the scheduler (robots
-        policy, CLI) and arrive as overrides rather than being stored here.
-        """
-        kwargs: dict[str, Any] = {
-            "visited": self._visited.copy(),
-            "frontier_keys": self._source.keys(),
-            "domain_counters": dict(self._domain_counters),
-        }
-        kwargs.update(overrides)
-        return PreFilterContext(**kwargs)
+    def get_prefilter_context(
+        self,
+        *,
+        allow_fetch: Callable[[str], bool] | None = None,
+        allowed_domains: set[str] | None = None,
+    ) -> PreFilterContext:
+        """Snapshot deduplication state and expose the current domain budget policy."""
+        return PreFilterContext(
+            visited=self._visited.copy(),
+            frontier_keys=self._source.keys(),
+            domain_exhausted=self.domain_exhausted,
+            allow_fetch=allow_fetch,
+            allowed_domains=allowed_domains,
+        )
 
     @property
     def size(self) -> int:
