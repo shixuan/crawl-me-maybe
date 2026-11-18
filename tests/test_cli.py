@@ -10,10 +10,10 @@ from crawlme.cli import main
 from crawlme.errors import ErrorHandler
 from crawlme.goals.enhancer import EnhancedGoal, GoalEnhancer
 from crawlme.pioneer.ranker import LLMRanker
-from crawlme.pioneer.sources import create_source
 from crawlme.runtime import Limits, Progress, RunState, Stats
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.pipelines.crawl import CrawlPipeline
+from crawlme.seeds.sources import create_source
 
 
 @pytest.fixture(autouse=True)

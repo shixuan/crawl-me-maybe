@@ -64,7 +64,7 @@ The pipeline factory creates crawl's state, frontier, buffer, budget and tracker
 StopMonitor. The monitor is passed separately to `create_engine`; Pipeline does not
 hold it. CLI commands create a pipeline, call the Engine factory and run the bound
 Engine. They neither select queue implementations nor instantiate concrete sources.
-Source selection and seed-file parsing belong to `pioneer.sources`.
+Source selection and seed-file parsing belong to `seeds.sources`.
 
 Crawl and dedup factories declare typed dependency parameters and pass shared
 instances directly to component constructors. Unspecified dependencies use their

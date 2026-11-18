@@ -22,13 +22,13 @@ from crawlme.pioneer import Candidate, FrontierItem
 from crawlme.pioneer.frontier import Frontier
 from crawlme.pioneer.prefilter import PreFilter
 from crawlme.pioneer.robots import RobotsPolicy
-from crawlme.pioneer.seed_expander import SeedExpander
 from crawlme.runtime import EventEmitter, EventType, RunState, Task, Tracker
 from crawlme.scheduler.pipelines import Pipeline, PipelineContext
 from crawlme.scheduler.pipelines.dedup import DedupPipeline
 from crawlme.scheduler.pipelines.page import PageInput, PagePipeline
 from crawlme.scheduler.reporting import summary
 from crawlme.scheduler.workers import RankingWorker
+from crawlme.seeds.expander import SeedExpander
 from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)

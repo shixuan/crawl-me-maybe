@@ -5,7 +5,7 @@ import json
 import pytest
 
 from crawlme.goals import Goal
-from crawlme.pioneer.sources import FileSource, ManualSource
+from crawlme.seeds.sources import FileSource, ManualSource
 
 
 def _goal() -> Goal:

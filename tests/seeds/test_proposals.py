@@ -1,0 +1,187 @@
+"""Model proposals and source verification."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from crawlme.discovery import Harvest
+from crawlme.errors import Kind
+from crawlme.goals import Goal
+from crawlme.llm import LLMResponse, RemoteError
+from crawlme.pioneer import Candidate
+from crawlme.seeds import SeedProposer
+from crawlme.seeds.proposals import _parse
+from crawlme.urls import URL
+
+
+def _reply(*pairs) -> str:
+    return json.dumps({"seeds": [{"url": u, "why": w} for u, w in pairs]})
+
+
+def _proposer(content: str) -> SeedProposer:
+    client = MagicMock()
+    client.chat = AsyncMock(return_value=LLMResponse(content=content, input_tokens=0, output_tokens=0, model="m"))
+    return SeedProposer(client)
+
+
+def _goal() -> Goal:
+    return Goal(prompt="new drinks in Toronto")
+
+
+async def test_proposes_what_the_model_named():
+    got = await _proposer(_reply(("https://a.com/", "because"))).propose(_goal(), ["https://s.com/"], 4)
+    assert got == [("https://a.com/", "because")]
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "https://www.ig.com/acct/",
+        "https://www.ig.com/acct",
+        "https://ig.com/acct/",
+        "http://www.ig.com/acct/",
+        "https://www.IG.com/Acct/",
+    ],
+)
+async def test_a_seed_respelled_is_still_the_same_seed(spelling):
+    """Asked twice, a model writes one account several ways. Each costs
+    a fetch and then hands back a seed the user already gave."""
+    got = await _proposer(_reply((spelling, "w"))).propose(_goal(), ["https://www.ig.com/acct/"], 4)
+    assert got == []
+
+
+async def test_two_spellings_of_one_proposal_count_once():
+    reply = _reply(("https://a.com/x/", "w"), ("http://www.a.com/x", "w"))
+    got = await _proposer(reply).propose(_goal(), ["https://s.com/"], 4)
+    assert len(got) == 1
+
+
+async def test_more_than_asked_is_cut():
+    reply = _reply(*[(f"https://a{i}.com/", "w") for i in range(9)])
+    got = await _proposer(reply).propose(_goal(), ["https://s.com/"], 3)
+    assert len(got) == 3
+
+
+async def test_a_non_url_is_dropped():
+    """The model answers in prose sometimes, and a bare handle is not
+    something the crawler can fetch."""
+    got = await _proposer(_reply(("chatimecanada", "w"), ("https://a.com/", "w"))).propose(
+        _goal(), ["https://s.com/"], 4
+    )
+    assert [u for u, _ in got] == ["https://a.com/"]
+
+
+async def test_no_client_proposes_nothing():
+    """Inert without credentials, like the Goal Enhancer."""
+    assert await SeedProposer(None).propose(_goal(), ["https://s.com/"], 4) == []
+
+
+async def test_llm_error_propagates():
+    client = MagicMock()
+    client.chat = AsyncMock(side_effect=RemoteError("down", kind=Kind.UNAVAILABLE))
+    with pytest.raises(RemoteError):
+        await SeedProposer(client).propose(_goal(), ["https://s.com/"], 4)
+
+
+def test_unparseable_replies_are_dropped():
+    for content in ("", "no json here", "{not json}", '{"seeds": "not a list"}'):
+        assert _parse(content, known=set(), want=4) == []
+
+
+def test_prose_around_the_json_is_tolerated():
+    content = 'Here you go:\n{"seeds": [{"url": "https://a.com/", "why": "w"}]}\nHope that helps.'
+    assert _parse(content, known=set(), want=4) == [("https://a.com/", "w")]
+
+
+def _url(u: str) -> URL:
+    return URL(raw=u, canonical=u, url_key=u, reg_domain="x.com")
+
+
+def _rig(*, yields: int, problem=None, fetch_raises=False):
+    """The scheduler's probe supplies discovered candidates or a fetch error."""
+    if fetch_raises:
+        from crawlme.digest import FetchError
+
+        probe = AsyncMock(side_effect=FetchError("gone"))
+    else:
+        probe = AsyncMock(
+            return_value=Harvest([Candidate(url=_url(f"https://x.com/{i}")) for i in range(yields)], problem)
+        )
+    canon = MagicMock()
+    canon.canonicalize = MagicMock(side_effect=lambda raw, _b: _url(raw))
+    return probe, canon
+
+
+async def _verify(proposals, **kw):
+    from crawlme.seeds.proposals import verify
+
+    probe, canon = _rig(**kw)
+    kept, dropped = await verify(
+        proposals,
+        probe=probe,
+        canonicalizer=canon,
+    )
+    return kept, probe, dropped
+
+
+async def test_a_seed_that_yields_is_kept():
+    kept, _, _ = await _verify([("https://a.com/", "why")], yields=18)
+    assert [c.url.canonical for c in kept] == ["https://a.com/"]
+    assert kept[0].seed_ext is True
+    assert kept[0].signals["why"] == "why"
+
+
+async def test_a_seed_that_yields_nothing_is_dropped():
+    """An invented account answers 200 and renders. Only reading it
+    apart from a real one, which is what the harvester does."""
+    kept, _, _ = await _verify([("https://a.com/", "w")], yields=0)
+    assert kept == []
+
+
+async def test_a_refusal_is_dropped():
+    from crawlme.platforms import PageProblem
+
+    kept, _, _ = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
+    assert kept == []
+
+
+async def test_an_unreachable_seed_is_dropped():
+    kept, _, _ = await _verify([("https://a.com/", "w")], yields=9, fetch_raises=True)
+    assert kept == []
+
+
+async def test_a_rejection_says_which_kind_it_was():
+    """An address the model guessed and one that would not load cost the
+    same fetch and mean different things."""
+    from crawlme.platforms import PageProblem
+
+    _, _, gone = await _verify([("https://a.com/", "w")], yields=5, problem=PageProblem.UNAVAILABLE)
+    assert gone == [("https://a.com/", "does not exist")]
+
+    _, _, unreachable = await _verify([("https://b.com/", "w")], yields=5, fetch_raises=True)
+    assert unreachable == [("https://b.com/", "gone")]
+
+    _, _, kept_none = await _verify([("https://c.com/", "w")], yields=4)
+    assert kept_none == []
+
+
+async def test_verification_preserves_unexpected_failures():
+    from crawlme.seeds.proposals import verify
+
+    probe, canonicalizer = _rig(yields=0)
+    failure = OSError("storage unavailable")
+    probe.side_effect = failure
+    with pytest.raises(OSError) as caught:
+        await verify([("https://a.com/", "why")], probe=probe, canonicalizer=canonicalizer)
+    assert caught.value is failure
+
+
+async def test_seedless_proposals_stay_on_requested_platform():
+    expander = _proposer(_reply(("https://www.reddit.com/r/toronto/", "local"), ("https://example.com/", "other")))
+    expander._platforms = ("reddit",)
+    result = await expander.propose(_goal(), [], 4)
+    assert result == [("https://www.reddit.com/r/toronto/", "local")]
+    assert "Only propose sources on these platforms\nreddit" in expander._client.chat.call_args.args[0]
