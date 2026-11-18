@@ -8,7 +8,7 @@ import html as html_module
 import json
 import logging
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -56,6 +56,22 @@ NEEDS_SESSION = True
 
 # A timeline is built by script, not served as markup.
 NEEDS_RENDERING = True
+
+
+def seed_contains(seed: str, post: FeedItem) -> bool:
+    """An account seed covers that account's posts, not similarly named accounts."""
+    if not claims_url(seed):
+        return False
+    path = urlsplit(seed).path.strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_.]+", path):
+        return False
+    author = post.author or _account_from_url(post.permalink)
+    return bool(author) and path.casefold() == author.casefold()
+
+
+def search_url(query: str) -> str:
+    """Build a native post search URL."""
+    return "https://www.instagram.com/explore/search/keyword/?" + urlencode({"q": query})
 
 
 def claims_url(url: str) -> bool:
@@ -180,6 +196,31 @@ def parse_listing(html: str, url: str, payloads: list[Payload]) -> Listing:
     # Use the expected connection name for diagnostics; parse posts by their shape.
     answered = any(_GRID_ANSWER in _body_text(pl) for pl in payloads)
     return Listing(own=own, others=others, degraded=not answered)
+
+
+def parse_search(html: str, url: str, payloads: list[Payload]) -> list[FeedItem]:
+    """Read keyword results without including the page's background home feed."""
+    selected = []
+    for payload in payloads:
+        try:
+            data = json.loads(payload.body)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        root = data.get("data") if isinstance(data, dict) else None
+        if isinstance(root, dict) and "xdt_fbsearch__top_serp_graphql" in root:
+            selected.append(Payload(body=json.dumps(root["xdt_fbsearch__top_serp_graphql"]).encode()))
+    return [
+        FeedItem(
+            permalink=f"https://www.instagram.com/{post.author}/p/{code}/",
+            platform=PLATFORM,
+            item_id=code,
+            author=post.author,
+            text=post.text,
+            published_at=post.taken_at,
+        )
+        for code, post in _posts_from_payloads(selected, set()).items()
+        if post.author
+    ]
 
 
 def _from_alt(alt: str) -> tuple[str, datetime.datetime | None]:

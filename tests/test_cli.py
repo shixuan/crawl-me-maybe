@@ -825,3 +825,23 @@ def test_shared_report_sections(command):
 @pytest.fixture(autouse=True)
 def no_cli_monitor(monkeypatch):
     monkeypatch.setattr("crawlme.cli.run.create_monitor", lambda pipeline: None)
+
+
+@pytest.mark.parametrize(
+    "seeds, conflict",
+    [(None, False), ("https://www.reddit.com/r/toronto/", False), ("https://example.com/", True)],
+)
+def test_platform_flag_enables_expansion_and_warns_on_conflict(seeds, conflict):
+    captured: dict = {}
+    argv = ["crawl", "run", "test", "--platform", "reddit"]
+    if seeds:
+        argv += ["--seeds", seeds]
+    with (
+        patch("sys.argv", argv),
+        patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)),
+        patch("crawlme.cli.run.logger.warning") as warning,
+    ):
+        main()
+    assert captured["cfg"].expand_seeds is True
+    assert captured["cfg"].search_platforms == ["reddit"]
+    assert warning.called is conflict

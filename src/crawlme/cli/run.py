@@ -12,7 +12,7 @@ from crawlme.cli.report import Report, make_report
 from crawlme.config import Settings
 from crawlme.logging import setup_logging
 from crawlme.pioneer.sources import create_source, declared_seeds
-from crawlme.platforms import ADAPTERS
+from crawlme.platforms import ADAPTERS, FEEDS
 from crawlme.runtime import Goal, Task
 from crawlme.scheduler.engine import create_engine
 from crawlme.scheduler.monitor import create_monitor
@@ -49,6 +49,21 @@ async def cmd_run(args: argparse.Namespace) -> Report:
         cfg.log_level = args.log_level
     # Apply final CLI settings even if logging was already configured.
     setup_logging(cfg, force=True)
+    platforms = list(dict.fromkeys(_split(getattr(args, "platform", None))))
+    unknown = set(platforms) - FEEDS.keys()
+    if unknown:
+        raise ValueError(f"Unknown search platforms: {', '.join(sorted(unknown))}. Choose from: {', '.join(FEEDS)}")
+    if platforms:
+        cfg.expand_seeds = True
+        seeds = _declared_seeds(args)
+        inferred = {name for name, adapter in FEEDS.items() if any(adapter.claims_url(url) for url in seeds)}
+        if seeds and set(platforms) != inferred:
+            logger.warning(
+                "--platform %s conflicts with supplied seeds; using seed platforms (%s)",
+                ",".join(platforms),
+                ",".join(sorted(inferred)) or "no platform search; source proposals only",
+            )
+        cfg.search_platforms = platforms
     goal = Goal(prompt=args.prompt)
     if args.draining:
         if args.max_pages is not None and args.max_pages > 0:

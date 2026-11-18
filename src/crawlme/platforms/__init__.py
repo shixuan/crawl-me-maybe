@@ -1,10 +1,10 @@
 """Platform adapters for recognition, access requirements and content discovery."""
 
 from crawlme.platforms import instagram, reddit, rss
-from crawlme.platforms.base import FeedAdapter
+from crawlme.platforms.base import FeedAdapter, SearchAdapter
 from crawlme.platforms.models import FeedItem, Listing, PageProblem
 
-FEEDS: dict[str, FeedAdapter] = {instagram.PLATFORM: instagram, reddit.PLATFORM: reddit}
+FEEDS: dict[str, SearchAdapter] = {instagram.PLATFORM: instagram, reddit.PLATFORM: reddit}
 
 # Adapter order is priority; the first claimant handles the page.
 ADAPTERS: tuple[FeedAdapter, ...] = (instagram, reddit, rss)

@@ -160,8 +160,7 @@ def completed_run(tmp_path_factory):
         "FETCH_CONCURRENCY": "2",
         "LLM_CONCURRENCY": "2",
         "NO_PROXY": "127.0.0.1",
-        "EXPAND_SEEDS_MIN": "1",
-        "EXPAND_SEEDS_MAX": "1",
+        "EXPAND_SEEDS_COUNT": "1",
     }
     try:
         proc = subprocess.run(  # noqa: S603

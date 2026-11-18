@@ -164,24 +164,35 @@ async def test_seed_expansion_disabled():
 
 
 @pytest.mark.asyncio
-async def test_no_seeds_to_expand():
-    """Nothing to widen, and the model would have no example to follow."""
+async def test_expansion_without_expander_returns_nothing():
+    """Expansion is inert when no expander was assembled."""
     sched = _make_sched(settings=Settings(expand_seeds=True))
     assert await sched.pipeline.expand_seeds(_goal(), []) == []
 
 
 @pytest.mark.asyncio
-async def test_expanded_seeds_are_marked():
+@pytest.mark.parametrize("with_seeds", [True, False])
+async def test_expanded_seeds_are_marked(with_seeds):
     """The buffer reads this to give them the smaller share."""
 
     url = URL(raw="https://a.com/", canonical="https://a.com/", url_key="a", reg_domain="a.com")
-    expander = MagicMock(propose=AsyncMock(return_value=[(url.raw, "source")]))
+    from crawlme.pioneer.seed_expander import SeedExpander
+
+    expander = SeedExpander(None)
+    expander.search = AsyncMock(return_value=[])
+    expander.propose = AsyncMock(return_value=[(url.raw, "source")])
     canonicalizer = MagicMock(canonicalize=MagicMock(return_value=url))
-    sched = _make_sched(settings=Settings(expand_seeds=True), seed_expander=expander, canonicalizer=canonicalizer)
+    sched = _make_sched(
+        settings=Settings(expand_seeds=True, expand_seeds_count=7),
+        seed_expander=expander,
+        canonicalizer=canonicalizer,
+    )
     sched.pipeline._page.probe = AsyncMock(return_value=Harvest([Candidate(url=url)]))
     goal = _goal()
-    got = await sched.pipeline.expand_seeds(goal, [Candidate(url=url)])
-    expander.propose.assert_awaited_once_with(goal, [url.raw], 4)
+    seeds = [Candidate(url=url)] if with_seeds else []
+    got = await sched.pipeline.expand_seeds(goal, seeds)
+    expander.search.assert_awaited_once_with(goal, [url.raw] if with_seeds else [], 7)
+    expander.propose.assert_awaited_once_with(goal, [url.raw] if with_seeds else [], 7)
     sched.pipeline._page.probe.assert_awaited_once()
     assert [c.seed_ext for c in got] == [True]
     assert got[0].signals["why"] == "source"
@@ -221,3 +232,24 @@ async def test_a_cancelled_pump_is_not_a_failure():
     sched.pipeline._pump_tasks.append(task)
     await sched.pipeline.halt()
     assert not sched.pipeline.run_state.progress.fatal_error
+
+
+async def test_searched_posts_skip_source_verification():
+    from crawlme.urls import Canonicalizer
+
+    canonicalizer = Canonicalizer()
+    url = canonicalizer.canonicalize("https://www.instagram.com/shop/p/NEW/", "https://www.instagram.com/")
+    post = Candidate(url=url, seed_ext=True, signals={"why": "instagram search"})
+    from crawlme.pioneer.seed_expander import SeedExpander
+
+    expander = SeedExpander(None)
+    expander.search = AsyncMock(return_value=[post])
+    expander.propose = AsyncMock()
+    sched = _make_sched(settings=Settings(expand_seeds=True), seed_expander=expander, canonicalizer=canonicalizer)
+    sched.pipeline._page.probe = AsyncMock()
+    result = await sched.pipeline.expand_seeds(_goal(), [Candidate(url=url)])
+    assert result == [post]
+    expander.propose.assert_not_awaited()
+    sched.pipeline._page.probe.assert_not_awaited()
+    assert sched.pipeline.run_state.proposed_seeds[url.url_key] == (url.canonical, "instagram search")
+    assert sched.pipeline.run_state.seeds_asked == 1
