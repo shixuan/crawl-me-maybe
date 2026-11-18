@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from crawlme.errors import Error, Kind
 from crawlme.platforms import FEEDS
@@ -80,7 +81,7 @@ async def _read_state(context: Any) -> dict[str, Any] | None:
         return None
 
 
-async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
+async def _browser_state(feed: str, timeout_sec: int, *, cdp_url: str | None = None) -> dict[str, Any]:
     """Open the platform homepage and collect state when the manual login wait ends."""
     try:
         from playwright.async_api import async_playwright
@@ -93,23 +94,43 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
 
     url = _login_url(feed)
     async with async_playwright() as pw:
-        try:
-            browser = await pw.chromium.launch(headless=False)
-        except Exception as e:  # pragma: no cover - depends on the desktop
-            raise SessionError(
-                f"could not open a browser window ({e}).\n"
-                "A visible browser needs a desktop: on WSL that means WSLg, over SSH an X display.",
-                code="browser_unavailable",
-                kind=Kind.UNAVAILABLE,
-            ) from e
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto(url)
-
-        print(f"\nA browser window is open at {url}")
-        print("  1. log in there, the way you normally would")
-        print("  2. close the window, or come back here and press Enter")
-        print("Nothing is read from the page: only the session your login produced.\n")
+        if cdp_url:
+            try:
+                browser = await pw.chromium.connect_over_cdp(cdp_url, timeout=30_000)
+            except Exception as e:
+                raise SessionError(
+                    "could not connect to the browser; start Chrome or Edge with "
+                    "--remote-debugging-port and a separate --user-data-dir",
+                    code="browser_unavailable",
+                    kind=Kind.UNAVAILABLE,
+                ) from e
+            if not browser.contexts:
+                raise SessionError("the connected browser has no context", code="browser_unavailable")
+            context = browser.contexts[0]
+            page = next((p for p in context.pages if FEEDS[feed].claims_url(p.url)), None)
+            if page is None:
+                page = await context.new_page()
+                await page.goto(url)
+            print(f"\nConnected to your browser for {feed}")
+            print("Log in in that browser, then press Enter here to save the session.")
+            print("The browser and its tabs will remain open.\n")
+        else:
+            try:
+                browser = await pw.chromium.launch(headless=False)
+            except Exception as e:  # pragma: no cover - depends on the desktop
+                raise SessionError(
+                    f"could not open a browser window ({e}).\n"
+                    "A visible browser needs a desktop: on WSL that means WSLg, over SSH an X display.",
+                    code="browser_unavailable",
+                    kind=Kind.UNAVAILABLE,
+                ) from e
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto(url)
+            print(f"\nA browser window is open at {url}")
+            print("  1. log in there, the way you normally would")
+            print("  2. close the window, or come back here and press Enter")
+            print("Nothing is read from the page: only the session your login produced.\n")
         try:
             came = await _wait_for_a_person(browser, page, timeout_sec)
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -133,21 +154,31 @@ async def _browser_state(feed: str, timeout_sec: int) -> dict[str, Any]:
                     kind=Kind.UNAVAILABLE,
                 )
         finally:
-            with contextlib.suppress(Exception):
-                await context.close()
-            with contextlib.suppress(Exception):
-                await browser.close()
+            if not cdp_url:
+                with contextlib.suppress(Exception):
+                    await context.close()
+                with contextlib.suppress(Exception):
+                    await browser.close()
+    if cdp_url:
+        domain = FEEDS[feed].DOMAIN
+
+        def belongs(host: str) -> bool:
+            host = host.lstrip(".").lower()
+            return host == domain or host.endswith("." + domain)
+
+        state = {
+            "cookies": [c for c in state.get("cookies", []) if belongs(c.get("domain", ""))],
+            "origins": [o for o in state.get("origins", []) if belongs(urlsplit(o["origin"]).hostname or "")],
+        }
     return state
 
 
-async def capture(feed: str, out: Path, *, timeout_sec: int = 600) -> dict[str, Any]:
+async def capture(feed: str, out: Path, *, timeout_sec: int = 600, cdp_url: str | None = None) -> dict[str, Any]:
     """Write browser storage state to *out*, rejecting states without cookies."""
-    state = await _browser_state(feed, timeout_sec)
+    state = await _browser_state(feed, timeout_sec, cdp_url=cdp_url)
     # Cookie presence alone does not verify authentication.
     if not state.get("cookies"):
-        raise SessionError(
-            "that browser was never logged in: the session it produced holds no cookies", code="session_empty"
-        )
+        raise SessionError("no cookies were found for this session", code="session_empty")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     return state
@@ -160,7 +191,7 @@ async def cmd_session(args: argparse.Namespace) -> None:
         print(f"Error: {out} already exists (use --force to replace it)", file=sys.stderr)
         sys.exit(1)
     try:
-        state = await capture(args.feed, out, timeout_sec=args.timeout)
+        state = await capture(args.feed, out, timeout_sec=args.timeout, cdp_url=getattr(args, "cdp_url", None))
     except SessionError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -175,5 +206,8 @@ def add_arguments(sub: Any) -> None:
     p.add_argument("path", help="Where to write the session file, e.g. ./session.json")
     platforms = sorted(FEEDS)
     p.add_argument("--feed", choices=platforms, default=platforms[0], help="Which platform")
+    p.add_argument(
+        "--cdp-url", help="Connect to an existing Chrome/Edge debugging endpoint, e.g. http://127.0.0.1:9222"
+    )
     p.add_argument("--force", action="store_true", help="Replace an existing session file")
     p.add_argument("--timeout", type=int, default=600, help="Seconds to wait for the login (default: 600)")

@@ -16,6 +16,7 @@ htmlcov/
 docs/*
 !docs/arch.md
 !docs/engine.md
+!docs/cdp-session.md
 !docs/CHANGELOG.md
 
 # Browser sessions: real login cookies, never commit

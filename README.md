@@ -153,11 +153,18 @@ Use `--result-dir` to select the results directory and `--log-level` to change l
 
 ### `crawl session <path>`
 
-Opens a browser for manual login and saves its session state. Requires a desktop display.
+```bash
+crawl session ./session.json --feed <platform>
+```
+
+Log in in the browser that opens, then press Enter in the terminal to save. Keep the browser open until `saved ...` appears. Requires a desktop display.
+
+If the browser cannot complete login, see [Export a session through CDP](docs/cdp-session.md).
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--feed` | `instagram` | Platform to log into (`instagram` or `reddit`) |
+| `--cdp-url` | none | Connect to an external browser; see the CDP guide above |
 | `--force` | off | Replace an existing session file |
 | `--timeout` | `600` | Login timeout in seconds |
 
