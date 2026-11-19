@@ -60,7 +60,7 @@ async def test_expander_created_once(tmp_path, monkeypatch, injected):
         if injected:
             builder.assert_not_called()
         else:
-            builder.assert_called_once_with(cfg, budget=scheduler.engine._monitor.budget)
+            builder.assert_called_once_with(cfg, storage_state=None, budget=scheduler.engine._monitor.budget)
     finally:
         await scheduler.aclose()
 
@@ -253,7 +253,10 @@ def test_optional_dependency(tmp_path, monkeypatch, component, selection):
     }[component]
     if selection == "default":
         assert actual is builders[component].return_value
-        builders[component].assert_called_once_with(cfg, budget=budget)
+        if component == "seed_expander":
+            builders[component].assert_called_once_with(cfg, storage_state=None, budget=budget)
+        else:
+            builders[component].assert_called_once_with(cfg, budget=budget)
     else:
         assert actual is (None if selection == "disabled" else injected)
         builders[component].assert_not_called()
@@ -342,17 +345,58 @@ def test_seed_search_wiring(tmp_path, monkeypatch, has_session):
     fetcher_builder = MagicMock()
     monkeypatch.setattr(Client, "from_settings_if_configured", client_builder)
     monkeypatch.setattr("crawlme.digest.fetcher.PlaywrightFetcher", fetcher_builder)
-    expander = _build_seed_expander(settings, budget=budget)
+    state = {"cookies": [{"name": "s", "value": "v"}], "origins": []} if has_session else None
+    expander = _build_seed_expander(settings, storage_state=state, budget=budget)
     client_builder.assert_called_once_with(
         settings, budget=budget, reasoning_effort=settings.llm_seeds_reasoning_effort, stage=Stage.SEEDS
     )
     assert expander._search._client is expander._proposer._client is client
     assert expander._search._platforms == expander._proposer._platforms == ("reddit",)
-    assert expander._search._missing_session == (None if has_session else str(session))
+    assert expander._search._missing_session == (None if has_session else "")
     fetcher_builder.assert_not_called()
     expander._search._fetcher_factory()
     options = fetcher_builder.call_args.kwargs
-    assert options["storage_state"] == (str(session) if has_session else None)
+    assert options["storage_state"] is state
     assert options["scrolls"] == 2
     assert options["timeout"] == settings.fetch_timeout_read
     assert options["max_payload_bytes"] == settings.browser_max_payload_bytes
+
+
+def test_invalid_session_fails_before_run_creation(tmp_path, monkeypatch):
+    from crawlme.errors import Error
+    from crawlme.scheduler.pipelines import factory
+
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text("not json")
+    storage_builder = MagicMock()
+    client_builder = MagicMock()
+    monkeypatch.setattr(factory.Storage, "create", storage_builder)
+    monkeypatch.setattr(factory.Client, "from_settings_if_configured", client_builder)
+    with pytest.raises(Error, match=r"invalid\.json"):
+        factory.create_crawl(Settings(browser_storage_state=[str(invalid)], expand_seeds=True))
+    storage_builder.assert_not_called()
+    client_builder.assert_not_called()
+
+
+def test_search_and_fetch_share_one_loaded_session(tmp_path, monkeypatch):
+    from crawlme.scheduler.pipelines import factory
+
+    state = {"cookies": [{"name": "s", "value": "secret", "domain": ".reddit.com", "path": "/"}], "origins": []}
+    loader = MagicMock(return_value=state)
+    monkeypatch.setattr(factory, "load_sessions", loader)
+    fetcher_builder = MagicMock(return_value=MagicMock())
+    expander_builder = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(factory, "_build_fetcher", fetcher_builder)
+    monkeypatch.setattr(factory, "_build_seed_expander", expander_builder)
+    cfg = Settings(
+        result_dir=tmp_path,
+        browser_storage_state=["one.json", "two.json"],
+        expand_seeds=True,
+        llm_api_key="",
+        llm_base_url="",
+    )
+    factory.create_crawl(cfg)
+    loader.assert_called_once_with(["one.json", "two.json"])
+    assert fetcher_builder.call_args.kwargs["storage_state"] is state
+    assert expander_builder.call_args.kwargs["storage_state"] is state
+    assert "secret" not in cfg.model_dump_json()

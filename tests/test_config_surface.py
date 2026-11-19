@@ -32,3 +32,17 @@ def test_new_seed_setting_wins(monkeypatch):
     monkeypatch.setenv("ENHANCE_SEEDS", "false")
     cfg = Settings(_env_file=None, llm_api_key="", llm_base_url="", llm_model="")
     assert cfg.expand_seeds is True
+
+
+@pytest.mark.parametrize(
+    "value,expected", [("", []), ("one.json", ["one.json"]), ('["one.json", "two.json"]', ["one.json", "two.json"])]
+)
+def test_session_environment_normalizes_paths(monkeypatch, value, expected):
+    monkeypatch.setenv("BROWSER_STORAGE_STATE", value)
+    cfg = Settings(_env_file=None)
+    assert cfg.browser_storage_state == expected
+    assert Settings.model_validate(cfg.model_dump()).browser_storage_state == expected
+
+
+def test_session_string_config_stays_compatible():
+    assert Settings(_env_file=None, browser_storage_state="old.json").browser_storage_state == ["old.json"]

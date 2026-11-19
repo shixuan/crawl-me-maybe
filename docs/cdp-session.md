@@ -147,6 +147,17 @@ crawl run "Toronto events this weekend" \
 
 You can also add `--session ./reddit-session.json` to a run using explicit seeds. The original Chrome window does not need to remain open once export has finished.
 
+## Use several exported sessions
+
+Export each platform into its own file, then pass the files together:
+
+```bash
+crawl run "<prompt>" --platform instagram,reddit \
+  --session ./ig-session.json ./reddit-session.json
+```
+
+The crawler merges the state in memory for both search and page fetching. It does not create a merged file or modify the originals. Later files override duplicate cookies and localStorage entries. A missing or invalid file is an error, not an instruction to skip that session.
+
 ## Native Linux
 
 Start Chrome in a desktop terminal:

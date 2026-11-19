@@ -114,7 +114,7 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”. 
 | `--since` | none | Publication cutoff, e.g. `"2 weeks"` or `2026-08-01`, overriding any cutoff inferred from the prompt |
 | `--draining` | off | Disable the page limit. Other budgets and stop conditions still apply |
 | `--fetcher` | per URL | `http` uses HTTP with automatic platform rendering. `browser` renders everything |
-| `--session` | none | Playwright storage-state file enabling Instagram and defaulting the domain budget to unlimited |
+| `--session` | none | One or more Playwright storage-state files, merged in order; later files win conflicts. Defaults the domain budget to unlimited |
 | `--ignore-robots` | off | Bypass robots.txt rules and requested delays |
 | `--max-relevant` | `0` | Relevant-page target before grouping (`0` disables). In-flight analysis may overshoot |
 | `--page-budget` | `500` | Maximum pages (`0` means unlimited). A positive value conflicts with `--draining` |
@@ -150,6 +150,15 @@ crawl dedup <task-id> --goal <goal-id> --max-tokens 30000
 ```
 
 Use `--result-dir` to select the results directory and `--log-level` to change logging verbosity.
+
+To use separate login files together:
+
+```bash
+crawl run "<prompt>" --platform instagram,reddit \
+  --session ./ig-session.json ./reddit-session.json
+```
+
+Files are merged in memory; the originals are unchanged. Repeating `--session` also works. Cookies are matched by name, domain, path and partition key; localStorage entries are matched by origin and name. Later files override matching entries. Every file is read and validated once during run setup, before search or browser startup. An invalid file aborts setup. Checkpoints store only file paths; resuming reloads the session files. `BROWSER_STORAGE_STATE` accepts either a single path or a JSON list of paths.
 
 ### `crawl session <path>`
 

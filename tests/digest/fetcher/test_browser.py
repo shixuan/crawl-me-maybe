@@ -9,11 +9,9 @@ commit under test.
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock
@@ -22,10 +20,10 @@ import pytest
 
 from crawlme.config import Settings
 from crawlme.digest import DispatchingFetcher, FetchError, PlaywrightFetcher
-from crawlme.digest.fetcher.browser import _load_storage_state
 from crawlme.errors import Kind
 from crawlme.pioneer import FrontierItem
 from crawlme.scheduler.pipelines.factory import _build_fetcher
+from crawlme.sessions import load_sessions
 from crawlme.urls import URL
 
 
@@ -36,33 +34,6 @@ def _item(url: str) -> FrontierItem:
 # session file ----------------------------------------------------------
 
 
-def test_state_loads(tmp_path: Path) -> None:
-    p = tmp_path / "session.json"
-    p.write_text(json.dumps({"cookies": [{"name": "sessionid", "value": "x"}], "origins": []}))
-    assert _load_storage_state(str(p))["cookies"][0]["name"] == "sessionid"
-
-
-@pytest.mark.parametrize(
-    ("content", "match"),
-    [
-        (None, "not found"),
-        ("not json at all", "readable JSON"),
-        (json.dumps({"cookies": [], "origins": []}), "no cookies"),
-    ],
-)
-def test_state_bad_path(tmp_path: Path, content, match) -> None:
-    """Silently falling back to anonymous would crawl a login wall.
-
-    On a login-walled platform that means a few hundred fetches of the
-    same sign-in page and a conclusion that the site is empty.
-    """
-    p = tmp_path / "session.json"
-    if content is not None:
-        p.write_text(content)
-    with pytest.raises(FetchError, match=match):
-        _load_storage_state(str(p))
-
-
 # factory wiring --------------------------------------------------------
 
 
@@ -70,20 +41,21 @@ def test_session_splits(tmp_path) -> None:
     """A shop the analyser endorsed off a post has no use for the
     platform's cookies, so it takes the cheap route."""
     sess = tmp_path / "s.json"
-    sess.write_text('{"cookies": [], "origins": []}')
-    built = _build_fetcher(Settings(browser_storage_state=str(sess)))
+    sess.write_text('{"cookies": [{"name": "s", "value": "v"}], "origins": []}')
+    state = load_sessions([str(sess)])
+    built = _build_fetcher(Settings(browser_storage_state=str(sess)), storage_state=state)
     assert isinstance(built, DispatchingFetcher)
     # Routing, not install detection: without playwright the dispatcher
     # deliberately degrades, and the bare CI lane has none.
     built._can_render = True
-    assert built._browser._storage_state == str(sess)
+    assert built._browser._storage_state is state
     assert isinstance(built._pick("https://www.instagram.com/someone/"), PlaywrightFetcher)
     assert not isinstance(built._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
 def test_lazy_launch() -> None:
     """Building a scheduler must not launch a browser."""
-    f = PlaywrightFetcher(storage_state="/nonexistent/session.json")
+    f = PlaywrightFetcher(storage_state={"cookies": [], "origins": []})
     assert f._context is None
     assert f._browser is None
 

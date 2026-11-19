@@ -92,7 +92,8 @@ def _refusal_advice(s: dict[str, Any]) -> list[str]:
     """Return recovery instructions for recognized refusal codes."""
     if "LOGIN_REQUIRED" not in str(s.get("reason", "")):
         return []
-    path = s.get("session") or "./session.json"
+    sessions = s.get("session") or []
+    path = sessions[0] if len(sessions) == 1 else "./session.json"
     platform = s.get("platform") or ""
     feed = f" --feed {platform}" if platform else ""
     return [

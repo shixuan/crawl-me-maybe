@@ -129,7 +129,7 @@ async def _browser_state(feed: str, timeout_sec: int, *, cdp_url: str | None = N
             await page.goto(url)
             print(f"\nA browser window is open at {url}")
             print("  1. log in there, the way you normally would")
-            print("  2. close the window, or come back here and press Enter")
+            print("  2. return here and press Enter; keep the browser open until saved appears")
             print("Nothing is read from the page: only the session your login produced.\n")
         try:
             came = await _wait_for_a_person(browser, page, timeout_sec)
@@ -148,7 +148,7 @@ async def _browser_state(feed: str, timeout_sec: int, *, cdp_url: str | None = N
             if state is None:
                 raise SessionError(
                     "the browser was closed before its session could be read.\n"
-                    "  Close the tab, or press Enter here, rather than quitting the browser:\n"
+                    "  Press Enter here while the browser is still open:\n"
                     "  a session lives in the browser and goes with it.",
                     code="session_unreadable",
                     kind=Kind.UNAVAILABLE,

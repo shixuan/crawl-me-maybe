@@ -174,11 +174,14 @@ def test_session_browser(_installed, tmp_path):
     from crawlme.scheduler.pipelines.factory import _build_fetcher
 
     cfg = captured["cfg"]
-    assert cfg.browser_storage_state == state
-    fetcher = _build_fetcher(cfg)
+    assert cfg.browser_storage_state == [state]
+    from crawlme.sessions import load_sessions
+
+    merged = load_sessions(cfg.browser_storage_state)
+    fetcher = _build_fetcher(cfg, storage_state=merged)
     platform = fetcher._pick("https://www.instagram.com/someone/")
     assert isinstance(platform, PlaywrightFetcher)
-    assert platform._storage_state == state
+    assert platform._storage_state is merged
     assert not isinstance(fetcher._pick("https://a-shop.example.com/promo"), PlaywrightFetcher)
 
 
@@ -437,7 +440,7 @@ def _installed():
 # the session preflight ---------------------------------------------------
 
 
-def test_session_missing(tmp_path, capsys):
+def test_session_missing(tmp_path, capsys, _installed):
     """It used to raise inside the fetcher, several hundred pages in."""
     argv = [
         "crawl",
@@ -452,8 +455,8 @@ def test_session_missing(tmp_path, capsys):
         with pytest.raises(SystemExit):
             main()
     err = capsys.readouterr().err
-    assert "no session file" in err
-    assert "crawl session" in err, "the message has to name the command that fixes it"
+    assert "storage state file not found" in err
+    assert "nope.json" in err
 
 
 def test_walled_refused(tmp_path, capsys):
@@ -468,7 +471,7 @@ def test_walled_refused(tmp_path, capsys):
 
     args = argparse.Namespace(session=None, seeds="https://www.instagram.com/cafe/")
     with pytest.raises(ValueError) as error:
-        _check_session(args)
+        _check_session(args, [])
     assert "crawling instagram needs a session" in str(error.value)
 
 
@@ -480,7 +483,7 @@ def test_walled_in_file(tmp_path, capsys):
     f.write_text('{"seeds": ["https://www.instagram.com/cafe/"]}')
     args = argparse.Namespace(session=None, seeds=str(f))
     with pytest.raises(ValueError) as error:
-        _check_session(args)
+        _check_session(args, [])
     assert "instagram" in str(error.value)
 
 
@@ -493,30 +496,21 @@ def test_feed_needs_session(capsys):
     from crawlme.cli.run import _check_session
 
     with pytest.raises(ValueError) as error:
-        _check_session(argparse.Namespace(session=None, seeds="https://www.instagram.com/cafe/"))
+        _check_session(argparse.Namespace(session=None, seeds="https://www.instagram.com/cafe/"), [])
     assert "crawl session" in str(error.value)
 
 
-def test_graph_no_hint(tmp_path, capsys):
-    """It asked for a session and named a file that is not there, which
-    is worth saying. The advice for making one is feed-shaped, so
-    offering it here would point at a command that cannot serve it."""
-    from crawlme.cli.run import _check_session
-
-    with pytest.raises(ValueError) as error:
-        _check_session(
-            argparse.Namespace(
-                session=str(tmp_path / "nope.json"),
-                feed=None,
-                seeds=None,
-                seeds_file=None,
-                source=None,
-                source_path=None,
-            )
-        )
-    err = str(error.value)
-    assert "no session file" in err
-    assert "crawl session" not in err
+def test_env_session_allows_instagram_seed(tmp_path, monkeypatch, _installed):
+    session = tmp_path / "state.json"
+    session.write_text('{"cookies": [{"name": "s", "value": "x"}]}')
+    monkeypatch.setenv("BROWSER_STORAGE_STATE", str(session))
+    captured: dict = {}
+    with (
+        patch("sys.argv", ["crawl", "run", "test", "--seeds", "https://www.instagram.com/cafe/"]),
+        patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)),
+    ):
+        main()
+    assert captured["cfg"].browser_storage_state == [str(session)]
 
 
 # optional installs -------------------------------------------------------
@@ -550,7 +544,9 @@ def test_no_playwright(capsys):
 
     with patch("importlib.util.find_spec", return_value=None):
         with pytest.raises(ValueError) as error:
-            _check_extras(Settings(fetcher="browser"), _extras_args(session="s.json"))
+            _check_extras(
+                Settings(fetcher="browser", browser_storage_state=["s.json"]), _extras_args(session=["s.json"])
+            )
     err = str(error.value)
     assert "--session needs playwright" in err
     assert "playwright install chromium" in err, "the package alone does not fetch a browser"
@@ -622,7 +618,7 @@ def test_login_refusal_says_how_to_fix_it():
     from crawlme.cli.report import format_summary
 
     out = format_summary(
-        {"state": "COMPLETED", "reason": "LOGIN_REQUIRED", "session": "./ig.json", "platform": "instagram"}
+        {"state": "COMPLETED", "reason": "LOGIN_REQUIRED", "session": ["./ig.json"], "platform": "instagram"}
     )
     assert "crawl session ./ig.json --feed instagram --force" in out
 
@@ -846,3 +842,32 @@ def test_platform_flag_enables_expansion_and_warns_on_conflict(seeds, conflict):
     assert captured["cfg"].expand_seeds is True
     assert captured["cfg"].search_platforms == ["reddit"]
     assert warning.called is conflict
+
+
+@pytest.mark.parametrize("repeated", [False, True])
+def test_multiple_session_files_reach_fetchers(tmp_path, repeated, _installed):
+    from pathlib import Path
+
+    from crawlme.config import Settings
+    from crawlme.scheduler.pipelines.factory import _build_fetcher, _build_seed_expander
+
+    paths = [str(tmp_path / "first.json"), str(tmp_path / "second.json")]
+    for path in paths:
+        Path(path).write_text('{"cookies": [{"name": "session", "value": "test"}]}')
+    flags = ["--session", paths[0], "--session", paths[1]] if repeated else ["--session", *paths]
+    captured = {}
+    with (
+        patch("sys.argv", ["crawl", "run", "test", *flags]),
+        patch("crawlme.cli.run.create_crawl", side_effect=_capturing_factory(captured)),
+    ):
+        main()
+    cfg = captured["cfg"]
+    assert cfg.browser_storage_state == paths
+    restored = Settings.model_validate(cfg.model_dump())
+    from crawlme.sessions import load_sessions
+
+    state = load_sessions(restored.browser_storage_state)
+    assert _build_fetcher(restored, storage_state=state)._browser._storage_state is state
+    search = _build_seed_expander(restored, storage_state=state)._search
+    assert search._missing_session is None
+    assert search._fetcher_factory()._storage_state is state

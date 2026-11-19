@@ -5,12 +5,10 @@ Playwright is imported lazily. Each fetch uses a fresh page in a shared context.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from crawlme.digest.fetcher.base import DEFAULT_UA, Fetcher, FetchError
@@ -49,7 +47,7 @@ class PlaywrightFetcher(Fetcher):
     def __init__(
         self,
         *,
-        storage_state: str | None = None,
+        storage_state: dict[str, Any] | None = None,
         user_agents: list[str] | None = None,
         timeout: float = 30.0,
         wait_until: WaitUntil = "networkidle",
@@ -100,7 +98,7 @@ class PlaywrightFetcher(Fetcher):
         self._browser = await self._pw.chromium.launch(headless=self._headless)
         options: dict[str, Any] = {"user_agent": random.choice(self._uas)}  # noqa: S311
         if self._storage_state:
-            options["storage_state"] = _load_storage_state(self._storage_state)
+            options["storage_state"] = self._storage_state
         self._context = await self._browser.new_context(**options)
         self._context.set_default_timeout(self._timeout_ms)
         logger.info(
@@ -271,38 +269,6 @@ class PlaywrightFetcher(Fetcher):
             logger.debug("browser.payload_capped url=%s bytes=%d", response.url, total)
             return
         into.append(Payload(url=response.url, content_type=ctype, body=body))
-
-
-def _load_storage_state(path: str) -> dict[str, Any]:
-    """Load saved session state; reject invalid input instead of silently browsing anonymously."""
-    p = Path(path)
-    if not p.is_file():
-        raise FetchError(
-            f"storage state file not found: {path}",
-            code="session_missing",
-            scope=Scope.DEPENDENCY,
-            kind=Kind.NOT_FOUND,
-            details={"path": path},
-        )
-    try:
-        state = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise FetchError(
-            f"storage state file is not readable JSON: {path}",
-            code="session_invalid",
-            scope=Scope.DEPENDENCY,
-            kind=Kind.INVALID_INPUT,
-            details={"path": path},
-        ) from e
-    if not isinstance(state, dict) or not (state.get("cookies") or state.get("origins")):
-        raise FetchError(
-            f"storage state file has no cookies or origins: {path}",
-            code="session_invalid",
-            scope=Scope.DEPENDENCY,
-            kind=Kind.INVALID_INPUT,
-            details={"path": path},
-        )
-    return state
 
 
 def _is_transient(err: BaseException) -> bool:

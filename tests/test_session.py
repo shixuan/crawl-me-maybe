@@ -21,14 +21,13 @@ def _args(**kw) -> argparse.Namespace:
 
 
 @pytest.mark.asyncio
-async def test_no_cookies(tmp_path: Path, monkeypatch):
-    """A logged-out browser produces a state that loads fine and crawls
-    nothing, which on a walled platform reads as an empty site."""
+async def test_no_cookies(tmp_path: Path):
+    """An empty capture must not create a session file."""
     out = tmp_path / "s.json"
     with patch("crawlme.cli.session._browser_state", AsyncMock(return_value={"cookies": [], "origins": []})):
-        with pytest.raises(SessionError, match="never logged in"):
+        with pytest.raises(SessionError, match="no cookies"):
             await capture("instagram", out)
-    assert not out.exists(), "nothing is written when the login did not take"
+    assert not out.exists()
 
 
 @pytest.mark.asyncio
@@ -151,7 +150,7 @@ async def test_quitting_the_browser_says_so(tmp_path: Path):
 
     browser = _FakeBrowser(_Gone(STATE, _FakePage()), connected=False)
     with _playwright(browser):
-        with pytest.raises(SessionError, match="Close the tab"):
+        with pytest.raises(SessionError, match="Press Enter here"):
             await capture("instagram", tmp_path / "s.json", timeout_sec=5)
 
 
