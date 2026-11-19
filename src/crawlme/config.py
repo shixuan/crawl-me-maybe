@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Annotated, Any
 
-from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from crawlme.digest.fetcher.base import DEFAULT_UA
 
@@ -52,8 +54,9 @@ class Settings(BaseSettings):
     fetch_max_retries: int = 3
     # "http" dispatches per platform; "browser" renders every candidate.
     fetcher: str = "http"
-    # Playwright storage-state path; empty uses an anonymous context.
-    browser_storage_state: str = ""
+    # Playwright storage-state paths; empty uses an anonymous context.
+    browser_storage_state: Annotated[list[str], NoDecode] = []
+
     # Per-page byte cap for sub-responses held in memory before storage.
     browser_max_payload_bytes: int = 8 * 1024 * 1024
     # Maximum scrolls on platforms that request scrolling.
@@ -75,3 +78,12 @@ class Settings(BaseSettings):
     # DEBUG | INFO | WARNING | ERROR | CRITICAL | OFF
     log_level: str = "INFO"
     log_format: str = "console"  # console | json
+
+    @field_validator("browser_storage_state", mode="before")
+    @classmethod
+    def _session_paths(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            if value.lstrip().startswith("["):
+                return json.loads(value)
+            return [value] if value else []
+        return value

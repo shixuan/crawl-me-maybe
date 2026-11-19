@@ -44,7 +44,7 @@ async def cmd_run(args: argparse.Namespace) -> Report:
     if args.session is not None:
         # A session supplies browser state without forcing browser fetching for every URL.
         cfg.browser_storage_state = args.session
-    _check_session(args)
+    _check_session(args, cfg.browser_storage_state)
     _check_extras(cfg, args)
     if args.log_level is not None:
         cfg.log_level = args.log_level
@@ -126,7 +126,7 @@ async def cmd_run(args: argparse.Namespace) -> Report:
     )
 
     await engine.run(CrawlInput(goal, task))
-    return make_report({**pipeline.summary(), "session": args.session or "", "platform": _walled_platform(args)})
+    return make_report({**pipeline.summary(), "session": cfg.browser_storage_state, "platform": _walled_platform(args)})
 
 
 # Map missing dependencies to install instructions.
@@ -142,8 +142,10 @@ def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
     if any(_looks_like_a_feed(u) for u in _declared_seeds(args)):
         wanted.append(("feedparser", "a feed among the seeds"))
     # Explicit browser use can be checked before creating a run.
-    if cfg.fetcher == "browser" or args.session:
-        wanted.append(("playwright", "--session" if args.session else "--fetcher browser"))
+    if cfg.browser_storage_state:
+        wanted.append(("playwright", "--session" if args.session else "BROWSER_STORAGE_STATE"))
+    elif cfg.fetcher == "browser":
+        wanted.append(("playwright", "--fetcher browser"))
     missing = [(m, flag) for m, flag in wanted if importlib.util.find_spec(m) is None]
     if not missing:
         return
@@ -157,16 +159,11 @@ def _check_extras(cfg: Settings, args: argparse.Namespace) -> None:
     raise ValueError("\n".join(lines))
 
 
-def _check_session(args: argparse.Namespace) -> None:
-    """Validate a supplied session path and require sessions for declared walled seeds."""
+def _check_session(args: argparse.Namespace, paths: list[str]) -> None:
+    """Require session input for declared platforms that need login."""
+    if paths:
+        return
     walled = _walled_platform(args)
-    if args.session:
-        if Path(args.session).is_file():
-            return
-        message = f"no session file at {args.session}"
-        if walled:
-            message += f"\n  Make one with:  crawl session {args.session} --feed {walled}"
-        raise ValueError(message)
     if not walled:
         return
     raise ValueError(

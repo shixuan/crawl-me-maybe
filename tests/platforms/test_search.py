@@ -54,3 +54,36 @@ def test_reddit_source_coverage():
     assert reddit.seed_contains("https://www.reddit.com/r/deals/", post)
     assert reddit.seed_contains("https://www.reddit.com/user/writer/", post)
     assert not reddit.seed_contains("https://www.reddit.com/r/deals_other/", post)
+
+
+def test_reddit_search_reads_rendered_search_cards():
+    import datetime
+    from pathlib import Path
+
+    html = Path(__file__).with_name("data").joinpath("reddit_search.html").read_text()
+    posts = reddit.parse_search(html, reddit.search_url("Toronto events"), [])
+    assert len(posts) == 2
+    assert posts[0].item_id == "t3_1xztulx"
+    assert posts[0].author == "readingitnowonline"
+    assert posts[0].text == "Event Cancelled: The Unauthorized Hallmark(ish) Parody Musical"
+    assert posts[0].published_at == datetime.datetime(2026, 11, 18, 23, 12, 57, 62000, tzinfo=datetime.timezone.utc)
+    assert all(p.text and p.published_at for p in posts)
+    assert len({p.permalink for p in posts}) == 2
+
+
+@pytest.mark.parametrize("metadata", ["{invalid", "[]", '{"profile": null}'])
+def test_reddit_search_keeps_posts_without_author_metadata(metadata):
+    from pathlib import Path
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(Path(__file__).with_name("data").joinpath("reddit_search.html").read_text(), "lxml")
+    card = soup.select_one('[data-testid="search-sdui-post"]')
+    card["data-faceplate-tracking-context"] = metadata
+    card.select_one("time").decompose()
+    card.select_one('[data-testid="post-title-text"]').decompose()
+    posts = reddit.parse_search(str(card), reddit.search_url("events"), [])
+    assert len(posts) == 1
+    assert posts[0].author == ""
+    assert posts[0].text == "Event Cancelled: The Unauthorized Hallmark(ish) Parody Musical"
+    assert posts[0].published_at is not None

@@ -124,15 +124,14 @@ async def test_missing_session_warns_only_for_selected_platforms(tmp_path, caplo
 
     client = MagicMock()
     client.chat = AsyncMock(return_value=SimpleNamespace(content='{"queries": []}', truncated=False))
-    path = str(tmp_path / "missing.json")
     with patch.object(Client, "from_settings_if_configured", return_value=client):
-        expander = _build_seed_expander(Settings(browser_storage_state=path, search_platforms=platforms))._search
+        expander = _build_seed_expander(Settings(search_platforms=platforms), storage_state=None)._search
     assert not caplog.records
     await expander.search(_goal(), seeds, 4)
     warnings = [record.getMessage() for record in caplog.records if "no session file found" in record.getMessage()]
     assert len(warnings) == int(warns)
     if warns:
-        assert f"crawl session {path} --feed instagram" in warnings[0]
+        assert "crawl session ./instagram-session.json --feed instagram" in warnings[0]
     if not seeds and platforms == ["instagram"]:
         client.chat.assert_not_awaited()
 
@@ -240,7 +239,7 @@ async def test_search_count_controls_prompt_and_requests(count):
         return_value=SimpleNamespace(content=json.dumps({"queries": [f"query {i}" for i in range(6)]}), truncated=False)
     )
     with patch.object(Client, "from_settings_if_configured", return_value=client):
-        expander = _build_seed_expander(Settings(expand_search_count=count))._search
+        expander = _build_seed_expander(Settings(expand_search_count=count), storage_state=None)._search
     adapter = MagicMock(
         PLATFORM="reddit",
         NEEDS_SESSION=False,

@@ -94,8 +94,10 @@ def main() -> None:
         "--session",
         "--cookies",  # the name this shipped under
         dest="session",
+        nargs="+",
+        action="extend",
         default=None,
-        help="Path to a Playwright storage_state JSON, for crawling as a logged-in session",
+        help="One or more Playwright storage_state JSON files; later files override duplicate entries",
     )
     run_p.add_argument(
         "--recall",

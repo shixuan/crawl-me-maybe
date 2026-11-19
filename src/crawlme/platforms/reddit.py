@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import html as html_mod
+import json
 import logging
 import re
 from urllib.parse import urlencode, urljoin, urlparse
@@ -72,7 +73,42 @@ def search_url(query: str) -> str:
 
 def parse_search(html: str, url: str, payloads: list[Payload]) -> list[FeedItem]:
     """Read posts from a rendered search page."""
-    return parse_listing(html, url, payloads).all
+    seen: dict[str, FeedItem] = {}
+    soup = BeautifulSoup(html, "lxml")
+    for card in soup.select('[data-testid="search-sdui-post"]'):
+        link = card.select_one('a[data-testid="post-title"]')
+        if link is None:
+            continue
+        permalink = urljoin(url, str(link.get("href", "")))
+        if not claims_url(permalink) or not _POST_URL.search(urlparse(permalink).path):
+            continue
+        parts = urlparse(permalink)
+        permalink = parts._replace(path=parts.path.rstrip("/") + "/", query="", fragment="").geturl()
+        title = card.select_one('[data-testid="post-title-text"]')
+        text = title.get_text(" ", strip=True) if title else str(link.get("aria-label", ""))
+        published = card.select_one("time[datetime]")
+        timeago = card.select_one("faceplate-timeago[ts]")
+        stamp = str(published["datetime"]) if published else str(timeago["ts"]) if timeago else None
+        try:
+            metadata = json.loads(str(card.get("data-faceplate-tracking-context", "{}")))
+        except (ValueError, TypeError):
+            metadata = {}
+        profile = metadata.get("profile") if isinstance(metadata, dict) else None
+        author = profile.get("name", "") if isinstance(profile, dict) else ""
+        seen.setdefault(
+            permalink,
+            FeedItem(
+                permalink=permalink,
+                platform=PLATFORM,
+                item_id=str(card.get("data-thingid", "")),
+                author=author if isinstance(author, str) else "",
+                text=text,
+                published_at=_timestamp(stamp),
+            ),
+        )
+    for post in parse_listing(html, url, payloads).all:
+        seen.setdefault(post.permalink, post)
+    return list(seen.values())
 
 
 def claims_url(url: str) -> bool:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from enum import Enum, auto
-from pathlib import Path
+from typing import Any
 
 from crawlme.analysis import Analyzer
 from crawlme.checkpoint import Checkpointer
@@ -38,6 +38,7 @@ from crawlme.scheduler.workers import (
     RankingWorker,
 )
 from crawlme.seeds import SeedExpander, SeedProposer, SeedSearch
+from crawlme.sessions import load_sessions
 from crawlme.urls import Canonicalizer
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ def create_crawl(
     """Assemble crawl dependencies; explicit None disables ranker, seed_expander and grouper."""
     if tracking is not None and run_state is not None and tracking.state is not run_state:
         raise ValueError("run_state must be tracking.state when both are supplied")
+    session = load_sessions(settings.browser_storage_state)
     budget = budget if budget is not None else TokenBudget(goal.max_tokens if goal else 0)
     if tracking is None:
         run_state = (
@@ -108,7 +110,9 @@ def create_crawl(
     if ranker is not None:
         logger.info("ranking with the LLM")
     if isinstance(seed_expander, _Default):
-        seed_expander = _build_seed_expander(settings, budget=budget) if settings.expand_seeds else None
+        seed_expander = (
+            _build_seed_expander(settings, storage_state=session, budget=budget) if settings.expand_seeds else None
+        )
     if goal_enhancer is None:
         goal_enhancer = GoalEnhancer.from_settings(settings, budget=budget)
     if dedup is None:
@@ -122,7 +126,7 @@ def create_crawl(
         )
     if fetch is None:
         if fetcher is None:
-            fetcher = _build_fetcher(settings)
+            fetcher = _build_fetcher(settings, storage_state=session)
         fetch = FetchWorker(
             fetcher,
             robots,
@@ -287,13 +291,13 @@ def _build_harvester(settings: Settings, canonicalizer: Canonicalizer) -> Harves
     return Harvester(canonicalizer, adapters=adapters_for(settings))
 
 
-def _build_fetcher(settings: Settings) -> Fetcher:
+def _build_fetcher(settings: Settings, *, storage_state: dict[str, Any] | None) -> Fetcher:
     """Force browser fetching when configured; otherwise dispatch per URL."""
     if settings.fetcher == "browser":
-        return _build_browser_fetcher(settings)
+        return _build_browser_fetcher(settings, storage_state=storage_state)
     return DispatchingFetcher(
         http=_build_http_fetcher(settings),
-        browser=_build_browser_fetcher(settings),
+        browser=_build_browser_fetcher(settings, storage_state=storage_state),
         adapters=adapters_for(settings),
     )
 
@@ -306,14 +310,14 @@ def _build_http_fetcher(settings: Settings) -> Fetcher:
     )
 
 
-def _build_browser_fetcher(settings: Settings) -> Fetcher:
+def _build_browser_fetcher(settings: Settings, *, storage_state: dict[str, Any] | None) -> Fetcher:
     """Construct the lazy browser fetcher without importing or launching Playwright."""
     from crawlme.digest.fetcher import PlaywrightFetcher
 
     # Enable scrolling if any adapter requests it; settings supply the limit.
     scrolls = max((a.SCROLLS for a in adapters_for(settings)), default=0)
     return PlaywrightFetcher(
-        storage_state=settings.browser_storage_state or None,
+        storage_state=storage_state,
         user_agents=list(settings.user_agents),
         timeout=settings.fetch_timeout_read,
         keep_payload=_payload_filter(settings),
@@ -327,12 +331,13 @@ def _build_ranker(settings: Settings, llm: Ranker | None = None) -> Ranker | Non
     return llm
 
 
-def _build_seed_expander(settings: Settings, *, budget: TokenBudget | None = None) -> SeedExpander:
+def _build_seed_expander(
+    settings: Settings, *, storage_state: dict[str, Any] | None, budget: TokenBudget | None = None
+) -> SeedExpander:
     """Assemble search and proposals with a shared seeds-stage client."""
     from crawlme.digest.fetcher import PlaywrightFetcher
     from crawlme.platforms import FEEDS
 
-    has_session = bool(settings.browser_storage_state and Path(settings.browser_storage_state).is_file())
     adapters = tuple(FEEDS.values())
     platforms = tuple(settings.search_platforms)
     client = Client.from_settings_if_configured(
@@ -346,9 +351,9 @@ def _build_seed_expander(settings: Settings, *, budget: TokenBudget | None = Non
         adapters=adapters,
         platforms=platforms,
         search_count=settings.expand_search_count,
-        missing_session=None if has_session else settings.browser_storage_state or "",
+        missing_session=None if storage_state else "",
         fetcher_factory=lambda: PlaywrightFetcher(
-            storage_state=settings.browser_storage_state if has_session else None,
+            storage_state=storage_state,
             timeout=settings.fetch_timeout_read,
             user_agents=list(settings.user_agents),
             keep_payload=lambda url, content_type: any(a.keeps_payload(url, content_type) for a in adapters),

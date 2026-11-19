@@ -79,10 +79,11 @@ def test_repair_context_over_name():
 
 
 def test_missing_session_is_shared(tmp_path):
-    from crawlme.digest.fetcher.browser import _load_storage_state
+    from crawlme.errors import Error
+    from crawlme.sessions import load_sessions
 
-    with pytest.raises(FetchError) as caught:
-        _load_storage_state(str(tmp_path / "missing.json"))
+    with pytest.raises(Error) as caught:
+        load_sessions([str(tmp_path / "missing.json")])
     assert caught.value.scope == Scope.DEPENDENCY
     assert ErrorPolicy().decide(caught.value, context()).action == Action.ABORT
 

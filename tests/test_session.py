@@ -7,7 +7,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -21,14 +21,13 @@ def _args(**kw) -> argparse.Namespace:
 
 
 @pytest.mark.asyncio
-async def test_no_cookies(tmp_path: Path, monkeypatch):
-    """A logged-out browser produces a state that loads fine and crawls
-    nothing, which on a walled platform reads as an empty site."""
+async def test_no_cookies(tmp_path: Path):
+    """An empty capture must not create a session file."""
     out = tmp_path / "s.json"
     with patch("crawlme.cli.session._browser_state", AsyncMock(return_value={"cookies": [], "origins": []})):
-        with pytest.raises(SessionError, match="never logged in"):
+        with pytest.raises(SessionError, match="no cookies"):
             await capture("instagram", out)
-    assert not out.exists(), "nothing is written when the login did not take"
+    assert not out.exists()
 
 
 @pytest.mark.asyncio
@@ -116,7 +115,7 @@ def _playwright(browser):
     fake.async_playwright = lambda: cm  # type: ignore[attr-defined]
     parent = sys.modules.get("playwright") or types.ModuleType("playwright")
     with patch.dict(sys.modules, {"playwright": parent, "playwright.async_api": fake}):
-        yield
+        yield pw
 
 
 STATE = {"cookies": [{"name": "sessionid", "value": "x", "domain": ".instagram.com"}], "origins": []}
@@ -151,7 +150,7 @@ async def test_quitting_the_browser_says_so(tmp_path: Path):
 
     browser = _FakeBrowser(_Gone(STATE, _FakePage()), connected=False)
     with _playwright(browser):
-        with pytest.raises(SessionError, match="Close the tab"):
+        with pytest.raises(SessionError, match="Press Enter here"):
             await capture("instagram", tmp_path / "s.json", timeout_sec=5)
 
 
@@ -228,3 +227,60 @@ def test_unknown_session_platform():
 
     with pytest.raises(SessionError, match="Unknown session platform"):
         _login_url("unknown")
+
+
+async def test_cdp_exports_only_selected_platform_and_leaves_browser_open(tmp_path):
+    page = MagicMock(url="https://www.reddit.com/r/test/")
+    context = MagicMock(pages=[page])
+    context.storage_state = AsyncMock(
+        return_value={
+            "cookies": [
+                {"name": "session", "value": "test", "domain": ".reddit.com"},
+                {"name": "other", "value": "private", "domain": ".notreddit.com"},
+            ],
+            "origins": [
+                {"origin": "https://www.reddit.com", "localStorage": [{"name": "key", "value": "value"}]},
+                {"origin": "https://reddit.com.example.org", "localStorage": []},
+            ],
+        }
+    )
+    context.close = AsyncMock()
+    browser = MagicMock(contexts=[context])
+    browser.close = AsyncMock()
+    out = tmp_path / "session.json"
+    with _playwright(browser) as pw, patch("crawlme.cli.session._wait_for_a_person", AsyncMock(return_value=True)):
+        pw.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+        state = await capture("reddit", out, cdp_url="http://127.0.0.1:9222")
+        pw.chromium.connect_over_cdp.assert_awaited_once_with("http://127.0.0.1:9222", timeout=30_000)
+        pw.chromium.launch.assert_not_awaited()
+    assert [c["domain"] for c in state["cookies"]] == [".reddit.com"]
+    assert [o["origin"] for o in state["origins"]] == ["https://www.reddit.com"]
+    assert json.loads(out.read_text()) == state
+    context.new_page.assert_not_called()
+    context.close.assert_not_awaited()
+    browser.close.assert_not_awaited()
+
+
+async def test_cdp_connection_failure_saves_nothing(tmp_path):
+    out = tmp_path / "session.json"
+    with _playwright(MagicMock()) as pw:
+        pw.chromium.connect_over_cdp = AsyncMock(side_effect=OSError("unreachable"))
+        with pytest.raises(SessionError, match="could not connect"):
+            await capture("reddit", out, cdp_url="http://127.0.0.1:9222")
+    assert not out.exists()
+
+
+async def test_cdp_timeout_keeps_browser_open_and_existing_file(tmp_path):
+    context = MagicMock(pages=[MagicMock(url="https://www.reddit.com/")])
+    context.close = AsyncMock()
+    browser = MagicMock(contexts=[context])
+    browser.close = AsyncMock()
+    out = tmp_path / "session.json"
+    out.write_text("existing")
+    with _playwright(browser) as pw, patch("crawlme.cli.session._wait_for_a_person", AsyncMock(return_value=False)):
+        pw.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+        with pytest.raises(SessionError, match="within"):
+            await capture("reddit", out, cdp_url="http://127.0.0.1:9222")
+    assert out.read_text() == "existing"
+    context.close.assert_not_awaited()
+    browser.close.assert_not_awaited()
