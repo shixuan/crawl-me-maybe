@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from crawlme.platforms import PageProblem
 from crawlme.runtime import Limits, Progress
+from crawlme.runtime.clock import RunClock
 
 
 @dataclass
@@ -52,12 +52,9 @@ def _budget_tokens(
     return None
 
 
-def _budget_time(
-    p: Progress,
-    lim: Limits,
-) -> StopReason | None:
-    if lim.max_duration_sec > 0 and p.started_at > 0 and (time.monotonic() - p.started_at) >= lim.max_duration_sec:
-        return StopReason("BUDGET_TIME", f"ran {lim.max_duration_sec}s")
+def _budget_time(clock: RunClock) -> StopReason | None:
+    if clock.expired():
+        return StopReason("BUDGET_TIME", f"ran {clock.limit}s")
     return None
 
 
@@ -121,6 +118,7 @@ def check_stop(
     limits: Limits,
     *,
     tokens_used: int,
+    clock: RunClock,
     queued: int,
     waiting: int,
     ranking: int,
@@ -131,7 +129,7 @@ def check_stop(
     results = (
         _budget_pages(progress, limits),
         _budget_tokens(tokens_used, limits),
-        _budget_time(progress, limits),
+        _budget_time(clock),
         _fatal(progress, limits),
         _platform_refused(progress, limits),
         _adapter_empty(progress, drained),

@@ -5,7 +5,6 @@ import copy
 import datetime
 import json
 import sqlite3
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -231,7 +230,7 @@ async def test_recovery_keeps_limits(tmp_path):
     saved["task"]["start_at"] = "2000-01-01T00:00:00+00:00"
     fresh, _, _, _ = build(tmp_path, storage=reopen(first), budget=TokenBudget(10))
     await fresh.engine.run(CrawlInput(goal, Task.model_validate(saved["task"]), checkpoint=saved))
-    assert 12 <= time.monotonic() - fresh.pipeline.run_state.progress.started_at < 15
+    assert 12 <= fresh.pipeline.run_state.clock.elapsed() < 15
     assert fresh.pipeline._checkpointer.budget.used == fresh.pipeline.summary()["tokens_used"] == 6
     assert fresh.pipeline._checkpointer.budget.by_stage["ranking"].calls == 1
     assert fresh.pipeline._robots.next_allowed_at("example.com") == datetime.datetime.fromisoformat(
@@ -514,3 +513,26 @@ async def test_settle_freezes_before_abort(tmp_path, monkeypatch, stop):
     finally:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_seed_search_uses_run_deadline(tmp_path):
+    scheduler, goal, task, fetched = build(tmp_path)
+    goal.max_duration_sec = 1
+    seed = candidate()
+    cancelled = asyncio.Event()
+
+    async def search(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    scheduler.pipeline.expand_seeds = search
+    await asyncio.wait_for(scheduler.pipeline.startup(goal, [seed]), timeout=5)
+    await scheduler.engine.run(CrawlInput(goal, task))
+    assert cancelled.is_set()
+    assert "BUDGET_TIME" in task.stopping_reason
+    assert not fetched
+    saved = snapshot(scheduler)
+    assert saved["state"]["progress"]["started_at"] >= 1
+    assert seed.url.canonical in json.dumps(saved["frontier"])

@@ -28,8 +28,7 @@ def test_reset_counters():
 
     assert ctx.limits.max_pages == 7
     assert ctx.limits.max_tokens == 123
-    assert ctx.limits.max_duration_sec == 60
-    assert ctx.progress.started_at > 0
+    assert ctx.clock.elapsed() == 0
     assert ctx.progress.pages_fetched == 0
 
 

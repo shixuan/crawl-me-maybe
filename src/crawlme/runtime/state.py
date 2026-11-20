@@ -5,13 +5,13 @@ from __future__ import annotations
 import collections
 import dataclasses
 import datetime
-import time
 from typing import Any
 
 from crawlme.checkpoint import Checkpointable
 from crawlme.digest import Page
 from crawlme.goals import Goal
 from crawlme.pioneer import FrontierItem
+from crawlme.runtime.clock import RunClock
 from crawlme.util import notify
 
 # How many of a source's own analyzed pages its window keeps.
@@ -120,7 +120,6 @@ class Limits:
 
     max_pages: int = 0
     max_tokens: int = 0
-    max_duration_sec: int = 0
     max_relevant: int = 0
     relevance_threshold: float = 0.7
     # Diagnostic mode: nothing the ranker rejects is discarded, it ranks
@@ -138,7 +137,6 @@ class Progress:
     pages_fetched: int = 0
     in_flight: int = 0
     relevant_found: int = 0
-    started_at: float = 0.0
     # The first failure that was about the run rather than one page.
     fatal_error: str = ""
     # Record the first run-wide platform refusal.
@@ -200,6 +198,7 @@ class RunState(Checkpointable):
     limits: Limits
     progress: Progress
     stats: Stats
+    clock: RunClock = dataclasses.field(default_factory=RunClock)
     page_states: dict[str, PageState] = dataclasses.field(default_factory=dict)
     pages: PageBook = dataclasses.field(default_factory=PageBook)
     seeds: dict[str, SeedState] = dataclasses.field(default_factory=lambda: collections.defaultdict(SeedState))
@@ -253,13 +252,12 @@ class RunState(Checkpointable):
         self.limits = Limits(
             max_pages=goal.max_pages,
             max_tokens=goal.max_tokens,
-            max_duration_sec=goal.max_duration_sec,
             max_relevant=goal.max_relevant,
             relevance_threshold=goal.relevance_threshold,
             recall=goal.recall,
             since=goal.since,
         )
-        self.progress = Progress(started_at=time.monotonic())
+        self.progress = Progress()
         self.stats.reset()
         self.page_states.clear()
         self.pages = PageBook()
@@ -271,7 +269,8 @@ class RunState(Checkpointable):
 
     def dump(self) -> dict[str, Any]:
         progress = dataclasses.asdict(self.progress)
-        progress["started_at"] = max(0, time.monotonic() - self.progress.started_at)
+        # The checkpoint key historically stores elapsed seconds.
+        progress["started_at"] = self.clock.elapsed()
         progress["in_flight"] = 0
         page_states = []
         for state in self.page_states.values():
@@ -307,8 +306,8 @@ class RunState(Checkpointable):
         self.page_states = {state.item.item_id: state for state in page_states}
         progress = dict(data["progress"])
         progress.pop("tokens_used", None)  # Older snapshots duplicated the budget total.
+        self.clock.restore(progress.pop("started_at"))
         self.progress = Progress(**progress)
-        self.progress.started_at = time.monotonic() - self.progress.started_at
         self.progress.fatal_error = ""
         self.stats = Stats(**data["stats"])
         self.seeds.clear()

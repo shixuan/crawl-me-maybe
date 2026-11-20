@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from contextlib import closing
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -215,7 +214,7 @@ async def test_retry_retains_source(tmp_path, rank_child):
 
 
 @pytest.mark.parametrize("stop", ["tokens", "time", "user"])
-async def test_waiting_analysis_obeys_stop(tmp_path, stop, monkeypatch):
+async def test_waiting_analysis_obeys_stop(tmp_path, stop):
     """A waiting page must recheck engine policy after receiving an analysis slot."""
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
@@ -244,8 +243,7 @@ async def test_waiting_analysis_obeys_stop(tmp_path, stop, monkeypatch):
         if stop == "tokens":
             scheduler.pipeline._checkpointer.budget.record(goal.max_tokens, 0)
         elif stop == "time":
-            expired_at = scheduler.pipeline.run_state.progress.started_at + 61
-            monkeypatch.setattr("crawlme.scheduler.stop_conds.time", SimpleNamespace(monotonic=lambda: expired_at))
+            scheduler.pipeline.run_state.clock.restore(61)
             scheduler.engine._monitor._notify()
         else:
             run.cancel()

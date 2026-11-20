@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -340,7 +339,7 @@ class PagePipeline(Pipeline[PageInput, None]):
                 page.title,
                 len(candidates),
                 n_allowed,
-                (time.monotonic() - self.run_state.progress.started_at),
+                self.run_state.clock.elapsed(),
             )
 
             self.run_state.page_states.pop(item.item_id, None)

@@ -73,7 +73,7 @@ def test_summary_stats(tmp_path):
     sched = _make_sched()
     sched.pipeline._storage.db_path = str(tmp_path / "db" / "crawl.db")
     sched.pipeline._goal = _goal()
-    _set_context(sched, pages_fetched=12, tokens_used=5000, started_at=100.0)
+    _set_context(sched, pages_fetched=12, tokens_used=5000)
     sched.pipeline.run_state.stats.links_discovered = 123
     sched.pipeline.run_state.stats.candidates_ranked = 45
     sched.pipeline.run_state.stats.fetch_errors = 2

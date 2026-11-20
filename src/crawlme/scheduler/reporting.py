@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from crawlme.runtime import RunState, SeedState
@@ -43,8 +42,7 @@ def summary(state: RunState, *, tokens_used: int) -> dict[str, Any]:
         "seeds_asked": state.seeds_asked,
         "rejected_seeds": list(state.rejected_seeds),
     }
-    if state.progress.started_at:
-        report["duration_sec"] = round(time.monotonic() - state.progress.started_at, 1)
+    report["duration_sec"] = round(state.clock.elapsed(), 1)
     if stats.not_content:
         report["not_content"] = dict(stats.not_content)
     if state.progress.listings_seen:

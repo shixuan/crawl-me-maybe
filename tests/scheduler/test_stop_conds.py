@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from crawlme.runtime import Limits, Progress
+from crawlme.runtime.clock import RunClock
 from crawlme.scheduler.stop_conds import can_drain_analysis, check_stop
 
 
@@ -12,8 +11,8 @@ def _frontier(size: int = 0, scoring: int = 0, waiting: int = 0) -> dict:
     return dict(queued=size, ranking=scoring, waiting=waiting, domain_refused=0)
 
 
-def _check(frontier: dict, limits: Limits, progress: Progress, tokens_used: int = 0):
-    return check_stop(progress, limits, tokens_used=tokens_used, **frontier)
+def _check(frontier: dict, limits: Limits, progress: Progress, tokens_used: int = 0, clock=None):
+    return check_stop(progress, limits, tokens_used=tokens_used, clock=clock or RunClock(), **frontier)
 
 
 def _split(**kw) -> tuple[Limits, Progress, int]:
@@ -25,7 +24,6 @@ def _split(**kw) -> tuple[Limits, Progress, int]:
 _LIMIT_FIELDS = {
     "max_pages",
     "max_tokens",
-    "max_duration_sec",
     "max_relevant",
     "relevance_threshold",
     "recall",
@@ -84,8 +82,10 @@ def test_budget_tokens(kw, fires):
     [(1, 10, True), (3600, 0, False)],
 )
 def test_budget_time(max_duration_sec, elapsed, fires):
-    lim, prog, _ = _split(max_duration_sec=max_duration_sec, started_at=time.monotonic() - elapsed)
-    assert ("BUDGET_TIME" in _codes(_check(_frontier(), lim, prog))) is fires
+    clock = RunClock()
+    clock.start(max_duration_sec)
+    clock.restore(elapsed)
+    assert ("BUDGET_TIME" in _codes(_check(_frontier(), Limits(), Progress(), clock=clock))) is fires
 
 
 # -- frontier drained ----------------------------------------------------
@@ -192,8 +192,6 @@ def test_healthy_quiet():
             pages_fetched=10,
             max_tokens=100000,
             tokens_used=5000,
-            max_duration_sec=3600,
-            started_at=time.monotonic(),
             in_flight=2,
         ),
     )

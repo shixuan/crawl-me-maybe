@@ -103,7 +103,19 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
         preserve_since: bool = False,
     ) -> None:
         """Keep user seeds recoverable even if startup model calls fail."""
+        clock = self.run_state.clock
+        clock.start(goal.max_duration_sec)
         await self.ingest_seeds(goal, candidates, allowed_domains=allowed_domains)
+        try:
+            await asyncio.wait_for(
+                self._prepare_sources(goal, candidates, allowed_domains, preserve_since), clock.remaining()
+            )
+        except asyncio.TimeoutError:
+            logger.info("time budget exhausted during startup")
+
+    async def _prepare_sources(
+        self, goal: Goal, candidates: list[Candidate], allowed_domains: set[str] | None, preserve_since: bool
+    ) -> None:
         try:
             # Enhance the goal when configured; keep the original if enhancement fails.
             logger.info("reading the goal with the model")
@@ -167,6 +179,7 @@ class CrawlPipeline(Pipeline[CrawlInput, Task]):
 
     def prepare(self, goal: Goal, task: Task, context: PipelineContext) -> None:
         self.run_state.reset(goal=goal)
+        self.run_state.clock.start(goal.max_duration_sec)
         self._goal, self._task_id = goal, task.task_id
         self._events = EventEmitter(self._storage, task.task_id)
         self._context = context

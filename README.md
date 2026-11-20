@@ -119,7 +119,7 @@ Name the fields you want in the prompt, such as “shop, offer and deadline”. 
 | `--max-relevant` | `0` | Relevant-page target before grouping (`0` disables). In-flight analysis may overshoot |
 | `--page-budget` | `500` | Maximum pages (`0` means unlimited). A positive value conflicts with `--draining` |
 | `--token-budget` | `500000` | Shared LLM token budget |
-| `--time-budget` | `3600` | Run duration in seconds |
+| `--time-budget` | `3600` | Run duration in seconds, including goal enhancement and seed expansion |
 | `--domain-budget` | `50` | Pages per domain (`0` means unlimited) |
 | `--recall` | off | Keep LLM-rejected candidates at low priority and disable source retirement. URL filters still apply |
 | `--analysis` | `on` | Per-page classification and field extraction (`on` or `off`) |

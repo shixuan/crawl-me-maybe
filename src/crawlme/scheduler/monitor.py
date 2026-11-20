@@ -69,6 +69,7 @@ class StopMonitor(Monitor):
             self.runtime.progress,
             self.runtime.limits,
             tokens_used=self.budget.used,
+            clock=self.runtime.clock,
             queued=self.frontier.size,
             waiting=self.frontier.waiting_size,
             ranking=self.frontier.scoring,
@@ -103,14 +104,10 @@ class StopMonitor(Monitor):
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 return []
-            limits, progress = self.runtime.limits, self.runtime.progress
-            run_deadline = (
-                progress.started_at + limits.max_duration_sec
-                if limits.max_duration_sec > 0 and progress.started_at > 0
-                else None
-            )
-            deadlines = [d for d in (deadline, run_deadline) if d is not None]
-            timeout = max(0, min(deadlines) - now) if deadlines else None
+            timeout = self.runtime.clock.remaining()
+            if deadline is not None:
+                until_deadline = max(0.0, deadline - now)
+                timeout = until_deadline if timeout is None else min(timeout, until_deadline)
             try:
                 await asyncio.wait_for(self._wait_for_update(revision), timeout=timeout)
             except asyncio.TimeoutError:

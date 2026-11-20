@@ -60,7 +60,6 @@ def _item() -> FrontierItem:
 _LIMIT_FIELDS = {
     "max_pages",
     "max_tokens",
-    "max_duration_sec",
     "max_relevant",
     "relevance_threshold",
     "recall",
@@ -70,9 +69,11 @@ _LIMIT_FIELDS = {
 
 def _ctx(**kw) -> RunState:
     """A run context with each field routed to the half that owns it."""
+    duration = kw.pop("max_duration_sec", 0)
     lim = {k: v for k, v in kw.items() if k in _LIMIT_FIELDS}
     prog = {k: v for k, v in kw.items() if k not in _LIMIT_FIELDS and k != "tokens_used"}
     state = RunState(limits=Limits(**lim), progress=Progress(**prog), stats=Stats())
+    state.clock.start(duration)
     return state
 
 
