@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.8.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.8.0...v0.8.1) (2026-11-19)
+
+
+### Features
+
+* refine reddit search ([44246fe](https://github.com/shixuan/crawl-me-maybe/commit/44246fef80fc7c05c63a5b3f172dd8e453912dd5))
+* **session:** export from external browsers ([6bebc66](https://github.com/shixuan/crawl-me-maybe/commit/6bebc6616b04f66c5e6042e1a8ce230fdd922fdd))
+* **session:** merge multiple session files ([2b701e1](https://github.com/shixuan/crawl-me-maybe/commit/2b701e16f1b9fd0556024dd6777c8ba7b4173682))
+
+
+### Fixes
+
+* **reddit:** parse search result cards ([316944f](https://github.com/shixuan/crawl-me-maybe/commit/316944f8fd5d230042d4f3c0fee602b5f463c871))
+
+
+### Changed
+
+* **frontier:** unify budget checks ([76fa7a7](https://github.com/shixuan/crawl-me-maybe/commit/76fa7a71b855ea9a12c2e1e501f0ac7f05233e05))
+* **seeds:** separate seed discovery ([01ea747](https://github.com/shixuan/crawl-me-maybe/commit/01ea747c586d75f9db33e9afd9d3b95c6615ebf9))
+
+
+### Chores
+
+* release 0.8.1 ([1399f70](https://github.com/shixuan/crawl-me-maybe/commit/1399f70f090da6fb712d0f08e5c3fa4b32819901))
+
 ## [0.8.0](https://github.com/shixuan/crawl-me-maybe/compare/v0.7.3...v0.8.0) (2026-11-18)
 
 
