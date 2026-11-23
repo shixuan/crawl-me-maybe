@@ -343,7 +343,7 @@ def test_time_policy_is_independent_of_requested_fields(policy):
     result = _parse_analysis(
         {
             "classification": "RELEVANT",
-            "time": {"status": "extracted", "ends_on": {"value": "August 16, 2027", "evidence": text}},
+            "time": {"status": "extracted", "ends_on": {"value": "2027-08-16", "evidence": text}},
         },
         _page(text),
         goal,
@@ -383,8 +383,8 @@ def test_inverted_time_window_rejected():
                 "classification": "RELEVANT",
                 "time": {
                     "status": "extracted",
-                    "starts_on": {"value": "August 20, 2027", "evidence": text},
-                    "ends_on": {"value": "August 16, 2027", "evidence": text},
+                    "starts_on": {"value": "2027-08-20", "evidence": text},
+                    "ends_on": {"value": "2027-08-16", "evidence": text},
                 },
             },
             _page(text),
@@ -397,11 +397,11 @@ def test_inverted_time_window_rejected():
 @pytest.mark.parametrize(
     "value,evidence,endpoint,expected",
     [
-        ("September 27, 2026", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
-        ("September 25, 2026", "Valid September 25\u201327, 2026.", "starts_on", datetime.date(2026, 9, 25)),
-        ("September 25\u201327, 2026", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
+        ("2026-09-27", "Valid September 25\u201327, 2026.", "ends_on", datetime.date(2026, 9, 27)),
+        ("2026-09-25", "Valid September 25\u201327, 2026.", "starts_on", datetime.date(2026, 9, 25)),
+        ("2026-11-22", "Valid from 11/19-11/22.", "ends_on", datetime.date(2026, 11, 22)),
         (
-            "Oct. 31",
+            "2026-10-31",
             "From \U0001d5e2\U0001d5f0\U0001d601. \U0001d7ed\u2013\U0001d7ef\U0001d7ed.",
             "ends_on",
             datetime.date(2026, 10, 31),
@@ -449,8 +449,8 @@ def _time_reply(evidence):
             "summary": "A one-day event.",
             "time": {
                 "status": "extracted",
-                "starts_on": {"value": "May 12, 2027", "evidence": "May 12, 2027"},
-                "ends_on": {"value": "May 12, 2027", "evidence": evidence},
+                "starts_on": {"value": "2027-05-12", "evidence": "May 12, 2027"},
+                "ends_on": {"value": "2027-05-12", "evidence": evidence},
             },
         }
     )
@@ -507,7 +507,7 @@ async def test_time_correction_fails(failure, caplog):
             _page("One day only.\nMay 12, 2027"), Goal(prompt="events", time_policy="event dates")
         )
     assert len(client.calls) == 2
-    assert "analysis.time" in caplog.text
+    assert "analysis.invalid" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -516,7 +516,7 @@ async def test_time_correction_fails(failure, caplog):
     [
         {"status": "not_stated", "reason": "No validity date is stated."},
         {"status": "ambiguous", "reason": "The date's role is unclear."},
-        {"status": "extracted", "starts_on": {"value": "May 12, 2027", "evidence": ["May 12, 2027"]}},
+        {"status": "extracted", "starts_on": {"value": "2027-05-12", "evidence": ["May 12, 2027"]}},
     ],
 )
 async def test_unknown_time_no_retry(time):
@@ -556,7 +556,7 @@ async def test_correction_keeps_analysis():
         {},
         {"status": "extracted"},
         {"status": "not_stated"},
-        {"status": "ambiguous", "reason": "Unclear", "ends_on": {"value": "May 12, 2027"}},
+        {"status": "ambiguous", "reason": "Unclear", "ends_on": {"value": "2027-05-12"}},
     ],
 )
 async def test_missing_time_corrected(time):
@@ -565,7 +565,7 @@ async def test_missing_time_corrected(time):
     item = {
         "summary": "Event",
         "evidence": ["May 12, 2027"],
-        "extracted": {"deadline": {"value": "May 12, 2027", "evidence": "May 12, 2027"}},
+        "extracted": {"deadline": {"value": "2027-05-12", "evidence": "May 12, 2027"}},
     }
     if time is not None:
         item["time"] = time

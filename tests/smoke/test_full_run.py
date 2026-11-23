@@ -76,7 +76,7 @@ def completed_run(tmp_path_factory):
                     assert path in pages
                     if path in {"/a", "/b", "/expired"}:
                         title, body, _ = pages[path]
-                        date = "January 1, 2001" if path == "/expired" else "December 31, 2099"
+                        date = "2001-01-01" if path == "/expired" else "2099-12-31"
                         answer = {
                             "classification": "RELEVANT",
                             "relevance_score": 0.9,

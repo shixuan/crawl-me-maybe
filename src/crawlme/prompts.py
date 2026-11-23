@@ -276,14 +276,14 @@ def analysis_system(goal: Goal) -> str:
     system = _ANALYSIS_SYSTEM + _ANALYSIS_EXTRACT_SYSTEM if spec_fields(goal.extraction_spec) else _ANALYSIS_SYSTEM
     system = system.replace(
         "__ITEM_TIME__",
-        ', "time": {"status": "extracted", "ends_on": {"value": "date as written", "evidence": ["verbatim quote"]}}'
+        ', "time": {"status": "extracted", "ends_on": {"value": "YYYY-MM-DD", "evidence": ["verbatim quote"]}}'
         if goal.time_policy
         else "",
     )
     if goal.time_policy:
         system += (
-            ' Within each item also return "time": {"status": "extracted", "starts_on": {"value": "date as written", '
-            '"evidence": ["verbatim quote"]}, "ends_on": {"value": "date as written", '
+            ' Within each item also return "time": {"status": "extracted", "starts_on": {"value": "YYYY-MM-DD", '
+            '"evidence": ["verbatim quote"]}, "ends_on": {"value": "YYYY-MM-DD", '
             '"evidence": ["verbatim quote"]}} following the time policy. '
             "Every item must include time. Use status extracted when at least one validity endpoint is "
             "supported. Otherwise use status not_stated when the source provides no validity dates, or "
@@ -293,7 +293,7 @@ def analysis_system(goal: Goal) -> str:
             "does not replace time. Omit unknown endpoints. "
             "For a single-day event use that date for both endpoints. "
             "For a compressed date range, each endpoint may use the full range as written; "
-            "the application selects its start or end. "
+            "return the corresponding endpoint as YYYY-MM-DD. Leave ambiguous numeric dates unresolved. "
             "Each evidence quote must be copied verbatim from the page. Together the quotes must "
             "contain the date and support its role as a start or end. When the date and its role "
             "appear separately, include both passages; for a single-day event include its date "

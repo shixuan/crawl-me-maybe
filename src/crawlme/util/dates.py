@@ -11,6 +11,7 @@ import unicodedata
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_abbr) if m}
 _MONTHS |= {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
 
+_SLASH_DATE = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?:/(\d{4}))?(?![\d/])")
 _ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 #: "August 29", "Aug 29", "Aug.3", "August 29, 2026" -- the day may carry
 #: an ordinal suffix, and an abbreviation's dot may swallow the space.
@@ -88,6 +89,18 @@ def read_dates(text: str, *, said_on: datetime.datetime | None = None) -> tuple[
                 if (day := _day(y, month, int(d))) is not None:
                     found.append(day)
         text = pattern.sub(lambda match: " " * len(match.group()), text)
+
+    for match in _SLASH_DATE.finditer(text):
+        a, b = map(int, match.groups()[:2])
+        if a <= 12 and b <= 12 and a != b:
+            continue  # Both day/month orders are possible.
+        month, number = (b, a) if a > 12 else (a, b)
+        year = match.group(3)
+        if not year and said_on is None:
+            continue
+        parsed = _day(int(year) if year else _year_for(month, number, said_on), month, number)
+        if parsed:
+            found.append(parsed)
 
     if not found:
         return None

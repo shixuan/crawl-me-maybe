@@ -118,10 +118,10 @@ def test_invalid_items_rejected(items):
 async def test_item_time_correction():
     entries = ["Aster ends May 12, 2027.", "Birch ends June 9, 2027."]
     raw = response(entries)
-    raw["items"][0]["time"] = {"status": "extracted", "ends_on": {"value": "May 12, 2027", "evidence": [entries[0]]}}
+    raw["items"][0]["time"] = {"status": "extracted", "ends_on": {"value": "2027-05-12", "evidence": [entries[0]]}}
     raw["items"][1]["time"] = {
         "status": "extracted",
-        "ends_on": {"value": "June 9, 2027", "evidence": ["Missing quote"]},
+        "ends_on": {"value": "2027-06-09", "evidence": ["Missing quote"]},
     }
     client = MagicMock()
     client.chat = AsyncMock(
@@ -129,7 +129,7 @@ async def test_item_time_correction():
             LLMResponse(json.dumps(raw), 100, 50, "test"),
             LLMResponse(
                 json.dumps(
-                    {"time": {"status": "extracted", "ends_on": {"value": "June 9, 2027", "evidence": [entries[1]]}}}
+                    {"time": {"status": "extracted", "ends_on": {"value": "2027-06-09", "evidence": [entries[1]]}}}
                 ),
                 100,
                 50,

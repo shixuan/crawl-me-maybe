@@ -4,6 +4,7 @@ Return supported results or raise an error for the caller to handle."""
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import unicodedata
@@ -95,7 +96,7 @@ class Analyzer:
             result = _parse_analysis(data, page, goal, model=resp.model, tokens_used=tokens)
         except AnalysisError as exc:
             logger.warning("analysis.invalid url_key=%s code=%s error=%s", page.url_key, exc.code, exc)
-            logger.warning(
+            logger.debug(
                 "analysis.response url_key=%s content=%s", page.url_key, resp.content, extra={"file_only": True}
             )
             raise
@@ -124,7 +125,7 @@ class Analyzer:
             issues: list[str] = []
             _policy_dates(data, page, issues=issues)
             if issues:
-                logger.warning("analysis.time_retry url_key=%s errors=%s", page.url_key, "; ".join(issues))
+                logger.info("analysis.time_retry url_key=%s errors=%s", page.url_key, "; ".join(issues))
                 correction = (
                     prompt
                     + "\n## Time correction\nPrevious time output:\n"
@@ -158,7 +159,7 @@ class Analyzer:
                         )
                     data = {**data, "time": corrected["time"]}
                 except AnalysisError as exc:
-                    logger.warning("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
+                    logger.debug("analysis.time_failed url_key=%s error=%s", page.url_key, exc)
                     raise
         return data, tokens
 
@@ -407,10 +408,15 @@ def _policy_dates(data: dict[str, Any], page: Page, *, issues: list[str] | None 
         if any(_normalize(unicodedata.normalize("NFKC", q)) not in text for q in quotes):
             invalid(f"{endpoint}: each evidence quote must occur in the page")
             continue
-        found = read_range(value, kind="on", said_on=page.published_at)
+        try:
+            date = datetime.date.fromisoformat(value)
+            if date.isoformat() != value:
+                raise ValueError
+        except ValueError:
+            invalid(f"{endpoint}: value must be a calendar date in YYYY-MM-DD format")
+            continue
         supported = [read_range(q, kind="on", said_on=page.published_at) for q in quotes]
-        date = (found.start if endpoint == "starts_on" else found.end) if found else None
-        if date is None or not any(span and date in (span.start, span.end) for span in supported):
+        if not any(span and date in (span.start, span.end) for span in supported):
             invalid(f"{endpoint}: evidence must include the stated date, including compressed ranges")
             continue
         dates[endpoint] = date
