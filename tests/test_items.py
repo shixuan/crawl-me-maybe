@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from crawlme.analysis import AnalysisError, AnalysisResult, Analyzer
-from crawlme.analysis.analyzer import _parse_analysis
+from crawlme.analysis.validator import validate_analysis
 from crawlme.dedup.grouper import Grouper
 from crawlme.digest import Page
 from crawlme.digest.models import PageSource
@@ -58,7 +58,7 @@ def test_sources_reject_unknown_or_unrelated_passages(refs):
     raw = response(["Alice measured 30."])
     raw["items"][0]["sources"] = refs
     with pytest.raises(AnalysisError):
-        _parse_analysis(raw, p, Goal(prompt="measurements"), model="test", tokens_used=0)
+        validate_analysis(raw, p, Goal(prompt="measurements"), model="test", tokens_used=0)
 
 
 async def test_item_sources_survive_storage_and_dedup_input(tmp_path):
@@ -67,7 +67,7 @@ async def test_item_sources_survive_storage_and_dedup_input(tmp_path):
     raw = response([p.plain_text])
     raw["items"][0]["sources"] = ["1"]
     goal = Goal(prompt="measurements")
-    result = _parse_analysis(raw, p, goal, model="test", tokens_used=0)
+    result = validate_analysis(raw, p, goal, model="test", tokens_used=0)
     storage = Storage.create(tmp_path)
     await storage.start()
     try:
@@ -93,7 +93,7 @@ async def test_item_sources_survive_storage_and_dedup_input(tmp_path):
 )
 def test_general_item_protocol(goal_text, entries):
     goal = Goal(prompt=goal_text, extraction_spec={"fields": {"name": "matching entry"}})
-    result = _parse_analysis(response(entries), page("\n".join(entries)), goal, model="test", tokens_used=10)
+    result = validate_analysis(response(entries), page("\n".join(entries)), goal, model="test", tokens_used=10)
     assert len(result.items) == len(entries)
     assert len({item.item_id for item in result.items}) == len(entries)
     assert [item.summary for item in result.items] == entries
@@ -104,7 +104,7 @@ def test_general_item_protocol(goal_text, entries):
 @pytest.mark.parametrize("items", [None, {}, ["bad"], [], [{"summary": "invented", "evidence": ["missing"]}]])
 def test_invalid_items_rejected(items):
     with pytest.raises(AnalysisError) as caught:
-        _parse_analysis(
+        validate_analysis(
             {"classification": "RELEVANT", "items": items},
             page("source"),
             Goal(prompt="find entries"),
@@ -157,7 +157,7 @@ async def test_items_replay_and_groups(tmp_path, capsys):
     source = page("Aster camera.\nBirch camera.")
     storage.save_goal(goal.model_dump(mode="json"))
     storage.save_page(source)
-    result = _parse_analysis(response(["Aster camera.", "Birch camera."]), source, goal, model="test", tokens_used=5)
+    result = validate_analysis(response(["Aster camera.", "Birch camera."]), source, goal, model="test", tokens_used=5)
     storage.save_analysis(result.model_dump(mode="json"))
     try:
         rows = await storage.dedup_inputs(goal.goal_id)
@@ -179,7 +179,7 @@ async def test_items_replay_and_groups(tmp_path, capsys):
             url_key="aster",
             plain_text="Aster camera.",
         )
-        duplicate = _parse_analysis(response(["Aster camera."]), other, goal, model="test", tokens_used=5)
+        duplicate = validate_analysis(response(["Aster camera."]), other, goal, model="test", tokens_used=5)
         storage.save_page(other)
         storage.save_analysis(duplicate.model_dump(mode="json"))
         pair = [result.items[0].item_id, duplicate.items[0].item_id]

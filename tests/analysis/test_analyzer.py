@@ -11,7 +11,7 @@ import datetime
 import pytest
 
 from crawlme.analysis import AnalysisError, Analyzer
-from crawlme.analysis.analyzer import _parse_analysis, _parse_extracted
+from crawlme.analysis.validator import _parse_extracted, validate_analysis
 from crawlme.digest import Page
 from crawlme.errors import Kind
 from crawlme.goals import Goal
@@ -313,7 +313,7 @@ def test_dates_require_validated_evidence(evidence):
             "time_field": {"name": "deadline", "kind": "until"},
         },
     )
-    result = _parse_analysis(
+    result = validate_analysis(
         {
             "classification": "RELEVANT",
             "extracted": {"deadline": {"value": "August 16, 2027", "evidence": evidence}},
@@ -336,7 +336,7 @@ def test_dates_require_validated_evidence(evidence):
 def test_time_policy_is_independent_of_requested_fields(policy):
     text = "Offer ends August 16, 2027."
     goal = Goal(prompt="find offers", time_policy=policy)
-    result = _parse_analysis(
+    result = validate_analysis(
         {
             "classification": "RELEVANT",
             "time": {"status": "extracted", "ends_on": {"value": "2027-08-16", "evidence": text}},
@@ -359,7 +359,7 @@ def test_time_policy_is_independent_of_requested_fields(policy):
 )
 def test_time_requires_date_inside_source_evidence(value, evidence):
     with pytest.raises(AnalysisError):
-        _parse_analysis(
+        validate_analysis(
             {
                 "classification": "RELEVANT",
                 "time": {"status": "extracted", "ends_on": {"value": value, "evidence": evidence}},
@@ -374,7 +374,7 @@ def test_time_requires_date_inside_source_evidence(value, evidence):
 def test_inverted_time_window_rejected():
     text = "Starts August 20, 2027. Ends August 16, 2027."
     with pytest.raises(AnalysisError):
-        _parse_analysis(
+        validate_analysis(
             {
                 "classification": "RELEVANT",
                 "time": {
@@ -407,7 +407,7 @@ def test_inverted_time_window_rejected():
 def test_time_range_evidence(value, evidence, endpoint, expected):
     page = _page(evidence)
     page.published_at = datetime.datetime(2026, 9, 24, tzinfo=datetime.timezone.utc)
-    result = _parse_analysis(
+    result = validate_analysis(
         {
             "classification": "RELEVANT",
             "time": {"status": "extracted", endpoint: {"value": value, "evidence": evidence}},
@@ -424,7 +424,7 @@ def test_time_range_evidence(value, evidence, endpoint, expected):
 def test_time_rejects_unsupported(value):
     evidence = "Valid September 25\u201327, 2026."
     with pytest.raises(AnalysisError):
-        _parse_analysis(
+        validate_analysis(
             {
                 "classification": "RELEVANT",
                 "time": {"status": "extracted", "ends_on": {"value": value, "evidence": evidence}},
