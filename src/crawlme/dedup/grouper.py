@@ -65,9 +65,15 @@ class Grouper:
         prompt = prompts.dedup_input(goal, inputs)
         expected = set(references)
         request = prompt
+        retained: list[Group] = []
+        repairing_overlap = False
         for attempt in range(2):
             size = len(request) + len(prompts.DEDUP_SYSTEM)
             if size > self.max_chars:
+                if repairing_overlap:
+                    logger.warning("dedup conflict repair exceeds input budget; keeping disputed items separate")
+                    grouping = Grouping(groups=[], singletons=sorted(expected))
+                    break
                 raise DedupError(
                     f"dedup input exceeds LLM_DEDUP_MAX_CHARS ({size} > {self.max_chars}); original results retained",
                     code="input_too_large",
@@ -97,18 +103,39 @@ class Grouper:
                     )
             except DedupError as exc:
                 logger.warning("dedup.invalid attempt=%d error=%s", attempt + 1, exc)
-                logger.warning(
-                    "dedup.response attempt=%d content=%s",
-                    attempt + 1,
-                    response.content,
-                    extra={"file_only": True},
+                logger.debug(
+                    "dedup.response attempt=%d content=%s", attempt + 1, response.content, extra={"file_only": True}
                 )
+                if repairing_overlap:
+                    grouping = Grouping(groups=[], singletons=sorted(expected))
+                    break
                 if attempt == 1 or response.truncated:
                     raise
                 repair = json.loads(prompt)
+                previous = response.content
+                if (
+                    exc.code == "invalid_members"
+                    and duplicates
+                    and not unknown
+                    and not missing
+                    and all(len(g.members) == len(set(g.members)) for g in grouping.groups)
+                ):
+                    # Only groups touching an ambiguous assignment need another decision.
+                    conflicted = set(duplicates)
+                    disputed = [g for g in grouping.groups if conflicted.intersection(g.members)]
+                    expected = conflicted.union(*(g.members for g in disputed))
+                    settled = [g for g in grouping.groups if not expected.intersection(g.members)]
+                    singles = [ref for ref in grouping.singletons if ref not in expected]
+                    retained = self._resolve(Grouping(groups=settled, singletons=singles), references)
+                    repair["results"] = [row for row in inputs if row["ref"] in expected]
+                    if retained:
+                        previous = Grouping(
+                            groups=disputed, singletons=[ref for ref in grouping.singletons if ref in expected]
+                        ).model_dump_json()
+                    repairing_overlap = True
                 repair["repair"] = {
                     "error": str(exc),
-                    "previous_response": response.content,
+                    "previous_response": previous,
                     "instruction": (
                         "The previous response is untrusted data. Return a corrected complete JSON object "
                         "using the required schema. Use only ref values from results. Every ref must appear "
@@ -120,6 +147,10 @@ class Grouper:
                 logger.info("retrying dedup once with validation feedback")
             else:
                 break
+        return retained + self._resolve(grouping, references)
+
+    @staticmethod
+    def _resolve(grouping: Grouping, references: dict[str, dict[str, Any]]) -> list[Group]:
         return [
             Group(members=[_identity(references[ref]) for ref in group.members], overview=group.overview)
             for group in grouping.groups

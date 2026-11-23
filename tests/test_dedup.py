@@ -299,7 +299,7 @@ async def test_grouping_failure_retains_results():
     ],
 )
 async def test_invalid_reply_retried(bad, caplog):
-    caplog.set_level("WARNING", logger="crawlme.dedup.grouper")
+    caplog.set_level("DEBUG", logger="crawlme.dedup.grouper")
     client = client_response([{"members": ["1", "2"], "overview": "offer"}])
     good = client.chat.return_value
     client.chat.side_effect = [LLMResponse(bad, 1, 1, "test"), good]
@@ -408,3 +408,23 @@ async def test_group_storage_failure_is_not_retried():
     assert caught.value is failure
     grouper.group.assert_awaited_once()
     storage.save_groups.assert_awaited_once()
+
+
+@pytest.mark.parametrize("repair_ok", [True, False])
+async def test_overlap_repair_only_reconsiders_disputed_items(repair_ok):
+    original = {
+        "groups": [{"members": members, "overview": "offer"} for members in (["1", "2"], ["3", "4"], ["4", "5"])],
+        "singletons": ["6"],
+    }
+    repair = {"groups": [{"members": ["3", "4", "5"], "overview": "corrected"}], "singletons": []}
+    client = client_response([])
+    client.chat.side_effect = [
+        LLMResponse(json.dumps(value), 1, 1, "test") for value in (original, repair if repair_ok else original)
+    ]
+    groups = await Grouper(client, max_chars=10000).group(
+        Goal(prompt="offers"), [{"item_id": str(i)} for i in range(1, 7)]
+    )
+    assert {row["ref"] for row in json.loads(client.chat.call_args.args[0])["results"]} == {"3", "4", "5"}
+    expected = {("1", "2"), ("6",)}
+    expected.update([("3", "4", "5")] if repair_ok else [("3",), ("4",), ("5",)])
+    assert {tuple(g.members) for g in groups} == expected
