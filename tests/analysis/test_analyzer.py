@@ -267,25 +267,21 @@ async def test_spec_reworded():
     assert a.spec_version != b.spec_version
 
 
-def test_negation_drop():
-    """A quote proves what a page says.  Nothing on a page proves an
-    absence, so "no" is a claim its evidence cannot support -- and the
-    field simply not being there already says it."""
+@pytest.mark.parametrize(("value", "quote"), [("no", "No purchase required."), ("否", "无需购买。")])
+def test_explicit_negative_field(value, quote):
+    goal = Goal(prompt="p", extraction_spec={"fields": {"purchase_required": "whether purchase is required"}})
+    data = {"extracted": {"purchase_required": {"value": value, "evidence": quote}}}
+    assert _parse_extracted(data, _page(quote), goal)["purchase_required"].value == value
+
+
+def test_null_field_is_omitted():
     goal = Goal(prompt="p", extraction_spec={"fields": {"limited_edition": "whether it is limited"}})
-    page = _page("Lemon Pie or Matcha Cookies - only $5.80 all month!")
-
-    kept = _parse_extracted(
-        {"extracted": {"limited_edition": {"value": "no", "evidence": "only $5.80 all month!"}}},
-        page,
-        goal,
-    )
-
-    assert kept == {}
+    text = "Only $5.80 all month!"
+    data = {"extracted": {"limited_edition": {"value": None, "evidence": text}}}
+    assert _parse_extracted(data, _page(text), goal) == {}
 
 
-def test_negation_inside():
-    """Only a bare negation is unprovable; "no-sugar option" is an
-    answer the page really does state."""
+def test_keeps_descriptive_field_value():
     goal = Goal(prompt="p", extraction_spec={"fields": {"variant": "which variant"}})
     page = _page("Now with a no-sugar option at every store.")
 

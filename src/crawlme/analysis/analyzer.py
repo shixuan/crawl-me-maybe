@@ -168,37 +168,6 @@ def _page_text(page: Page) -> str:
     return (page.plain_text or "").strip() or (page.markdown or "").strip()
 
 
-# Reject bare negations, but preserve values such as "no-sugar option".
-_NEGATIONS = frozenset(
-    {
-        "no",
-        "none",
-        "not",
-        "false",
-        "n/a",
-        "na",
-        "nil",
-        "null",
-        "unknown",
-        "unnamed",
-        "unspecified",
-        "not specified",
-        "not mentioned",
-        "not stated",
-        "not applicable",
-        "not limited",
-        "not a limited edition",
-        "否",
-        "无",
-        "没有",
-        "不是",
-        "未知",
-        "未说明",
-        "未提及",
-    }
-)
-
-
 def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
@@ -215,18 +184,14 @@ def _parse_extracted(data: dict[str, Any], page: Page, goal: Goal) -> dict[str, 
     out: dict[str, ExtractedField] = {}
     for name in fields:
         entry = raw.get(name)
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or entry.get("value") is None:
             continue
-        value = str(entry.get("value", "")).strip()
+        value = str(entry["value"]).strip()
         evidence = str(entry.get("evidence", "")).strip()
         if not value or not evidence:
             continue
         if _normalize(evidence) not in haystack:
             logger.debug("analysis.evidence_not_found url_key=%s field=%s", page.url_key, name)
-            continue
-        if _normalize(value) in _NEGATIONS:
-            # Bare negations do not establish a field value; omit them.
-            logger.debug("analysis.negative_claim url_key=%s field=%s", page.url_key, name)
             continue
         out[name] = ExtractedField(value=value, evidence=evidence)
     return out
