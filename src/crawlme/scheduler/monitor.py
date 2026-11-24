@@ -108,7 +108,12 @@ class StopMonitor(Monitor):
             if deadline is not None:
                 until_deadline = max(0.0, deadline - now)
                 timeout = until_deadline if timeout is None else min(timeout, until_deadline)
+            update = asyncio.create_task(self._wait_for_update(revision))
             try:
-                await asyncio.wait_for(self._wait_for_update(revision), timeout=timeout)
-            except asyncio.TimeoutError:
-                pass
+                # Keep external cancellation visible even when an update arrives in the same turn.
+                await asyncio.wait({update}, timeout=timeout)
+                if update.done():
+                    update.result()
+            finally:
+                update.cancel()
+                await asyncio.gather(update, return_exceptions=True)
