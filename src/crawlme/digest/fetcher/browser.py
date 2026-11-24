@@ -274,4 +274,6 @@ class PlaywrightFetcher(Fetcher):
 def _is_transient(err: BaseException) -> bool:
     """Identify navigation failures that can be retried."""
     name = type(err).__name__
+    if str(err).startswith("Page.goto: net::ERR_NAME_NOT_RESOLVED at "):
+        return True
     return "Timeout" in name or "TargetClosed" in name or isinstance(err, asyncio.TimeoutError)
