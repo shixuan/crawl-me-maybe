@@ -59,7 +59,8 @@ def _capturing_factory(captured: dict):
 
         sched.error_handler = ErrorHandler()
         sched._goal_enhancer = Enhancer.from_settings(cfg)
-        sched.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched, *args, **kwargs)
+        sched.startup = CrawlPipeline.startup.__get__(sched)
+        sched._prepare_sources = CrawlPipeline._prepare_sources.__get__(sched)
         sched.ingest_seeds = AsyncMock()
         sched.expand_seeds = AsyncMock(return_value=[])
         sched.run_state = RunState(limits=Limits(), progress=Progress(), stats=Stats())
@@ -202,19 +203,7 @@ def test_prints_summary(capsys):
     """After a run, the terminal report shows the numbers that matter."""
 
     def _capture(cfg, goal=None, **overrides):
-        sched = MagicMock()
-        from crawlme.scheduler.pipelines.factory import GoalEnhancer as Enhancer
-
-        sched.error_handler = ErrorHandler()
-        sched._goal_enhancer = Enhancer.from_settings(cfg)
-        sched.startup = lambda *args, **kwargs: CrawlPipeline.startup(sched, *args, **kwargs)
-        sched.ingest_seeds = AsyncMock()
-        sched.expand_seeds = AsyncMock(return_value=[])
-        sched.run_state = RunState(limits=Limits(), progress=Progress(pages_fetched=5), stats=Stats())
-        sched.monitor = None
-        sched.checkpoint = None
-        sched.aclose = AsyncMock()
-        sched.run = AsyncMock()
+        sched = _capturing_factory({})(cfg, goal, **overrides)
         sched.summary = lambda: {
             "pages_fetched": 5,
             "tokens_used": 1234,
@@ -500,7 +489,7 @@ def test_feed_needs_session(capsys):
     assert "crawl session" in str(error.value)
 
 
-def test_env_session_allows_instagram_seed(tmp_path, monkeypatch, _installed):
+def test_instagram_env_session(tmp_path, monkeypatch, _installed):
     session = tmp_path / "state.json"
     session.write_text('{"cookies": [{"name": "s", "value": "x"}]}')
     monkeypatch.setenv("BROWSER_STORAGE_STATE", str(session))
@@ -612,7 +601,7 @@ def test_session_sets_no_depth(_installed, tmp_path, flags, expected_depth):
     assert captured["goal"].depth_limit == expected_depth
 
 
-def test_login_refusal_says_how_to_fix_it():
+def test_login_refusal_advice():
     """The stop code is for a machine. This is the one ending with an
     obvious next step, and the run cannot say it any other way."""
     from crawlme.cli.report import format_summary
@@ -623,14 +612,14 @@ def test_login_refusal_says_how_to_fix_it():
     assert "crawl session ./ig.json --feed instagram --force" in out
 
 
-def test_advice_survives_a_missing_session_path():
+def test_missing_session_advice():
     from crawlme.cli.report import format_summary
 
     out = format_summary({"state": "COMPLETED", "reason": "LOGIN_REQUIRED"})
     assert "crawl session" in out
 
 
-def test_unjudged_pages_are_reported():
+def test_unjudged_page_count():
     """Fetching outruns analysis, so a run that stops on a target leaves
     pages it paid to fetch and never judged. Without this line, "not in
     the results" and "never looked at" read the same."""
@@ -642,7 +631,7 @@ def test_unjudged_pages_are_reported():
     assert "37 fetched pages were never judged" in out
 
 
-def test_overshooting_the_target_is_explained():
+def test_target_overshoot():
     """Work already dispatched keeps landing after the target is met.
     Without the target beside the tally, one run asking for 15 and
     reporting 24 reads as the run ignoring what it was asked for."""
@@ -654,7 +643,7 @@ def test_overshooting_the_target_is_explained():
     assert "24 relevant against a target of 15" in out
 
 
-def test_retired_sources_are_reported():
+def test_retired_sources():
     """A run now ends by every source retiring, so without this it just
     reads as a drained frontier."""
     from crawlme.cli.report import format_summary
@@ -670,7 +659,7 @@ def test_retired_sources_are_reported():
     assert "nothing in its last 20 pages (2 sources)" in out
 
 
-def test_survivors_and_rejects_are_both_listed():
+def test_survivors_and_rejects():
     from crawlme.cli.report import format_summary
 
     out = format_summary(
@@ -710,7 +699,7 @@ def test_tokens_split_by_stage():
 
 @pytest.mark.parametrize("command", ["run", "resume", "replay", "dedup"])
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "exception", "invalid"])
-async def test_dispatch_cleanup_and_report(monkeypatch, capsys, outcome, command):
+async def test_dispatch_cleanup_report(monkeypatch, capsys, outcome, command):
     import asyncio
     import logging
 
@@ -828,7 +817,7 @@ def no_cli_monitor(monkeypatch):
     "seeds, conflict",
     [(None, False), ("https://www.reddit.com/r/toronto/", False), ("https://example.com/", True)],
 )
-def test_platform_flag_enables_expansion_and_warns_on_conflict(seeds, conflict):
+def test_platform_expansion_flags(seeds, conflict):
     captured: dict = {}
     argv = ["crawl", "run", "test", "--platform", "reddit"]
     if seeds:
@@ -845,7 +834,7 @@ def test_platform_flag_enables_expansion_and_warns_on_conflict(seeds, conflict):
 
 
 @pytest.mark.parametrize("repeated", [False, True])
-def test_multiple_session_files_reach_fetchers(tmp_path, repeated, _installed):
+def test_multiple_session_files(tmp_path, repeated, _installed):
     from pathlib import Path
 
     from crawlme.config import Settings

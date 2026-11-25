@@ -37,7 +37,7 @@ def client_response(groups, *, singletons=(), truncated=False):
         [{"members": ["1"], "overview": "singleton in groups"}],
     ],
 )
-async def test_invalid_partition_rejected(groups):
+async def test_bad_partition(groups):
     grouper = Grouper(client_response(groups), max_chars=10000)
     with pytest.raises(DedupError) as caught:
         await grouper.group(Goal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}])
@@ -49,7 +49,7 @@ async def test_invalid_partition_rejected(groups):
         assert caught.value.code == "invalid_members"
 
 
-async def test_group_preserves_evidence_and_does_not_output_a_score():
+async def test_group_evidence_and_score():
     client = client_response([{"members": ["1", "2"], "overview": "Same offer; terms differ."}])
     rows = [
         {"analysis_id": "a", "extracted": {"condition": {"value": "two large", "evidence": "two large"}}},
@@ -64,7 +64,7 @@ async def test_group_preserves_evidence_and_does_not_output_a_score():
     assert set(result[0].model_dump()) == {"members", "overview"}
 
 
-async def test_no_truncation_or_call_for_oversized_input():
+async def test_oversized_input_skips_llm():
     client = client_response([])
     with pytest.raises(DedupError, match="exceeds"):
         await Grouper(client, max_chars=10).group(Goal(prompt="gifts"), [{"analysis_id": "a"}, {"analysis_id": "b"}])
@@ -86,7 +86,7 @@ async def test_singleton_needs_no_llm():
     client.chat.assert_not_called()
 
 
-async def test_explicit_singletons_reuse_original_summaries():
+async def test_singleton_summaries():
     rows = [{"analysis_id": "a", "summary": "one"}, {"analysis_id": "b", "summary": "two"}]
     groups = await Grouper(client_response([], singletons=["1", "2"]), max_chars=10000).group(
         Goal(prompt="gifts"), rows
@@ -96,7 +96,7 @@ async def test_explicit_singletons_reuse_original_summaries():
 
 
 @pytest.mark.parametrize("singletons", [[], ["1"]])
-async def test_missing_references_rejected(singletons):
+async def test_missing_refs(singletons):
     client = client_response([], singletons=singletons)
     with pytest.raises(DedupError) as caught:
         await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "b"}])
@@ -106,22 +106,28 @@ async def test_missing_references_rejected(singletons):
 
 
 @pytest.mark.parametrize(
-    ("groups", "singletons", "error"),
+    ("groups", "singletons"),
     [
-        ([{"members": ["1", "2"], "overview": "same"}], ["2"], "duplicates"),
-        ([], ["1", "1", "2"], "duplicates"),
-        ([], ["1", "2", "3"], "unknown"),
+        ([{"members": ["1", "2"], "overview": "same"}], ["2"]),
+        ([], ["1", "1", "2"]),
     ],
 )
-async def test_references_checked_across_groups_and_singletons(groups, singletons, error):
+async def test_overlap_fallback(groups, singletons):
     client = client_response(groups, singletons=singletons)
+    results = await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "b"}])
+    assert sorted(group.members for group in results) == [["a"], ["b"]]
+    assert client.chat.await_count == 2
+
+
+async def test_unknown_singleton():
+    client = client_response([], singletons=["1", "2", "3"])
     with pytest.raises(DedupError) as caught:
         await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "b"}])
     assert caught.value.code == "invalid_members"
-    assert caught.value.details[error]
+    assert caught.value.details["unknown"] == ["3"]
 
 
-async def test_references_are_stable_and_do_not_replace_storage_ids():
+async def test_stable_refs_and_item_ids():
     rows = [
         {"item_id": "z-real", "analysis_id": "parent-z", "summary": "unique"},
         {"item_id": "b-real", "analysis_id": "parent-b", "summary": "second"},
@@ -146,7 +152,7 @@ async def test_references_are_stable_and_do_not_replace_storage_ids():
     assert fingerprint(rows) == before_fingerprint
 
 
-async def test_duplicate_input_ids_rejected_before_call():
+async def test_duplicate_input_ids():
     client = client_response([], singletons=["1", "2"])
     with pytest.raises(DedupError) as caught:
         await Grouper(client, max_chars=10000).group(Goal(prompt="gifts"), [{"item_id": "a"}, {"item_id": "a"}])
@@ -154,7 +160,7 @@ async def test_duplicate_input_ids_rejected_before_call():
     client.chat.assert_not_called()
 
 
-async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
+async def test_stored_groups_replay(tmp_path):
     import sys
     from pathlib import Path
 
@@ -206,7 +212,7 @@ async def test_persisted_groups_dashboard_and_stale_replay(tmp_path):
         await storage.close()
 
 
-async def test_group_inputs_match_readers(tmp_path, monkeypatch):
+async def test_group_reader_inputs(tmp_path, monkeypatch):
     """Both consumers use the same goal, page revision and evidence for fingerprints."""
     import sys
     from pathlib import Path
@@ -273,7 +279,7 @@ async def test_group_inputs_match_readers(tmp_path, monkeypatch):
         await storage.close()
 
 
-async def test_grouping_failure_retains_results():
+async def test_failure_preserves_results():
     from crawlme.dedup import DedupError
     from crawlme.scheduler.pipelines.dedup import DedupPipeline
 
@@ -349,7 +355,7 @@ async def test_repair_input_limit():
     client.chat.assert_awaited_once()
 
 
-async def test_latest_verdict_before_filter(tmp_path):
+async def test_filter_latest_verdict(tmp_path):
     storage = Storage.create(tmp_path)
     await storage.start()
     try:
@@ -396,7 +402,7 @@ async def test_compact_input_boundary():
     client.chat.assert_not_called()
 
 
-async def test_group_storage_failure_is_not_retried():
+async def test_storage_failure_no_retry():
     from crawlme.scheduler.pipelines.dedup import DedupPipeline
 
     failure = OSError("disk full")
@@ -411,7 +417,7 @@ async def test_group_storage_failure_is_not_retried():
 
 
 @pytest.mark.parametrize("repair_ok", [True, False])
-async def test_overlap_repair_only_reconsiders_disputed_items(repair_ok):
+async def test_retry_disputed_items(repair_ok):
     original = {
         "groups": [{"members": members, "overview": "offer"} for members in (["1", "2"], ["3", "4"], ["4", "5"])],
         "singletons": ["6"],

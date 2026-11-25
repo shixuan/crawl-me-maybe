@@ -164,9 +164,9 @@ async def test_seed_expansion_disabled():
 
 
 @pytest.mark.asyncio
-async def test_expansion_without_expander_returns_nothing():
+async def test_no_expander():
     """Expansion is inert when no expander was assembled."""
-    sched = _make_sched(settings=Settings(expand_seeds=True))
+    sched = _make_sched(settings=Settings(expand_seeds=True), seed_expander=None)
     assert await sched.pipeline.expand_seeds(_goal(), []) == []
 
 
@@ -206,7 +206,7 @@ async def test_expanded_seeds_are_marked(with_seeds):
 
 
 @pytest.mark.asyncio
-async def test_backpressure_caps_inflight():
+async def test_inflight_limit():
     """The fetch slot is released before the analysis, so tasks waiting
     for an LLM slot hold nothing back. One run reached forty-six parked
     on two analysis slots and abandoned thirty-three when it stopped."""
@@ -226,7 +226,7 @@ async def test_backpressure_caps_inflight():
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_pump_is_not_a_failure():
+async def test_cancelled_pump():
     sched = _make_sched()
     task = asyncio.create_task(asyncio.sleep(10))
     sched.pipeline._pump_tasks.append(task)
@@ -234,7 +234,7 @@ async def test_a_cancelled_pump_is_not_a_failure():
     assert not sched.pipeline.run_state.progress.fatal_error
 
 
-async def test_searched_posts_skip_source_verification():
+async def test_search_posts_skip_probe():
     from crawlme.urls import Canonicalizer
 
     canonicalizer = Canonicalizer()
