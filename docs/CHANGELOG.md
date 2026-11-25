@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.8.2](https://github.com/shixuan/crawl-me-maybe/compare/v0.8.1...v0.8.2) (2026-11-25)
+
+
+### Fixes
+
+* **analysis:** preserve explicit negative field values ([be13f60](https://github.com/shixuan/crawl-me-maybe/commit/be13f60f71670b8272ead81acb357eb1c34699da))
+* **analysis:** validate ISO endpoints against numeric date evidence ([31c9d4e](https://github.com/shixuan/crawl-me-maybe/commit/31c9d4e2bf5d237e9cbfadec05f37b930b66f1aa))
+* **dedup:** retry overlapping groups without discarding settled results ([9ae7386](https://github.com/shixuan/crawl-me-maybe/commit/9ae7386335bd36bc161c43ca9591a952be79d6cb))
+* **fetch:** retry browser DNS failures ([1ba4bf3](https://github.com/shixuan/crawl-me-maybe/commit/1ba4bf309f5f7e5084ddb4ce9b05d3e67ee84f94))
+* **runtime:** include startup in the crawl time budget ([f3c75bf](https://github.com/shixuan/crawl-me-maybe/commit/f3c75bfea4086bd18b6fc31795b922416899e0b4))
+* **scheduler:** preserve monitor cancellation ([957593c](https://github.com/shixuan/crawl-me-maybe/commit/957593c39a43a0f7987854a89515d3756a5642f8))
+
+
+### Changed
+
+* **analysis:** isolate result validation ([64fa59e](https://github.com/shixuan/crawl-me-maybe/commit/64fa59eb18dab6f82e53f5846e5c0a7d592b9a9d))
+
 ## [0.8.1](https://github.com/shixuan/crawl-me-maybe/compare/v0.8.0...v0.8.1) (2026-11-19)
 
 
